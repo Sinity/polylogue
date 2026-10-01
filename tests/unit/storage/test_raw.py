@@ -10,6 +10,7 @@ This module contains tests for:
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from pathlib import Path
 
@@ -84,7 +85,7 @@ class TestRawSessionStorage:
             assert admitted[4] == RawRevisionAuthority.QUARANTINED.value
 
     async def test_repository_update_raw_state_uses_source_tier(self, tmp_path: Path) -> None:
-        initialize_active_archive_root(tmp_path)
+        await asyncio.to_thread(initialize_active_archive_root, tmp_path)
         source_backend = SQLiteBackend(db_path=tmp_path / "source.db")
         try:
             await admit_raw_record(

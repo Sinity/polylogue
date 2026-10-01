@@ -8,21 +8,7 @@ import aiosqlite
 
 from polylogue.core.json import JSONDocument
 from polylogue.storage.sqlite.connection import _build_source_scope_filter
-
-
-def session_id_prefix_bounds(prefix: str) -> tuple[str, str | None]:
-    """Return indexed lexicographic bounds for a session-id prefix."""
-
-    if prefix == "":
-        return "", None
-    chars = list(prefix)
-    while chars:
-        last = ord(chars[-1])
-        if last < 0x10FFFF:
-            chars[-1] = chr(last + 1)
-            return prefix, "".join(chars)
-        chars.pop()
-    return prefix, None
+from polylogue.storage.sqlite.session_identity import session_id_prefix_bounds
 
 
 async def resolve_id(conn: aiosqlite.Connection, id_prefix: str, *, strict: bool = False) -> str | None:
@@ -173,7 +159,6 @@ __all__ = [
     "list_tags",
     "resolve_id",
     "session_id_query",
-    "session_id_prefix_bounds",
     "set_metadata",
     "update_metadata_raw",
 ]

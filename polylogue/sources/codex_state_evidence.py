@@ -246,7 +246,7 @@ def record_codex_state_snapshot_terminal(
     A ``thread_state`` export also recomputes the index-tier thread-state
     projection, which is why both routes pass through one function.
     """
-    from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+    from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 
     receipt: CodexStateMaterializationReceipt | None = None
     if state_kind in {"goals", "memories"}:
@@ -274,7 +274,7 @@ def record_codex_state_snapshot_terminal(
     archive.replace_raw_membership_census(
         raw_id,
         [],
-        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+        parser_fingerprint=raw_authority_parser_fingerprint(),
         censused_at_ms=censused_at_ms,
         detail=(
             f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}" if receipt is not None else CODEX_STATE_CENSUS_DETAIL

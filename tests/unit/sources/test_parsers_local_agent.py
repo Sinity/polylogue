@@ -29,7 +29,7 @@ from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.schema import _ensure_schema
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 
@@ -419,7 +419,7 @@ def test_gemini_cli_contentless_turn_tokens_reach_the_cost_rollup(workspace_env:
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     with open_connection(db_setup(workspace_env)) as conn:
-        write_prepared_session(conn, session)
+        write_fixture_index_session(conn, session)
         rollup = conn.execute("SELECT model_name, input_tokens, output_tokens FROM session_model_usage").fetchall()
         usage_events = conn.execute(
             "SELECT source_message_id, last_input_tokens, last_output_tokens"
@@ -1717,7 +1717,7 @@ def test_hermes_snapshot_and_state_db_share_one_session_identity(tmp_path: Path)
     try:
         _ensure_schema(conn)
         for parsed in (state_root, snapshot):
-            write_prepared_session(conn, parsed, content_hash=session_content_hash(parsed))
+            write_fixture_index_session(conn, parsed, content_hash=session_content_hash(parsed), standalone_memory=True)
         rows = [
             row["native_id"]
             for row in conn.execute("SELECT native_id FROM sessions WHERE origin = 'hermes-session'").fetchall()

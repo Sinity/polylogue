@@ -52,7 +52,7 @@ from polylogue.storage.derived.session.rebuild import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
 # matching the corpus finding in _provider_usage_disjoint_lanes's docstring),
@@ -184,7 +184,7 @@ def _profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int
 def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Path) -> None:
     conn = _make_archive_conn(tmp_path)
     session_id = "codex-session:model-usage-consistency-sync"
-    write_prepared_session(conn, _codex_session("model-usage-consistency-sync"))
+    write_fixture_index_session(conn, _codex_session("model-usage-consistency-sync"))
 
     # Sanity: session_model_usage carries the real (large) cumulative usage,
     # not the near-empty per-message fields.
@@ -212,7 +212,7 @@ def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Pat
 async def test_codex_profile_tokens_match_model_usage_after_async_rebuild(tmp_path: Path) -> None:
     session_id = "codex-session:model-usage-consistency-async"
     sync_conn = _make_archive_conn(tmp_path)
-    write_prepared_session(sync_conn, _codex_session("model-usage-consistency-async"))
+    write_fixture_index_session(sync_conn, _codex_session("model-usage-consistency-async"))
     model_usage = _model_usage_totals(sync_conn, session_id)
     sync_conn.close()
 
@@ -243,7 +243,7 @@ def test_claude_code_profile_tokens_match_model_usage_no_regression(tmp_path: Pa
     already correct) must keep matching session_model_usage after the fix."""
     conn = _make_archive_conn(tmp_path)
     session_id = "claude-code-session:model-usage-consistency"
-    write_prepared_session(conn, _claude_code_session("model-usage-consistency"))
+    write_fixture_index_session(conn, _claude_code_session("model-usage-consistency"))
 
     model_usage = _model_usage_totals(conn, session_id)
     assert model_usage == (1_000, 500, 200, 100)
@@ -266,7 +266,7 @@ def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Pa
 
     conn = _make_archive_conn(tmp_path)
     session_id = "codex-session:model-usage-consistency-anti-vacuity"
-    write_prepared_session(conn, _codex_session("model-usage-consistency-anti-vacuity"))
+    write_fixture_index_session(conn, _codex_session("model-usage-consistency-anti-vacuity"))
     model_usage = _model_usage_totals(conn, session_id)
     assert model_usage[0] == _CODEX_EXPECTED_INPUT
 
@@ -321,7 +321,7 @@ async def test_profile_rows_and_usage_overlay_share_one_snapshot(
     try:
         # WAL lets the interleaved writer commit while the reader holds its snapshot.
         writer.execute("PRAGMA journal_mode = WAL")
-        session_id = write_prepared_session(writer, _claude_code_session("profile-snapshot"))
+        session_id = write_fixture_index_session(writer, _claude_code_session("profile-snapshot"))
         rebuild_session_insights_sync(writer, session_ids=[session_id])
         writer.commit()
         title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]

@@ -1,13 +1,13 @@
 """The process's sole authority for opening a write-mode archive connection.
 
-SQLite is the physical single-writer boundary; this module makes the in-process
-boundary structural rather than conventional. Where enforcement is armed, a
+An outer root-bound lease holds cross-process archive custody before writable
+SQL; this module also makes the in-process boundary structural. Where enforcement is armed, a
 write-mode connection is obtainable only from a held :class:`WriteLease`, so an
 unserialized writer raises instead of contending through the busy timeout.
 
 Enforcement is armed by the owner of the process's writer discipline (the
-daemon) and is off elsewhere: one-shot CLI and API writers are their own single
-writer and have no gate to be outside of.
+daemon) and is off elsewhere. One-shot CLI and API mutation owners still acquire
+the same physical custody through their root-bound write scope.
 
 **Contexts do not isolate threads on this interpreter** (polylogue-1oa7o).
 This checkout runs a free-threading CPython build, and a new
@@ -15,36 +15,48 @@ This checkout runs a free-threading CPython build, and a new
 thread's ``ContextVar`` values rather than the declared defaults. So every
 thread spawned while a lease is held inherits ``_ACTIVE`` -- the lease object
 itself, not a copy. Authority therefore rests entirely on explicit thread
-identity: ``WriteLease.bound_thread_ids`` and the ``owner_task_id`` check in
+identity: ``WriteLease.bound_thread_ids`` and the ``owner_task`` check in
 :func:`require_write_lease`, never on "the context did not carry it". Every
 place that widens ``bound_thread_ids`` or hands back an existing lease
 re-checks that identity, because an inheriting thread would otherwise pass by
-default.
+default. Physical-custody context is thread-local and additionally bound to
+the exact owning task and thread; it cannot be borrowed merely because a
+child execution inherited the ambient context.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import fcntl
+import os
+import stat
 import threading
 import time
 import weakref
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
-from polylogue.logging import get_logger
+from polylogue.core.sql_settlement import SQLCustodyOwner
+from polylogue.logging import WARNING, emit, get_logger
+
+ARCHIVE_WRITE_CUSTODY_LOCK_NAME = ".archive-write-custody.lock"
 
 __all__ = [
+    "ARCHIVE_WRITE_CUSTODY_LOCK_NAME",
     "UnleasedWriteError",
     "declared_unguarded_write",
     "install_archive_write_guard",
-    "WriteHoldExceededError",
     "WriteLease",
     "WriteLeaseDelegation",
     "WriteLeaseThreadGrant",
+    "ArchiveWriteCustody",
     "adopt_write_lease",
+    "archive_write_custody",
+    "async_write_lease",
     "arm_write_lease_enforcement",
     "bind_write_lease_thread",
     "current_write_lease",
@@ -56,29 +68,426 @@ __all__ = [
 ]
 
 logger = get_logger(__name__)
+_CUSTODY_REGISTRY_LOCK = threading.RLock()
+_CUSTODIES: set[ArchiveWriteCustody] = set()
+_FORK_ABANDONED_CUSTODIES: list[ArchiveWriteCustody] = []
+
+
+class ArchiveWriteCustody:
+    """One process-shared, cross-process exclusive hold for an archive root.
+
+    The descriptor is reference-counted because adopted daemon work may still
+    be settling after the lease owner has stopped accepting new work.  The
+    separate lock inode does not replace the active-store shared rebuild lock.
+    """
+
+    __slots__ = (
+        "archive_root",
+        "path",
+        "_fd",
+        "_directory_fd",
+        "_directory_identity",
+        "_file_identity",
+        "_guard",
+        "_refs",
+        "_owner_open",
+        "_locked",
+        "_sql_owners",
+        "owner_pid",
+        "owner_thread",
+        "owner_task",
+        "_abandoned_after_fork",
+        "_fork_cleanup_error",
+        "__weakref__",
+    )
+
+    def __init__(self, archive_root: Path, path: Path, fd: int, directory_fd: int) -> None:
+        self.archive_root = archive_root
+        self.path = path
+        self._fd = fd
+        self._directory_fd = directory_fd
+        self._directory_identity: tuple[int, int] | None = None
+        self._file_identity: tuple[int, int] | None = None
+        self._guard = threading.Lock()
+        self._refs = 1
+        self._owner_open = True
+        self._locked = False
+        self._sql_owners: dict[int, tuple[SQLCustodyOwner, threading.Thread, asyncio.Task[Any] | None]] = {}
+        self.owner_pid = os.getpid()
+        self.owner_thread: threading.Thread | None = None
+        self.owner_task: asyncio.Task[Any] | None = None
+        self._abandoned_after_fork = False
+        self._fork_cleanup_error: BaseException | None = None
+        _CUSTODIES.add(self)
+        try:
+            directory = os.fstat(directory_fd)
+            self._directory_identity = (directory.st_dev, directory.st_ino)
+            metadata = os.fstat(fd)
+            self._file_identity = (metadata.st_dev, metadata.st_ino)
+        except BaseException as primary:
+            try:
+                self.abandon_failed_acquisition()
+            except BaseException as cleanup_error:
+                raise cleanup_error from primary
+            raise
+
+    def bind_owner_context(self) -> None:
+        self._check_process()
+        with self._guard:
+            thread = threading.current_thread()
+            task = _current_task()
+            if not self._owner_open or self._fd < 0 or self._refs < 1:
+                raise UnleasedWriteError("cannot bind an inactive archive custody owner")
+            if self.owner_thread is not None and (self.owner_thread is not thread or self.owner_task is not task):
+                raise UnleasedWriteError("archive write custody is already bound to another owner")
+            self.owner_thread = thread
+            self.owner_task = task
+
+    def require_owner_context(self, purpose: str) -> None:
+        self._check_process()
+        with self._guard:
+            if self.owner_thread is not threading.current_thread() or self.owner_task is not _current_task():
+                raise UnleasedWriteError(f"{purpose} inherited archive custody from a different task or thread")
+
+    def retain(self) -> None:
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            if self._fd < 0 or self._refs < 1:
+                raise UnleasedWriteError("archive write custody is no longer available")
+            self._refs += 1
+
+    def retain_sql_owner(self, owner: SQLCustodyOwner) -> None:
+        """Keep actual unsettled SQL handles and their exclusion recoverable."""
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            if self._fd < 0 or self._refs < 1:
+                raise UnleasedWriteError("cannot retain SQL after archive custody settled")
+            if id(owner) not in self._sql_owners:
+                self._sql_owners[id(owner)] = (owner, threading.current_thread(), _current_task())
+                self._refs += 1
+
+    def retained_sql_owners_on_current_thread(self) -> tuple[SQLCustodyOwner, ...]:
+        """Retain the actual handles that a terminal worker must settle."""
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            return tuple(
+                owner for owner, thread, _task in self._sql_owners.values() if thread is threading.current_thread()
+            )
+
+    def require_sql_owner_context(self, owner: object) -> None:
+        """Authorize only the original SQL owner to settle retained handles."""
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            retained = self._sql_owners.get(id(owner))
+            if (
+                retained is None
+                or retained[0] is not owner
+                or retained[1] is not threading.current_thread()
+                or retained[2] is not _current_task()
+            ):
+                raise UnleasedWriteError("retained archive SQL belongs to another task or thread")
+            if self._fd < 0 or self._refs < 1:
+                raise UnleasedWriteError("retained archive SQL has lost its physical custody")
+
+    def release_sql_owner(self, owner: object) -> None:
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            if self._sql_owners.pop(id(owner), None) is None:
+                if self._refs == 0:
+                    self._close_terminal_descriptors()
+                return
+        self.release()
+
+    def retain_owner_scope(self) -> None:
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            if self._fd < 0 or self._refs < 1 or not self._owner_open:
+                raise UnleasedWriteError("archive write custody owner scope is no longer available")
+            if self.owner_thread is not threading.current_thread() or self.owner_task is not _current_task():
+                raise UnleasedWriteError("archive write custody cannot be borrowed by an inherited task or thread")
+            self._refs += 1
+
+    def _close_terminal_descriptors(self) -> None:
+        """Retire each numeric descriptor once; never close a reused number."""
+        first_error: BaseException | None = None
+        fd, self._fd = self._fd, -1
+        locked, self._locked = self._locked, False
+        if fd >= 0:
+            if locked and self.owner_pid == os.getpid():
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except BaseException as exc:
+                    first_error = exc
+            try:
+                os.close(fd)
+            except BaseException as exc:
+                first_error = first_error or exc
+        try:
+            self._close_directory_descriptor()
+        except BaseException as exc:
+            first_error = first_error or exc
+        _CUSTODIES.discard(self)
+        if first_error is not None:
+            raise first_error
+
+    def abandon_failed_acquisition(self) -> None:
+        """Retire a failed acquisition without admitting SQL work."""
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            self._refs = 0
+            self._owner_open = False
+            self._close_terminal_descriptors()
+
+    def release(self) -> None:
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            if self._abandoned_after_fork:
+                return
+            if self._refs < 1:
+                raise RuntimeError("archive write custody reference underflow")
+            self._refs -= 1
+            if self._refs == 0:
+                self._close_terminal_descriptors()
+
+    @property
+    def directory_identity(self) -> tuple[int, int]:
+        """The directory incarnation selected before physical acquisition."""
+        identity = self._directory_identity
+        if identity is None:
+            raise UnleasedWriteError("archive custody directory identity was not captured")
+        return identity
+
+    @property
+    def held(self) -> bool:
+        if self.owner_pid != os.getpid():
+            return False
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            return self._fd >= 0 and self._locked
+
+    def close_owner(self) -> None:
+        self._check_process()
+        from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+
+        failure: BaseException | None = None
+        try:
+            settle_cached_connections_on_current_thread(self)
+        except BaseException as error:
+            failure = error
+        try:
+            release_owner = False
+            with _CUSTODY_REGISTRY_LOCK, self._guard:
+                if not self._owner_open:
+                    if self._refs == 0:
+                        self._close_terminal_descriptors()
+                else:
+                    self._owner_open = False
+                    release_owner = True
+            if release_owner:
+                self.release()
+        except BaseException as error:
+            failure = failure or error
+        if failure is not None:
+            raise failure
+
+    def _check_process(self) -> None:
+        if self.owner_pid != os.getpid():
+            raise UnleasedWriteError("archive write custody cannot be used from a forked process")
+
+    def _close_directory_descriptor(self) -> None:
+        descriptor, self._directory_fd = self._directory_fd, -1
+        if descriptor >= 0:
+            os.close(descriptor)
+
+    def assert_namespace(self) -> None:
+        """Require the owned lock namespace to retain its selected inodes."""
+        self._check_process()
+        with _CUSTODY_REGISTRY_LOCK, self._guard:
+            directory = os.stat(self.archive_root, follow_symlinks=False)
+            _validate_custody_directory(directory, self.archive_root)
+            if (directory.st_dev, directory.st_ino) != self._directory_identity:
+                raise UnleasedWriteError("archive write custody directory was replaced")
+            metadata = os.stat(self.path.name, dir_fd=self._directory_fd, follow_symlinks=False)
+            _validate_custody_lock(metadata, self.path)
+            if (metadata.st_dev, metadata.st_ino) != self._file_identity:
+                raise UnleasedWriteError("archive write custody lock was replaced")
+
+    def abandon_after_fork(self) -> None:
+        """Close an inherited descriptor without unlocking its parent's flock."""
+        fd = self._fd
+        self._fd = -1
+        self._refs = 0
+        self._owner_open = False
+        self._abandoned_after_fork = True
+        self._locked = False
+        if fd >= 0:
+            try:
+                os.close(fd)
+            finally:
+                self._close_directory_descriptor()
+
+
+def retained_sql_owners_on_current_thread() -> tuple[SQLCustodyOwner, ...]:
+    """Return actual unsettled SQL from this process's original worker thread."""
+    with _CUSTODY_REGISTRY_LOCK:
+        return tuple(
+            owner
+            for custody in tuple(_CUSTODIES)
+            if custody.owner_pid == os.getpid()
+            for owner in custody.retained_sql_owners_on_current_thread()
+        )
+
+
+def _before_fork() -> None:
+    _CUSTODY_REGISTRY_LOCK.acquire()
+
+
+def _after_fork_parent() -> None:
+    _CUSTODY_REGISTRY_LOCK.release()
+
+
+def _after_fork_child() -> None:
+    try:
+        for custody in tuple(_CUSTODIES):
+            try:
+                custody.abandon_after_fork()
+            except BaseException as exc:
+                # Keep the failed owner, not a second error ledger. A child
+                # with uncertain inherited cleanup cannot admit new writers.
+                custody._fork_cleanup_error = exc
+            else:
+                # Keep copied SQL owners unreachable for use, without letting
+                # their SQLite finalizers run as descriptor-hook cleanup.
+                _FORK_ABANDONED_CUSTODIES.append(custody)
+                _CUSTODIES.discard(custody)
+    finally:
+        _CUSTODY_REGISTRY_LOCK.release()
+        _ACTIVE.set(None)
+        if hasattr(_CUSTODY_CONTEXT, "custody"):
+            del _CUSTODY_CONTEXT.custody
+        if hasattr(_THREAD_GRANT_CONTEXT, "grant"):
+            del _THREAD_GRANT_CONTEXT.grant
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent, after_in_child=_after_fork_child)
+
+
+def _validate_custody_directory(metadata: os.stat_result, path: Path) -> None:
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise UnleasedWriteError(f"archive custody directory must be owned and privately writable: {path}")
+
+
+def _validate_custody_lock(metadata: os.stat_result, path: Path) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise UnleasedWriteError(f"archive custody lock must be owned, single-link and privately writable: {path}")
+
+
+def _acquire_archive_write_custody(archive_root: str | Path) -> ArchiveWriteCustody:
+    with _CUSTODY_REGISTRY_LOCK:
+        for inherited in _CUSTODIES:
+            if inherited._fork_cleanup_error is not None:
+                raise UnleasedWriteError(
+                    "inherited archive descriptor cleanup failed; a fresh process is required for writes"
+                ) from inherited._fork_cleanup_error
+    root = Path(archive_root).resolve()
+    if not root.is_dir():
+        raise UnleasedWriteError(f"archive root is not an existing directory: {root}")
+    path = root / ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    before: tuple[int, int] | None
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        before = (metadata.st_dev, metadata.st_ino)
+        _validate_custody_lock(metadata, path)
+    except FileNotFoundError:
+        before = None
+    fd = -1
+    directory_fd = -1
+    custody: ArchiveWriteCustody | None = None
+    try:
+        with _CUSTODY_REGISTRY_LOCK:
+            # Opening and registration are atomic with respect to fork. The
+            # guard is released before flock, which may wait for another
+            # process to finish its archive mutation.
+            directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0))
+            directory = os.fstat(directory_fd)
+            _validate_custody_directory(directory, root)
+            fd = os.open(path.name, flags | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+            selected_fd, selected_directory_fd = fd, directory_fd
+            fd = directory_fd = -1
+            custody = ArchiveWriteCustody(root, path, selected_fd, selected_directory_fd)
+            fd = selected_fd
+            opened = os.fstat(fd)
+            _validate_custody_lock(opened, path)
+            if before is not None and (opened.st_dev, opened.st_ino) != before:
+                raise UnleasedWriteError(f"archive write custody path changed while opening: {path}")
+            linked = os.stat(path.name, dir_fd=selected_directory_fd, follow_symlinks=False)
+            if (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino):
+                raise UnleasedWriteError(f"archive write custody path changed while opening: {path}")
+        # Never hold the registry guard while waiting on another process's
+        # archive lease: fork must remain possible while a writer is queued.
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        custody._locked = True
+        custody.assert_namespace()
+        return custody
+    except BaseException as primary:
+        try:
+            if custody is not None:
+                custody.abandon_failed_acquisition()
+            else:
+                if fd >= 0:
+                    os.close(fd)
+                if directory_fd >= 0:
+                    os.close(directory_fd)
+        except BaseException as cleanup_error:
+            raise cleanup_error from primary
+        raise
+
+
+@contextmanager
+def archive_write_custody(archive_root: str | Path) -> Iterator[ArchiveWriteCustody]:
+    """Hold physical archive custody for direct synchronous mutation owners."""
+    root = Path(archive_root).resolve()
+    inherited = _context_custody()
+    if inherited is not None:
+        if inherited.archive_root != root:
+            raise UnleasedWriteError("nested archive custody requested for a different archive root")
+        inherited.require_owner_context("nested archive custody")
+        inherited.retain_owner_scope()
+        try:
+            yield inherited
+        finally:
+            inherited.release()
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise UnleasedWriteError("synchronous archive custody cannot block an event loop; use async_write_lease")
+    custody = _acquire_archive_write_custody(archive_root)
+    custody.bind_owner_context()
+    previous = _set_context_custody(custody)
+    try:
+        yield custody
+    finally:
+        _restore_context_custody(previous)
+        custody.close_owner()
 
 
 class UnleasedWriteError(RuntimeError):
     """A write-mode connection was requested without holding the write lease."""
 
     code = "unleased_write"
-
-
-class WriteHoldExceededError(RuntimeError):
-    """A lease was released after its declared maximum hold.
-
-    Raised at release, not during the hold: the lease cannot abort an operation
-    already inside a SQLite transaction, and interrupting one would leave the
-    hold's own writer in an undefined state. Its purpose is to make an
-    over-budget hold a typed failure the caller must handle rather than a
-    longer wait every other writer silently absorbs.
-
-    Raised only when the hold exits cleanly. A hold that is already failing
-    reports its own exception, which is the stronger signal and may carry
-    typed partial-write facts; the budget breach is logged instead.
-    """
-
-    code = "write_hold_exceeded"
 
 
 @dataclass(eq=False, slots=True)
@@ -123,25 +532,33 @@ class WriteLeaseDelegation:
         # Never adopted is trivially settled; adoption clears it.
         self._settled.set()
 
+    def _require_process(self) -> None:
+        if self.lease.owner_pid != os.getpid():
+            raise UnleasedWriteError("cannot use a writer delegation inherited across fork")
+
     @property
     def live(self) -> bool:
         """Whether this delegation still authorizes an adoption."""
-        with self._guard:
-            return not self._revoked
+        self._require_process()
+        with self.lease._lifecycle_guard, self._guard:
+            return self.lease._active and not self._revoked
 
     @property
     def adopted(self) -> bool:
         """Whether an execution currently holds this authorization."""
+        self._require_process()
         with self._guard:
             return self._adopted_by is not None
 
     @property
     def settled(self) -> bool:
         """Whether no execution is currently running under this authorization."""
+        self._require_process()
         return self._settled.is_set()
 
     def revoke(self) -> None:
         """Retire this delegation; further adoptions are refused."""
+        self._require_process()
         with self._guard:
             self._revoked = True
 
@@ -153,9 +570,23 @@ class WriteLeaseDelegation:
         release its gate. ``True`` means one is in flight and the holder must
         wait for :attr:`settled` before another writer is admitted.
         """
+        self._require_process()
         with self._guard:
             self._revoked = True
             return self._adopted_by is not None
+
+    def wait_until_settled(self) -> None:
+        """Wait without allowing repeated interrupts to abandon live work."""
+        self._require_process()
+        interruption: BaseException | None = None
+        while not self._settled.is_set():
+            try:
+                self._settled.wait()
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
+        if interruption is not None:
+            raise interruption
 
 
 @dataclass(slots=True)
@@ -166,9 +597,18 @@ class WriteLease:
     acquired_at: float
     max_hold_seconds: float | None
     archive_root: Path | None = None
+    custody: ArchiveWriteCustody | None = None
+    owns_custody: bool = False
+    owns_custody_ref: bool = False
+    _custody_guard: threading.Lock = field(default_factory=threading.Lock)
+    _lifecycle_guard: threading.RLock = field(default_factory=threading.RLock)
+    _active: bool = True
+    owner_pid: int = field(default_factory=os.getpid)
+    thread_grants: list[WriteLeaseThreadGrant] = field(default_factory=list)
     coordinator: object | None = None
-    owner_task_id: int | None = None
+    owner_task: asyncio.Task[Any] | None = None
     owner_thread_id: int = 0
+    owner_thread: threading.Thread = field(default_factory=threading.current_thread)
     bound_thread_ids: set[int] | None = None
     delegations: list[WriteLeaseDelegation] = field(default_factory=list)
     #: Guards ``bound_thread_ids``. On a free-threading build several
@@ -190,6 +630,8 @@ class WriteLease:
 
     def authorize_thread(self, thread_id: int) -> None:
         """Authorize the calling thread, which ``thread_id`` must identify."""
+        if self.owner_pid != os.getpid():
+            raise UnleasedWriteError("cannot authorize an inherited write lease")
         if thread_id != threading.get_ident():
             raise UnleasedWriteError("a write lease thread authorizes only itself")
         with self._bind_guard:
@@ -199,11 +641,15 @@ class WriteLease:
             self._thread_refs[thread_id] = weakref.ref(threading.current_thread())
 
     def authorized_threads(self) -> frozenset[int]:
+        if self.owner_pid != os.getpid():
+            raise UnleasedWriteError("cannot inspect an inherited write lease")
         with self._bind_guard:
             return frozenset(self.bound_thread_ids or {self.owner_thread_id})
 
     def current_thread_is_authorized(self) -> bool:
         """Whether the calling thread -- this thread object, not a reused ident -- is bound."""
+        if self.owner_pid != os.getpid():
+            return False
         thread_id = threading.get_ident()
         with self._bind_guard:
             if thread_id not in (self.bound_thread_ids or {self.owner_thread_id}):
@@ -219,10 +665,48 @@ class WriteLease:
     def over_budget(self) -> bool:
         return self.max_hold_seconds is not None and self.held_seconds > self.max_hold_seconds
 
+    @property
+    def active(self) -> bool:
+        if self.owner_pid != os.getpid():
+            return False
+        with self._lifecycle_guard:
+            return self._active
+
+    def require_active(self, purpose: str) -> None:
+        if self.owner_pid != os.getpid():
+            raise UnleasedWriteError(f"{purpose} uses a write lease inherited across fork")
+        with self._lifecycle_guard:
+            delegated_thread = _current_thread_grant(self)
+            if not self._active and not delegated_thread:
+                raise UnleasedWriteError(f"{purpose} uses a released write lease for {self.actor}")
+            if self.custody is None or not self.custody.held:
+                raise UnleasedWriteError(f"{purpose} uses a write lease without live archive custody")
+            self.custody.assert_namespace()
+
+    def retire(self) -> None:
+        if self.owner_pid != os.getpid():
+            raise UnleasedWriteError("cannot retire a write lease inherited across fork")
+        with self._lifecycle_guard:
+            if not self._active:
+                return
+            self._active = False
+            grants = tuple(self.thread_grants)
+            delegations = tuple(self.delegations)
+        failure: BaseException | None = None
+        for revoke in (*tuple(grant.revoke for grant in grants), *tuple(item.revoke for item in delegations)):
+            try:
+                revoke()
+            except BaseException as error:
+                failure = failure or error
+        if failure is not None:
+            raise failure
+
 
 _ACTIVE: contextvars.ContextVar[WriteLease | None] = contextvars.ContextVar(
     "polylogue_active_write_lease", default=None
 )
+_CUSTODY_CONTEXT = threading.local()
+_THREAD_GRANT_CONTEXT = threading.local()
 _ENFORCEMENT = threading.local()
 _ENFORCEMENT_DEFAULT = False
 _PROCESS_ENFORCEMENT = False
@@ -231,13 +715,66 @@ _PROCESS_ENFORCEMENT_USERS = 0
 _PROCESS_ENFORCEMENT_SUPPRESSORS = 0
 
 
-def _current_task_id() -> int | None:
-    """Return the running task identity without requiring an event loop."""
+def _current_task() -> asyncio.Task[Any] | None:
+    """Return the exact task object, distinguishing inherited child contexts."""
     try:
-        task = asyncio.current_task()
+        return asyncio.current_task()
     except RuntimeError:
         return None
-    return id(task) if task is not None else None
+
+
+def _current_thread_grant(lease: WriteLease) -> bool:
+    grant = getattr(_THREAD_GRANT_CONTEXT, "grant", None)
+    return isinstance(grant, WriteLeaseThreadGrant) and grant.lease is lease and grant.live_for_current_thread()
+
+
+_NO_CONTEXT_CUSTODY = object()
+
+
+def _context_custody() -> ArchiveWriteCustody | None:
+    custody = getattr(_CUSTODY_CONTEXT, "custody", None)
+    return custody if isinstance(custody, ArchiveWriteCustody) else None
+
+
+def current_sql_custody() -> ArchiveWriteCustody | None:
+    """Observe this execution's admitted physical owner without minting authority."""
+    lease = _ACTIVE.get()
+    if lease is not None:
+        if (
+            lease.owner_pid == os.getpid()
+            and lease._active
+            and (
+                _current_task() is lease.owner_task
+                if _current_task() is not None
+                else lease.current_thread_is_authorized()
+            )
+        ):
+            return lease.custody
+        return None
+    custody = _context_custody()
+    if custody is not None:
+        if (
+            custody.owner_pid != os.getpid()
+            or custody.owner_thread is not threading.current_thread()
+            or custody.owner_task is not _current_task()
+        ):
+            return None
+        custody.require_owner_context("native SQLite custody")
+    return custody
+
+
+def _set_context_custody(custody: ArchiveWriteCustody) -> object:
+    previous = getattr(_CUSTODY_CONTEXT, "custody", _NO_CONTEXT_CUSTODY)
+    _CUSTODY_CONTEXT.custody = custody
+    return previous
+
+
+def _restore_context_custody(previous: object) -> None:
+    if previous is _NO_CONTEXT_CUSTODY:
+        if hasattr(_CUSTODY_CONTEXT, "custody"):
+            del _CUSTODY_CONTEXT.custody
+    else:
+        _CUSTODY_CONTEXT.custody = previous
 
 
 def write_lease_enforced() -> bool:
@@ -308,9 +845,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     """
     lease = _ACTIVE.get()
     if lease is not None:
-        task_id = _current_task_id()
-        if task_id is not None:
-            if task_id != lease.owner_task_id:
+        lease.require_active(purpose)
+        task = _current_task()
+        if task is not None:
+            if task is not lease.owner_task:
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
         elif not lease.current_thread_is_authorized():
             raise UnleasedWriteError(f"{purpose} uses a write lease from an unauthorized thread")
@@ -325,6 +863,33 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
                 raise UnleasedWriteError(
                     f"{purpose} is outside the archive bound to writer {lease.actor}: {expected} != {actual}"
                 )
+        if archive_root is not None and lease.archive_root is None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise UnleasedWriteError(
+                    f"{purpose} reached an unbound synchronous lease on an event loop; "
+                    "enter async_write_lease with the configured archive root first"
+                )
+            expected = Path(archive_root).resolve()
+            with lease._custody_guard:
+                if lease.archive_root is not None and lease.archive_root != expected:
+                    raise UnleasedWriteError(
+                        f"{purpose} is outside the archive bound to writer {lease.actor}: "
+                        f"{expected} != {lease.archive_root}"
+                    )
+                if lease.custody is None:
+                    inherited_custody = _context_custody()
+                    if inherited_custody is not None and inherited_custody.archive_root == expected:
+                        inherited_custody.retain_owner_scope()
+                        lease.custody = inherited_custody
+                        lease.owns_custody_ref = True
+                    else:
+                        lease.custody = _acquire_archive_write_custody(expected)
+                        lease.owns_custody = True
+                    lease.archive_root = expected
         return lease
     if not write_lease_enforced():
         return None
@@ -351,14 +916,82 @@ class WriteLeaseThreadGrant:
     lease: WriteLease
     _guard: threading.Lock = field(default_factory=threading.Lock)
     _used: bool = False
+    _revoked: bool = False
+    _custody_held: bool = True
+    _settled: threading.Event = field(default_factory=threading.Event)
+    _owner_pid: int = field(default_factory=os.getpid)
+    _bound_thread: threading.Thread | None = None
+
+    def __post_init__(self) -> None:
+        self._settled.set()
+
+    def _require_process(self) -> None:
+        if self._owner_pid != os.getpid() or self.lease.owner_pid != os.getpid():
+            raise UnleasedWriteError("cannot use a writer grant inherited across fork")
 
     def _claim(self) -> None:
-        with self._guard:
+        self._require_process()
+        with self.lease._lifecycle_guard, self._guard:
+            if (
+                self._owner_pid != os.getpid()
+                or self.lease.owner_pid != os.getpid()
+                or not self.lease._active
+                or self._revoked
+                or not self._custody_held
+            ):
+                raise UnleasedWriteError(f"write lease thread grant for {self.lease.actor} is no longer live")
             if self._used:
                 raise UnleasedWriteError(
                     f"write lease thread grant for {self.lease.actor} was already used; one grant authorizes one thread"
                 )
             self._used = True
+            self._bound_thread = threading.current_thread()
+            self._settled.clear()
+
+    def live_for_current_thread(self) -> bool:
+        if self._owner_pid != os.getpid() or self.lease.owner_pid != os.getpid():
+            return False
+        with self._guard:
+            return (
+                self._owner_pid == os.getpid()
+                and self._used
+                and self._custody_held
+                and self._bound_thread is threading.current_thread()
+            )
+
+    def revoke(self) -> None:
+        self._require_process()
+        release_custody = False
+        with self._guard:
+            self._revoked = True
+            if not self._used and self._custody_held:
+                self._custody_held = False
+                release_custody = True
+        if release_custody and self.lease.custody is not None:
+            self.lease.custody.release()
+
+    def complete(self) -> None:
+        self._require_process()
+        release_custody = False
+        with self._guard:
+            if self._custody_held:
+                self._custody_held = False
+                release_custody = True
+            self._settled.set()
+        if release_custody and self.lease.custody is not None:
+            self.lease.custody.release()
+
+    def wait_until_settled(self) -> None:
+        self._require_process()
+        interruption: BaseException | None = None
+        while not self._settled.is_set():
+            try:
+                self._settled.wait()
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
+        if interruption is not None:
+            raise interruption
 
 
 def grant_write_lease_thread() -> WriteLeaseThreadGrant:
@@ -379,7 +1012,15 @@ def grant_write_lease_thread() -> WriteLeaseThreadGrant:
             "cannot grant a write lease thread binding without holding the lease; "
             "mint the grant inside write_lease(...)"
         )
-    return WriteLeaseThreadGrant(lease=lease)
+    if lease.custody is None or lease.archive_root is None:
+        raise UnleasedWriteError("cannot grant a writer thread before archive custody is bound")
+    with lease._lifecycle_guard:
+        if not lease._active:
+            raise UnleasedWriteError("cannot grant a writer thread from a released lease")
+        lease.custody.retain()
+        grant = WriteLeaseThreadGrant(lease=lease)
+        lease.thread_grants.append(grant)
+        return grant
 
 
 def bind_write_lease_thread(grant: WriteLeaseThreadGrant) -> None:
@@ -390,14 +1031,19 @@ def bind_write_lease_thread(grant: WriteLeaseThreadGrant) -> None:
     different, later hold.
     """
     lease = _ACTIVE.get()
-    if lease is None:
-        raise UnleasedWriteError("cannot bind a thread without an active write lease")
-    if grant.lease is not lease:
+    if lease is not None and grant.lease is not lease:
         raise UnleasedWriteError(
             f"write lease thread grant for {grant.lease.actor} does not authorize the lease "
             f"held by {lease.actor} in this thread"
         )
     grant._claim()
+    lease = grant.lease
+    _THREAD_GRANT_CONTEXT.grant = grant
+    if _ACTIVE.get() is None:
+        # Some supported Python builds do not inherit contextvars into a
+        # newly-created worker thread. The single-use owner grant carries the
+        # exact lease and is the authority for installing it here.
+        _ACTIVE.set(lease)
     lease.authorize_thread(threading.get_ident())
 
 
@@ -418,8 +1064,13 @@ def delegate_write_lease() -> WriteLeaseDelegation:
             "cannot delegate the write lease without holding it; mint the delegation "
             "inside write_lease(...) so the delegated work stays behind one admission"
         )
-    delegation = WriteLeaseDelegation(actor=lease.actor, lease=lease)
-    lease.delegations.append(delegation)
+    if lease.custody is None or lease.archive_root is None:
+        raise UnleasedWriteError("cannot delegate a writer before archive custody is bound")
+    with lease._lifecycle_guard:
+        if not lease._active:
+            raise UnleasedWriteError("cannot delegate new work from a released lease")
+        delegation = WriteLeaseDelegation(actor=lease.actor, lease=lease)
+        lease.delegations.append(delegation)
     return delegation
 
 
@@ -429,11 +1080,12 @@ def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
 
     Binds the adopting task *and* thread, so the adopted view is authorized
     exactly where it is presented and nowhere else. The hold budget stays with
-    the minting lease, which is the hold that is actually being measured; an
-    adopted view never raises :class:`WriteHoldExceededError` of its own.
+    the minting lease, which is the hold that is actually being measured.
     """
-    with delegation._guard:
-        if delegation._revoked:
+    delegation._require_process()
+    source = delegation.lease
+    with source._lifecycle_guard, delegation._guard:
+        if not source._active or delegation._revoked:
             raise UnleasedWriteError(
                 f"write lease delegation for {delegation.actor} was revoked when its lease was released"
             )
@@ -442,27 +1094,68 @@ def adopt_write_lease(delegation: WriteLeaseDelegation) -> Iterator[WriteLease]:
                 f"write lease delegation for {delegation.actor} is already executing on thread "
                 f"{delegation._adopted_by}; one admission authorizes one writer at a time"
             )
+        custody = source.custody
+        if custody is not None:
+            custody.retain()
         delegation._adopted_by = threading.get_ident()
         delegation._settled.clear()
-    source = delegation.lease
     adopted = WriteLease(
         actor=source.actor,
         acquired_at=source.acquired_at,
         max_hold_seconds=None,
         archive_root=source.archive_root,
+        custody=custody,
         coordinator=source.coordinator,
-        owner_task_id=_current_task_id(),
+        owner_task=_current_task(),
         owner_thread_id=threading.get_ident(),
         bound_thread_ids={threading.get_ident()},
     )
     token = _ACTIVE.set(adopted)
+    primary: BaseException | None = None
     try:
         yield adopted
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        _ACTIVE.reset(token)
+        failure: BaseException | None = None
+        try:
+            _ACTIVE.reset(token)
+        except BaseException as error:
+            failure = error
+        try:
+            adopted.retire()
+        except BaseException as error:
+            failure = failure or error
         with delegation._guard:
             delegation._adopted_by = None
             delegation._settled.set()
+        if custody is not None:
+            try:
+                custody.release()
+            except BaseException as error:
+                failure = failure or error
+        if failure is not None:
+            if primary is None:
+                raise failure
+            primary.add_note(f"adopted writer cleanup also failed: {type(failure).__name__}")
+
+
+def _restore_active_lease(token: contextvars.Token[WriteLease | None], lease: WriteLease) -> None:
+    """Retire a completed task's manual scope without resetting another context."""
+    if lease.owner_pid != os.getpid() or lease.owner_thread is not threading.current_thread():
+        raise UnleasedWriteError("write lease cleanup belongs to its original process and thread")
+    owner = lease.owner_task
+    current = _current_task()
+    if current is not owner:
+        if owner is None or not owner.done():
+            raise UnleasedWriteError("a live writer task owns its lease cleanup")
+        # The original task's Context is no longer executing. Its token cannot
+        # be reset from this cleanup task; retiring authority below is global.
+        if _ACTIVE.get() is lease:
+            _ACTIVE.set(None)
+        return
+    _ACTIVE.reset(token)
 
 
 @contextmanager
@@ -472,10 +1165,13 @@ def write_lease(
     max_hold_seconds: float | None = None,
     archive_root: str | Path | None = None,
     coordinator: object | None = None,
+    _custody: ArchiveWriteCustody | None = None,
+    _sql_owner: object | None = None,
 ) -> Iterator[WriteLease]:
     """Hold the write lease for ``actor``, authorizing write-mode opens.
 
-    Re-entrant within one context: nested acquisitions return the outer lease
+    An outer acquisition names its archive root. Re-entrant within one context:
+    nested acquisitions return the outer lease
     rather than a second authority, so a publish nested inside a batch does not
     reset the outer hold's budget.
     """
@@ -497,13 +1193,48 @@ def write_lease(
             raise UnleasedWriteError("nested write lease requested by a different coordinator")
         yield held
         return
+    if archive_root is None:
+        raise UnleasedWriteError("an outer write lease must name its archive root")
+    owns_custody = _custody is None
+    owns_custody_ref = False
+    custody = _custody
+    if custody is not None:
+        if _sql_owner is None:
+            custody.require_owner_context(f"write lease for {actor}")
+        else:
+            custody.require_sql_owner_context(_sql_owner)
+    elif _sql_owner is not None:
+        raise UnleasedWriteError("retained SQL cleanup requires its original custody")
+    if custody is None:
+        inherited_custody = _context_custody()
+        if inherited_custody is not None and inherited_custody.archive_root == Path(archive_root).resolve():
+            inherited_custody.retain_owner_scope()
+            custody = inherited_custody
+            owns_custody_ref = True
+            owns_custody = False
+        else:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                raise UnleasedWriteError("synchronous write_lease cannot block an event loop; use async_write_lease")
+            custody = _acquire_archive_write_custody(archive_root)
+            custody.bind_owner_context()
+    if Path(archive_root).resolve() != custody.archive_root:
+        if owns_custody:
+            custody.close_owner()
+        raise UnleasedWriteError("archive write custody does not match the requested archive root")
     lease = WriteLease(
         actor=actor,
         acquired_at=time.perf_counter(),
         max_hold_seconds=max_hold_seconds,
-        archive_root=Path(archive_root).resolve() if archive_root is not None else None,
+        archive_root=Path(archive_root).resolve(),
+        custody=custody,
+        owns_custody=owns_custody,
+        owns_custody_ref=owns_custody_ref,
         coordinator=coordinator,
-        owner_task_id=_current_task_id(),
+        owner_task=_current_task(),
         owner_thread_id=threading.get_ident(),
         bound_thread_ids={threading.get_ident()},
     )
@@ -511,38 +1242,122 @@ def write_lease(
     try:
         yield lease
     except BaseException:
-        # The hold budget never displaces the hold's own failure. Raising from
-        # the ``finally`` below would replace an in-flight exception with this
-        # timing complaint, demoting it to ``__context__`` where no ``except``
-        # clause matches it. That is worst precisely under contention -- the
-        # only condition that puts a hold over budget -- and it erases the
-        # caller's own typed failure, which is the fact an operator needs. An
-        # over-budget hold is still reported: the caller's own error is the
-        # stronger signal, and the budget breach is logged rather than raised.
-        if lease.over_budget:
-            logger.warning(
-                "writer %s held the lease %.3fs against a declared %.3fs budget "
-                "while failing; reporting the hold's own error",
-                actor,
-                lease.held_seconds,
-                lease.max_hold_seconds,
+        # Elapsed hold telemetry cannot change the operation's own outcome.
+        if lease.over_budget and lease.max_hold_seconds is not None:
+            emit(
+                "storage.write_lease.hold_exceeded",
+                level=WARNING,
+                actor=actor,
+                hold_ms=lease.held_seconds * 1000,
+                budget_ms=lease.max_hold_seconds * 1000,
+                outcome="failed",
             )
-        _ACTIVE.reset(token)
+        _restore_active_lease(token, lease)
         # Release revokes, whether or not the hold succeeded: the delegation
         # contract is that a stashed delegation authorizes nothing once its
         # lease is gone, and a failing hold releases the lease just the same.
-        for delegation in lease.delegations:
-            delegation.revoke()
+        lease.retire()
+        if lease.owns_custody_ref and lease.custody is not None:
+            lease.custody.release()
+        elif lease.owns_custody and lease.custody is not None:
+            lease.custody.close_owner()
         raise
     else:
-        _ACTIVE.reset(token)
-        for delegation in lease.delegations:
-            delegation.revoke()
-        if lease.over_budget:
-            raise WriteHoldExceededError(
-                f"writer {actor} held the lease {lease.held_seconds:.3f}s against a declared "
-                f"{lease.max_hold_seconds:.3f}s budget; every other writer waited behind it"
+        _restore_active_lease(token, lease)
+        lease.retire()
+        if lease.over_budget and lease.max_hold_seconds is not None:
+            emit(
+                "storage.write_lease.hold_exceeded",
+                level=WARNING,
+                actor=actor,
+                hold_ms=lease.held_seconds * 1000,
+                budget_ms=lease.max_hold_seconds * 1000,
+                outcome="committed",
             )
+        if lease.owns_custody_ref and lease.custody is not None:
+            lease.custody.release()
+        elif lease.owns_custody and lease.custody is not None:
+            lease.custody.close_owner()
+
+
+@asynccontextmanager
+async def async_write_lease(
+    actor: str,
+    *,
+    max_hold_seconds: float | None = None,
+    archive_root: str | Path,
+    coordinator: object | None = None,
+) -> AsyncIterator[WriteLease]:
+    """Acquire physical custody without blocking the owning event loop."""
+    held = _ACTIVE.get()
+    if held is not None:
+        with write_lease(
+            actor, max_hold_seconds=max_hold_seconds, archive_root=archive_root, coordinator=coordinator
+        ) as lease:
+            yield lease
+        return
+
+    # An async scope is an offline executor only when no process-wide daemon
+    # boundary has armed. In daemon mode the coordinator must provide the
+    # authority; this helper never turns an unowned daemon call into a writer.
+    coordinator_authorized = False
+    if coordinator is not None:
+        from polylogue.core.write_admission import active_write_admission
+
+        coordinator_lease = active_write_admission.get()
+        coordinator_authorized = coordinator_lease is not None and coordinator_lease.admits(coordinator, archive_root)
+    if not coordinator_authorized:
+        require_write_lease(f"async writer admission({actor})", archive_root=archive_root)
+    inherited_custody = _context_custody()
+    borrowed_custody = inherited_custody is not None and inherited_custody.archive_root == Path(archive_root).resolve()
+    if borrowed_custody:
+        assert inherited_custody is not None
+        inherited_custody.retain_owner_scope()
+        custody = inherited_custody
+    else:
+        acquire_task = asyncio.create_task(asyncio.to_thread(_acquire_archive_write_custody, archive_root))
+        custody, cancellation, failure = await _settle_task(acquire_task)
+        if cancellation is not None:
+            if custody is not None:
+                custody.close_owner()
+            raise cancellation
+        if failure is not None:
+            raise failure
+        assert custody is not None
+    try:
+        if not borrowed_custody:
+            custody.bind_owner_context()
+        with write_lease(
+            actor,
+            max_hold_seconds=max_hold_seconds,
+            archive_root=archive_root,
+            coordinator=coordinator,
+            _custody=custody,
+        ) as lease:
+            yield lease
+    finally:
+        if borrowed_custody:
+            custody.release()
+        else:
+            custody.close_owner()
+
+
+async def _settle_task(task: asyncio.Future[Any]) -> tuple[Any, asyncio.CancelledError | None, BaseException | None]:
+    """Drain a shielded task through repeated caller cancellation requests."""
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+        except BaseException:
+            # The task is done with its own exception; collect it below.
+            break
+    try:
+        return task.result(), cancellation, None
+    except BaseException as exc:
+        return None, cancellation, exc
 
 
 # The connection-level half of this boundary. ``write_guard`` intercepts

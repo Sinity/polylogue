@@ -27,7 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _make_db(root: Path) -> sqlite3.Connection:
@@ -281,7 +281,7 @@ def test_scan_attachment_coverage_never_counts_unfetched_as_missing(
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    write_prepared_session(
+    write_fixture_index_session(
         conn,
         _session_with_attachment(
             ParsedAttachment(
@@ -367,7 +367,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_missing_blob_file(
         )
     )
     blob_hash, blob_size = store.write_from_bytes(payload)
-    write_prepared_session(
+    write_fixture_index_session(
         conn,
         session,
         preacquired_attachment_blobs={id(session.attachments[0]): (bytes.fromhex(blob_hash), blob_size, "acquired")},
@@ -506,7 +506,7 @@ def test_acquired_coverage_partitioned_by_stored_bytes(tmp_path: Path, monkeypat
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    write_prepared_session(conn, session, preacquired_attachment_blobs=preacquired)
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=preacquired)
     ids = {
         str(row["display_name"]): str(row["attachment_id"])
         for row in conn.execute("SELECT attachment_id, display_name FROM attachments")

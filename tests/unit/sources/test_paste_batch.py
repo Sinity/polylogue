@@ -18,7 +18,7 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -107,7 +107,7 @@ def test_paste_spans_roundtrip_through_writer(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     has_paste, paste_boundary = conn.execute(
         "SELECT has_paste, paste_boundary FROM messages WHERE native_id = ?",

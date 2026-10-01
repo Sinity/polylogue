@@ -25,6 +25,7 @@ from polylogue.core.compute import (
     DaemonBackpressureError,
     DaemonOperationCancelled,
 )
+from polylogue.core.durable_fs import sync_directory
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.audit import (
@@ -616,11 +617,7 @@ class DaemonOperationRuntime:
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary, path)
-            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            sync_directory(path.parent)
         finally:
             Path(temporary).unlink(missing_ok=True)
 

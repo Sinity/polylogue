@@ -10,7 +10,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
-from polylogue.context.compiler import ContextImage, ContextSpec
+from polylogue.archive.context_models import ContextImage, ContextSpec
 from polylogue.context.scheduler import ContextItem, schedule_context
 from polylogue.core.refs import EvidenceRef, ObjectRef
 
@@ -164,10 +164,8 @@ def _dedupe_evidence_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...
 
 
 async def compile_context_image(source: Any, spec: ContextSpec) -> ContextImage:
+    from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSegment
     from polylogue.context.compiler import (
-        ContextImage,
-        ContextOmission,
-        ContextSegment,
         compile_assertion_context_segment,
         compile_chronicle_context_segment,
         compile_messages_context_segment,

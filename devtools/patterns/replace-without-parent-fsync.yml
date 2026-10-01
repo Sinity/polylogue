@@ -12,6 +12,7 @@ rule:
             any:
               - pattern: _fsync_directory($DIR)
               - pattern: _fsync_dir($DIR)
+              - pattern: sync_directory($DIR)
               - inside:
                   kind: function_definition
                   all:

@@ -34,7 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     read_archive_session_envelope,
 )
 from tests.infra.identity import archive_message_id
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 _PARENT_NATIVE_ID = "11111111-2222-3333-4444-555555555555"
 _BRANCH_POINT_UUID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
@@ -148,8 +148,8 @@ def test_fork_context_ref_is_lineage_evidence_not_a_dropped_record() -> None:
 def test_branch_point_reaches_session_links_when_parent_is_already_stored(tmp_path: Path) -> None:
     """The wanted outcome: an edge naming the parent AND the divergence point."""
     conn = _connect(tmp_path / "index.db")
-    parent_id = write_prepared_session(conn, _parent_session())
-    child_id = write_prepared_session(conn, _parse_child())
+    parent_id = write_fixture_index_session(conn, _parent_session())
+    child_id = write_fixture_index_session(conn, _parse_child())
 
     link = _link(conn, child_id)
     assert link["dst_native_id"] == _PARENT_NATIVE_ID
@@ -180,10 +180,10 @@ def test_branch_point_binds_when_the_parent_arrives_after_the_child(tmp_path: Pa
     rewritten.
     """
     conn = _connect(tmp_path / "index.db")
-    child_id = write_prepared_session(conn, _parse_child())
+    child_id = write_fixture_index_session(conn, _parse_child())
     assert _link(conn, child_id)["branch_point_message_id"] is None
 
-    parent_id = write_prepared_session(conn, _parent_session())
+    parent_id = write_fixture_index_session(conn, _parent_session())
 
     link = _link(conn, child_id)
     assert link["resolved_dst_session_id"] == parent_id
@@ -208,8 +208,8 @@ def test_unbacked_branch_point_is_retained_as_a_claim_not_a_dangling_id(tmp_path
     lineage-sanity check counts. The claim stays in ``evidence_json``.
     """
     conn = _connect(tmp_path / "index.db")
-    write_prepared_session(conn, _parent_session(include_branch_point=False))
-    child_id = write_prepared_session(conn, _parse_child())
+    write_fixture_index_session(conn, _parent_session(include_branch_point=False))
+    child_id = write_fixture_index_session(conn, _parse_child())
 
     link = _link(conn, child_id)
     assert link["branch_point_message_id"] is None

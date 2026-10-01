@@ -766,7 +766,7 @@ async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export
     state_raw = raw_ids["state_5.sqlite"]
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     owner = RawObservationConvergenceOwner(
         archive_root,
         compute_adapter=compute,

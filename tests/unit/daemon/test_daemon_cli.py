@@ -3452,7 +3452,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
 
     async def scenario() -> None:
         compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
         owner = RawObservationConvergenceOwner(
             tmp_path,
             compute_adapter=compute,
@@ -3733,6 +3733,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         ProductionBaselineReadUnavailableError,
     )
     from polylogue.storage.archive_identity import ArchiveLocationError
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 
     assert classify_cold_build_settlement_failure(ProductionBaselineError("missing source revision")) == (
         "source_integrity",
@@ -3745,6 +3746,14 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     assert classify_cold_build_settlement_failure(
         ColdBuildCoverageError(missing_count=1, first_missing_session_id="codex:synthetic")
     ) == ("active_coverage_incomplete", False)
+    assert classify_cold_build_settlement_failure(ReferenceSealStaleError("snapshot changed")) == (
+        "promotion_evidence_changed",
+        True,
+    )
+    assert classify_cold_build_settlement_failure(ReferenceSealError("durable ref cannot be preserved")) == (
+        "durable_reference_preservation",
+        False,
+    )
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
     assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
         "storage_io_unavailable",
@@ -3877,10 +3886,9 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     active index keeps serving both sessions. When the daemon watches both
     roots the candidate covers every served session and promotes.
 
-    Anti-vacuity: deleting the ``require_active_coverage`` call from
-    ``promote_cold_build_covering_active_index`` (or settling through
-    ``generation.promote`` directly) promotes the one-session candidate, and
-    the active index loses ``codex-session:cold-imported``.
+    Anti-vacuity: dropping the active-coverage census from the retained
+    ``PreparedIndexPromotion`` lets the one-session candidate publish, and the
+    active index loses ``codex-session:cold-imported``.
     """
     from polylogue import Polylogue as RealPolylogue
     from polylogue.core.compute import reset_compute_adapter
@@ -5161,7 +5169,7 @@ async def test_no_watch_fresh_audit_fault_returns_to_its_periodic_cadence(
 
     archive_root = tmp_path / "fresh"
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     tick_finished = asyncio.Event()
     delays: list[float] = []
     calls = 0

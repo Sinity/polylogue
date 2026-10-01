@@ -120,10 +120,9 @@ routes:
       above, which has no production caller of its own.
 
   - function: polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
-    kinds: [direct_caller, entry_root]
+    kinds: [entry_root]
     entrypoints:
       - polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights
-      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
     route: unreached
     reason: >-
       Its docstring claimed polylogue.api calls it; at this head nothing in
@@ -138,3 +137,13 @@ routes:
     reason: >-
       The async twin of rebuild_session_insights_sync is exported and exercised
       only by tests; no production caller reaches it.
+
+  - function: polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.rebuild_session_insights
+    kinds: [direct_caller, entry_root]
+    entrypoints:
+      - polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync
+    route: unreached
+    reason: >-
+      The retained archive adapter delegates to this Store mutation owner.
+      No product caller reaches the adapter; tests exercise its physical
+      custody across the materializer's internal commits.

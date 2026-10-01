@@ -24,7 +24,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, Any, BinaryIO, NotRequired, Protocol, TypedDict, Unpack, cast
 
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -115,7 +115,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_membership_raw_ids,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
-    ArchiveSourceBlobRef,
     ContentExcisedError,
     is_blob_hash_excised,
 )
@@ -128,7 +127,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _message_content_hash,
     _normalized_message_native_id,
     _parsed_message_signature,
-    _repair_stale_session_observations,
+    _retain_stale_session_observations,
     prepare_session_write,
     raw_source_path,
     recorded_attachment_owner_gaps,
@@ -144,6 +143,12 @@ from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
     open_readonly_connection,
     write_connection_pragma_statements,
+)
+from polylogue.storage.sqlite.reference_seal import (
+    KnownSourceMutationPermit,
+    KnownSourceMutationReceipt,
+    PreparedIndexMutation,
+    current_index_mutation_scope,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
@@ -196,6 +201,10 @@ _INGEST_RESULT_WAIT_HEARTBEAT_S = 15.0
 # A heartbeat reports coordinator liveness; cancellation or a typed result
 # settles the owned worker future, without an elapsed progress deadline.
 _INGEST_RESULT_CHUNK_SIZE = 100
+
+
+class _StaleDrivePreparationError(RuntimeError):
+    """A completed Drive parse no longer matches the retained source/index view."""
 
 
 # Sync DB writer
@@ -753,12 +762,12 @@ def _append_payload_changes_existing_message(
     return False
 
 
-def _repair_stale_revision_observations(
+def _retain_stale_revision_observations(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
 ) -> None:
     """Merge monotonic facts from a stale revision without replacing content."""
-    _repair_stale_session_observations(
+    _retain_stale_session_observations(
         conn,
         payload.session_id,
         payload.parsed_session,
@@ -1085,70 +1094,15 @@ class _CohortCachingBlobPublisher(ArchiveBlobPublisher):
 
 
 class _DriveRevisionGovernanceAdapter:
-    """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
-
-    ``bind_raw_revision``/``classify_raw_revision_cohort`` and their
-    transitive call graph (``raw_membership_raw_ids``,
-    ``_raw_revision_candidates``, ``_promote_contiguous_append_evidence``,
-    ``raw_membership_retired_full_revision_siblings``,
-    ``_raw_revision_source_path_has_divergent_evidence``) touch only
-    ``store._ensure_source_conn()`` and, inside
-    ``classify_raw_revision_cohort`` itself, ``store._blob_publisher``
-    (verified by reading every line of that call graph, polylogue-sp72).
-    Nothing in it touches ``_conn`` (index.db), ``_pending_raw_parse_states``,
-    ``_preacquire_attachment_blobs``, ``_write_counts``, or
-    ``_skipped_counts`` -- those Protocol members exist only because
-    ``ArchiveStore`` (the Protocol's only other implementer) happens to
-    carry them. This adapter implements them as typed stubs that raise if
-    ever actually invoked, rather than reaching into ``ArchiveStore``'s
-    ~9,000-line read surface just to satisfy an unused Protocol member.
-    ``_conn`` is declared a plain settable attribute (not a read-only
-    property) because the Protocol types it that way -- it is set to the
-    same ``source_conn`` handle as a harmless placeholder that is never
-    actually read by anything this adapter is used for.
-    """
+    """Bind and classify Source revisions without claiming an Index destination."""
 
     def __init__(self, source_conn: sqlite3.Connection, blob_publisher: ArchiveBlobPublisher) -> None:
         self._source_conn = source_conn
         self._blob_publisher: ArchiveBlobPublisher | None = blob_publisher
         self.archive_root = blob_publisher.source_db_path.parent
-        self._inactive_candidate_durable_read_only = False
-        # Never read by bind_raw_revision/classify_raw_revision_cohort; see
-        # class docstring for why this is a harmless placeholder value.
-        self._conn = source_conn
-        self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
 
     def _ensure_source_conn(self) -> sqlite3.Connection:
         return self._source_conn
-
-    def commit(self) -> None:
-        raise NotImplementedError("ingest_batch owns the index.db commit; this adapter never manages it")
-
-    def _preacquire_attachment_blobs(
-        self,
-        session: ParsedSession,
-        *,
-        source_path: str,
-        acquired_at_ms: int,
-    ) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
-
-    @staticmethod
-    def _write_counts(session: ParsedSession) -> dict[str, int]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
-
-    @staticmethod
-    def _skipped_counts(session: ParsedSession, *, session_events: int = 0) -> dict[str, int]:
-        raise NotImplementedError(
-            "_DriveRevisionGovernanceAdapter is used only for bind_raw_revision/"
-            "classify_raw_revision_cohort, which never call this"
-        )
 
 
 def _drive_structural_growth_predecessor(
@@ -1475,7 +1429,7 @@ def _write_session(
         raw_id=payload.raw_id or "",
         provider_session_id=payload.parsed_session.provider_session_id,
     ):
-        _repair_stale_revision_observations(conn, payload)
+        _retain_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -1529,7 +1483,7 @@ def _write_session(
                 session_id=payload.session_id,
                 events=payload.parsed_session.session_events,
             )
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
             counts["session_events"] = counts.get("session_events", 0) + outage_events
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
@@ -1553,7 +1507,7 @@ def _write_session(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_int,
         ):
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
@@ -1739,6 +1693,7 @@ def _write_session(
         stage_timings_s=stage_timings_s,
         preacquired_attachment_blobs=preacquired_attachment_blobs,
         sidecar_blob_locators=sidecar_blob_locators,
+        mutation_scope=current_index_mutation_scope(),
         # Guard-gated bulk FTS for any prefix-tail re-extraction this write
         # cascades into (polylogue-crd8). Byte-identical to per-row trigger
         # mode (tests/unit/storage/test_bulk_fts_prefix_reextract.py) but
@@ -1769,7 +1724,7 @@ def _write_session(
             if prepared_write is not payload.prepared_write:
                 prepared_write.close()
         if writer_outcomes[0].stale_skipped:
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -3023,18 +2978,47 @@ def _ingest_index_binding(db_path: Path) -> tuple[str, int, int]:
     return str(resolved), stat.st_dev, stat.st_ino
 
 
-def _ingest_policy_binding(archive_root: Path) -> tuple[object, ...]:
-    with closing(open_readonly_connection(archive_root / "user.db", validate_schema=False)) as user:
-        epoch = tuple(user.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
-    with closing(open_readonly_connection(archive_root / "audit.db", validate_schema=False)) as audit:
-        head = audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1").fetchone()
+def _ingest_policy_binding(
+    archive_root: Path,
+    *,
+    user_conn: sqlite3.Connection | None = None,
+    audit_conn: sqlite3.Connection | None = None,
+) -> tuple[object, ...]:
+    if user_conn is None:
+        with closing(open_readonly_connection(archive_root / "user.db", validate_schema=False)) as user:
+            epoch = tuple(user.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
+    else:
+        epoch = tuple(user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
+    if audit_conn is None:
+        with closing(open_readonly_connection(archive_root / "audit.db", validate_schema=False)) as audit:
+            head = audit.execute(
+                "SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1"
+            ).fetchone()
+    else:
+        head = audit_conn.execute(
+            "SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1"
+        ).fetchone()
     return (*epoch, *(tuple(head) if head is not None else (None, None)))
 
 
-def _ingest_revision_heads(db_path: Path, keys: tuple[str, ...]) -> tuple[tuple[object, ...], ...]:
+def _ingest_revision_heads(
+    db_path: Path,
+    keys: tuple[str, ...],
+    *,
+    index_conn: sqlite3.Connection | None = None,
+) -> tuple[tuple[object, ...], ...]:
     if not keys:
         return ()
     marks = ",".join("?" for _ in keys)
+    if index_conn is not None:
+        return tuple(
+            tuple(row)
+            for row in index_conn.execute(
+                f"SELECT * FROM raw_revision_heads WHERE logical_source_key IN ({marks}) "
+                f"OR session_id IN ({marks}) ORDER BY logical_source_key",
+                (*keys, *keys),
+            )
+        )
     with closing(open_readonly_connection(db_path, validate_schema=False)) as index:
         return tuple(
             tuple(row)
@@ -3044,6 +3028,62 @@ def _ingest_revision_heads(db_path: Path, keys: tuple[str, ...]) -> tuple[tuple[
                 (*keys, *keys),
             )
         )
+
+
+def _prepared_ingest_is_current(
+    prepared: _PreparedIngestUnit,
+    *,
+    db_path: Path,
+    archive_root: Path,
+    validation_mode: str,
+    publication_mode: PublicationMode,
+    reference_seal: PreparedIndexMutation | None = None,
+) -> bool:
+    if (
+        prepared.stale
+        or prepared.validation_mode != validation_mode
+        or prepared.publication_mode != publication_mode.value
+    ):
+        return False
+    if (
+        _ingest_index_binding(db_path) != prepared.index_binding
+        or _ingest_policy_binding(
+            archive_root,
+            user_conn=None if reference_seal is None else reference_seal.observer("user"),
+            audit_conn=None if reference_seal is None else reference_seal.observer("audit"),
+        )
+        != prepared.policy_binding
+    ):
+        return False
+    index_conn = None if reference_seal is None else reference_seal.observer("index")
+    if _ingest_revision_heads(db_path, prepared.logical_keys, index_conn=index_conn) != prepared.revision_heads:
+        return False
+    source = (
+        open_readonly_connection(archive_root / "source.db", validate_schema=False)
+        if reference_seal is None
+        else reference_seal.observer("source")
+    )
+    try:
+        source.execute("BEGIN")
+        try:
+            matches = all(
+                _source_snapshot(source, snapshot.table, snapshot.predicate, snapshot.parameters) == snapshot
+                for snapshot in prepared.source_snapshots
+            )
+        except BaseException:
+            source.rollback()
+            raise
+        else:
+            source.commit()
+    finally:
+        if reference_seal is None:
+            source.close()
+    if reference_seal is not None:
+        try:
+            reference_seal.validate_observers_current()
+        except Exception:
+            return False
+    return matches
 
 
 def _prepare_ingest_unit_sync(
@@ -3205,38 +3245,15 @@ def _prepare_ingest_unit_sync(
     )
 
 
-def _prepared_ingest_is_current(
+def _publish_drive_revision_updates(
     prepared: _PreparedIngestUnit,
-    *,
-    db_path: Path,
     archive_root: Path,
-    validation_mode: str,
-    publication_mode: PublicationMode,
-) -> bool:
-    if (
-        prepared.stale
-        or prepared.validation_mode != validation_mode
-        or prepared.publication_mode != publication_mode.value
-    ):
-        return False
-    if (
-        _ingest_index_binding(db_path) != prepared.index_binding
-        or _ingest_policy_binding(archive_root) != prepared.policy_binding
-    ):
-        return False
-    if _ingest_revision_heads(db_path, prepared.logical_keys) != prepared.revision_heads:
-        return False
-    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
-        source.execute("BEGIN")
-        return all(
-            _source_snapshot(source, snapshot.table, snapshot.predicate, snapshot.parameters) == snapshot
-            for snapshot in prepared.source_snapshots
-        )
-
-
-def _publish_drive_revision_updates(prepared: _PreparedIngestUnit, archive_root: Path) -> None:
+    *,
+    permit: KnownSourceMutationPermit,
+) -> KnownSourceMutationReceipt | None:
     if not prepared.drive_revision_updates:
-        return
+        return None
+    permit.require_rows("raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates)
     assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
     with (
         closing(
@@ -3249,10 +3266,32 @@ def _publish_drive_revision_updates(prepared: _PreparedIngestUnit, archive_root:
         source,
     ):
         source.execute("BEGIN IMMEDIATE")
-        source.executemany(f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates)
+        cursor = source.executemany(
+            f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates
+        )
+        if int(cursor.rowcount) != len(prepared.drive_revision_updates):
+            raise RuntimeError("prepared Drive lineage did not update every exact retained raw row")
+    return permit.committed()
 
 
-def _process_ingest_batch_sync(
+def _publish_prepared_drive_revision_updates(
+    prepared: _PreparedIngestUnit,
+    archive_root: Path,
+    reference_seal: PreparedIndexMutation,
+) -> None:
+    if not prepared.drive_revision_updates:
+        return
+    reference_seal.validate_observers_current()
+    permit = reference_seal.prepare_known_source_mutation(
+        "raw_sessions", _DRIVE_REVISION_COLUMNS, prepared.drive_revision_updates
+    )
+    receipt = _publish_drive_revision_updates(prepared, archive_root, permit=permit)
+    if receipt is None:
+        raise RuntimeError("prepared Drive source mutation returned no commit receipt")
+    reference_seal.accept_known_source_commit(receipt)
+
+
+def _process_ingest_batch_sync_owned(
     raw_artifacts: list[RawSessionRecord],
     *,
     db_path: Path,
@@ -3270,6 +3309,7 @@ def _process_ingest_batch_sync(
     fresh_build: bool = False,
     prepared_unit: _PreparedIngestUnit,
     marker_acceptance_enabled: bool = False,
+    reference_seal: PreparedIndexMutation,
 ) -> _IngestBatchSummary:
     if progress is None:
         progress = _WorkerProgress()
@@ -3281,17 +3321,6 @@ def _process_ingest_batch_sync(
             )
     t_start = time.perf_counter()
     archive_root = Path(archive_root_str)
-    if not _prepared_ingest_is_current(
-        prepared_unit,
-        db_path=db_path,
-        archive_root=archive_root,
-        validation_mode=validation_mode,
-        publication_mode=publication_mode,
-    ):
-        discard_ingest_result_payload(prepared_unit.result)
-        logger.info("Drive preparation became stale; leaving raw state for a fresh pass")
-        return summary
-    _publish_drive_revision_updates(prepared_unit, archive_root)
     _resolve_codex_sidecar_snapshots(raw_artifacts, archive_root=archive_root)
     primary_publication_service = (
         PublicationService(
@@ -3326,6 +3355,8 @@ def _process_ingest_batch_sync(
         )
     _observe_current_rss(summary)
     transaction_started = False
+    mutation_stack = contextlib.ExitStack()
+    mutation_scope = None
     # Blob publication's shared slot is held from before the index transaction
     # begins until it commits or rolls back. Excision takes the same slot
     # exclusively before it writes index.db, so both routes take the slot
@@ -3333,23 +3364,30 @@ def _process_ingest_batch_sync(
     # cannot commit between this batch's excision checks and its index commit.
     publisher_exclusion = contextlib.ExitStack()
     publisher_exclusion.enter_context(_archive_blob_publisher_slot(blob_publisher.source_db_path))
+
+    def begin_index_mutation() -> None:
+        nonlocal mutation_scope, transaction_started
+        if transaction_started:
+            return
+        if reference_seal is None:
+            raise RuntimeError("index publication requires its off-writer durable-reference seal")
+        if suspend_fts_triggers:
+            conn.execute("PRAGMA foreign_keys = OFF")
+        mutation_scope = mutation_stack.enter_context(reference_seal.mutation_scope(conn))
+        if suspend_fts_triggers:
+            from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
+
+            _open_unscoped_foreign_key_window(conn)
+            summary.foreign_key_window_open = True
+            suspend_fts_triggers_sync(conn)
+        transaction_started = True
+
     try:
         if marker_acceptance_enabled:
             _ensure_ingest_index_incarnation(conn)
 
         def begin_prepared_transaction() -> None:
-            nonlocal transaction_started
-            if not transaction_started:
-                if suspend_fts_triggers:
-                    conn.execute("PRAGMA foreign_keys = OFF")
-                conn.execute("BEGIN IMMEDIATE")
-                if suspend_fts_triggers:
-                    from polylogue.storage.fts.fts_lifecycle import suspend_fts_triggers_sync
-
-                    _open_unscoped_foreign_key_window(conn)
-                    summary.foreign_key_window_open = True
-                    suspend_fts_triggers_sync(conn)
-                transaction_started = True
+            begin_index_mutation()
 
         try:
             _drain_ingest_result(
@@ -3377,8 +3415,7 @@ def _process_ingest_batch_sync(
         if marker_acceptance_enabled and not transaction_started:
             # Empty parse batches have no session write to start the index
             # transaction, but their empty disposition still needs a witness.
-            conn.execute("BEGIN IMMEDIATE")
-            transaction_started = True
+            begin_index_mutation()
         if transaction_started:
             if suspend_fts_triggers and summary.foreign_key_window_open:
                 fk_violations = _foreign_key_violations_for_sessions(conn, materialized_ids)
@@ -3464,7 +3501,7 @@ def _process_ingest_batch_sync(
                     summary.schema_drift_observations,
                     archive_root=archive_root,
                 )
-    except BaseException:
+    except BaseException as exc:
         # polylogue-qoa75: BaseException, not Exception. The dropped-trigger
         # window is exactly the window an operator Ctrl-C (KeyboardInterrupt)
         # or a cancelled task (asyncio.CancelledError) lands in, and neither is
@@ -3478,6 +3515,7 @@ def _process_ingest_batch_sync(
         # has no dropped-trigger window to recover from here.
         with contextlib.suppress(Exception):
             conn.rollback()
+        mutation_stack.__exit__(type(exc), exc, exc.__traceback__)
         if suspend_fts_triggers:
             from polylogue.storage.fts.fts_lifecycle import restore_fts_triggers_sync
 
@@ -3499,6 +3537,7 @@ def _process_ingest_batch_sync(
                 ) from restore_exc
         raise
     finally:
+        mutation_stack.close()
         blob_publisher.discard_pending()
         if suspend_fts_triggers:
             with contextlib.suppress(Exception):
@@ -3512,6 +3551,69 @@ def _process_ingest_batch_sync(
     summary.worker_progress_total = progress.total_raw_count
     summary.elapsed_s = time.perf_counter() - t_start
     return summary
+
+
+class _IngestBatchOptions(TypedDict):
+    db_path: Path
+    archive_root_str: str
+    blob_root_str: str
+    validation_mode: str
+    ingest_workers: int | None
+    measure_ingest_result_size: bool
+    publication_mode: NotRequired[PublicationMode]
+    force_write: NotRequired[bool]
+    heartbeat: NotRequired[IngestHeartbeat | None]
+    progress: NotRequired[_WorkerProgress | None]
+    ingest_result_chunk_size: NotRequired[int]
+    suspend_fts_triggers: NotRequired[bool]
+    fresh_build: NotRequired[bool]
+    prepared_unit: _PreparedIngestUnit
+    marker_acceptance_enabled: NotRequired[bool]
+
+
+def _process_ingest_batch_sync(
+    raw_artifacts: list[RawSessionRecord],
+    *,
+    reference_seal: PreparedIndexMutation | None = None,
+    **kwargs: Unpack[_IngestBatchOptions],
+) -> _IngestBatchSummary:
+    """Prepare the reference proof before this route opens an index writer."""
+    if reference_seal is not None:
+        if not isinstance(reference_seal, PreparedIndexMutation):
+            raise TypeError("ingest reference_seal must be a prepared index mutation")
+        return _process_ingest_batch_sync_owned(
+            raw_artifacts,
+            reference_seal=reference_seal,
+            **kwargs,
+        )
+    from polylogue.storage.sqlite.write_lease import current_write_lease, write_lease
+
+    if current_write_lease() is not None:
+        raise RuntimeError("ingest writer admission requires a precomputed durable-reference seal")
+    db_path = kwargs["db_path"]
+    archive_root_str = kwargs["archive_root_str"]
+    archive_root = Path(archive_root_str)
+    with PreparedIndexMutation(db_path, archive_root=archive_root) as seal:
+        prepared = kwargs.get("prepared_unit")
+        if isinstance(prepared, _PreparedIngestUnit) and not _prepared_ingest_is_current(
+            prepared,
+            db_path=db_path,
+            archive_root=archive_root,
+            validation_mode=kwargs["validation_mode"],
+            publication_mode=kwargs.get("publication_mode", PublicationMode.OFF),
+            reference_seal=seal,
+        ):
+            discard_ingest_result_payload(prepared.result)
+            return _new_ingest_batch_summary(raw_artifacts, ingest_workers=kwargs["ingest_workers"])
+        with write_lease("offline.ingest.index", archive_root=archive_root):
+            seal.validate_observers_current()
+            if isinstance(prepared, _PreparedIngestUnit) and prepared.drive_revision_updates:
+                _publish_prepared_drive_revision_updates(prepared, archive_root, seal)
+            return _process_ingest_batch_sync_owned(
+                raw_artifacts,
+                reference_seal=seal,
+                **kwargs,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -3560,8 +3662,8 @@ async def process_ingest_batch(
             if unit is None:
                 continue
 
-            async def publish(raw_id: str = raw_id, unit: _PreparedIngestUnit = unit) -> ParseBatchObservation | None:
-                return await process_ingest_batch(
+            try:
+                last_observation = await process_ingest_batch(
                     service,
                     backend,
                     [raw_id],
@@ -3571,9 +3673,6 @@ async def process_ingest_batch(
                     fresh_build=fresh_build,
                     prepared_unit=unit,
                 )
-
-            try:
-                last_observation = await service.execution.publish("ingest", publish)
             finally:
                 discard_ingest_result_payload(unit.result)
         return last_observation
@@ -3622,10 +3721,40 @@ async def process_ingest_batch(
         sync_kwargs["fresh_build"] = True
     if prepared_unit is not None:
         sync_kwargs["prepared_unit"] = prepared_unit
-    batch_summary = await service.execution.publish_sync(
-        "index",
-        lambda: cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(raw_artifacts, **sync_kwargs),
-    )
+
+    def prepare_reference_seal() -> PreparedIndexMutation:
+        seal = PreparedIndexMutation(backend.db_path, archive_root=service.archive_root)
+        if prepared_unit is not None and not _prepared_ingest_is_current(
+            prepared_unit,
+            db_path=backend.db_path,
+            archive_root=service.archive_root,
+            validation_mode=validation_mode,
+            publication_mode=publication_mode,
+            reference_seal=seal,
+        ):
+            seal.close()
+            raise _StaleDrivePreparationError("Drive preparation became stale before index publication")
+        return seal
+
+    def publish_with_seal(seal: PreparedIndexMutation) -> _IngestBatchSummary:
+        seal.validate_observers_current()
+        if prepared_unit is not None and prepared_unit.drive_revision_updates:
+            _publish_prepared_drive_revision_updates(prepared_unit, service.archive_root, seal)
+        return cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(
+            raw_artifacts,
+            reference_seal=seal,
+            **sync_kwargs,
+        )
+
+    try:
+        batch_summary = await service.execution.publish_prepared_sync(
+            "index", prepare_reference_seal, publish_with_seal
+        )
+    except _StaleDrivePreparationError:
+        if prepared_unit is not None:
+            discard_ingest_result_payload(prepared_unit.result)
+        emit("ingest.drive.preparation_stale")
+        return None
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
         or batch_summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD

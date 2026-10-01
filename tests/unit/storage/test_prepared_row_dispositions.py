@@ -20,9 +20,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
     prepared_row_dispositions,
     reset_prepared_row_dispositions,
-    write_parsed_session_to_archive,
 )
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 @pytest.fixture(autouse=True)
@@ -60,9 +59,9 @@ def test_canonical_write_is_counted_and_consumed(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = _session("consumed", ["one", "two"])
     try:
-        prepared = prepare_session_write(conn, session)
+        prepared = prepare_session_write(conn, session, merge_append=False)
         try:
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
             )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
@@ -79,7 +78,7 @@ def test_missing_canonical_write_refuses_before_rows(tmp_path: Path) -> None:
     session = _session("absent", ["one"])
     try:
         with pytest.raises(PreparedSessionWriteRefusedError):
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, session, prepared_write=None, content_hash=str(session_content_hash(session))
             )
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
@@ -93,10 +92,10 @@ def test_changed_input_refuses_before_rows(tmp_path: Path) -> None:
     original = _session("mutates", ["original"])
     mutated = original.model_copy(update={"messages": [_message("m0", "changed", 0)]})
     try:
-        prepared = prepare_session_write(conn, original)
+        prepared = prepare_session_write(conn, original, merge_append=False)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_parsed_session_to_archive(
+                write_fixture_index_session(
                     conn, mutated, prepared_write=prepared, content_hash=str(session_content_hash(mutated))
                 )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 0
@@ -111,11 +110,11 @@ def test_append_matching_frontier_consumes_preparation(tmp_path: Path) -> None:
     first = _session("append", ["one"])
     appended = _session("append", ["two"], id_offset=1)
     try:
-        write_prepared_session(conn, first)
+        write_fixture_index_session(conn, first)
         reset_prepared_row_dispositions()
         prepared = prepare_session_write(conn, appended, merge_append=True)
         try:
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 appended,
                 prepared_write=prepared,
@@ -136,7 +135,7 @@ def test_append_changed_frontier_refuses_without_relowering(tmp_path: Path, muta
     first = _session("frontier", ["one"])
     appended = _session("frontier", ["two"], id_offset=1)
     try:
-        write_prepared_session(conn, first)
+        write_fixture_index_session(conn, first)
         prepared = prepare_session_write(conn, appended, merge_append=True)
         rows = (
             replace(prepared.rows, position_offset=0)
@@ -146,7 +145,7 @@ def test_append_changed_frontier_refuses_without_relowering(tmp_path: Path, muta
         stale = replace(prepared, rows=rows)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_parsed_session_to_archive(
+                write_fixture_index_session(
                     conn,
                     appended,
                     prepared_write=stale,
@@ -164,11 +163,11 @@ def test_changed_predecessor_refuses_before_replacement(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = _session("predecessor", ["one"])
     try:
-        prepared = prepare_session_write(conn, session)
-        write_prepared_session(conn, session)
+        prepared = prepare_session_write(conn, session, merge_append=False)
+        write_fixture_index_session(conn, session)
         try:
             with pytest.raises(PreparedSessionWriteRefusedError):
-                write_parsed_session_to_archive(
+                write_fixture_index_session(
                     conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
                 )
             assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
@@ -182,7 +181,7 @@ def test_dispositions_accumulate_for_published_preparations(tmp_path: Path) -> N
     conn = _connect(tmp_path / "index.db")
     try:
         for index in range(3):
-            write_prepared_session(conn, _session(f"sum-{index}", ["body"]))
+            write_fixture_index_session(conn, _session(f"sum-{index}", ["body"]))
     finally:
         conn.close()
     assert prepared_row_dispositions() == {"prepared_write": 3}
@@ -193,13 +192,13 @@ def test_prefix_sharing_child_consumes_already_sliced_preparation(tmp_path: Path
     parent = _session("slice-parent", ["A", "B"])
     child = _session("slice-child", ["A", "B", "C"]).model_copy(update={"parent_session_provider_id": "slice-parent"})
     try:
-        write_prepared_session(conn, parent)
-        prepared = prepare_session_write(conn, child)
+        write_fixture_index_session(conn, parent)
+        prepared = prepare_session_write(conn, child, merge_append=False)
         try:
             assert len(prepared.context.messages) == 1
             assert len(prepared.rows.content_identities) == 1
             reset_prepared_row_dispositions()
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, child, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
             )
             assert (

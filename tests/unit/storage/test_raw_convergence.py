@@ -41,7 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _codex_conversation_bytes(session_id: str = "session", text: str = "hi") -> bytes:
@@ -242,7 +242,7 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         target_id = str(conn.execute("SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
         conn.execute("PRAGMA foreign_keys = OFF")
-        foreign_id = write_prepared_session(
+        foreign_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

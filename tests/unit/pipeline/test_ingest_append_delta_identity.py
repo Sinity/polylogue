@@ -52,7 +52,10 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
 )
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import (
+    write_fixture_index_session,
+    write_fixture_ingest_payload,
+)
 
 _SESSION_ID = "codex-session:append-delta-identity"
 _NATIVE_ID = _SESSION_ID.split(":", 1)[1]
@@ -90,7 +93,7 @@ def _payload(*texts: str, append_only: bool) -> SessionWritePayload:
 
 def _seeded(tmp_path: Path) -> sqlite3.Connection:
     conn = open_connection(tmp_path / "index.db").__enter__()
-    ingest_batch_core._write_session(conn, _payload("first", append_only=False))
+    write_fixture_ingest_payload(conn, _payload("first", append_only=False))
     conn.commit()
     return conn
 
@@ -150,7 +153,7 @@ def test_append_carrier_admitted_and_reused(tmp_path: Path, monkeypatch: pytest.
 
         monkeypatch.setattr(archive_tier_write, "message_content_identities", _boom)
 
-        changed, counts = ingest_batch_core._write_session(conn, payload)
+        changed, counts = write_fixture_ingest_payload(conn, payload)
         conn.commit()
 
         assert changed is True
@@ -173,7 +176,7 @@ def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
         merged_carrier = prepare_session_rows(payload.parsed_session)
 
         with pytest.raises(PreparedSessionWriteRefusedError, match="merged session"):
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 delta,
                 content_hash=payload.content_hash,
@@ -190,7 +193,7 @@ def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
     conn = _seeded(tmp_path)
     try:
         payload = _payload("first", "second", append_only=True)
-        changed, _counts = ingest_batch_core._write_session(conn, payload)
+        changed, _counts = write_fixture_ingest_payload(conn, payload)
         conn.commit()
         assert changed is True
 
@@ -199,7 +202,7 @@ def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
 
         # Which is what makes the identical replay a no-op rather than a
         # second append: the delta's own digest would never match here.
-        _changed_again, replay_counts = ingest_batch_core._write_session(
+        _changed_again, replay_counts = write_fixture_ingest_payload(
             conn, _payload("first", "second", append_only=True)
         )
         conn.commit()

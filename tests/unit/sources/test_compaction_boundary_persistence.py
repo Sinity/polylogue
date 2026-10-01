@@ -22,7 +22,7 @@ from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -81,7 +81,7 @@ def test_claude_code_compaction_stores_the_boundary_range_and_summary(tmp_path: 
     assert [event.boundary_end_position for event in parsed.session_events] == [1]
 
     conn = _connect(tmp_path / "index.db")
-    session_id = write_prepared_session(conn, parsed)
+    session_id = write_fixture_index_session(conn, parsed)
     conn.commit()
 
     rows = _stored_compactions(conn)
@@ -136,7 +136,7 @@ def test_codex_compaction_stores_the_boundary_range_and_summary(tmp_path: Path) 
     assert compactions[0].boundary_end_position is not None
 
     conn = _connect(tmp_path / "index.db")
-    write_prepared_session(conn, parsed)
+    write_fixture_index_session(conn, parsed)
     conn.commit()
 
     rows = _stored_compactions(conn)

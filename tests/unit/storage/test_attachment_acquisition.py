@@ -29,7 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from tests.infra.identity import archive_message_id
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -93,7 +93,7 @@ def test_inline_attachment_bytes_are_stored_with_true_hash(tmp_path: Path, monke
             inline_bytes=payload,
         )
     )
-    write_prepared_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert row["acquisition_status"] == "acquired"
@@ -126,7 +126,7 @@ def test_precomputed_blob_attachment_is_stored_as_acquired(tmp_path: Path, monke
     preacquired: dict[int, tuple[bytes | None, int, str]] = {
         id(attachment): (bytes.fromhex(blob_hash), size, "acquired")
     }
-    write_prepared_session(conn, session, preacquired_attachment_blobs=preacquired)
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=preacquired)
 
     row = conn.execute("SELECT blob_hash, byte_count, acquisition_status FROM attachments").fetchone()
     assert row["acquisition_status"] == "acquired"
@@ -153,7 +153,7 @@ def test_prepared_attachment_preacquisition_survives_a_fresh_row_read(tmp_path: 
         acquisition_key = attachments[0].acquisition_key
         assert acquisition_key == attachments[0].acquisition_key
         conn = _connect(tmp_path / "index.db")
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             session,
             preacquired_attachment_blobs={acquisition_key: (bytes.fromhex(blob_hash), size, "acquired")},
@@ -177,7 +177,7 @@ def test_low_level_writer_rejects_precomputed_blob_without_preacquisition(tmp_pa
     )
 
     with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
-        write_prepared_session(conn, session)
+        write_fixture_index_session(conn, session)
 
 
 def test_attachment_without_bytes_is_marked_unfetched_not_faked(
@@ -187,7 +187,7 @@ def test_attachment_without_bytes_is_marked_unfetched_not_faked(
     monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
 
     conn = _connect(tmp_path / "index.db")
-    write_prepared_session(
+    write_fixture_index_session(
         conn,
         _session_with_attachment(
             ParsedAttachment(
@@ -242,7 +242,7 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     )
     conn = _connect(tmp_path / "index.db")
 
-    write_prepared_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+    write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     rows = conn.execute(
         """
@@ -309,7 +309,7 @@ def test_claude_content_base64_preserves_non_utf8_bytes_and_identity(
     assert binary.attachments[0].inline_bytes == payload
 
     conn = _connect(tmp_path / "index.db")
-    write_prepared_session(conn, binary, preacquired_attachment_blobs=_preacquired(store, binary))
+    write_fixture_index_session(conn, binary, preacquired_attachment_blobs=_preacquired(store, binary))
     row = conn.execute("SELECT attachment_id, blob_hash, acquisition_status FROM attachments").fetchone()
     assert row["attachment_id"]
     assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
@@ -354,7 +354,7 @@ def test_low_level_writer_rejects_inline_bytes_without_preacquisition(tmp_path: 
     )
 
     with pytest.raises(ValueError, match="preacquired_attachment_blobs"):
-        write_prepared_session(conn, session)
+        write_fixture_index_session(conn, session)
 
 
 @pytest.mark.asyncio
@@ -401,7 +401,7 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
 
     # First ingest: attachment lands on message m0 and is reachable.
     first_session = _session_with_attachment(attachment)
-    write_prepared_session(conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session))
+    write_fixture_index_session(conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session))
 
     row = conn.execute(
         "SELECT acquisition_status, ref_count FROM attachments WHERE attachment_id = ?",
@@ -434,7 +434,7 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
         ],
         attachments=[attachment],
     )
-    write_prepared_session(conn, second_session, force_replace=True)
+    write_fixture_index_session(conn, second_session, force_replace=True)
 
     surviving_row = conn.execute(
         "SELECT 1 FROM attachments WHERE attachment_id = ?",

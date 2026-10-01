@@ -52,7 +52,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 from polylogue.storage.sqlite.queries.session_events import sync_session_events_batch
 from tests.infra.identity import archive_message_id
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -80,7 +80,7 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
                 )
             ],
         )
-        session_id = write_prepared_session(conn, first)
+        session_id = write_fixture_index_session(conn, first)
         first_hash = conn.execute(
             "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
             (session_id,),
@@ -98,7 +98,7 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
                 ]
             }
         )
-        write_prepared_session(conn, second)
+        write_fixture_index_session(conn, second)
         second_hash = conn.execute(
             "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
             (session_id,),
@@ -127,7 +127,7 @@ def test_merge_append_reconciles_tool_use_from_prior_batch(
                 )
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         prior_use_hash = conn.execute(
             "SELECT content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
             (session_id,),
@@ -151,7 +151,7 @@ def test_merge_append_reconciles_tool_use_from_prior_batch(
                 ]
             }
         )
-        write_prepared_session(conn, appended, merge_append=True)
+        write_fixture_index_session(conn, appended, merge_append=True)
 
         use = conn.execute(
             "SELECT tool_outcome, content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
@@ -209,9 +209,9 @@ def test_appended_tool_result_leaves_the_use_hash_a_full_replay_computes(
     appended = _connect(tmp_path / "appended.db")
     replayed = _connect(tmp_path / "replayed.db")
     try:
-        session_id = write_prepared_session(appended, first)
-        write_prepared_session(appended, first.model_copy(update={"messages": [result]}), merge_append=True)
-        replayed_id = write_prepared_session(replayed, first.model_copy(update={"messages": [use, result]}))
+        session_id = write_fixture_index_session(appended, first)
+        write_fixture_index_session(appended, first.model_copy(update={"messages": [result]}), merge_append=True)
+        replayed_id = write_fixture_index_session(replayed, first.model_copy(update={"messages": [use, result]}))
 
         assert replayed_id == session_id
         assert _tool_use_hash(appended, session_id) == _tool_use_hash(replayed, session_id)
@@ -249,11 +249,11 @@ def test_cross_acquisition_union_keeps_an_unchanged_blocks_evidence_hash(tmp_pat
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        session_id = write_prepared_session(conn, session, raw_id="raw-first")
+        session_id = write_fixture_index_session(conn, session, raw_id="raw-first")
         first_hash = _tool_use_hash(conn, session_id)
         # A different acquisition of an already-stored session takes the
         # field-path union, which coalesces the matched block pair.
-        write_prepared_session(conn, session, raw_id="raw-second")
+        write_fixture_index_session(conn, session, raw_id="raw-second")
 
         assert _tool_use_hash(conn, session_id) == first_hash
     finally:
@@ -271,7 +271,7 @@ def test_writer_separates_native_and_content_message_identity(tmp_path: Path) ->
                 ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="positional", position=0),
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         rows = conn.execute(
             "SELECT message_id, native_id FROM messages WHERE session_id = ? ORDER BY position",
@@ -282,7 +282,7 @@ def test_writer_separates_native_and_content_message_identity(tmp_path: Path) ->
         assert str(idless_id).startswith(f"{session_id}:c:")
         assert (native_row["message_id"], native_row["native_id"]) == (f"{session_id}:n:0.0", "0.0")
 
-        write_prepared_session(conn, session.model_copy(update={"messages": list(reversed(session.messages))}))
+        write_fixture_index_session(conn, session.model_copy(update={"messages": list(reversed(session.messages))}))
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
     finally:
         conn.close()
@@ -329,7 +329,7 @@ def test_block_content_hash_is_stable_across_position_and_tool_id_but_sensitive_
                 )
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         original_hash = _block_hash(conn, session_id, "m1", 0)
 
         # Same evidence (type/tool_name/tool_input), DIFFERENT tool_id and
@@ -356,7 +356,7 @@ def test_block_content_hash_is_stable_across_position_and_tool_id_but_sensitive_
                 ]
             }
         )
-        write_prepared_session(conn, reordered)
+        write_fixture_index_session(conn, reordered)
         moved_hash = _block_hash(conn, session_id, "m1", 1)
         assert moved_hash == original_hash
 
@@ -381,7 +381,7 @@ def test_block_content_hash_is_stable_across_position_and_tool_id_but_sensitive_
                 ]
             }
         )
-        write_prepared_session(conn, changed_evidence)
+        write_fixture_index_session(conn, changed_evidence)
         changed_hash = _block_hash(conn, session_id, "m1", 0)
         assert changed_hash != original_hash
     finally:
@@ -422,7 +422,7 @@ def test_archive_tiers_writer_materializes_typed_web_constructs(tmp_path: Path) 
             )
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     rows = conn.execute(
         """
@@ -498,7 +498,7 @@ def test_archive_tiers_writer_materializes_codex_session(tmp_path: Path) -> None
         active_leaf_message_provider_id="a1",
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert envelope.session_id == "codex-session:codex-session-1"
@@ -560,7 +560,7 @@ def test_archive_tiers_writer_splits_provider_user_from_authored_user_counts(tmp
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     counts = conn.execute(
         """
         SELECT user_message_count, authored_user_message_count,
@@ -638,7 +638,7 @@ def test_archive_tiers_writer_ingests_session_with_root_cwd_and_no_repo_name(tmp
     )
 
     # Must not raise sqlite3.IntegrityError on repos.repo_name NOT NULL.
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
     assert repos == [], "a bare '/' cwd with no git evidence must not synthesize a repos row"
@@ -672,7 +672,7 @@ def test_archive_tiers_writer_does_not_collapse_duplicate_message_native_ids(tmp
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     message_rows = conn.execute(
         """
@@ -746,7 +746,7 @@ def test_archive_tiers_writer_normalizes_duplicate_idless_active_leaves_by_posit
             ],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         leaf_positions = [
             row[0]
@@ -784,7 +784,7 @@ def test_archive_tiers_writer_stores_lone_surrogates_sqlite_can_hold(tmp_path: P
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     session_row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     block_row = conn.execute("SELECT tool_input FROM blocks WHERE session_id = ?", (session_id,)).fetchone()
@@ -834,7 +834,7 @@ def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) 
         active_leaf_message_provider_id="a-new",
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     rows = conn.execute(
         """
         SELECT message_id, parent_message_id, position, variant_index, is_active_path, is_active_leaf
@@ -912,7 +912,7 @@ def test_archive_writer_propagates_active_leaf_path_and_preserves_inactive_varia
             active_leaf_message_provider_id="answer-new",
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
         by_native_id = {message.native_id: message for message in envelope.messages}
 
@@ -939,7 +939,7 @@ def test_archive_tiers_writer_accepts_code_blocks(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     block_type = conn.execute("SELECT block_type FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0]
     assert block_type == "code"
@@ -967,7 +967,7 @@ def test_archive_tiers_writer_uses_identity_law_for_messages_without_native_ids(
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     expected_ids = [
@@ -997,7 +997,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     rebuild_session_insights_sync(conn, session_ids=[session_id])
@@ -1046,7 +1046,7 @@ def test_archive_tiers_session_tags_upsert_normalizes_and_refreshes_scores(tmp_p
             )
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     first = upsert_session_tag(
         conn,
@@ -1118,7 +1118,7 @@ def test_archive_tiers_writer_materializes_paste_span_from_parser_evidence(tmp_p
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     session = conn.execute("SELECT paste_count FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     message = conn.execute(
@@ -1181,7 +1181,7 @@ def test_archive_tiers_writer_materializes_supported_session_events(tmp_path: Pa
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     rows = conn.execute(
         """
@@ -1286,7 +1286,7 @@ def test_archive_tiers_writer_round_trips_typed_session_event_payloads(tmp_path:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     records = sync_session_events_batch(conn, [session_id])[session_id]
     assert [(record.event_type, record.payload) for record in records] == [
@@ -1337,7 +1337,7 @@ def test_archive_tiers_writer_materializes_provider_usage_events(tmp_path: Path)
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     usage = conn.execute(
         """
@@ -1402,7 +1402,7 @@ def test_provider_usage_events_repair_single_model_usage_rollup(tmp_path: Path) 
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     usage = conn.execute(
         """
@@ -1467,7 +1467,7 @@ def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path:
         ],
         session_events=[_usage_event("gpt-5-codex-mini", input_tokens=100, cached=0, output=30)],
     )
-    write_prepared_session(conn, session_v1)
+    write_fixture_index_session(conn, session_v1)
 
     # Session grows: a second message on a different model, with a new
     # session-global cumulative that already includes model A's tokens.
@@ -1493,7 +1493,7 @@ def test_provider_usage_model_switch_on_reingest_does_not_double_count(tmp_path:
             _usage_event("gpt-5-codex", input_tokens=250, cached=20, output=80),
         ],
     )
-    session_id = write_prepared_session(conn, session_v2)
+    session_id = write_fixture_index_session(conn, session_v2)
 
     rows = conn.execute(
         "SELECT model_name, input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
@@ -1561,7 +1561,7 @@ def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_p
         ],
         session_events=[_usage_event("gpt-5-codex-mini", input_tokens=100, cached=0, output=30)],
     )
-    write_prepared_session(conn, session_v1)
+    write_fixture_index_session(conn, session_v1)
 
     session_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -1576,7 +1576,7 @@ def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_p
         ],
         session_events=[_usage_event("gpt-5-codex", input_tokens=50, cached=0, output=10)],
     )
-    session_id = write_prepared_session(conn, session_v2)
+    session_id = write_fixture_index_session(conn, session_v2)
 
     rows = conn.execute(
         "SELECT model_name, input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
@@ -1639,7 +1639,7 @@ def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_tota
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     usage = conn.execute(
         """
@@ -1696,7 +1696,7 @@ def test_provider_usage_events_roll_up_session_global_cumulative_to_latest_model
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     rows = conn.execute(
         """
@@ -1756,7 +1756,7 @@ def test_provider_usage_cumulative_model_switch_uses_highest_position_not_per_mo
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     rows = conn.execute(
         """
@@ -1807,7 +1807,7 @@ def test_provider_usage_per_message_last_usage_still_rolls_up_per_model(tmp_path
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     rows = conn.execute(
         """
@@ -1859,7 +1859,7 @@ def test_writer_materializes_claude_message_usage_events_without_overriding_pric
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     event = conn.execute(
         """
@@ -1945,8 +1945,8 @@ def test_provider_usage_events_append_preserves_prior_history(tmp_path: Path) ->
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second, merge_append=True)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     rows = conn.execute(
         """
@@ -2056,15 +2056,15 @@ def test_provider_usage_rollup_skips_append_without_usage_events(
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
     assert rollup_calls == [session_id]
     assert append_rollup_calls == []
 
-    write_prepared_session(conn, no_usage_append, merge_append=True)
+    write_fixture_index_session(conn, no_usage_append, merge_append=True)
     assert rollup_calls == [session_id]
     assert append_rollup_calls == []
 
-    write_prepared_session(conn, usage_append, merge_append=True)
+    write_fixture_index_session(conn, usage_append, merge_append=True)
     assert rollup_calls == [session_id]
     assert append_rollup_calls == [(session_id, 1)]
 
@@ -2140,8 +2140,8 @@ def test_provider_usage_append_incremental_rolls_up_last_usage(tmp_path: Path) -
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second, merge_append=True)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     row = conn.execute(
         """
@@ -2213,8 +2213,8 @@ def test_provider_usage_append_last_usage_does_not_override_cumulative(tmp_path:
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second, merge_append=True)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     row = conn.execute(
         """
@@ -2284,8 +2284,8 @@ def test_provider_usage_append_model_switch_clears_stale_cumulative(tmp_path: Pa
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second, merge_append=True)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     rows = conn.execute(
         """
@@ -2357,13 +2357,13 @@ def test_reported_costs_skip_message_token_aggregate_on_plain_append(
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
     assert aggregate_calls == [session_id]
 
-    write_prepared_session(conn, plain_append, merge_append=True)
+    write_fixture_index_session(conn, plain_append, merge_append=True)
     assert aggregate_calls == [session_id]
 
-    write_prepared_session(conn, token_append, merge_append=True)
+    write_fixture_index_session(conn, token_append, merge_append=True)
     assert aggregate_calls == [session_id, session_id]
 
 
@@ -2384,8 +2384,8 @@ def test_merge_append_replaces_prior_provider_total_on_model_switch(tmp_path: Pa
         messages=[ParsedMessage(provider_message_id="m2", role=Role.ASSISTANT, model_name="gpt-new")],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second, merge_append=True)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     rows = conn.execute(
         "SELECT model_name, provider_cost_usd FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
@@ -2438,9 +2438,9 @@ def test_merge_append_clears_only_existing_active_leaf(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
     before_changes = conn.total_changes
-    write_prepared_session(conn, second, merge_append=True)
+    write_fixture_index_session(conn, second, merge_append=True)
     append_changes = conn.total_changes - before_changes
 
     rows = conn.execute(
@@ -2500,9 +2500,9 @@ def test_merge_append_recomputes_session_counts_from_messages(tmp_path: Path) ->
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
 
-    write_prepared_session(conn, second, merge_append=True)
+    write_fixture_index_session(conn, second, merge_append=True)
 
     row = conn.execute(
         """
@@ -2532,7 +2532,7 @@ def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts
     conn = _connect(tmp_path / "index.db")
     unrelated_attachment_count = 120
     for i in range(unrelated_attachment_count):
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CHATGPT,
@@ -2581,9 +2581,9 @@ def test_merge_append_without_attachments_does_not_refresh_all_attachment_counts
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
     before_changes = conn.total_changes
-    write_prepared_session(conn, second, merge_append=True)
+    write_fixture_index_session(conn, second, merge_append=True)
     append_changes = conn.total_changes - before_changes
 
     assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == unrelated_attachment_count
@@ -2595,7 +2595,7 @@ def test_full_replace_without_attachments_does_not_refresh_all_attachment_counts
     conn = _connect(tmp_path / "index.db")
     unrelated_attachment_count = 120
     for i in range(unrelated_attachment_count):
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CHATGPT,
@@ -2642,9 +2642,9 @@ def test_full_replace_without_attachments_does_not_refresh_all_attachment_counts
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
+    session_id = write_fixture_index_session(conn, first)
     before_changes = conn.total_changes
-    write_prepared_session(conn, second)
+    write_fixture_index_session(conn, second)
     replace_changes = conn.total_changes - before_changes
 
     assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == unrelated_attachment_count
@@ -2695,9 +2695,9 @@ def test_full_replace_sweeps_removed_attachment_that_loses_its_last_ref(tmp_path
         attachments=[att1],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     att2_id = archive_tier_write._attachment_id(session_id, att2)
-    write_prepared_session(conn, replacement)
+    write_fixture_index_session(conn, replacement)
 
     assert conn.execute("SELECT 1 FROM attachments WHERE attachment_id = ?", (att2_id,)).fetchone() is None
     assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (att2_id,)).fetchone()[0] == 0
@@ -2730,7 +2730,7 @@ def test_provider_usage_rollup_clears_stale_message_pricing(tmp_path: Path) -> N
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     row = conn.execute(
         """
@@ -2773,7 +2773,7 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     row = conn.execute(
         """
@@ -2831,7 +2831,7 @@ def test_claude_code_forked_from_becomes_a_fork_session_link(tmp_path: Path) -> 
         "fork-child",
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     row = conn.execute(
         "SELECT dst_native_id, link_type, method FROM session_links WHERE src_session_id = ?",
@@ -2873,8 +2873,8 @@ def test_archive_tiers_writer_resolves_parent_link_when_parent_already_exists(tm
         ],
     )
 
-    parent_id = write_prepared_session(conn, parent)
-    child_id = write_prepared_session(conn, child)
+    parent_id = write_fixture_index_session(conn, parent)
+    child_id = write_fixture_index_session(conn, child)
 
     child_row = conn.execute(
         "SELECT parent_session_id, root_session_id, branch_type FROM sessions WHERE session_id = ?",
@@ -2949,8 +2949,8 @@ def test_refresh_thread_fast_path_keeps_current_thread_membership(tmp_path: Path
         ],
     )
 
-    parent_id = write_prepared_session(conn, parent)
-    child_id = write_prepared_session(conn, child)
+    parent_id = write_fixture_index_session(conn, parent)
+    child_id = write_fixture_index_session(conn, child)
     before = conn.execute(
         """
         SELECT session_id, position
@@ -3034,12 +3034,12 @@ def test_refresh_thread_appends_suffix_without_rebuilding_membership(tmp_path: P
         ],
     )
 
-    parent_id = write_prepared_session(conn, parent)
-    first_child_id = write_prepared_session(conn, first_child)
+    parent_id = write_fixture_index_session(conn, parent)
+    first_child_id = write_fixture_index_session(conn, first_child)
     statements: list[str] = []
     conn.set_trace_callback(statements.append)
 
-    second_child_id = write_prepared_session(conn, second_child)
+    second_child_id = write_fixture_index_session(conn, second_child)
 
     conn.set_trace_callback(None)
     thread_rows = conn.execute(
@@ -3173,10 +3173,10 @@ def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_l
         ],
     )
 
-    child_id = write_prepared_session(conn, child)
+    child_id = write_fixture_index_session(conn, child)
     assert conn.execute("SELECT thread_id FROM threads WHERE thread_id = ?", (child_id,)).fetchone()[0] == child_id
 
-    parent_id = write_prepared_session(conn, parent)
+    parent_id = write_fixture_index_session(conn, parent)
 
     child_row = conn.execute(
         "SELECT parent_session_id, root_session_id, branch_type FROM sessions WHERE session_id = ?",
@@ -3244,10 +3244,10 @@ def test_graph_resolve_records_late_parent_substage_timings(tmp_path: Path) -> N
         ],
     )
 
-    write_prepared_session(conn, child)
+    write_fixture_index_session(conn, child)
     timings: dict[str, float] = {}
 
-    write_prepared_session(
+    write_fixture_index_session(
         conn,
         parent,
         stage_timings_s=timings,
@@ -3344,9 +3344,9 @@ def test_graph_resolve_shares_projection_refresh_seen_set_for_late_children(
         for position in range(3)
     ]
 
-    write_prepared_session(conn, grandparent)
+    write_fixture_index_session(conn, grandparent)
     for child in children:
-        write_prepared_session(conn, child)
+        write_fixture_index_session(conn, child)
 
     original_refresh = archive_tier_write._refresh_session_projection
     seen_ids: list[int] = []
@@ -3357,7 +3357,7 @@ def test_graph_resolve_shares_projection_refresh_seen_set_for_late_children(
 
     monkeypatch.setattr(archive_tier_write, "_refresh_session_projection", wrapped_refresh)
 
-    write_prepared_session(conn, parent)
+    write_fixture_index_session(conn, parent)
 
     assert len(set(seen_ids)) == 1
 
@@ -3381,7 +3381,7 @@ def test_archive_tiers_writer_materializes_repo_and_commit_edges(tmp_path: Path)
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     repo = conn.execute(
         """
@@ -3495,8 +3495,8 @@ def test_archive_tiers_writer_collapses_worktree_cwds_to_one_repo_row(tmp_path: 
         ],
     )
 
-    write_prepared_session(conn, first)
-    write_prepared_session(conn, second)
+    write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second)
 
     repos = [dict(row) for row in conn.execute("SELECT root_path, repo_name FROM repos").fetchall()]
     assert repos == [{"root_path": str(repo_root), "repo_name": "myrepo"}]
@@ -3551,8 +3551,8 @@ def test_archive_tiers_writer_collapses_same_remote_different_checkouts_to_one_r
         ],
     )
 
-    first_id = write_prepared_session(conn, first)
-    second_id = write_prepared_session(conn, second)
+    first_id = write_fixture_index_session(conn, first)
+    second_id = write_fixture_index_session(conn, second)
 
     repos = [dict(row) for row in conn.execute("SELECT repo_id, repo_name FROM repos").fetchall()]
     assert repos == [{"repo_id": "remote:github.com/sinity/polylogue", "repo_name": "polylogue"}]
@@ -3615,8 +3615,8 @@ def test_archive_tiers_writer_replacement_clears_old_projection_rows(tmp_path: P
         ],
     )
 
-    session_id = write_prepared_session(conn, first)
-    write_prepared_session(conn, second)
+    session_id = write_fixture_index_session(conn, first)
+    write_fixture_index_session(conn, second)
 
     envelope = read_archive_session_envelope(conn, session_id)
     stale_counts = {
@@ -3703,7 +3703,7 @@ def test_archive_tiers_writer_materializes_attachments_and_refs(tmp_path: Path) 
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     attachment_hash = hashlib.sha256()
     for part in (
         "attachment",
@@ -3792,7 +3792,7 @@ def test_writer_sanitizes_unpaired_surrogates_in_attachment_native_ids(tmp_path:
                 )
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         ref_id = conn.execute("SELECT ref_id FROM attachment_refs WHERE session_id = ?", (session_id,)).fetchone()[0]
         native_ids = {
             row[0]
@@ -3822,7 +3822,7 @@ def test_writer_derives_attachment_direction_from_the_owning_turn(tmp_path: Path
             attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1")],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         rows = conn.execute(
             "SELECT direction, producer_ref FROM attachment_refs WHERE session_id = ?",
@@ -3852,7 +3852,7 @@ def test_writer_names_the_producing_turn_when_the_provider_supplied_no_id(tmp_pa
             attachments=[ParsedAttachment(provider_attachment_id="a1", message_position=0)],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         row = conn.execute(
             "SELECT direction, producer_ref, message_id FROM attachment_refs WHERE session_id = ?",
@@ -3880,7 +3880,7 @@ def test_writer_skips_orphan_attachment_before_direction_validation(tmp_path: Pa
             ],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         assert (
             conn.execute(
@@ -3916,7 +3916,7 @@ def test_writer_retains_ambiguous_attachment_as_typed_unowned(tmp_path: Path) ->
             attachments=[attachment],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         attachment_id = archive_tier_write._attachment_id(session_id, attachment)
         row = conn.execute(
             "SELECT ref_count FROM attachments WHERE attachment_id = ?",
@@ -3961,7 +3961,7 @@ def test_writer_receipt_types_unresolved_inline_attachment_owner(tmp_path: Path)
             attachments=[attachment],
         )
         outcomes: list[ArchiveWriteOutcome] = []
-        session_id = write_prepared_session(
+        session_id = write_fixture_index_session(
             conn,
             session,
             preacquired_attachment_blobs={id(attachment): (b"a" * 32, len(attachment.inline_bytes or b""), "acquired")},
@@ -4005,7 +4005,7 @@ def test_writer_records_why_a_metadata_only_attachment_has_no_owner(tmp_path: Pa
             attachments=[named_absent, never_linked],
         )
         outcomes: list[ArchiveWriteOutcome] = []
-        session_id = write_prepared_session(conn, session, write_outcome=outcomes)
+        session_id = write_fixture_index_session(conn, session, write_outcome=outcomes)
 
         reasons = dict(outcomes[-1].unresolved_attachment_owners)
         named_id = archive_tier_write._attachment_id(session_id, named_absent)
@@ -4048,7 +4048,7 @@ def test_instructions_text_roundtrip(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert envelope.instructions_text == "Always reply in haiku."
@@ -4072,7 +4072,7 @@ def test_instructions_text_none_when_absent(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
 
     assert envelope.instructions_text is None
@@ -4105,7 +4105,7 @@ def test_title_source_roundtrip(tmp_path: Path) -> None:
                 ),
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
         assert envelope.title_source == expected, f"expected title_source={expected!r}, got {envelope.title_source!r}"
 
@@ -4127,7 +4127,7 @@ def test_title_source_none_when_absent(tmp_path: Path) -> None:
             ),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     envelope = read_archive_session_envelope(conn, session_id)
     assert envelope.title_source is None
 
@@ -4167,7 +4167,7 @@ def test_agent_policy_roundtrip(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     policies = read_session_agent_policies(conn, session_id)
 
     assert len(policies) == 1
@@ -4196,7 +4196,7 @@ def test_agent_policy_absent_when_no_events(tmp_path: Path) -> None:
             ),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     assert read_session_agent_policies(conn, session_id) == []
 
 
@@ -4231,7 +4231,7 @@ def test_ingest_flags_written_as_auto_tags(tmp_path: Path) -> None:
         ingest_flags=["degraded:brain-metadata-fragment"],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     tags = read_session_tags(conn, session_id=session_id, tag_source="auto")
     assert "degraded:brain-metadata-fragment" in tags, (
@@ -4262,7 +4262,7 @@ def test_session_kind_is_persisted_and_read_back(tmp_path: Path) -> None:
         ingest_flags=["capture:temporary-chat"],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     assert row["session_kind"] == "temporary"
@@ -4301,7 +4301,7 @@ def test_admission_assigns_session_kind_from_structural_evidence(
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     assert row["session_kind"] == expected.value
@@ -4325,7 +4325,7 @@ def test_ingest_flags_empty_writes_no_auto_tags(tmp_path: Path) -> None:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     auto_tags = read_session_tags(conn, session_id=session_id, tag_source="auto")
     assert auto_tags == {}, f"Expected no auto-tags for clean session, got: {list(auto_tags)}"
@@ -4350,10 +4350,10 @@ def test_ingest_flags_re_ingest_is_idempotent(tmp_path: Path) -> None:
         ingest_flags=["degraded:brain-metadata-fragment"],
     )
 
-    write_prepared_session(conn, session)
-    write_prepared_session(conn, session)
+    write_fixture_index_session(conn, session)
+    write_fixture_index_session(conn, session)
 
-    auto_tags = read_session_tags(conn, session_id=write_prepared_session(conn, session), tag_source="auto")
+    auto_tags = read_session_tags(conn, session_id=write_fixture_index_session(conn, session), tag_source="auto")
     assert len(auto_tags) == 1, (
         f"Expected exactly one auto-tag after re-ingest, got {len(auto_tags)}: {list(auto_tags)}"
     )
@@ -4380,7 +4380,7 @@ def _large_ordinary_session(message_count: int) -> ParsedSession:
 def test_read_archive_session_page_matches_full_composition_windows(tmp_path: Path) -> None:
     """A bounded page's messages are exactly the corresponding slice of the full read."""
     conn = _connect(tmp_path / "index.db")
-    session_id = write_prepared_session(conn, _large_ordinary_session(200))
+    session_id = write_fixture_index_session(conn, _large_ordinary_session(200))
     full = read_archive_session_envelope(conn, session_id)
 
     for offset, limit in [(0, 30), (30, 30), (170, 30), (190, 30), (195, 30), (0, 200), (200, 30)]:
@@ -4407,8 +4407,8 @@ def test_read_archive_session_page_composes_bounded_sql_work_regardless_of_sessi
     wall-clock timing budget.
     """
     conn = _connect(tmp_path / "index.db")
-    small_id = write_prepared_session(conn, _large_ordinary_session(20))
-    large_id = write_prepared_session(conn, _large_ordinary_session(2000))
+    small_id = write_fixture_index_session(conn, _large_ordinary_session(20))
+    large_id = write_fixture_index_session(conn, _large_ordinary_session(2000))
 
     def _count_statements(session_id: str, *, limit: int, offset: int) -> int:
         count = 0
@@ -4465,7 +4465,7 @@ def _lineage_chain(
             for index in range(per_link)
         ]
         composed = [*composed, *own]
-        session_id = write_prepared_session(
+        session_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -4510,7 +4510,7 @@ def _forking_chain(
             for index in range(own_count)
         ]
         composed = [*base, *own]
-        session_id = write_prepared_session(
+        session_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -4741,7 +4741,7 @@ def test_reads_report_the_stored_message_identity_source(tmp_path: Path) -> None
     which identity namespace produced its ``message_id``.
     """
     conn = _connect(tmp_path / "index.db")
-    session_id = write_prepared_session(
+    session_id = write_fixture_index_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,
@@ -4800,7 +4800,7 @@ def test_read_archive_session_page_composes_the_parent_prefix_for_a_lineage_chil
             ),
         ],
     )
-    parent_id = write_prepared_session(conn, parent)
+    parent_id = write_fixture_index_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="page-child",
@@ -4838,7 +4838,7 @@ def test_read_archive_session_page_composes_the_parent_prefix_for_a_lineage_chil
             ),
         ],
     )
-    child_id = write_prepared_session(conn, child)
+    child_id = write_fixture_index_session(conn, child)
     assert parent_id
 
     full = read_archive_session_envelope(conn, child_id)
@@ -4852,7 +4852,7 @@ def test_read_archive_session_page_composes_the_parent_prefix_for_a_lineage_chil
 
 def test_read_archive_session_page_offset_beyond_total_returns_empty_window(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
-    session_id = write_prepared_session(conn, _large_ordinary_session(10))
+    session_id = write_fixture_index_session(conn, _large_ordinary_session(10))
 
     page = read_archive_session_page(conn, session_id, limit=30, offset=100)
 
@@ -4938,7 +4938,7 @@ def test_normalized_derived_repeat_cannot_promote_to_producer_on_force_replace(t
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="producer", position=0)],
     )
     normalized_producer = normalize_session_timestamps(producer)
-    session_id = write_prepared_session(conn, normalized_producer, raw_id="producer")
+    session_id = write_fixture_index_session(conn, normalized_producer, raw_id="producer")
     derived = normalized_producer.model_copy(
         update={
             "created_at": None,
@@ -4956,7 +4956,7 @@ def test_normalized_derived_repeat_cannot_promote_to_producer_on_force_replace(t
     )
     normalized_derived = normalize_session_timestamps(derived)
     assert producer_timestamp_flags(normalized_derived) == (False, False)
-    write_prepared_session(conn, normalized_derived, raw_id="derived", force_replace=True)
+    write_fixture_index_session(conn, normalized_derived, raw_id="derived", force_replace=True)
     row = _session_timestamps(conn, session_id)
     assert row["created_at_ms"] == 1767225600000
     assert row["updated_at_ms"] == 1767225660000
@@ -4978,14 +4978,14 @@ def test_producer_timestamp_supersedes_derived_and_force_keeps_interval_order(tm
             )
         ],
     )
-    session_id = write_prepared_session(conn, derived, raw_id="derived")
+    session_id = write_fixture_index_session(conn, derived, raw_id="derived")
     producer = derived.model_copy(
         update={
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-02T00:00:00Z",
         }
     )
-    write_prepared_session(conn, producer, raw_id="producer", force_replace=True)
+    write_fixture_index_session(conn, producer, raw_id="producer", force_replace=True)
     row = _session_timestamps(conn, session_id)
     assert row["created_at_ms"] == 1767225600000
     assert row["updated_at_ms"] == 1767312000000
@@ -4995,7 +4995,7 @@ def test_producer_timestamp_supersedes_derived_and_force_keeps_interval_order(tm
             "updated_at": "2026-02-01T00:00:00Z",
         }
     )
-    write_prepared_session(conn, inverted, raw_id="inverted", force_replace=True)
+    write_fixture_index_session(conn, inverted, raw_id="inverted", force_replace=True)
     row = _session_timestamps(conn, session_id)
     assert row["created_at_ms"] <= row["updated_at_ms"]
 
@@ -5009,14 +5009,14 @@ def test_force_one_sided_producer_timestamp_keeps_interval_closed(tmp_path: Path
         updated_at="2026-01-02T00:00:00Z",
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="old", position=0)],
     )
-    session_id = write_prepared_session(conn, established, raw_id="old")
+    session_id = write_fixture_index_session(conn, established, raw_id="old")
     forced = established.model_copy(
         update={
             "created_at": "2027-01-01T00:00:00Z",
             "updated_at": None,
         }
     )
-    write_prepared_session(conn, forced, raw_id="forced", force_replace=True)
+    write_fixture_index_session(conn, forced, raw_id="forced", force_replace=True)
     row = _session_timestamps(conn, session_id)
     assert row["created_at_ms"] <= row["updated_at_ms"]
     assert row["created_at_ms"] == row["updated_at_ms"] == 1798761600000
@@ -5031,7 +5031,7 @@ def test_direct_writer_repairs_created_observation_on_stale_skip(tmp_path: Path)
         updated_at="2026-06-02T00:00:00Z",
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="new", position=0)],
     )
-    session_id = write_prepared_session(conn, established, raw_id="new")
+    session_id = write_fixture_index_session(conn, established, raw_id="new")
     stale = established.model_copy(
         update={
             "created_at": None,
@@ -5041,7 +5041,7 @@ def test_direct_writer_repairs_created_observation_on_stale_skip(tmp_path: Path)
         }
     )
     outcomes: list[ArchiveWriteOutcome] = []
-    write_prepared_session(conn, stale, raw_id="old", write_outcome=outcomes)
+    write_fixture_index_session(conn, stale, raw_id="old", write_outcome=outcomes)
     row = _session_timestamps(conn, session_id)
     assert outcomes and outcomes[0].stale_skipped
     assert row["created_at_ms"] == 1767225600000
@@ -5095,7 +5095,7 @@ def test_writer_derives_session_timestamps_from_message_evidence_when_provider_o
     assert session.created_at is None
     assert session.updated_at is None
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     row = _session_timestamps(conn, session_id)
 
     expected_min = 1_769_940_000_000  # 2026-02-01T10:00:00Z
@@ -5130,7 +5130,7 @@ def test_writer_uses_explicit_acquisition_fallback_when_session_has_no_timeline(
         ],
     )
 
-    session_id = write_prepared_session(
+    session_id = write_fixture_index_session(
         conn,
         session,
         raw_id="raw-claude-no-wire-time",
@@ -5177,7 +5177,7 @@ def test_writer_does_not_override_provider_supplied_session_timestamps_with_deri
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     row = _session_timestamps(conn, session_id)
 
     assert row["created_at_ms"] == 1_577_836_800_000  # 2020-01-01T00:00:00Z
@@ -5206,7 +5206,7 @@ def test_writer_uses_event_timestamps_after_message_evidence_is_absent(tmp_path:
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     row = _session_timestamps(conn, session_id)
 
     assert row["created_at_ms"] == 1_775_037_600_000
@@ -5234,9 +5234,9 @@ def test_writer_reports_deep_stale_skip_to_callers(tmp_path: Path) -> None:
             ],
         )
 
-    write_prepared_session(conn, session("new", "2026-04-01T10:00:00Z"), raw_id="new")
+    write_fixture_index_session(conn, session("new", "2026-04-01T10:00:00Z"), raw_id="new")
     outcomes: list[ArchiveWriteOutcome] = []
-    write_prepared_session(
+    write_fixture_index_session(
         conn,
         session("old", "2026-03-01T10:00:00Z"),
         raw_id="old",
@@ -5288,8 +5288,8 @@ def test_writer_preserves_existing_timestamp_when_incoming_full_snapshot_omits_i
         },
     )
 
-    session_id = write_prepared_session(conn, established, raw_id="established")
-    write_prepared_session(conn, incoming, raw_id="incoming", force_replace=force_replace)
+    session_id = write_fixture_index_session(conn, established, raw_id="established")
+    write_fixture_index_session(conn, incoming, raw_id="incoming", force_replace=force_replace)
 
     row = _session_timestamps(conn, session_id)
     assert row["created_at_ms"] == 1_767_225_600_000
@@ -5327,7 +5327,7 @@ def test_writer_leaves_session_timestamps_null_when_no_timestamp_evidence_exists
         ],
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     row = _session_timestamps(conn, session_id)
 
     assert row["created_at_ms"] is None
@@ -5373,7 +5373,7 @@ def test_writer_derives_session_timestamps_from_event_evidence_when_messages_car
     assert session.updated_at is None
     assert all(message.occurred_at_ms is None for message in session.messages)
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     row = _session_timestamps(conn, session_id)
 
     assert row["created_at_ms"] == 1_775_037_600_000
@@ -5417,7 +5417,7 @@ def test_writer_derives_prefix_sharing_child_created_at_from_full_transcript(
             ),
         ],
     )
-    write_prepared_session(conn, parent)
+    write_fixture_index_session(conn, parent)
     child = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="ts-child",
@@ -5451,7 +5451,7 @@ def test_writer_derives_prefix_sharing_child_created_at_from_full_transcript(
             ),
         ],
     )
-    child_id = write_prepared_session(conn, child)
+    child_id = write_fixture_index_session(conn, child)
     page = read_archive_session_page(conn, child_id, limit=10, offset=0)
     assert page.lineage_inheritance == "prefix-sharing"
 
@@ -5484,7 +5484,7 @@ def test_merge_append_advances_derived_updated_at_ms_from_new_message_evidence(
             ),
         ],
     )
-    session_id = write_prepared_session(conn, initial)
+    session_id = write_fixture_index_session(conn, initial)
     first_row = _session_timestamps(conn, session_id)
     assert first_row["created_at_ms"] == 1_775_001_600_000  # 2026-04-01T00:00:00Z
     assert first_row["updated_at_ms"] == 1_775_001_600_000
@@ -5504,7 +5504,7 @@ def test_merge_append_advances_derived_updated_at_ms_from_new_message_evidence(
             ),
         ],
     )
-    write_prepared_session(conn, appended, merge_append=True)
+    write_fixture_index_session(conn, appended, merge_append=True)
     second_row = _session_timestamps(conn, session_id)
 
     # created_at_ms is untouched (COALESCE keeps the already-set value);
@@ -5578,7 +5578,7 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
                 ),
             ],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="raw-2026-04-export")
+        session_id = write_fixture_index_session(conn, rich, raw_id="raw-2026-04-export")
 
         # The July-shaped re-export: message m1's citation record survives but
         # loses several keys one level deeper; message m2-tool is entirely
@@ -5609,7 +5609,7 @@ def test_reingest_with_poorer_export_unions_fields_instead_of_deleting_them(tmp_
                 ),
             ],
         )
-        write_prepared_session(conn, poorer, raw_id="raw-2026-07-export")
+        write_fixture_index_session(conn, poorer, raw_id="raw-2026-07-export")
 
         message_rows = conn.execute(
             "SELECT native_id FROM messages WHERE session_id = ? ORDER BY native_id",
@@ -5692,10 +5692,10 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
             ],
             session_events=[_event(100, 20)],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="usage-rich-acquisition")
+        session_id = write_fixture_index_session(conn, rich, raw_id="usage-rich-acquisition")
 
         poorer = rich.model_copy(update={"session_events": [_event(None, None)]})
-        write_prepared_session(conn, poorer, raw_id="usage-poor-acquisition")
+        write_fixture_index_session(conn, poorer, raw_id="usage-poor-acquisition")
 
         events = conn.execute(
             "SELECT source_message_id, model_name, total_input_tokens, total_output_tokens "
@@ -5710,7 +5710,7 @@ def test_reingest_with_poorer_export_carries_provider_usage_evidence(tmp_path: P
         assert tuple(rollup) == (100, 20)
 
         measured_zero = rich.model_copy(update={"session_events": [_event(0, 0)]})
-        write_prepared_session(conn, measured_zero, raw_id="usage-zero-acquisition")
+        write_fixture_index_session(conn, measured_zero, raw_id="usage-zero-acquisition")
         zero_event = conn.execute(
             "SELECT total_input_tokens, total_output_tokens FROM session_provider_usage_events WHERE session_id = ?",
             (session_id,),
@@ -5747,7 +5747,7 @@ def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) 
                 ),
             ],
         )
-        session_id = write_prepared_session(conn, first_parse, raw_id="raw-unchanged-file")
+        session_id = write_fixture_index_session(conn, first_parse, raw_id="raw-unchanged-file")
 
         # A parser bugfix re-parses the SAME bytes (same raw_id) and decides
         # m1/m2 were one message wrongly split in two -- the corrected parse
@@ -5764,7 +5764,7 @@ def test_reingest_with_same_raw_id_replaces_instead_of_unioning(tmp_path: Path) 
                 ),
             ],
         )
-        write_prepared_session(conn, corrected_parse, raw_id="raw-unchanged-file")
+        write_fixture_index_session(conn, corrected_parse, raw_id="raw-unchanged-file")
 
         native_ids = {
             row["native_id"]
@@ -5807,7 +5807,7 @@ def test_reingest_interior_message_omission_preserves_transcript_order(tmp_path:
                 ),
             ],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="raw-generation-1")
+        session_id = write_fixture_index_session(conn, rich, raw_id="raw-generation-1")
 
         poorer = ParsedSession(
             source_name=Provider.CHATGPT,
@@ -5825,7 +5825,7 @@ def test_reingest_interior_message_omission_preserves_transcript_order(tmp_path:
                 ),
             ],
         )
-        write_prepared_session(conn, poorer, raw_id="raw-generation-2")
+        write_fixture_index_session(conn, poorer, raw_id="raw-generation-2")
 
         ordered_native_ids = [
             row["native_id"]
@@ -5865,7 +5865,7 @@ def test_reingest_interior_block_omission_preserves_block_order(tmp_path: Path) 
                 )
             ],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="raw-generation-1")
+        session_id = write_fixture_index_session(conn, rich, raw_id="raw-generation-1")
 
         poorer = ParsedSession(
             source_name=Provider.CHATGPT,
@@ -5881,7 +5881,7 @@ def test_reingest_interior_block_omission_preserves_block_order(tmp_path: Path) 
                 )
             ],
         )
-        write_prepared_session(conn, poorer, raw_id="raw-generation-2")
+        write_fixture_index_session(conn, poorer, raw_id="raw-generation-2")
 
         ordered_blocks = [
             (row["block_type"], row["text"])
@@ -5939,7 +5939,7 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
                 )
             ],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="raw-generation-1")
+        session_id = write_fixture_index_session(conn, rich, raw_id="raw-generation-1")
 
         poorer = ParsedSession(
             source_name=Provider.CHATGPT,
@@ -5952,7 +5952,7 @@ def test_reingest_restores_attachment_ref_for_reinjected_message(tmp_path: Path)
                 ),
             ],
         )
-        write_prepared_session(conn, poorer, raw_id="raw-generation-2")
+        write_fixture_index_session(conn, poorer, raw_id="raw-generation-2")
 
         attachment_row = conn.execute(
             """
@@ -6005,7 +6005,7 @@ def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tm
             messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="two files")],
             attachments=attachments,
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         def rows() -> list[tuple[str, int]]:
             return [
@@ -6021,7 +6021,7 @@ def test_full_replace_preserves_distinct_attachments_with_colliding_positions(tm
         assert len({attachment_id for attachment_id, _position in first_rows}) == 2
         assert len({position for _attachment_id, position in first_rows}) == 2
 
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             session.model_copy(update={"attachments": list(reversed(attachments))}),
             force_replace=True,
@@ -6056,7 +6056,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
                 )
             ],
         )
-        session_id = write_prepared_session(conn, rich, raw_id="raw-generation-1")
+        session_id = write_fixture_index_session(conn, rich, raw_id="raw-generation-1")
 
         def semantic_rows() -> tuple[tuple[object, ...], list[tuple[object, ...]]]:
             # The stored digest covers semantic message fields independently
@@ -6095,7 +6095,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
                 )
             ],
         )
-        write_prepared_session(conn, poorer, raw_id="raw-generation-2")
+        write_fixture_index_session(conn, poorer, raw_id="raw-generation-2")
 
         row = conn.execute(
             "SELECT has_tool_use, content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'",
@@ -6118,7 +6118,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
                 ]
             }
         )
-        write_prepared_session(conn, changed, raw_id="raw-generation-3")
+        write_fixture_index_session(conn, changed, raw_id="raw-generation-3")
         assert semantic_rows() != original_semantics
         changed_hash = conn.execute(
             "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'", (session_id,)
@@ -6157,7 +6157,7 @@ def test_repo_edges_skip_bare_directory_with_no_git_evidence(monkeypatch: pytest
                     )
                 ],
             )
-            session_id = write_prepared_session(conn, session)
+            session_id = write_fixture_index_session(conn, session)
 
             repos_count = conn.execute("SELECT COUNT(*) FROM repos").fetchone()[0]
             session_repos_count = conn.execute(
@@ -6193,7 +6193,7 @@ def test_repo_edges_write_repo_for_discovered_git_root(tmp_path: Path) -> None:
                 )
             ],
         )
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
 
         repo_rows = conn.execute("SELECT repo_id, root_path, repo_name FROM repos").fetchall()
         assert len(repo_rows) == 1
@@ -6227,7 +6227,7 @@ def test_real_writer_persists_current_semantic_fingerprints_on_replay(tmp_path: 
             ],
         )
 
-        session_id = write_prepared_session(conn, session, raw_id="raw-first")
+        session_id = write_fixture_index_session(conn, session, raw_id="raw-first")
         first = conn.execute(
             "SELECT parser_fingerprint, lowering_fingerprint FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
@@ -6237,7 +6237,7 @@ def test_real_writer_persists_current_semantic_fingerprints_on_replay(tmp_path: 
             lowering_fingerprint(),
         )
 
-        write_prepared_session(conn, session, raw_id="raw-replay", force_replace=True)
+        write_fixture_index_session(conn, session, raw_id="raw-replay", force_replace=True)
         replay = conn.execute(
             "SELECT parser_fingerprint, lowering_fingerprint, raw_id FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
@@ -6284,7 +6284,7 @@ def test_fresh_archive_reads_back_attachment_provenance_through_the_envelope(tmp
             ],
         )
 
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
 
         provenance = {
@@ -6353,7 +6353,7 @@ def test_hermes_observer_parent_resolves_across_profile_roots(tmp_path: Path) ->
                 )
             ],
         )
-        write_prepared_session(conn, conversational)
+        write_fixture_index_session(conn, conversational)
 
         observer = ParsedSession(
             source_name=Provider.HERMES,
@@ -6370,7 +6370,7 @@ def test_hermes_observer_parent_resolves_across_profile_roots(tmp_path: Path) ->
                 )
             ],
         )
-        write_prepared_session(conn, observer)
+        write_fixture_index_session(conn, observer)
 
         row = conn.execute(
             "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id LIKE '%observer:atof%'"
@@ -6407,7 +6407,7 @@ def test_hermes_observer_refuses_the_literal_events_artifact_name_as_a_parent(tm
                 )
             ],
         )
-        write_prepared_session(conn, observer)
+        write_fixture_index_session(conn, observer)
 
         rows = conn.execute("SELECT 1 FROM session_links WHERE src_session_id LIKE '%observer:atof:events%'").fetchall()
         assert rows == []
@@ -6451,7 +6451,7 @@ def test_message_usage_request_id_and_thinking_budget_survive_the_write(tmp_path
         "sess-usage-identity",
     )
 
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     request_ids = [
         row[0]
@@ -6534,7 +6534,7 @@ def test_parent_links_cross_the_update_batch_boundary(tmp_path: Path, monkeypatc
             for index in range(count)
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
     rows = conn.execute(
         "SELECT message_id, parent_message_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
     ).fetchall()

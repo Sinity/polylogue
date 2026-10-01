@@ -6,8 +6,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, get_args
 
-from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
-from polylogue.context.compiler import (
+from polylogue.archive.context_models import (
     DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
     ContextImage,
@@ -15,6 +14,7 @@ from polylogue.context.compiler import (
     ContextSegmentProfile,
     ContextSpec,
 )
+from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.context.product_image import compile_context_image
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import AssertionClaimPayload

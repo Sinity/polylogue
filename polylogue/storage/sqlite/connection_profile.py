@@ -17,27 +17,445 @@ thread-local cached connection used by the async runtime, use the factories in
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import math
 import os
 import re
 import sqlite3
+import sys
+import tempfile
 import threading
 import time
-import weakref
 from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import TracebackType
+from types import BuiltinFunctionType, TracebackType
 from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
-from polylogue.storage.io_phase_metrics import connect_measured
-from polylogue.storage.sqlite.write_lease import require_write_lease
+from polylogue.core.sql_settlement import SQLCustodyOwner, current_native_sql_lifetimes, register_native_sql_census
+from polylogue.storage.io_phase_metrics import (
+    close_connection_cursor,
+    connect_measured,
+    live_connection_cursors,
+    settle_connection_cursors,
+)
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError, current_sql_custody, require_write_lease
 
 if TYPE_CHECKING:
     from polylogue.logging import BoundLoggerLike
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
+
+
+class NativeConnectionSettlementError(RuntimeError):
+    """A native connection remains owned until its original thread closes it."""
+
+    code = "native_sql_unsettled"
+    retryable = True
+
+    def __init__(self, owner: NativeSQLCustodyOwner, failure: BaseException) -> None:
+        super().__init__("native SQLite connection cleanup remains unsettled")
+        self.owner = owner
+        self.failure = failure
+
+
+def _native_owner_task() -> asyncio.Task[object] | None:
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
+# Reload cannot discard live native handles or their creator-thread census.
+if "_LIVE_NATIVE_SQL_OWNERS" not in globals():
+    _LIVE_NATIVE_SQL_OWNERS_LOCK = threading.RLock()
+    _LIVE_NATIVE_SQL_OWNERS: dict[int, NativeSQLCustodyOwner] = {}
+    _FORK_ABANDONED_NATIVE_SQL_OWNERS: list[NativeSQLCustodyOwner] = []
+
+
+def _before_native_owner_fork() -> None:
+    _LIVE_NATIVE_SQL_OWNERS_LOCK.acquire()
+
+
+def _after_native_owner_fork_parent() -> None:
+    _LIVE_NATIVE_SQL_OWNERS_LOCK.release()
+
+
+def _after_native_owner_fork_child() -> None:
+    global _LIVE_NATIVE_SQL_OWNERS_LOCK, _LIVE_NATIVE_SQL_OWNERS
+    # Quarantine copied handles without calling SQLite or a parent finalizer.
+    _FORK_ABANDONED_NATIVE_SQL_OWNERS.extend(_LIVE_NATIVE_SQL_OWNERS.values())
+    _LIVE_NATIVE_SQL_OWNERS = {}
+    _LIVE_NATIVE_SQL_OWNERS_LOCK = threading.RLock()
+
+
+if hasattr(os, "register_at_fork") and not globals().get("_NATIVE_FORK_REGISTERED", False):
+    _NATIVE_FORK_REGISTERED = True
+    os.register_at_fork(
+        before=_before_native_owner_fork,
+        after_in_parent=_after_native_owner_fork_parent,
+        after_in_child=_after_native_owner_fork_child,
+    )
+
+
+def retained_native_sql_owners_on_current_thread() -> tuple[NativeSQLCustodyOwner, ...]:
+    """Return actual handles awaiting cleanup by their creating thread."""
+    with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+        return tuple(
+            owner
+            for owner in _LIVE_NATIVE_SQL_OWNERS.values()
+            if owner.pid == os.getpid() and owner.thread is threading.current_thread()
+        )
+
+
+def retained_native_settlement_owners_on_current_thread(
+    preserved_native_owners: tuple[SQLCustodyOwner, ...] | None = (),
+) -> tuple[SQLCustodyOwner, ...]:
+    """Settle complete parents, preserving exact outer handles during nesting."""
+    physical = retained_native_sql_owners_on_current_thread()
+    if preserved_native_owners is None:
+        return physical
+    preserved_ids = {id(owner) for owner in preserved_native_owners}
+    protected_parents = {
+        id(owner._terminal_parent)
+        for owner in physical
+        if id(owner) in preserved_ids and owner._terminal_parent is not None
+    }
+    result: dict[int, SQLCustodyOwner] = {}
+    for owner in physical:
+        if id(owner) in preserved_ids:
+            continue
+        parent = owner._terminal_parent
+        if parent is not None and id(parent) in protected_parents:
+            # A nested unit cannot close its outer parent's existing SQL or
+            # artifacts. Close its new child only; keep the verified closed
+            # binding available for the outer parent's eventual field cleanup.
+            if owner._settled:
+                continue
+            terminal: SQLCustodyOwner = owner
+        else:
+            terminal = parent if parent is not None else owner
+        result[id(terminal)] = terminal
+    return tuple(result.values())
+
+
+def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeSQLCustodyOwner, ...]:
+    """Protect artifact cleanup while any actual native owner retains it."""
+    with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+        return tuple(
+            owner
+            for owner in _LIVE_NATIVE_SQL_OWNERS.values()
+            if owner.pid == os.getpid()
+            and (not owner._settled or owner._terminal_parent is not None)
+            and any(item is dependency for item in owner._lifetime_dependencies)
+        )
+
+
+def native_sql_children(parent: SQLCustodyOwner) -> tuple[NativeSQLCustodyOwner, ...]:
+    return tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner._terminal_parent is parent)
+
+
+def close_parent_native_connection(parent: SQLCustodyOwner, connection: sqlite3.Connection) -> None:
+    owner = next((owner for owner in native_sql_children(parent) if owner._connection_identity == id(connection)), None)
+    if owner is None:
+        raise RuntimeError("native connection has no matching terminal parent")
+    owner.close()
+
+
+def retire_native_sql_parent(parent: SQLCustodyOwner) -> None:
+    for owner in native_sql_children(parent):
+        owner.retire_terminal_parent(parent)
+
+
+register_native_sql_census(retained_native_settlement_owners_on_current_thread)
+
+
+class NativeSQLCustodyOwner:
+    """Pin an actual native handle during construction or one-shot execution.
+
+    Successful construction hands its idle handle to the caller. Failed close
+    keeps the handle in the existing physical custody's terminal owner census.
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection | None,
+        *,
+        leaf: VerifiedAuditLeaf | None = None,
+        cache_entry: tuple[dict[str, NativeSQLCustodyOwner], str] | None = None,
+        frame: ReadFrame | None = None,
+        anchored_descriptors: tuple[int, ...] = (),
+        terminal_parent: SQLCustodyOwner | None = None,
+        scratch_directory: tempfile.TemporaryDirectory[str] | None = None,
+        lifetime_dependencies: tuple[object, ...] = (),
+    ) -> None:
+        self.close_required = False
+        self._settled = False
+        self._terminal_parent = terminal_parent
+        self.scratch_directory = scratch_directory
+        self._connection_identity = id(connection)
+        self._lifetime_dependencies: list[object] = list(lifetime_dependencies)
+        self.leaf = leaf
+        self.cache_entry = cache_entry
+        self.anchored_descriptors = anchored_descriptors
+        self._descriptor_bindings: dict[int, tuple[int, int]] = {}
+        self._pending_descriptor_closes: dict[int, BaseException] = {}
+        self.frame = frame
+        if frame is not None:
+            frame._sql_owner = self
+        self.connection: sqlite3.Connection | None = connection
+        self.pid = os.getpid()
+        self.thread = threading.current_thread()
+        self.task = _native_owner_task()
+        self.custody: ArchiveWriteCustody | None = None
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            _LIVE_NATIVE_SQL_OWNERS[id(self)] = self
+        try:
+            # Persistent parent handles retain creator-thread cleanup here;
+            # their parent owns transaction admission and archive custody.
+            # Pinning an idle reader/writer to its construction lease would
+            # prevent that lease from retiring after a successful commit.
+            self.custody = current_sql_custody() if terminal_parent is None else None
+            if self.custody is not None:
+                self.custody.retain_sql_owner(self)
+                self.custody.assert_namespace()
+            for descriptor in anchored_descriptors:
+                metadata = os.fstat(descriptor)
+                self._descriptor_bindings[descriptor] = (metadata.st_dev, metadata.st_ino)
+        except BaseException as primary:
+            _close_failed_native_construction(self, primary)
+            raise
+
+    def retain_anchored_descriptor(self, descriptor: int) -> None:
+        """Attach a constructor's selected descriptor before returning its failure."""
+        self._require_owner()
+        self.anchored_descriptors += (descriptor,)
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException as error:
+            raise NativeConnectionSettlementError(self, error) from error
+        self._descriptor_bindings[descriptor] = (metadata.st_dev, metadata.st_ino)
+
+    def _descriptor_binding_retired(self, descriptor: int) -> bool:
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        previous = self._descriptor_bindings.get(descriptor)
+        # A different file proves this numeric slot was replaced. An equal
+        # inode does NOT prove the original open-file-description survives.
+        return previous is not None and previous != (metadata.st_dev, metadata.st_ino)
+
+    def _forget_descriptor(self, descriptor: int) -> None:
+        self.anchored_descriptors = tuple(value for value in self.anchored_descriptors if value != descriptor)
+        self._descriptor_bindings.pop(descriptor, None)
+        self._pending_descriptor_closes.pop(descriptor, None)
+
+    def _require_owner(self) -> None:
+        if self.pid != os.getpid():
+            raise RuntimeError("native SQLite connection belongs to another process")
+        if self.thread is not threading.current_thread() or (
+            self.task is not _native_owner_task() and (self.task is None or not self.task.done())
+        ):
+            raise RuntimeError("native SQLite connection belongs to another task or thread")
+
+    def require_connection(self) -> sqlite3.Connection:
+        """Admit new native work only on the exact current creator task."""
+        self._require_owner()
+        if self.task is not _native_owner_task():
+            raise RuntimeError("native SQLite work belongs to another task")
+        if self.connection is None or self.close_required:
+            raise RuntimeError("native SQLite connection requires terminal cleanup")
+        from polylogue.core.compute_cancel import compute_cancel_requested
+
+        if compute_cancel_requested():
+            raise asyncio.CancelledError("native SQLite work was cancelled")
+        return self.connection
+
+    def handoff(self) -> sqlite3.Connection:
+        """Retire temporary construction custody without closing the idle handle."""
+        self._require_owner()
+        if self._terminal_parent is not None or self.scratch_directory is not None or self._lifetime_dependencies:
+            raise RuntimeError("native SQLite handle with terminal obligations cannot be handed off")
+        connection = self.connection
+        if connection is None:
+            raise RuntimeError("native SQLite connection has already settled")
+        if self.anchored_descriptors or self.leaf is not None or self.frame is not None or self.cache_entry is not None:
+            primary = RuntimeError("native SQLite handle has retained lifetime obligations")
+            _close_failed_native_construction(self, primary)
+            raise primary
+        if connection.in_transaction:
+            primary = RuntimeError("native SQLite construction left an active transaction")
+            _close_failed_native_construction(self, primary)
+            raise primary
+        if self.custody is not None:
+            try:
+                self.custody.release_sql_owner(self)
+            except BaseException as primary:
+                _close_failed_native_construction(self, primary)
+                raise
+        self.connection = None
+        self.custody = None
+        self.leaf = None
+        self.cache_entry = None
+        self._settled = True
+        self._terminal_parent = None
+        self._lifetime_dependencies.clear()
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
+        return connection
+
+    def admit_cached_reuse(self) -> sqlite3.Connection:
+        """Reuse only inside the same actual admitted operation and task."""
+        self._require_owner()
+        if self.task is not _native_owner_task():
+            raise RuntimeError("cached SQLite connection belongs to an earlier task")
+        if self.connection is None or self.close_required:
+            raise RuntimeError("cached SQLite connection requires terminal cleanup")
+        custody = current_sql_custody()
+        if self.custody is None or custody is not self.custody:
+            raise RuntimeError("cached SQLite connection belongs to an earlier admitted operation")
+        custody.assert_namespace()
+        return self.connection
+
+    def retain_lifetime(self, dependency: object) -> None:
+        """Keep an artifact alive until this actual native handle settles."""
+        self._require_owner()
+        if self._settled:
+            raise RuntimeError("a settled native owner cannot retain an artifact")
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            self._lifetime_dependencies.append(dependency)
+
+    def retire_terminal_parent(self, parent: SQLCustodyOwner) -> None:
+        """Retire only after the actual handle and its parent's obligations settle."""
+        self._require_owner()
+        if not self._settled or self._terminal_parent is not parent:
+            raise RuntimeError("native terminal parent has unsettled obligations")
+        self._terminal_parent = None
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
+        self._lifetime_dependencies.clear()
+
+    def close(self) -> None:
+        self._require_owner()
+        if self._settled:
+            return
+        self.close_required = True
+        connection = self.connection
+        failure: BaseException | None = None
+        if connection is not None:
+            try:
+                settle_connection_cursors(connection)
+            except BaseException as error:
+                if self.frame is not None:
+                    live_ids = {id(cursor) for cursor in live_connection_cursors(connection)}
+                    self.frame._cursors = {cursor for cursor in self.frame._cursors if id(cursor) in live_ids}
+                    with _LIVE_READ_FRAMES_LOCK:
+                        _LIVE_READ_FRAMES.add(self.frame)
+                # Do not retry a failed statement in this terminal call, or
+                # roll back/close a connection while its statements remain live.
+                raise NativeConnectionSettlementError(self, error) from error
+            if self.frame is not None:
+                self.frame._cursors.clear()
+            try:
+                # Cancellation interrupts work, never original-owner cleanup.
+                connection.set_progress_handler(None, 0)
+                if connection.in_transaction:
+                    connection.rollback()
+            except BaseException as error:
+                failure = failure or error
+            try:
+                connection.close()
+            except BaseException as error:
+                if self.frame is not None:
+                    with _LIVE_READ_FRAMES_LOCK:
+                        _LIVE_READ_FRAMES.add(self.frame)
+                raise NativeConnectionSettlementError(self, failure or error) from error
+            self.connection = None
+        frame, self.frame = self.frame, None
+        if frame is not None:
+            frame._cursors.clear()
+            with _LIVE_READ_FRAMES_LOCK:
+                _LIVE_READ_FRAMES.discard(frame)
+        cache_entry, self.cache_entry = self.cache_entry, None
+        if cache_entry is not None:
+            cache, key = cache_entry
+            if cache.get(key) is self:
+                del cache[key]
+        for descriptor in tuple(self.anchored_descriptors):
+            pending = self._pending_descriptor_closes.get(descriptor)
+            if pending is not None:
+                if self._descriptor_binding_retired(descriptor):
+                    self._forget_descriptor(descriptor)
+                else:
+                    # An ambiguous close is never retried by numeric slot.
+                    # Keep creator custody until original settlement is proven.
+                    failure = failure or pending
+                continue
+            close_descriptor = os.close
+            native_linux_close = (
+                sys.platform == "linux"
+                and isinstance(close_descriptor, BuiltinFunctionType)
+                and close_descriptor.__module__ == "posix"
+                and close_descriptor.__name__ == "close"
+            )
+            try:
+                close_descriptor(descriptor)
+            except BaseException as error:
+                failure = failure or error
+                # Linux's actual close syscall releases the descriptor before
+                # reporting an OSError. A substituted/non-Linux closer has no
+                # such guarantee; preserve ambiguity without an inode-only
+                # claim about open-file-description identity.
+                self._pending_descriptor_closes[descriptor] = error
+                if (native_linux_close and isinstance(error, OSError)) or self._descriptor_binding_retired(descriptor):
+                    self._forget_descriptor(descriptor)
+            else:
+                self._forget_descriptor(descriptor)
+        if self.leaf is not None and not self.anchored_descriptors:
+            try:
+                self.leaf.close()
+            except BaseException as error:
+                failure = failure or error
+            else:
+                self.leaf = None
+        if self.scratch_directory is not None and not self.anchored_descriptors:
+            try:
+                self.scratch_directory.cleanup()
+            except BaseException as error:
+                failure = failure or error
+            else:
+                self.scratch_directory = None
+        resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
+        if resources_settled and self.custody is not None:
+            try:
+                self.custody.release_sql_owner(self)
+            except BaseException as error:
+                failure = failure or error
+            else:
+                self.custody = None
+        self._settled = resources_settled and self.custody is None
+        if self._settled and self._terminal_parent is None:
+            with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+                _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
+            self._lifetime_dependencies.clear()
+        if failure is not None:
+            if not self._settled:
+                raise NativeConnectionSettlementError(self, failure) from failure
+            raise failure
+
+
+def _close_failed_native_construction(owner: NativeSQLCustodyOwner, primary: BaseException) -> None:
+    try:
+        owner.close()
+    except NativeConnectionSettlementError as cleanup:
+        raise cleanup from primary
+    except BaseException as cleanup:
+        raise cleanup from primary
 
 
 SCRATCH_SYNCHRONOUS_ENV = "POLYLOGUE_SQLITE_SYNCHRONOUS"
@@ -651,13 +1069,14 @@ def open_source_tier_write_connection(
     """
     require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
     conn = connect_measured(path, timeout=WRITE_CONNECTION_PROFILE.timeout_seconds)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
             conn.execute(statement)
-    except BaseException:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
 
 
 # ---------------------------------------------------------------------------
@@ -883,7 +1302,25 @@ _SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
+def configured_archive_root(path: str | Path, archive_root: str | Path | None = None) -> Path:
+    """Carry configured archive authority independently of a resolved Index target."""
+    custody = current_sql_custody()
+    configured_path = Path(path)
+    if archive_root is None and custody is None and ".index-generations" in configured_path.parts:
+        raise RuntimeError("an offline Index generation requires its explicit configured archive root")
+    root = (
+        Path(archive_root)
+        if archive_root is not None
+        else (custody.archive_root if custody is not None else Path(path).parent)
+    )
+    if custody is not None:
+        if root.resolve() != custody.archive_root.resolve():
+            raise UnleasedWriteError("SQLite configuration belongs to another admitted archive")
+        custody.assert_namespace()
+    return root
+
+
+def _attach_sibling_tiers(conn: sqlite3.Connection, *, archive_root: Path) -> None:
     """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
 
     Lets one-shot sync connections resolve cross-tier tables (e.g. source.db's
@@ -904,7 +1341,8 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
     main = Path(main_path)
     if main.name != "index.db":
         return
-    root = main.parent
+    root = configured_archive_root(main, archive_root)
+    custody = current_sql_custody()
     for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
         if schema_name in attached:
             continue
@@ -915,13 +1353,19 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
                 sibling_conn = open_readonly_connection(
                     sibling, tier=tier, validate_schema=False, timeout_class="background-read"
                 )
+                sibling_owner = NativeSQLCustodyOwner(sibling_conn)
                 try:
                     # An attached sibling keeps the absent-tier read answer; a
                     # writer that mutates a tier opens that tier directly.
                     _assert_schema_supported(sibling_conn, sibling, tier, allow_uninitialized_read=True)
-                finally:
-                    sibling_conn.close()
+                except BaseException as primary:
+                    _close_failed_native_construction(sibling_owner, primary)
+                    raise
+                else:
+                    sibling_owner.close()
             attach_database(conn, sibling, alias=schema_name)
+    if custody is not None:
+        custody.assert_namespace()
 
 
 def _archive_tier_for_path(path: str | Path) -> ArchiveTier | None:
@@ -1065,21 +1509,20 @@ def open_connection(
     """
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
-    require_write_lease(f"open_connection({path})", archive_root=archive_root)
+    root = configured_archive_root(path, archive_root)
+    require_write_lease(f"open_connection({path})", archive_root=root)
     conn = connect_measured(path, timeout=timeout, check_same_thread=check_same_thread)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
         for stmt in write_connection_pragma_statements(profile):
             conn.execute(stmt)
-        _attach_sibling_tiers(conn)
-    except BaseException:
-        # A pragma can fail (e.g. a WAL-mode write pragma against a
-        # lock-held database). Close the just-opened connection before
-        # propagating so it is not orphaned by the caller's ``with``/``closing``.
-        conn.close()
+        _attach_sibling_tiers(conn, archive_root=root)
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
 
 
 def open_daemon_connection(
@@ -1098,8 +1541,10 @@ def open_daemon_connection(
     mmap profile, because systemd charges their SQLite page cache to the
     service cgroup for the lifetime of the process.
     """
-    require_write_lease(f"open_daemon_connection({path})", archive_root=archive_root)
+    root = configured_archive_root(path, archive_root)
+    require_write_lease(f"open_daemon_connection({path})", archive_root=root)
     conn = connect_measured(path, timeout=timeout)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
@@ -1107,11 +1552,30 @@ def open_daemon_connection(
             if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
                 stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
             conn.execute(stmt)
-        _attach_sibling_tiers(conn)
-    except BaseException:
-        conn.close()
+        _attach_sibling_tiers(conn, archive_root=root)
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
+
+
+@contextmanager
+def owned_daemon_connection(
+    path: str | Path,
+    *,
+    archive_root: str | Path,
+) -> Iterator[sqlite3.Connection]:
+    """Keep one-shot daemon SQL in the admitted worker's actual custody."""
+    owner = NativeSQLCustodyOwner(open_daemon_connection(path, archive_root=archive_root))
+    try:
+        connection = owner.connection
+        assert connection is not None
+        yield connection
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 def descriptor_alias_path(opened_fd: int) -> Path | None:
@@ -1222,6 +1686,33 @@ def open_readonly_connection(
     ``check_same_thread=False`` is reserved for a cached handle whose caller
     already serializes access and may close it from a different thread.
     """
+    return _open_readonly_owner(
+        path,
+        timeout=timeout,
+        immutable=immutable,
+        opened_main_fd=opened_main_fd,
+        tier=tier,
+        validate_schema=validate_schema,
+        profile=profile,
+        timeout_class=timeout_class,
+        check_same_thread=check_same_thread,
+    ).handoff()
+
+
+def _open_readonly_owner(
+    path: str | Path,
+    *,
+    timeout: float | None = None,
+    immutable: bool = False,
+    opened_main_fd: int | None = None,
+    tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
+    timeout_class: str = "interactive-read",
+    check_same_thread: bool = True,
+    lifetime_dependencies: tuple[object, ...] = (),
+) -> NativeSQLCustodyOwner:
+    """Register read construction and its explicit artifact lifetime before SQL."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
     assert_population_admitted(path)
@@ -1261,6 +1752,7 @@ def open_readonly_connection(
             raise RuntimeError(f"cannot open selected SQLite database through a descriptor-bound path: {path}")
         database_uri = descriptor_uri
     conn = connect_measured(database_uri, uri=True, timeout=timeout, check_same_thread=check_same_thread)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=lifetime_dependencies)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
@@ -1269,10 +1761,10 @@ def open_readonly_connection(
                 stmt = f"PRAGMA busy_timeout = {int(timeout * 1000)}"
             conn.execute(stmt)
         conn.set_authorizer(_authorize_read_operation)
-    except BaseException:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner
 
 
 def _authorize_read_operation(
@@ -1461,10 +1953,14 @@ def one_shot_diagnostic_read(
         validate_schema=False,
         timeout_class="interactive-read",
     )
+    owner = NativeSQLCustodyOwner(conn)
     try:
         yield conn
-    finally:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 def open_sealed_staging_connection(
@@ -1487,6 +1983,7 @@ def open_sealed_staging_connection(
     _refuse_immutable_over_live_state(path)
     database_uri = f"file:{quote(str(path))}?mode=ro&immutable=1"
     conn = connect_measured(database_uri, uri=True, timeout=profile.timeout_seconds)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier, allow_uninitialized_read=True)
@@ -1496,10 +1993,10 @@ def open_sealed_staging_connection(
         for statement in profile.pragma_statements:
             conn.execute(statement)
         conn.set_authorizer(_authorize_sealed_staging_operation)
-    except BaseException:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
 
 
 def open_profiled_connection(
@@ -1557,13 +2054,14 @@ def open_isolated_write_connection(
         raise ValueError("open_isolated_write_connection requires a write profile")
     require_write_lease(purpose, archive_root=archive_root)
     conn = connect_measured(path, timeout=profile.timeout_seconds if timeout is None else timeout)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_pragma_statements(profile):
             conn.execute(statement)
-    except BaseException:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
 
 
 # ---------------------------------------------------------------------------
@@ -1669,9 +2167,35 @@ class ReadFrameStatus:
 # The process-local read-snapshot registry. ``connection_profile`` owns both
 # halves of the coupled decision, so the recurring checkpoint owner can name the
 # frames that pinned it instead of only naming a PID from a ``/proc`` walk that
-# cannot distinguish an idle handle from an open read transaction.
-_LIVE_READ_FRAMES: weakref.WeakSet[ReadFrame] = weakref.WeakSet()
+# cannot distinguish an idle handle from an open read transaction. Strong
+# ownership also preserves failed cleanup until the actual handle closes;
+# every frame caller must explicitly close its operation's frame.
+_LIVE_READ_FRAMES: set[ReadFrame] = set()
 _LIVE_READ_FRAMES_LOCK = threading.Lock()
+_FORK_ABANDONED_READ_FRAMES: list[ReadFrame] = []
+
+
+def _before_read_frame_fork() -> None:
+    _LIVE_READ_FRAMES_LOCK.acquire()
+
+
+def _after_read_frame_fork_parent() -> None:
+    _LIVE_READ_FRAMES_LOCK.release()
+
+
+def _abandon_read_frames_after_fork() -> None:
+    global _LIVE_READ_FRAMES, _LIVE_READ_FRAMES_LOCK
+    _FORK_ABANDONED_READ_FRAMES.extend(_LIVE_READ_FRAMES)
+    _LIVE_READ_FRAMES = set()
+    _LIVE_READ_FRAMES_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_before_read_frame_fork,
+        after_in_parent=_after_read_frame_fork_parent,
+        after_in_child=_abandon_read_frames_after_fork,
+    )
 
 
 def live_read_frames() -> tuple[ReadFrameStatus, ...]:
@@ -1715,7 +2239,6 @@ class ReadFrame:
     """
 
     __slots__ = (
-        "__weakref__",
         "_cancelled",
         "_conn",
         "_cursors",
@@ -1726,7 +2249,7 @@ class ReadFrame:
         "_path",
         "_profile",
         "_reason",
-        "_streaming",
+        "_sql_owner",
         "_tier",
         "_timeout_class",
     )
@@ -1763,24 +2286,43 @@ class ReadFrame:
         self._reason = reason
         self._cancelled = False
         self._epoch = 0
-        self._streaming = 0
         self._cursors: set[sqlite3.Cursor] = set()
-        self._conn = self._open()
         self._opened_at = time.monotonic()
-        self._generation = _generation_token(self._path)
-        self._data_version = _data_version(self._conn)
-        self._install_progress_handler()
+        self._conn = self._open()
+        self._initialize_opened_connection()
+
+    def _initialize_opened_connection(self) -> None:
+        try:
+            self._opened_at = time.monotonic()
+            self._generation = _generation_token(self._path)
+            self._data_version = _data_version(self._conn)
+            self._install_progress_handler()
+        except BaseException as primary:
+            _close_failed_native_construction(self._sql_owner, primary)
+            raise
         with _LIVE_READ_FRAMES_LOCK:
             _LIVE_READ_FRAMES.add(self)
 
     def _open(self) -> sqlite3.Connection:
-        conn = open_readonly_connection(
-            self._path,
-            profile=self._profile,
-            immutable=self._profile.immutable,
-            tier=self._tier,
-        )
-        conn.row_factory = sqlite3.Row
+        try:
+            conn = open_readonly_connection(
+                self._path,
+                profile=self._profile,
+                immutable=self._profile.immutable,
+                tier=self._tier,
+            )
+        except NativeConnectionSettlementError as cleanup:
+            self._sql_owner = cleanup.owner
+            cleanup.owner.frame = self
+            with _LIVE_READ_FRAMES_LOCK:
+                _LIVE_READ_FRAMES.add(self)
+            raise
+        self._sql_owner = NativeSQLCustodyOwner(conn, frame=self)
+        try:
+            conn.row_factory = sqlite3.Row
+        except BaseException as primary:
+            _close_failed_native_construction(self._sql_owner, primary)
+            raise
         return conn
 
     def _install_progress_handler(self) -> None:
@@ -1832,7 +2374,7 @@ class ReadFrame:
     @property
     def streaming(self) -> bool:
         """Whether a :meth:`stream` cursor is in flight, i.e. pinning WAL frames."""
-        return self._streaming > 0
+        return bool(self._cursors)
 
     def status(self) -> ReadFrameStatus:
         return ReadFrameStatus(
@@ -1844,8 +2386,19 @@ class ReadFrame:
             reason=self._reason,
         )
 
+    def _require_read_owner(self) -> None:
+        self._sql_owner._require_owner()
+        if self._sql_owner.close_required:
+            if self._sql_owner.connection is not None:
+                raise NativeConnectionSettlementError(
+                    self._sql_owner,
+                    RuntimeError("read frame requires terminal cleanup"),
+                )
+            raise RuntimeError("read frame has already closed")
+
     def check(self) -> None:
         """Raise if this frame may no longer be read from."""
+        self._require_read_owner()
         if self._cancelled:
             raise ReadFrameCancelledError(f"read frame over {self._path} was cancelled")
         if self.expired:
@@ -1883,23 +2436,29 @@ class ReadFrame:
         it chooses, instead of leaving it to garbage collection.
         """
         self.check()
-        self._streaming += 1
         cursor: sqlite3.Cursor | None = None
         try:
             try:
                 cursor = self._conn.execute(sql, tuple(parameters))
                 self._cursors.add(cursor)
-                for row in cursor:
+                while True:
                     self.check()
+                    try:
+                        row = next(cursor)
+                    except StopIteration:
+                        break
                     yield row
             except sqlite3.OperationalError as exc:
                 self._raise_if_interrupted(exc)
                 raise
         finally:
-            self._streaming -= 1
+            # A suspended iterator can be resumed or closed by another task or
+            # fork child. Refuse before touching SQLite, retaining the cursor
+            # for terminal cleanup by the original frame owner.
+            self._sql_owner._require_owner()
             if cursor is not None and cursor in self._cursors:
+                close_connection_cursor(self._sql_owner.require_connection(), cursor)
                 self._cursors.remove(cursor)
-                cursor.close()
 
     def revalidate(self) -> bool:
         """Whether this frame still sees exactly what it was opened on.
@@ -1907,6 +2466,7 @@ class ReadFrame:
         Both halves matter: the generation may have been swapped under the
         frame, or another connection may have committed into the same one.
         """
+        self._require_read_owner()
         try:
             if _generation_token(self._path) != self._generation:
                 return False
@@ -1932,18 +2492,17 @@ class ReadFrame:
                 f"read frame over {self._path} cannot rebind while a stream is in flight; "
                 "finish or abandon the stream first"
             )
-        self._conn.close()
+        self._sql_owner.close()
         self._cancelled = False
         self._epoch += 1
         self._conn = self._open()
-        self._opened_at = time.monotonic()
-        self._generation = _generation_token(self._path)
-        self._data_version = _data_version(self._conn)
-        self._install_progress_handler()
+        self._initialize_opened_connection()
         return self._generation
 
     def cancel(self) -> None:
         """Interrupt an in-flight statement on this frame."""
+        if self._sql_owner.pid != os.getpid():
+            raise RuntimeError("read frame belongs to another process")
         if not self._profile.cancellation_supported:
             raise ValueError(f"read profile for {self._path} does not declare cancellation support")
         self._cancelled = True
@@ -1963,6 +2522,7 @@ class ReadFrame:
         holds the same position -- or raises :class:`StaleContinuationError`. It
         never advances or rewinds the position to make one fit.
         """
+        self._require_read_owner()
         if self.expired or (
             self._profile.generation_identity == "live" and (self._conn.in_transaction or self.streaming)
         ):
@@ -1987,14 +2547,7 @@ class ReadFrame:
     # -- lifecycle ------------------------------------------------------------
 
     def close(self) -> None:
-        with _LIVE_READ_FRAMES_LOCK:
-            _LIVE_READ_FRAMES.discard(self)
-        # A suspended generator may outlive the frame. Retire its cursor while
-        # the connection is still usable; its finally block then has no work.
-        for cursor in tuple(self._cursors):
-            cursor.close()
-            self._cursors.remove(cursor)
-        self._conn.close()
+        self._sql_owner.close()
 
     def __enter__(self) -> Self:
         return self
@@ -2005,7 +2558,10 @@ class ReadFrame:
         exc: BaseException | None,
         tb: TracebackType | None,
     ) -> None:
-        self.close()
+        if exc is None:
+            self.close()
+        else:
+            _close_failed_native_construction(self._sql_owner, exc)
 
 
 def read_frame(
@@ -2040,6 +2596,78 @@ def read_frame(
     return ReadFrame(path, profile=profile, tier=tier, timeout_class=timeout_class, reason=reason)
 
 
+def open_scratch_connection(
+    path: Path,
+    *,
+    terminal_parent: SQLCustodyOwner | None = None,
+    scratch_directory: tempfile.TemporaryDirectory[str] | None = None,
+    lifetime_dependencies: tuple[object, ...] = (),
+) -> NativeSQLCustodyOwner:
+    """Register disposable SQL before its first pragma or schema statement."""
+    connection = connect_measured(path)
+    owner = NativeSQLCustodyOwner(
+        connection,
+        terminal_parent=terminal_parent,
+        scratch_directory=scratch_directory,
+        lifetime_dependencies=(*current_native_sql_lifetimes(), *lifetime_dependencies),
+    )
+    try:
+        connection = owner.require_connection()
+        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA synchronous = OFF")
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    return owner
+
+
+@contextmanager
+def scratch_connection_context(
+    *, prefix: str, filename: str, directory: Path | None = None
+) -> Iterator[sqlite3.Connection]:
+    """Keep disposable artifacts until their actual creator closes SQL."""
+    scratch = tempfile.TemporaryDirectory(prefix=prefix, dir=directory)
+    try:
+        connection = connect_measured(Path(scratch.name) / filename)
+    except BaseException:
+        scratch.cleanup()
+        raise
+    owner = NativeSQLCustodyOwner(
+        connection, scratch_directory=scratch, lifetime_dependencies=current_native_sql_lifetimes()
+    )
+    try:
+        connection = owner.require_connection()
+        connection.execute("PRAGMA journal_mode = MEMORY")
+        connection.execute("PRAGMA synchronous = OFF")
+        yield connection
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
+
+
+@contextmanager
+def readonly_connection_context(
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    validate_schema: bool = True,
+    lifetime_dependencies: tuple[object, ...] = (),
+) -> Iterator[sqlite3.Connection]:
+    """Close a temporary reader on its creator, retaining a failed close."""
+    owner = _open_readonly_owner(
+        path, timeout=timeout, validate_schema=validate_schema, lifetime_dependencies=lifetime_dependencies
+    )
+    try:
+        yield owner.require_connection()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
+
+
 @contextmanager
 def connection_context(
     path: str | Path,
@@ -2052,10 +2680,14 @@ def connection_context(
     Opens a connection with write pragmas, yields it, and closes on exit.
     """
     conn = open_connection(path, timeout=timeout, archive_root=archive_root)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         yield conn
-    finally:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 __all__ = [

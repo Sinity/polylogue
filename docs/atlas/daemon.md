@@ -2,6 +2,20 @@
 
 ## Runtime ownership
 
+HTTP mutations first acquire the existing writer bridge admission. Their bodies
+run on the coordinator's writer worker under explicit child-task delegation;
+they do not enter the read compute pool or acquire another writer gate. A client
+wait deadline reports an indeterminate result and leaves accepted work owned.
+If SQL cleanup fails, that original worker remains available for cleanup before
+the next mutation can acquire physical custody; HTTP reports retryable
+`writer_sql_unsettled` with status 503. The preceding mutation may have committed. Read routes keep their compute
+admission and read cancellation behavior. Writer hold duration is telemetry;
+elapsed time alone cannot reject a progressing append operation. New work
+checks cancellation, while rollback, close and failed-close retry remain
+available to the original owner. A supervised service constructs its coroutine
+inside the owned task, so cancellation before startup leaves no unawaited
+watcher coroutine.
+
 The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 
 `run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:1944`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2557-2558`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2785-2798`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner. The daemon hands both callbacks to the live watcher (`polylogue/daemon/cli.py:2939-2952`); after an admitted batch the intake adapter calls the watcher's lease-free embedding and profile convergence (`polylogue/operations/intake_adapters.py:1041-1049`; `polylogue/sources/live/watcher.py:1282-1302`); the periodic sweep and backlog services are registered in `periodic_services` (`polylogue/daemon/cli.py:2845-2877`). These are source-route facts, not live deployment evidence.

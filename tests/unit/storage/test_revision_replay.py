@@ -34,7 +34,7 @@ from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
+from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -391,7 +391,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
                     raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority
                 ) VALUES (?, ?, 'failed', 1, 1, ?, 'byte_proven')
                 """,
-                (raw_id, RAW_AUTHORITY_PARSER_FINGERPRINT, BYTE_AUTHORITY_CENSUS_DETAIL),
+                (raw_id, raw_authority_parser_fingerprint(), BYTE_AUTHORITY_CENSUS_DETAIL),
             )
             archive_revision_governance.record_current_parser_source_census(conn, raw_id)
 
@@ -516,7 +516,7 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
         archive.replace_raw_membership_census(
             raw_id,
             [session],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=1,
             revision_authority=None,
         )
@@ -1007,7 +1007,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
             archive.replace_raw_membership_census(
                 baseline,
                 [],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail="test-duplicate-guard",
                 retire_full_revision_governance=True,
@@ -1208,7 +1208,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             archive.replace_raw_membership_census(
                 raw_id,
                 [session],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail="historical non-prefix full revision governance",
                 retire_full_revision_governance=True,
@@ -1422,7 +1422,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             archive.replace_raw_membership_census(
                 raw_a,
                 [parsed_solo("s1", "base", "left")],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=unrecognized,
                 retire_full_revision_governance=True,
@@ -1446,7 +1446,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         archive.replace_raw_membership_census(
             raw_a,
             [],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail=unrecognized,
             retire_full_revision_governance=True,
@@ -1471,7 +1471,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             archive.replace_raw_membership_census(
                 raw_id,
                 [parsed_solo("s1", "base", tail)],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
@@ -1539,7 +1539,7 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
             archive.replace_raw_membership_census(
                 raw_id,
                 [parsed_solo(tail)],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
@@ -1593,7 +1593,7 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
             archive,
             raw_id,
             [session],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+            parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail="operator-facing wording may change",
             revision_authority=RawRevisionAuthority.QUARANTINED,

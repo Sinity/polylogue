@@ -28,7 +28,7 @@ from polylogue.pipeline.services.ingest_worker import IngestRecordResult, Sessio
 from polylogue.storage.fts.fts_lifecycle import FTS_TRIGGER_NAMES
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 from tests.unit.pipeline.test_ingest_batch import _message_tuple, _session_data
 
 _FTS_TRIGGERS = set(FTS_TRIGGER_NAMES)
@@ -81,12 +81,11 @@ def _install_fake_ingest(monkeypatch: pytest.MonkeyPatch, mapping: dict[str, Ses
 
 def _bootstrap_archive(db_path: Path, *, seed: str | None = None) -> None:
     """Create the index schema (and optionally one pre-existing session)."""
-    from polylogue.pipeline.services.ingest_batch._core import _write_session
 
     with open_connection(db_path) as conn:
         if seed is not None:
             _, seeded = _session(seed)
-            _write_session(conn, seeded)
+            write_fixture_ingest_payload(conn, seeded)
         conn.commit()
 
 
@@ -122,7 +121,7 @@ def test_batch_transaction_is_not_committed_per_session(
     _install_fake_ingest(monkeypatch, {raws[0].raw_id: first, raws[1].raw_id: second})
 
     observed: list[list[str]] = []
-    real_write = write_prepared_session
+    real_write = write_fixture_index_session
 
     def observing_write(conn: sqlite3.Connection, *args: Any, **kwargs: Any) -> Any:
         result = real_write(conn, *args, **kwargs)
@@ -165,7 +164,7 @@ def test_interrupt_during_suspended_fts_restores_triggers(
     raws = [_raw(tmp_path, "interrupt-one"), _raw(tmp_path, "interrupt-two")]
     _install_fake_ingest(monkeypatch, {raws[0].raw_id: first, raws[1].raw_id: second})
 
-    real_write = write_prepared_session
+    real_write = write_fixture_index_session
     calls = {"n": 0}
 
     def interrupting_write(conn: sqlite3.Connection, *args: Any, **kwargs: Any) -> Any:

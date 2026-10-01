@@ -60,6 +60,7 @@ from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource, _log_ingest_metrics
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.archive_identity import ArchiveLocationError
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError, ReferenceSealStaleError
 
 _T = TypeVar("_T")
 
@@ -115,6 +116,10 @@ def classify_cold_build_settlement_failure(exc: Exception) -> tuple[str, bool] |
         exc = exc.__cause__
     if isinstance(exc, ColdBuildCoverageError):
         return "active_coverage_incomplete", False
+    if isinstance(exc, ReferenceSealStaleError):
+        return "promotion_evidence_changed", True
+    if isinstance(exc, ReferenceSealError):
+        return "durable_reference_preservation", False
     if isinstance(exc, ProductionBaselineReadUnavailableError):
         return "source_integrity", True
     if isinstance(exc, ProductionBaselineError):

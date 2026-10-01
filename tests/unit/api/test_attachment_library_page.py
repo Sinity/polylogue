@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from polylogue import Polylogue
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 if TYPE_CHECKING:
     from polylogue.api.runtime import RuntimeServices
@@ -76,7 +76,7 @@ async def test_attachment_library_pages_keep_session_and_transcript_order(
         conn.row_factory = sqlite3.Row
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         for native_id, timestamp in [("a-old", "2026-01-01T00:00:00Z"), ("z-new", "2026-01-02T00:00:00Z")]:
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 ParsedSession(
                     source_name=Provider.CODEX,

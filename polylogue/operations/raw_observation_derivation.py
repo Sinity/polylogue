@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
 from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
     from polylogue.sources.prepared_jsonl import PreparedJsonl
 
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
-_RAW_OBSERVATION_RECIPE_VERSION = RawObservationDerivation.recipe_version
 
 
 def prepare_retained_non_json_artifact_worker(
@@ -120,7 +120,7 @@ def raw_observation_frame(
     return DerivationFrame(
         archive_root=str(archive_root),
         source_revision=str(index_path.resolve()),
-        recipe_versions={RAW_OBSERVATION_DOMAIN: _RAW_OBSERVATION_RECIPE_VERSION},
+        recipe_versions={RAW_OBSERVATION_DOMAIN: raw_authority_parser_fingerprint()},
         scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
     )
 

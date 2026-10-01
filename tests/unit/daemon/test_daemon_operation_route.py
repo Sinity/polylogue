@@ -1678,6 +1678,7 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
         )
         assert accepted is not None and accepted["outcome"] == "completed", accepted
         reference = accepted["accepted_reference"]
+        assert isinstance(reference, dict)
         principal = _all_capabilities_principal()
         request = DaemonOperationRequest(
             "operation.await",
@@ -1706,15 +1707,17 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
                 started_at=monotonic() - 1,
             )
             assert refused["outcome"] == "rejected", refused
-            assert isinstance(refused["error"], dict)
-            assert refused["error"]["code"] == "operation_reference_unknown", refused
+            refused_error = refused["error"]
+            assert isinstance(refused_error, dict)
+            assert refused_error["code"] == "operation_reference_unknown", refused
         stale = stack.runtime.call(
             replace(request, expected_archive_identity="synthetic-other-archive"),
             principal,
             started_at=monotonic() - 1,
         )
-        assert isinstance(stale["error"], dict)
-        assert stale["outcome"] == "rejected" and stale["error"]["code"] == "archive_identity_stale", stale
+        stale_error = stale["error"]
+        assert isinstance(stale_error, dict)
+        assert stale["outcome"] == "rejected" and stale_error["code"] == "archive_identity_stale", stale
         cancelled = QueryExecutionContext(
             call_id="disconnected-expired-poll", query_ref=request.fingerprint, deadline_monotonic=monotonic() - 1
         )
@@ -1728,8 +1731,9 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
                 started_at=monotonic() - 1,
             )
             assert expired["outcome"] == "timed-out", expired
-            assert isinstance(expired["error"], dict)
-            assert expired["error"]["code"] == "QueryTimeoutError", expired
+            expired_error = expired["error"]
+            assert isinstance(expired_error, dict)
+            assert expired_error["code"] == "QueryTimeoutError", expired
         assert stack.session_exists(ids[0])
 
 
@@ -2162,10 +2166,10 @@ def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evid
             error = sqlite3.OperationalError("synthetic reader contention")
             error.sqlite_errorcode = sqlite3.SQLITE_BUSY
             raise MigrationError("migration evidence unavailable") from error
-        permission_error = PermissionError("synthetic evidence access fault")
+        access_error = PermissionError("synthetic evidence access fault")
         if fault_kind == "wrapped_permission":
-            raise MigrationError("migration evidence unavailable") from permission_error
-        raise permission_error
+            raise MigrationError("migration evidence unavailable") from access_error
+        raise access_error
 
     destination = tmp_path / "pending-restoration"
     with running_daemon_operations(tmp_path / "archive") as stack:

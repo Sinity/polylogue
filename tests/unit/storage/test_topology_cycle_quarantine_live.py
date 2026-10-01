@@ -39,7 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -84,7 +84,7 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
         title="A",
         messages=[_msg("a0", Role.USER, "start", 0)],
     )
-    a_id = write_prepared_session(conn, session_a_v1)
+    a_id = write_fixture_index_session(conn, session_a_v1)
     assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
 
     # 2. B lands claiming A as its parent. A already exists, so this resolves
@@ -96,7 +96,7 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
         parent_session_provider_id="A",
         messages=[_msg("b0", Role.USER, "child of A", 0)],
     )
-    b_id = write_prepared_session(conn, session_b)
+    b_id = write_fixture_index_session(conn, session_b)
     assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (b_id,)).fetchone()[0] == a_id
 
     # 3. A is re-ingested (a corrupted/scrambled export re-asserting lineage)
@@ -111,7 +111,7 @@ async def test_cross_ingest_cycle_quarantines_the_closing_edge_without_losing_pr
             _msg("a1", Role.ASSISTANT, "revised", 1),
         ],
     )
-    write_prepared_session(conn, session_a_v2, force_replace=True)
+    write_fixture_index_session(conn, session_a_v2, force_replace=True)
 
     # The closing edge (A -> B) must be quarantined, not silently resolved.
     link = _link_row(conn, a_id)
@@ -244,7 +244,7 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
         title="self-loop",
         messages=[_msg("s0", Role.USER, "start", 0)],
     )
-    session_id = write_prepared_session(conn, session_v1)
+    session_id = write_fixture_index_session(conn, session_v1)
 
     session_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -253,7 +253,7 @@ def test_self_referential_edge_quarantines_without_touching_projection(tmp_path:
         parent_session_provider_id="self-loop",
         messages=[_msg("s0", Role.USER, "start", 0), _msg("s1", Role.ASSISTANT, "claims itself as parent", 1)],
     )
-    write_prepared_session(conn, session_v2, force_replace=True)
+    write_fixture_index_session(conn, session_v2, force_replace=True)
 
     link = _link_row(conn, session_id)
     assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
@@ -293,7 +293,7 @@ def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: P
         parent_session_provider_id="mutual-B",
         messages=[_msg("a0", Role.USER, "a body", 0)],
     )
-    a_id = write_prepared_session(conn, session_a)
+    a_id = write_fixture_index_session(conn, session_a)
     assert _link_row(conn, a_id)["resolved_dst_session_id"] is None
     assert conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (a_id,)).fetchone()[0] is None
 
@@ -306,7 +306,7 @@ def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: P
         parent_session_provider_id="mutual-A",
         messages=[_msg("b0", Role.USER, "b body", 0)],
     )
-    b_id = write_prepared_session(conn, session_b)
+    b_id = write_fixture_index_session(conn, session_b)
 
     closing = _link_row(conn, a_id)
     assert closing["status"] == TopologyEdgeStatus.QUARANTINED.value
@@ -363,14 +363,14 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
         title="deep parent",
         messages=[_msg("p0", Role.USER, "copied parent prefix", 0)],
     )
-    parent_id = write_prepared_session(conn, parent)
+    parent_id = write_fixture_index_session(conn, parent)
     child_v1 = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="deep-child",
         title="deep child",
         messages=[_msg("c0", Role.USER, "original child", 0)],
     )
-    child_id = write_prepared_session(conn, child_v1)
+    child_id = write_fixture_index_session(conn, child_v1)
 
     for position in range(1024, 0, -1):
         native_id = f"deep-{position}"
@@ -402,7 +402,7 @@ def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_p
             _msg("c1", Role.ASSISTANT, "child tail", 1),
         ],
     )
-    write_prepared_session(conn, child_v2, force_replace=True)
+    write_fixture_index_session(conn, child_v2, force_replace=True)
 
     link = _link_row(conn, child_id)
     evidence = json.loads(link["evidence_json"])
@@ -443,7 +443,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         title="A",
         messages=[_msg("a0", Role.USER, "root A", 0)],
     )
-    a_id = write_prepared_session(conn, session_a)
+    a_id = write_fixture_index_session(conn, session_a)
     session_b_v1 = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="multi-B",
@@ -451,7 +451,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-A",
         messages=[_msg("b0", Role.USER, "B follows A", 0)],
     )
-    b_id = write_prepared_session(conn, session_b_v1)
+    b_id = write_fixture_index_session(conn, session_b_v1)
     session_c = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="multi-C",
@@ -459,7 +459,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-B",
         messages=[_msg("c0", Role.USER, "C follows B", 0)],
     )
-    write_prepared_session(conn, session_c)
+    write_fixture_index_session(conn, session_c)
 
     session_b_v2 = ParsedSession(
         source_name=Provider.CODEX,
@@ -468,7 +468,7 @@ def test_quarantined_alternate_parent_does_not_invalidate_resolved_projection(tm
         parent_session_provider_id="multi-C",
         messages=[_msg("b1", Role.USER, "B asserts unsafe alternate C", 0)],
     )
-    write_prepared_session(conn, session_b_v2, merge_append=True)
+    write_fixture_index_session(conn, session_b_v2, merge_append=True)
 
     links = conn.execute(
         "SELECT dst_native_id, status FROM session_links WHERE src_session_id = ? ORDER BY dst_native_id",
@@ -496,7 +496,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         title="D",
         messages=[_msg("d0", Role.USER, "root", 0)],
     )
-    d_id = write_prepared_session(conn, session_d)
+    d_id = write_fixture_index_session(conn, session_d)
 
     session_b = ParsedSession(
         source_name=Provider.CODEX,
@@ -505,7 +505,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         parent_session_provider_id="D",
         messages=[_msg("b0", Role.USER, "child of D", 0)],
     )
-    b_id = write_prepared_session(conn, session_b)
+    b_id = write_fixture_index_session(conn, session_b)
 
     session_c = ParsedSession(
         source_name=Provider.CODEX,
@@ -514,7 +514,7 @@ def test_diamond_dag_is_not_mistaken_for_a_cycle(tmp_path: Path) -> None:
         parent_session_provider_id="D",
         messages=[_msg("c0", Role.USER, "also child of D", 0)],
     )
-    c_id = write_prepared_session(conn, session_c)
+    c_id = write_fixture_index_session(conn, session_c)
 
     for child_id in (b_id, c_id):
         link = _link_row(conn, child_id)

@@ -7,6 +7,7 @@ from pathlib import Path
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_ingest_payload
 from tests.unit.pipeline.test_ingest_batch import (
     _block_tuple,
     _message_tuple,
@@ -82,8 +83,8 @@ def test_append_mode_filters_unchanged_replayed_rows(tmp_path: Path) -> None:
             append_only=True,
         )
 
-        changed_initial, _initial_counts = _write_session(conn, initial)
-        changed_tail, tail_counts = _write_session(conn, replay)
+        changed_initial, _initial_counts = write_fixture_ingest_payload(conn, initial)
+        changed_tail, tail_counts = write_fixture_ingest_payload(conn, replay)
         conn.commit()
 
         rows = conn.execute(
@@ -139,7 +140,7 @@ def test_append_mode_updates_session_counts(tmp_path: Path) -> None:
             ],
             stats_tuple=(SessionId("codex-session:append-stats"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
-        changed_initial, _initial_counts = _write_session(conn, initial)
+        changed_initial, _initial_counts = write_fixture_ingest_payload(conn, initial)
         conn.commit()
 
         replay = _session_data(
@@ -166,7 +167,7 @@ def test_append_mode_updates_session_counts(tmp_path: Path) -> None:
             append_only=True,
         )
 
-        changed_tail, tail_counts = _write_session(conn, replay)
+        changed_tail, tail_counts = write_fixture_ingest_payload(conn, replay)
         conn.commit()
         stats = conn.execute(
             """
@@ -202,7 +203,7 @@ def test_append_mode_skips_unchanged_replay(tmp_path: Path) -> None:
             ],
             stats_tuple=(SessionId("codex-session:append-stats-repair"), "codex", 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0),
         )
-        changed_initial, _initial_counts = _write_session(conn, initial)
+        changed_initial, _initial_counts = write_fixture_ingest_payload(conn, initial)
         conn.commit()
 
         replay = _session_data(
@@ -221,7 +222,7 @@ def test_append_mode_skips_unchanged_replay(tmp_path: Path) -> None:
             append_only=True,
         )
 
-        changed_tail, tail_counts = _write_session(conn, replay)
+        changed_tail, tail_counts = write_fixture_ingest_payload(conn, replay)
         conn.commit()
         stats = conn.execute(
             """

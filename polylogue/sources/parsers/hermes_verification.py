@@ -75,15 +75,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
-from contextlib import closing
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -212,16 +212,12 @@ def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = Fa
         return False
 
 
-def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    """Open a retained logical export or a live Hermes database for reading.
-
-    The caller owns the returned connection and must close it: for a retained
-    export it holds the only reference to an already-unlinked reconstruction,
-    so leaving it open keeps that inode alive for the rest of the process.
-    """
-    conn = open_logical_source(path, immutable=immutable)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def _readonly_context(path: Path, *, immutable: bool = False) -> Iterator[sqlite3.Connection]:
+    """Keep the logical-source reader and reconstruction on its creator."""
+    with logical_source_context(path, immutable=immutable) as connection:
+        connection.row_factory = sqlite3.Row
+        yield connection
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -301,10 +297,7 @@ def parse_verification_evidence_db(
     del fallback_id
     grouped_events: dict[str, list[ParsedSessionEvent]] = {}
     grouped_state: dict[str, list[ParsedSessionEvent]] = {}
-    # ``closing``, not a bare ``with``: a sqlite3 connection's own context
-    # manager commits or rolls back and never closes, so returning from here
-    # would leave the unlinked reconstruction backed by an open handle.
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with _readonly_context(path, immutable=immutable) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes verification_evidence.db file")
         schema_version = _schema_version(conn)

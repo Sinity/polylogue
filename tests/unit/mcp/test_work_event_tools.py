@@ -7,7 +7,6 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.live_ingest import write_index_session
-from tests.infra.prepared_session import write_prepared_session
 
 
 def test_agent_work_event_uses_append_ingest_and_is_idempotent(tmp_path: Path) -> None:
@@ -203,8 +202,9 @@ def test_retained_work_event_replay_keeps_the_reconstructed_session(tmp_path: Pa
         if source_index is None:
             # The cold-build writer shortcut: the event raw reaches a session
             # this generation already holds.
+            from tests.infra.index_writer import write_fixture_index_session
 
-            write_prepared_session(archive._conn, replayed, raw_id=raw_id, fresh_build=True)
+            write_fixture_index_session(archive._conn, replayed, raw_id=raw_id, fresh_build=True)
         else:
             _index_parsed_for_retained_raw(
                 archive,

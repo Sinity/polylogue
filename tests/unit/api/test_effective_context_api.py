@@ -25,7 +25,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -72,7 +72,7 @@ def _seed(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -
             *extra_events,
         ],
     )
-    write_prepared_session(conn, session)
+    write_fixture_index_session(conn, session)
     conn.commit()
     conn.close()
 
@@ -176,7 +176,7 @@ def _seed_with_fork(db_path: Path) -> None:
             )
         ],
     )
-    write_prepared_session(conn, parent)
+    write_fixture_index_session(conn, parent)
     fork = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="compaction-effective-context-fork",
@@ -191,7 +191,7 @@ def _seed_with_fork(db_path: Path) -> None:
             _message("f4", Role.ASSISTANT, "fork diverges here"),
         ],
     )
-    write_prepared_session(conn, fork)
+    write_fixture_index_session(conn, fork)
     conn.commit()
     conn.close()
 
@@ -356,7 +356,7 @@ async def test_effective_context_hydrates_structured_tool_blocks(workspace_env: 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

@@ -10,7 +10,7 @@ from polylogue.daemon.convergence import ConvergenceStage, DaemonConverger, Stag
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 
 
-async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_stops() -> None:
+async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_stops(tmp_path: Path) -> None:
     """Cancellation distinguishes pre-admission from an admitted writer.
 
     Anti-vacuity: releasing the gate in ``run`` when its caller is cancelled
@@ -18,7 +18,7 @@ async def test_coordinator_cancellation_keeps_the_real_writer_owned_until_it_sto
     has stopped, which is exactly the SQLite-writer race this coordinator owns.
     """
     events: list[DaemonWriteEvent] = []
-    coordinator = DaemonWriteCoordinator(observer=events.append)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=events.append)
     first_started = asyncio.Event()
     allow_first_finish = asyncio.Event()
     admitted_finished = asyncio.Event()

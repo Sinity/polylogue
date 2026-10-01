@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
     from polylogue.storage.sqlite.population_admission import _PopulationAdmission
 
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_BASELINE_DDL_BY_TIER,
     ARCHIVE_BASELINE_VERSION_BY_TIER,
@@ -27,7 +28,13 @@ from polylogue.storage.sqlite.archive_tiers import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    NativeSQLCustodyOwner,
+    _close_failed_native_construction,
+    open_readonly_connection,
+    retained_native_sql_owners_for_lifetime,
+    scratch_connection_context,
+)
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Kept locally so schema metadata can import the bootstrap module while the
@@ -233,11 +240,17 @@ def archive_tier_init_counts() -> dict[str, int]:
         return {f"{tier}.{outcome}": count for (tier, outcome), count in sorted(_TIER_INIT_COUNTS.items())}
 
 
+def _cleanup_tier_prototype_dir(directory: Path) -> None:
+    if retained_native_sql_owners_for_lifetime(directory):
+        raise RuntimeError("tier prototype directory retains unsettled native SQL")
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 def _tier_prototype_dir() -> Path:
     global _TIER_PROTOTYPE_DIR
     if _TIER_PROTOTYPE_DIR is None:
         directory = Path(tempfile.mkdtemp(prefix="polylogue-tier-prototype-"))
-        atexit.register(shutil.rmtree, directory, True)
+        atexit.register(_cleanup_tier_prototype_dir, directory)
         _TIER_PROTOTYPE_DIR = directory
     return _TIER_PROTOTYPE_DIR
 
@@ -273,10 +286,19 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
             loaded, _error = try_load_sqlite_vec(conn)
             if not loaded:
                 return False
-        with contextlib.closing(
-            open_readonly_connection(prototype.resolve(strict=True), immutable=True, validate_schema=False)
-        ) as source:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
+        source = open_readonly_connection(prototype.resolve(strict=True), immutable=True, validate_schema=False)
+        source_owner = NativeSQLCustodyOwner(
+            source, lifetime_dependencies=(_TIER_PROTOTYPE_DIR,) if _TIER_PROTOTYPE_DIR is not None else ()
+        )
+        try:
             source.backup(conn)
+        except BaseException as primary:
+            _close_failed_native_construction(source_owner, primary)
+            raise
+        else:
+            source_owner.close()
         stored = int(conn.execute("PRAGMA user_version").fetchone()[0])
     except sqlite3.Error:
         return False
@@ -296,8 +318,9 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         if key in _TIER_PROTOTYPES:
             return
     staging: Path | None = None
+    directory = _tier_prototype_dir()
     try:
-        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
+        destination = directory / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
         staging_fd, staging_name = tempfile.mkstemp(
             prefix=f".{destination.name}.",
             suffix=".tmp",
@@ -305,8 +328,17 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         )
         os.close(staging_fd)
         staging = Path(staging_name)
-        with contextlib.closing(sqlite3.connect(staging)) as target:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
+        target = connect_measured(staging)
+        target_owner = NativeSQLCustodyOwner(target, lifetime_dependencies=(directory,))
+        try:
             conn.backup(target)
+        except BaseException as primary:
+            _close_failed_native_construction(target_owner, primary)
+            raise
+        else:
+            target_owner.close()
         staging.chmod(staging.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
         os.replace(staging, destination)
         directory_fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -317,7 +349,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
     except (OSError, sqlite3.Error):
         return
     finally:
-        if staging is not None:
+        if staging is not None and not retained_native_sql_owners_for_lifetime(directory):
             with contextlib.suppress(OSError):
                 staging.unlink(missing_ok=True)
     with _TIER_PROTOTYPE_LOCK:
@@ -404,23 +436,19 @@ def initialize_runtime_tier_probe(
         # The numbered runner proves actual file custody. Build that proof on
         # an owned isolated file, then copy its proved schema into the probe;
         # an in-memory connection never supplies a fabricated archive identity.
-        with tempfile.TemporaryDirectory(prefix="polylogue-tier-probe-") as directory:
+        with scratch_connection_context(prefix="polylogue-tier-probe-", filename=f"{tier.value}.db") as temporary:
             from polylogue.storage.sqlite.migration_runner import (
                 _durable_literal_rows_digest,
                 capture_durable_schema_inventory,
             )
 
-            path = Path(directory) / f"{tier.value}.db"
-            temporary = sqlite3.connect(path)
-            try:
-                initialize_runtime_tier_probe(temporary, tier, probe_path=path)
-                admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
-                evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
-                temporary.backup(conn)
-                if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
-                    raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
-            finally:
-                temporary.close()
+            path = Path(next(row[2] for row in temporary.execute("PRAGMA database_list") if row[1] == "main"))
+            initialize_runtime_tier_probe(temporary, tier, probe_path=path)
+            admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
+            evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
+            temporary.backup(conn)
+            if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
+                raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
         conn.execute("PRAGMA foreign_keys = ON")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) != admitted_version:
             raise RuntimeError("runtime tier probe backup did not retain its admitted version")
@@ -629,11 +657,8 @@ def initialize_archive_database(
                 remedy="initialize the canonical archive root to construct its baseline and admit declared trains",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(path)
-        if page_size is not None:
-            # Before any DDL: the first CREATE allocates page one and freezes
-            # the page size for the life of the file.
-            apply_creation_page_size(conn, page_size)
+        conn = connect_measured(path)
+        owner = NativeSQLCustodyOwner(conn)
     else:
         if page_size is not None:
             raise ValueError("page_size is a creation-time choice; it cannot be applied to an existing tier")
@@ -643,8 +668,13 @@ def initialize_archive_database(
             raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
         if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
-        conn = sqlite3.connect(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        conn = connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        owner = NativeSQLCustodyOwner(conn)
+    primary: BaseException | None = None
     try:
+        if page_size is not None:
+            # Creation-only policy is SQL and shares the actual construction owner.
+            apply_creation_page_size(conn, page_size)
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         # Both derived tiers refuse a stale identity before issuing DDL.
         # The daemon replaces disposable ops state at its startup seam.
@@ -699,8 +729,14 @@ def initialize_archive_database(
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
             assert_schema_manifest(conn, tier)
+    except BaseException as error:
+        primary = error
+        raise
     finally:
-        conn.close()
+        if primary is None:
+            owner.close()
+        else:
+            _close_failed_native_construction(owner, primary)
 
 
 #: Bootstrap creates every durable tier together under one pending intent, so
@@ -1068,7 +1104,7 @@ def _initialize_population_archive_stage(root: Path) -> None:
 
 
 def initialize_active_archive_root(root: Path) -> None:
-    """Create or initialize every active archive tier under one local bootstrap owner."""
+    """Create or initialize every active archive tier under archive custody."""
 
     global _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
 
@@ -1076,12 +1112,23 @@ def initialize_active_archive_root(root: Path) -> None:
 
     assert_population_admitted(root)
     from polylogue.storage.archive_tuple_location import ArchiveTupleError, is_archive_tuple_candidate_path
-    from polylogue.storage.sqlite.write_lease import require_write_lease
+    from polylogue.storage.sqlite.write_lease import require_write_lease, write_lease
 
     if is_archive_tuple_candidate_path(root):
         raise ArchiveTupleError(
             "inactive archive tuple roots require typed per-tier destinations; refusing active-root bootstrap"
         )
+
+    require_write_lease("active archive bootstrap", archive_root=root)
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with write_lease("active archive bootstrap", archive_root=root):
+        _initialize_active_archive_root_under_lease(root)
+
+
+def _initialize_active_archive_root_under_lease(root: Path) -> None:
+    """Materialize the active tiers after their writer has been admitted."""
+
+    global _ACTIVE_ARCHIVE_BOOTSTRAP_VALIDATIONS
 
     # Active-root bootstrap creates or opens every writable tier.  It is a
     # daemon-owned operation when process-wide lease enforcement is armed;
@@ -1089,8 +1136,6 @@ def initialize_active_archive_root(root: Path) -> None:
     # initializer directly and remain intentionally independent of this gate.
     # The authority check is never memoized: it decides whether *this* caller
     # may bootstrap, which is a fact about the caller, not about the archive.
-    require_write_lease("active archive bootstrap", archive_root=root)
-
     with _ACTIVE_ARCHIVE_BOOTSTRAP_LOCK:
         memo_key = str(root.absolute())
         observed = _archive_generation_token(root)
@@ -1131,6 +1176,8 @@ def open_initialized_tier_connection(
     this connection owner never creates a baseline and calls it current.
     """
     from polylogue.storage.sqlite.connection_profile import (
+        NativeSQLCustodyOwner,
+        _close_failed_native_construction,
         assert_tier_schema_supported,
         open_connection,
         open_daemon_connection,
@@ -1158,6 +1205,7 @@ def open_initialized_tier_connection(
         )
     else:
         conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False, archive_root=archive_root)
+    owner = NativeSQLCustodyOwner(conn)
     try:
         stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version
@@ -1188,10 +1236,10 @@ def open_initialized_tier_connection(
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)
-    except BaseException:
-        conn.close()
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
-    return conn
+    return owner.handoff()
 
 
 __all__ = [

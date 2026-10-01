@@ -108,6 +108,7 @@ def make_session_summary_derivation(
         read_connection,
         write_connection,
         session_scope=_session_scope,
+        archive_root=archive_root,
         generation_binding=generation_binding,
     )
 
@@ -154,6 +155,7 @@ def make_session_usage_rollup_derivation(
         read_connection,
         write_connection,
         session_scope=_session_scope,
+        archive_root=archive_root,
         quiet_key=_hot_session_quiet_key(read_connection, archive_root=archive_root, now=now),
         generation_binding=generation_binding,
     )
@@ -180,6 +182,7 @@ def make_session_profile_derivation(
         write_connection,
         materializer_version=materializer_version,
         session_scope=_session_scope,
+        archive_root=archive_root,
         quiet_key=quiet_key,
         generation_binding=generation_binding,
     )

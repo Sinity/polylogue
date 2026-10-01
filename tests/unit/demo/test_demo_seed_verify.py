@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -505,7 +506,7 @@ async def test_seed_demo_archive_refuses_the_default_root_collision(tmp_path: Pa
     from tests.infra.storage_records import SessionBuilder
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
     with pytest.raises(DemoSeedTargetUnsafeError, match="real ingested session"):
@@ -524,7 +525,7 @@ async def test_seed_demo_archive_explicit_root_refuses_real_content(tmp_path: Pa
     from tests.infra.storage_records import SessionBuilder
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
     with pytest.raises(DemoSeedTargetUnsafeError, match="real archive content"):
@@ -541,7 +542,7 @@ async def test_seed_demo_archive_never_self_heals_a_root_that_held_real_content(
     from tests.infra.storage_records import SessionBuilder
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     SessionBuilder(archive_root / "index.db", "real-session").provider("claude-code").save()
 
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -693,7 +694,7 @@ async def test_record_demo_ownership_treats_missing_index_as_unsafe_not_empty(tm
     # rebuilt. Bootstrap the whole root first and then drop the rebuildable
     # tier: a source.db created on its own has no provenance marker, so durable
     # admission rejects the root before the missing-index case is reached.
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     (archive_root / "index.db").unlink(missing_ok=True)
     initialize_runtime_source_fixture(archive_root / "source.db")
     with sqlite3.connect(archive_root / "source.db") as conn:

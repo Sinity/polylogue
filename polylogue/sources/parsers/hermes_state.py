@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Mapping
-from contextlib import closing
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -22,7 +22,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
@@ -256,10 +256,7 @@ def parse_state_db(
 ) -> list[ParsedSession]:
     """Parse every session revision from a Hermes ``state.db`` file."""
     del fallback_id
-    # ``closing``, not a bare ``with``: a sqlite3 connection's own context
-    # manager commits or rolls back and never closes, so returning from here
-    # would leave the unlinked reconstruction backed by an open handle.
-    with closing(_connect_readonly(path, immutable=immutable)) as conn:
+    with _readonly_context(path, immutable=immutable) as conn:
         if not _has_required_tables(conn):
             raise ValueError(f"{path} is not a Hermes state.db file")
         session_columns = _columns(conn, "sessions")
@@ -573,16 +570,12 @@ def _fidelity_capability(
 _MESSAGE_READ_INDEXES: tuple[tuple[str, tuple[str, ...]], ...] = (("messages", ("session_id", "id")),)
 
 
-def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    """Open a retained logical export or a live Hermes database for reading.
-
-    The caller owns the returned connection and must close it: for a retained
-    export it holds the only reference to an already-unlinked reconstruction,
-    so leaving it open keeps that inode alive for the rest of the process.
-    """
-    conn = open_logical_source(path, immutable=immutable, read_indexes=_MESSAGE_READ_INDEXES)
-    conn.row_factory = sqlite3.Row
-    return conn
+@contextmanager
+def _readonly_context(path: Path, *, immutable: bool = False) -> Iterator[sqlite3.Connection]:
+    """Keep the logical-source reader and reconstruction on its creator."""
+    with logical_source_context(path, immutable=immutable, read_indexes=_MESSAGE_READ_INDEXES) as connection:
+        connection.row_factory = sqlite3.Row
+        yield connection
 
 
 def _has_required_tables(conn: sqlite3.Connection) -> bool:

@@ -254,7 +254,7 @@ class TestInsightsEndpointDispatch:
 
         async def converge() -> None:
             compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-            coordinator = DaemonWriteCoordinator()
+            coordinator = DaemonWriteCoordinator(archive_root=root)
             try:
                 composed = compose_session_profile_callback(
                     root,

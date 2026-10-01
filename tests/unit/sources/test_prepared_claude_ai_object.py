@@ -23,7 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _conversation(message_count: int = 300) -> dict[str, object]:
@@ -387,7 +387,7 @@ def test_real_claude_repeated_occurrence_events_keep_their_message(tmp_path: Pat
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.row_factory = sqlite3.Row
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_prepared_session(conn, parsed)
+            sid = write_fixture_index_session(conn, parsed)
             rows = conn.execute(
                 "SELECT e.event_type, e.payload_json, b.text FROM session_events e "
                 "JOIN blocks b ON b.message_id = e.source_message_id "

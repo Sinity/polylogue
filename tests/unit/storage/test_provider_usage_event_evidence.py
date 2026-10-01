@@ -14,7 +14,7 @@ from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -26,7 +26,7 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
-    return write_prepared_session(
+    return write_fixture_index_session(
         conn,
         session,
         content_hash=str(session_content_hash(session)),

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, cast
 from pydantic import Field, RootModel
 from typing_extensions import TypedDict
 
-from polylogue.context.compiler import ContextImage
+from polylogue.archive.context_models import ContextImage
 from polylogue.core.enums import DisplayLabelSource
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import source_name_to_origin

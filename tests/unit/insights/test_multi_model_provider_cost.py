@@ -24,7 +24,7 @@ from polylogue.api import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 _REPORTED_TOTAL = 12.5
 
@@ -87,7 +87,7 @@ def _write(db_path: Path, *sessions: ParsedSession) -> None:
     conn.row_factory = sqlite3.Row
     try:
         for session in sessions:
-            write_prepared_session(conn, session)
+            write_fixture_index_session(conn, session)
         conn.commit()
     finally:
         conn.close()

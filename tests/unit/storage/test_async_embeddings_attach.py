@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiosqlite
 import pytest
@@ -31,7 +32,7 @@ def test_attached_embeddings_are_measurable_on_async_index_connections(tmp_path:
     async def measure() -> tuple[int, int | None]:
         target, uri = (f"file:{index_db}?mode=ro", True) if read_only else (str(index_db), False)
         async with aiosqlite.connect(target, uri=uri) as conn:
-            await (configure_read_connection if read_only else configure_connection)(conn)
+            await (configure_read_connection if read_only else configure_connection)(conn, archive_root=root)
             cursor = await conn.execute("SELECT COUNT(*) FROM message_embeddings")
             row = await cursor.fetchone()
             assert row is not None
@@ -89,7 +90,7 @@ def test_pending_population_refuses_async_configuration_before_pragmas_or_attach
             marker.write_text('{"fixture":"unfinished-population"}')
             try:
                 with pytest.raises(ArchivePopulationPendingError):
-                    await (configure_read_connection if read_only else configure_connection)(conn)
+                    await (configure_read_connection if read_only else configure_connection)(conn, archive_root=root)
                 async with conn.execute("PRAGMA database_list") as cursor:
                     assert [row[1] for row in await cursor.fetchall()] == ["main"]
                 async with conn.execute("PRAGMA user_version") as cursor:
@@ -110,11 +111,11 @@ def test_async_pool_refusal_closes_prior_and_new_configuration_handles(
     handles: list[aiosqlite.Connection] = []
     configure = async_sqlite.configure_read_connection
 
-    async def configure_with_pending(conn: aiosqlite.Connection) -> None:
+    async def configure_with_pending(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
         handles.append(conn)
         if len(handles) == 2:
             (root / POPULATION_PENDING).write_text('{"fixture":"unfinished-population"}')
-        await configure(conn)
+        await configure(conn, archive_root=root)
 
     async def exercise() -> None:
         backend = async_sqlite.SQLiteBackend(root / "index.db")
@@ -146,10 +147,10 @@ def test_async_writer_refusal_closes_unconfigured_handle_without_publishing_it(
     handles: list[aiosqlite.Connection] = []
     configure = async_sqlite.configure_connection
 
-    async def configure_with_pending(conn: aiosqlite.Connection) -> None:
+    async def configure_with_pending(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
         handles.append(conn)
         (root / POPULATION_PENDING).write_text('{"fixture":"unfinished-population"}')
-        await configure(conn)
+        await configure(conn, archive_root=root)
 
     async def exercise() -> None:
         backend = async_sqlite.SQLiteBackend(root / "index.db")
@@ -184,13 +185,13 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
         handles = []
         close_attempts = []
         configure = async_sqlite.configure_read_connection
-        execute = aiosqlite.Connection._execute
+        execute = cast(Callable[..., Awaitable[Any]], aiosqlite.Connection._execute)
         refuse_close = True
         primary = ValueError("synthetic configuration refusal")
 
-        async def configure_last(conn: aiosqlite.Connection) -> None:
+        async def configure_last(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
             handles.append(conn)
-            await configure(conn)
+            await configure(conn, archive_root=archive_root)
             if len(handles) == 3:
                 raise primary
 
@@ -199,7 +200,7 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
                 close_attempts.append(conn)
                 if refuse_close and conn in (handles[0], handles[-1]):
                     raise OSError("synthetic native close refusal")
-            return await execute(conn, function, *args, **kwargs)  # type: ignore[no-untyped-call]
+            return await execute(conn, function, *args, **kwargs)
 
         monkeypatch.setattr(async_sqlite, "configure_read_connection", configure_last)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
@@ -236,17 +237,17 @@ def test_failed_writer_configuration_keeps_actual_handle_until_backend_retiremen
         await backend._ensure_schema_once()
         handles = []
         primary = ValueError("synthetic writer configuration refusal")
-        execute = aiosqlite.Connection._execute
+        execute = cast(Callable[..., Awaitable[Any]], aiosqlite.Connection._execute)
         refuse_close = True
 
-        async def configure(conn: aiosqlite.Connection) -> None:
+        async def configure(conn: aiosqlite.Connection, *, archive_root: Path) -> None:
             handles.append(conn)
             raise primary
 
         async def execute_with_close_fault(conn: aiosqlite.Connection, function: Any, *args: Any, **kwargs: Any) -> Any:
             if refuse_close and getattr(function, "__name__", None) == "close_raw":
                 raise OSError("synthetic native close refusal")
-            return await execute(conn, function, *args, **kwargs)  # type: ignore[no-untyped-call]
+            return await execute(conn, function, *args, **kwargs)
 
         monkeypatch.setattr(async_sqlite, "configure_connection", configure)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
@@ -303,7 +304,7 @@ def test_cancelled_close_waiter_drains_actual_worker_before_retiring_handle(
         backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
         conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
         entered, release = threading.Event(), threading.Event()
-        execute = conn._execute
+        execute = cast(Callable[..., Awaitable[Any]], conn._execute)
 
         async def delay_close(function: Any, *args: Any, **kwargs: Any) -> Any:
             if getattr(function, "__name__", None) == "close_raw":
@@ -313,8 +314,8 @@ def test_cancelled_close_waiter_drains_actual_worker_before_retiring_handle(
                     release.wait()
                     function()
 
-                return await execute(queued_close)  # type: ignore[no-untyped-call]
-            return await execute(function, *args, **kwargs)  # type: ignore[no-untyped-call]
+                return await execute(queued_close)
+            return await execute(function, *args, **kwargs)
 
         monkeypatch.setattr(conn, "_execute", delay_close)
         closing = asyncio.create_task(async_sqlite._close_backend_connection(conn))
@@ -385,9 +386,10 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
 
     async def exercise() -> None:
         backend = async_sqlite.SQLiteBackend(tmp_path / "index.db")
-        backend.db_path.unlink()
+        # Construction admits the path without creating a SQLite file.
+        assert not backend.db_path.exists()
         with pytest.raises(sqlite3.OperationalError):
-            _unexpected_connection = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+            _ = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
         assert len(connections) == 1
         conn = connections[0]
         assert conn._connection is None

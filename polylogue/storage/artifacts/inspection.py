@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
-from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,7 +28,7 @@ from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
 from polylogue.schemas.packages import SchemaResolution
 from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.parsers.hermes_state import looks_like_state_db_path
-from polylogue.sources.sqlite_export import LogicalExportError, open_logical_source
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 
@@ -116,8 +115,8 @@ def _hermes_state_db_schema_version(path: Path, *, immutable: bool = False) -> i
 
     Retained Hermes material is the member's canonical logical export, never a
     page image (``archive/raw_payload/decode.py`` refuses the latter, #5040), so
-    this reads through ``open_logical_source`` -- the same seam
-    ``hermes_state._connect_readonly`` and ``looks_like_state_db_path`` already
+    this reads through ``logical_source_context`` -- the same seam
+    ``hermes_state._readonly_context`` and ``looks_like_state_db_path`` already
     use. A plain read-only SQLite open sees an export as a non-database and
     returns no version, which downgrades every retained Hermes observation to
     ``unsupported_parseable`` with no resolved package.
@@ -135,7 +134,7 @@ def _hermes_state_db_schema_version(path: Path, *, immutable: bool = False) -> i
     misreport this function was repaired to remove.
     """
     try:
-        with closing(open_logical_source(path.resolve(), immutable=immutable)) as conn:
+        with logical_source_context(path.resolve(), immutable=immutable) as conn:
             row = conn.execute("SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1").fetchone()
     except (sqlite3.Error, LogicalExportError):
         return None

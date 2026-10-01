@@ -13,6 +13,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.context_models import ContextImage, ContextSegment, ContextSpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
@@ -25,7 +26,6 @@ from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
-from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
 from polylogue.core.enums import Origin
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
@@ -986,7 +986,7 @@ def test_read_verb_context_uses_declared_preamble_operation() -> None:
 
 def test_read_verb_context_image_invokes_declared_read() -> None:
     """Context-image predicates and page limit reach the typed read operation."""
-    from polylogue.context.compiler import ContextImage
+    from polylogue.archive.context_models import ContextImage
 
     _, child = _context_pair(query_terms=("repo:polylogue",))
     child.obj.config = SimpleNamespace()
@@ -1152,7 +1152,7 @@ def test_read_verb_token_bounded_standard_views_compile_as_messages(view: str) -
 
 def test_context_image_markdown_renderer_adds_document_structure() -> None:
     """Context-image Markdown should be readable as one composed packet."""
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
+    from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSpec
 
     projection_spec = projection_from_views(
         ("temporal", "chronicle"),
@@ -1313,7 +1313,7 @@ def test_continue_verb_emits_successor_context_json() -> None:
         assert session_id == "codex-session:abc123"
         return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
 
-    from polylogue.context.compiler import ContextImage
+    from polylogue.archive.context_models import ContextImage
 
     async def compile_context(spec: ContextSpec) -> ContextImage:
         return ContextImage(spec=spec, segments=())

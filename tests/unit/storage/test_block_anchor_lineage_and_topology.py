@@ -14,7 +14,7 @@ from polylogue.storage.derived.topology.derivation import TopologyNodeInput, com
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connection(path: Path | str) -> sqlite3.Connection:
@@ -26,7 +26,7 @@ def _connection(path: Path | str) -> sqlite3.Connection:
 
 
 def _session(conn: sqlite3.Connection, native: str, texts: list[tuple[str, str]]) -> str:
-    return write_prepared_session(
+    return write_fixture_index_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,

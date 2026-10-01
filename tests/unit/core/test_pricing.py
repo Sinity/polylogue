@@ -16,7 +16,7 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from tests.infra.builders import make_conv, make_msg
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_session_reported_cost_metadata_is_not_read() -> None:
@@ -565,7 +565,7 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    session_id = write_prepared_session(conn, parsed)
+    session_id = write_fixture_index_session(conn, parsed)
 
     message_usage = conn.execute(
         """

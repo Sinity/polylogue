@@ -14,7 +14,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_merge import prepare_retained_cohort_artifact, prepared_cohort_source_hash
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _chunk_artifact(directory: Path, session: ParsedSession, source_hash: str) -> PreparedJsonl:
@@ -160,6 +160,7 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
     from polylogue.sources.parsers.base import ParsedAttachment
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.index_writer import write_fixture_index_session
 
     first = ParsedSession(
         source_name=Provider.CODEX,
@@ -236,7 +237,7 @@ def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, 
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_prepared_session(
+            sid = write_fixture_index_session(
                 conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
             )
             stored = conn.execute(
@@ -465,7 +466,7 @@ def test_real_codex_instructions_anchor_keeps_its_fragment(
         with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_prepared_session(conn, merged)
+            sid = write_fixture_index_session(conn, merged)
             row = conn.execute(
                 "SELECT m.position FROM session_events e LEFT JOIN messages m "
                 "ON m.message_id = e.boundary_message_id WHERE e.session_id = ?",
@@ -533,7 +534,7 @@ def test_repeated_native_event_uses_exact_occurrence_after_composition(tmp_path:
         with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
             conn.row_factory = sqlite3.Row
             initialize_archive_tier(conn, ArchiveTier.INDEX)
-            sid = write_prepared_session(conn, merged)
+            sid = write_fixture_index_session(conn, merged)
             row = conn.execute(
                 "SELECT m.position FROM session_events e JOIN messages m "
                 "ON m.message_id = e.source_message_id WHERE e.session_id = ?",

@@ -26,7 +26,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -205,8 +205,8 @@ def test_dominant_path_is_repo_relative_across_two_worktree_checkouts(tmp_path: 
             _edit_call(1, str(repo_root_b / "pipeline" / "_core.py")),
         ],
     )
-    session_a_id = write_prepared_session(conn, session_a)
-    session_b_id = write_prepared_session(conn, session_b)
+    session_a_id = write_fixture_index_session(conn, session_a)
+    session_b_id = write_fixture_index_session(conn, session_b)
 
     path_a, extra_a = dominant_repo_relative_path_for_session(conn, session_a_id)
     path_b, extra_b = dominant_repo_relative_path_for_session(conn, session_b_id)
@@ -234,7 +234,7 @@ def test_dominant_path_picks_most_touched_file_and_counts_the_rest(tmp_path: Pat
             _edit_call(4, str(repo_root / "c.py")),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     dominant_path, additional = dominant_repo_relative_path_for_session(conn, session_id)
 
@@ -257,7 +257,7 @@ def test_session_structural_label_for_session_end_to_end(tmp_path: Path) -> None
             _edit_call(1, str(repo_root / "core.py")),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     label = session_structural_label_for_session(
         conn,
@@ -295,7 +295,7 @@ def test_distinct_file_count_uses_a_sql_aggregate_when_no_root_is_stripped(tmp_p
             _edit_call(3, "/elsewhere/a.py"),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     traced: list[str] = []
     conn.set_trace_callback(lambda sql: traced.append(" ".join(sql.split())))
@@ -333,7 +333,7 @@ def test_distinct_file_count_caps_and_reports_the_cap_when_a_root_is_stripped(
             _edit_call(3, str(repo_root / "c.py")),
         ],
     )
-    session_id = write_prepared_session(conn, session)
+    session_id = write_fixture_index_session(conn, session)
 
     monkeypatch.setattr(session_label_module, "MAX_DISTINCT_FILE_COUNT", 2)
 

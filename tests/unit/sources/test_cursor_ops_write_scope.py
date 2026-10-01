@@ -163,7 +163,7 @@ def test_scope_refuses_an_unleased_entrant(store: CursorStore) -> None:
                 pass
 
         # The scope is entered normally by the serialized writer that holds it.
-        with write_lease("test-writer"):
+        with write_lease("test-writer", archive_root=store._archive_root):
             with store.ops_write_scope():
                 pass
 

@@ -133,7 +133,7 @@ def test_daemon_coordinator_owns_real_blob_gc_mutation(tmp_path: Path) -> None:
         )
         conn.commit()
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def run() -> object:
         return await coordinator.run_sync("maintenance.blob_gc", run_blob_gc_once, db_path, blob_dir)
@@ -164,7 +164,7 @@ def test_periodic_blob_gc_uses_daemon_write_route_and_reclaims_safely(
 
     coordinator_events: list[str] = []
     first_run = asyncio.Event()
-    delegate = DaemonWriteCoordinator()
+    delegate = DaemonWriteCoordinator(archive_root=tmp_path)
 
     class RecordingCoordinator:
         async def run_sync(self, actor: str, callback: Any, *args: Any, **kwargs: Any) -> Any:
@@ -241,7 +241,7 @@ def test_periodic_publication_reconciliation_repeats_safe_cleanup_and_retains_un
             if len(coordinator_events) == 2:
                 second_tick.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root, observer=observe)
     monkeypatch.setattr(blob_gc_periodic, "BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS", 0)
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
     monkeypatch.setattr("polylogue.paths.source_db_path", lambda: source_db)
@@ -327,7 +327,7 @@ def test_periodic_publication_reconciliation_pages_past_unresolved_rows(
             if len(coordinator_events) == 2:
                 acquired.set()
 
-    coordinator = DaemonWriteCoordinator(observer=observe)
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root, observer=observe)
     monkeypatch.setattr(blob_gc_periodic, "BLOB_PUBLICATION_RECONCILIATION_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(blob_gc_periodic, "BLOB_PUBLICATION_RECONCILIATION_MAX_BATCH", 2)
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
@@ -391,7 +391,7 @@ def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index
         conn.commit()
     (archive_root / ".index-active-pointer").write_text(str(active_index.resolve()), encoding="utf-8")
 
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive_root)
     monkeypatch.setattr("polylogue.daemon.cli.daemon_write_coordinator", lambda: coordinator)
 

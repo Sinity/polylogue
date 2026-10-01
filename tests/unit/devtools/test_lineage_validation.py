@@ -17,7 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool = False) -> Path:
@@ -313,7 +313,7 @@ def _make_writer_candidate(root: Path) -> Path:
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     try:
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -326,7 +326,7 @@ def _make_writer_candidate(root: Path) -> Path:
             ),
         )
         for provider_id, tail_text in (("child", "child tail"), ("sibling", "sibling tail")):
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 ParsedSession(
                     source_name=Provider.CODEX,
@@ -341,7 +341,7 @@ def _make_writer_candidate(root: Path) -> Path:
                     ],
                 ),
             )
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

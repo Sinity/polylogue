@@ -42,7 +42,7 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_distribution_sketch_is_bounded_mergeable_and_preserves_tails() -> None:
@@ -462,7 +462,7 @@ def test_profile_generated_tool_pair_reaches_production_action_view(tmp_path: Pa
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    session_id = write_prepared_session(conn, sessions[0])
+    session_id = write_fixture_index_session(conn, sessions[0])
     materialized_at = time.perf_counter()
     actions = conn.execute(
         "SELECT tool_name, is_error, exit_code FROM actions WHERE session_id = ?",
@@ -562,8 +562,8 @@ def test_profile_generated_lineage_replays_through_production_write_and_read(tmp
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
-    parent_id = write_prepared_session(conn, parsed[0])
-    child_id = write_prepared_session(conn, parsed[1])
+    parent_id = write_fixture_index_session(conn, parsed[0])
+    child_id = write_fixture_index_session(conn, parsed[1])
     materialized_at = time.perf_counter()
     child_physical_count = conn.execute(
         "SELECT COUNT(*) FROM messages WHERE session_id = ?",

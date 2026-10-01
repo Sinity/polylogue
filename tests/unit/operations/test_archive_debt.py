@@ -21,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _write_tier_version(path: Path, version: int) -> None:
@@ -711,7 +711,7 @@ def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
             messages=[],
             models_used=["gpt-5-codex"],
         )
-        write_prepared_session(conn, session)
+        write_fixture_index_session(conn, session)
         conn.execute(
             "UPDATE session_model_usage SET input_tokens = ? WHERE session_id = ? AND model_name = ?",
             (input_tokens, "codex-session:s1", "gpt-5-codex"),

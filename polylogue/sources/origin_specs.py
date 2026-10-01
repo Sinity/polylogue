@@ -285,7 +285,7 @@ def _module_path(base: Path) -> Path | None:
 
 
 #: Bump when edge resolution below changes shape; it is part of the disk key.
-_IMPORT_EDGE_MEMO_VERSION = 1
+_IMPORT_EDGE_MEMO_VERSION = 2
 #: Import edges memoized across processes, keyed by ``label\0content digest``.
 #: ``None`` until the memo file has been consulted once.
 _IMPORT_EDGES: dict[str, list[str]] | None = None
@@ -383,7 +383,23 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
         bases = list(_import_bases(signature))
         edges[key] = bases
         _IMPORT_EDGES_ADDED = True
-    found = {resolved for label in bases if (resolved := _module_path(_source_path(label, _SOURCE_ROOT))) is not None}
+    found: set[Path] = set()
+    for label in bases:
+        base = _source_path(label, _SOURCE_ROOT)
+        resolved = _module_path(base)
+        if resolved is not None:
+            found.add(resolved)
+        # Implicit namespace packages have no ``__init__.py`` to fingerprint.
+        # Their executable members are the imported modules, so close over
+        # those members at the import edge itself.  This also makes
+        # ``from .parsers import (provider_a, provider_b)`` contribute the
+        # parser files that Python loads from ``sources/parsers``.
+        if base.is_dir() and not (base / "__init__.py").is_file():
+            for child in sorted(base.iterdir()):
+                if child.is_file() and child.suffix == ".py":
+                    found.add(child.resolve())
+                elif child.is_dir() and (child / "__init__.py").is_file():
+                    found.add((child / "__init__.py").resolve())
     return tuple(sorted(str(item) for item in found))
 
 
@@ -405,9 +421,22 @@ def _import_bases(signature: tuple[str, str, int]) -> tuple[str, ...]:
                 base = path.parent
                 for _ in range(node.level - 1):
                     base = base.parent
-                bases.add(base / Path(*(node.module or "").split(".")))
+                module_base = base / Path(*(node.module or "").split("."))
+                bases.add(module_base)
+                # ``from package import name`` may resolve ``name`` to a
+                # package attribute or to a submodule.  Include the submodule
+                # candidate whenever it exists; doing so closes Python's
+                # namespace-package import route without relying on which
+                # attribute happened to be loaded in this process.
+                for alias in node.names:
+                    if alias.name != "*":
+                        bases.add(module_base / Path(*alias.name.split(".")))
             elif node.module and node.module.startswith("polylogue."):
-                bases.add(_SOURCE_ROOT / Path(*node.module.split(".")))
+                module_base = _SOURCE_ROOT / Path(*node.module.split("."))
+                bases.add(module_base)
+                for alias in node.names:
+                    if alias.name != "*":
+                        bases.add(module_base / Path(*alias.name.split(".")))
         elif isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name.startswith("polylogue."):
@@ -1202,6 +1231,10 @@ class OriginSpec:
         if self.assembly_spec_path is not None:
             declared_paths.append(self.assembly_spec_path)
         declared_paths.extend(rule.parser_path for rule in self.artifact_rules if rule.parser_path is not None)
+        if self.database_capability is not None:
+            declared_paths.extend(
+                member.consumer for member in self.database_capability.members if member.consumer is not None
+            )
         source_paths = tuple(dict.fromkeys(_source_file_from_reference(path) for path in declared_paths))
         return _fingerprint_sources(
             source_paths,
@@ -3837,6 +3870,82 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
+@cache
+def parser_semantic_authority_fingerprint() -> str:
+    """Fingerprint every executable parser route used by raw authority.
+
+    The shared lowering closure covers dispatch, message identity, writer
+    lowering, lineage, and revision membership. Each executable OriginSpec
+    then contributes its actual provider-to-parser, stream, assembly, and
+    artifact routes plus the recursive source closure rooted at those routes.
+    This projects the existing admission registry; it does not create a
+    second parser inventory or a manually advanced semantic version.
+    """
+    executable = sorted(
+        (spec for spec in ORIGIN_SPECS if spec.lifecycle == "executable"),
+        key=lambda spec: spec.origin.value,
+    )
+    payload = {
+        "shared_lowering": lowering_fingerprint(),
+        "executable_origins": [
+            {
+                "origin": spec.origin.value,
+                "provider_wires": tuple(provider.value for provider in spec.provider_wires),
+                "lifecycle": spec.lifecycle,
+                "acquisition_modes": spec.acquisition_modes,
+                "parser_paths": spec.parser_paths,
+                "stream_parser_path": spec.stream_parser_path,
+                "assembly_paths": spec.assembly_paths,
+                "assembly_spec_path": spec.assembly_spec_path,
+                "artifact_routes": tuple(
+                    {
+                        "kind": rule.kind,
+                        "path_pattern": rule.path_pattern,
+                        "parse_policy": rule.parse_policy,
+                        "parser_path": rule.parser_path,
+                    }
+                    for rule in spec.artifact_rules
+                ),
+                "database_capability": (
+                    None
+                    if spec.database_capability is None
+                    else {
+                        "snapshot_method": spec.database_capability.snapshot_method,
+                        "consistency_fence": spec.database_capability.consistency_fence,
+                        "revision_identity": spec.database_capability.revision_identity,
+                        "raw_id_strategy": spec.database_capability.raw_id_strategy,
+                        "full_snapshot_per_revision": spec.database_capability.full_snapshot_per_revision,
+                        "snapshot_lineage_policy": spec.database_capability.snapshot_lineage_policy,
+                        "members": tuple(
+                            {
+                                "filename": member.filename,
+                                "disposition": member.disposition,
+                                "kind": member.kind,
+                                "reason": member.reason,
+                                "logical_tables": member.logical_tables,
+                                "consumer": member.consumer,
+                                "table_rules": tuple(
+                                    {
+                                        "table": rule.table,
+                                        "disposition": rule.disposition,
+                                        "reason": rule.reason,
+                                    }
+                                    for rule in member.table_rules
+                                ),
+                            }
+                            for member in spec.database_capability.members
+                        ),
+                    }
+                ),
+                "parser_closure": spec.parser_fingerprint(),
+            }
+            for spec in executable
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def artifact_observation_contracts(
     specs: Sequence[OriginSpec] | None = None,
 ) -> tuple[ArtifactObservationContract, ...]:
@@ -4061,6 +4170,7 @@ __all__ = [
     "schema_observed_leaf_values",
     "undeclared_schema_values",
     "lowering_fingerprint",
+    "parser_semantic_authority_fingerprint",
     "detector_registry",
     "materializer_fingerprint",
     "replay_routing_fingerprint",

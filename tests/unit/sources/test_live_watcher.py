@@ -1413,8 +1413,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
     that fails to parse stays permanently dark even after the parser bug that
     poisoned it is fixed -- the file on disk never changes, only the code
     that reads it. A ``_PARSER_FINGERPRINT`` bump (this module's existing,
-    deliberately-versioned marker for a parser-semantics change, the same
-    pattern ``RAW_AUTHORITY_PARSER_FINGERPRINT`` uses) must be enough to
+    deliberately-versioned marker for a parser-semantics change) must be enough to
     trigger a fresh attempt through the real ``LiveWatcher._needs_work`` path,
     not merely through ``CursorStore.revive_replaced_exclusion`` directly.
     """
@@ -3189,6 +3188,51 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         await archive.close()
 
 
+@pytest.mark.parametrize("cursor_state", ["settled", "excluded", "failed", "deferred"])
+def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path, cursor_state: str) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text('{"a":1}\n')
+    watcher, full_ingest = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint="live-batched-v5",
+        content_fingerprint=None if cursor_state == "deferred" else "old-revision",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=1 if cursor_state in {"excluded", "failed"} else 0,
+        excluded=cursor_state == "excluded",
+        next_retry_at="2999-01-01T00:00:00+00:00" if cursor_state in {"failed", "deferred"} else None,
+    )
+
+    # Use the dispatcher's bulk selection, then the actual batch cursor
+    # publication path. Only provider work is substituted by this harness.
+    selected, deferred = watcher.classify_ingest_candidates([path])
+    assert selected == (path,)
+    assert deferred == ()
+    asyncio.run(watcher._ingest_files(selected))
+
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+    assert full_ingest.await_count == 1
+    record = watcher._cursor.get_record(path)
+    assert record is not None
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+    assert record.parser_fingerprint != "live-batched-v5"
+    assert not record.excluded
+    assert record.failure_count == 0
+    assert watcher.classify_ingest_candidates([path]) == ((), ())
+
+
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "src"
     root.mkdir()
@@ -3925,14 +3969,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock, file_count: int
 ) -> None:
-    """slc55: an acquired file is finished, not discarded, when its own capture spends the hold.
-
-    The unit stops taking new files, the files it never reached stay
-    backlog, and the acquired one publishes its cursor. Anti-vacuity: raise
-    at the next admission or after the acquisition loop (the predecessor)
-    and the pass ends with no cursor, so a file that always outlasts the
-    bound is re-acquired and refused forever.
-    """
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
     from polylogue.sources.live.batch_support import classify_pre_acquisition
 
@@ -3973,27 +4010,16 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
         exit_write_hold(token)
 
     assert result.failed_file_count == 0
-    assert result.succeeded_file_count == 1
-    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+    assert result.succeeded_file_count == file_count
+    assert [path for path in paths if cursor.get_record(path) is not None] == paths
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (file_count,)
 
 
 @pytest.mark.asyncio
-async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> None:
-    """polylogue-ipyvj: past the bound the unit of work ends, typed.
-
-    The writer gate declares how long an admitted unit may hold the sole
-    archive writer. A unit that reaches a checkpoint already past it stops
-    there instead of finishing and being warned about afterwards, and the
-    files it never reached stay ordinary backlog -- no cursor, no failure
-    count, no retry backoff.
-
-    Anti-vacuity: drop ``check_write_hold_budget`` from
-    ``_ingest_pass_exhausted`` and this pass runs all three files to
-    completion with no bound in force, since ``max_pass_seconds`` is None.
-    """
-    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path) -> None:
+    """Admitted work finishes and publishes its cursor past diagnostic thresholds."""
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -4023,21 +4049,13 @@ async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> N
 
     token = enter_write_hold("watcher.catch_up.chunk", 0.0)
     try:
-        with pytest.raises(WriteHoldBudgetError) as raised:
-            await processor.ingest_files(paths, emit_event=False)
+        result = await processor.ingest_files(paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
-    assert raised.value.actor == "watcher.catch_up.chunk"
-    assert raised.value.checkpoint == "full_acquisition_file"
-    assert raised.value.budget_s == 0.0
-    for path in paths:
-        assert cursor.get_record(path) is None
-
-    recovered = await processor.ingest_files(paths, emit_event=False)
-
-    assert recovered.succeeded_file_count == 3
-    assert recovered.failed_file_count == 0
+    assert result.succeeded_file_count == 3
+    assert result.failed_file_count == 0
+    assert all(cursor.get_record(path) is not None for path in paths)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
 

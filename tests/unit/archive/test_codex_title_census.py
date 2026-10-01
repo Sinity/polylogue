@@ -22,7 +22,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, Titl
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_thread_titles
 
 
@@ -63,7 +63,7 @@ def _write(
         title_source=title_source,
         messages=messages or [],
     )
-    write_prepared_session(conn, session)
+    write_fixture_index_session(conn, session)
 
 
 def _seed_corpus(db_path: Path) -> None:

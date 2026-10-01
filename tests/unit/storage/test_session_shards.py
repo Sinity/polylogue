@@ -53,7 +53,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
     shard_column_signature,
 )
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.revision_backfill_benchmark import build_large_parent_shared_prefix_sessions
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -184,7 +184,7 @@ def _dump_table(conn: sqlite3.Connection, table: str, order_by: str) -> list[tup
 
 def _write_inline(conn: sqlite3.Connection, sessions: list[ParsedSession]) -> None:
     for session in sessions:
-        write_prepared_session(conn, session, content_hash=str(session_content_hash(session)))
+        write_fixture_index_session(conn, session, content_hash=str(session_content_hash(session)))
 
 
 def _session_key(session: ParsedSession) -> str:
@@ -197,7 +197,7 @@ def _copy_from_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], sh
     with attached_session_shard(conn, shard) as schema:
         bindings = bind_session_shard(schema, shard)
         for session in sessions:
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
@@ -253,7 +253,7 @@ def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
 
     conn = _connect(tmp_path / "index.db")
     try:
-        write_prepared_session(conn, original, raw_id="same-acquisition")
+        write_fixture_index_session(conn, original, raw_id="same-acquisition")
         with attached_session_shard(conn, shard) as schema:
             prepared = bind_session_shard(schema, shard)[_session_key(publication)]
 
@@ -262,7 +262,7 @@ def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
 
             monkeypatch.setattr(archive_tier_write, "_iter_message_rows", forbid_inline)
             monkeypatch.setattr(archive_tier_write, "_iter_block_rows", forbid_inline)
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 publication,
                 content_hash=publication.content_hash,
@@ -309,10 +309,10 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
     inline = _connect(tmp_path / "inline-attachment.db")
     streamed = _connect(tmp_path / "streamed-attachment.db")
     try:
-        write_prepared_session(inline, session, content_hash=str(session_content_hash(session)))
+        write_fixture_index_session(inline, session, content_hash=str(session_content_hash(session)))
         with attached_session_shard(streamed, shard) as schema:
             prepared = bind_session_shard(schema, shard)[_session_key(publication)]
-            write_prepared_session(
+            write_fixture_index_session(
                 streamed,
                 publication,
                 content_hash=publication.content_hash,
@@ -494,7 +494,7 @@ def test_stale_shard_content_hash_falls_back_to_fresh_content(tmp_path: Path) ->
         reopened = open_session_shard(shard.path)
         with attached_session_shard(conn, reopened) as schema:
             bindings = bind_session_shard(schema, reopened)
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 mutated,
                 content_hash=str(session_content_hash(mutated)),

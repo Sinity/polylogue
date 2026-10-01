@@ -57,7 +57,7 @@ from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
 )
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 from tests.infra.workload_artifacts import SeededArchiveArtifact
 
@@ -1640,7 +1640,7 @@ def test_unowned_attachment_evidence_keeps_closure_and_coverage_clean(tmp_path: 
                 )
             ],
         )
-        write_prepared_session(conn, session)
+        write_fixture_index_session(conn, session)
         conn.commit()
         unowned = conn.execute(
             "SELECT acquisition_status, ref_count FROM attachments WHERE display_name = 'note.txt'"
@@ -2903,7 +2903,7 @@ def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.
     session = parsed.sessions[0]
     attachment = session.parsed_session.attachments[0]
     attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
-    write_prepared_session(
+    write_fixture_index_session(
         index,
         session.parsed_session,
         raw_id=record.raw_id,

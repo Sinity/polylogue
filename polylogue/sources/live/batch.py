@@ -85,7 +85,6 @@ from polylogue.core.storage_faults import (
     storage_fault_kind,
 )
 from polylogue.core.timestamp_authority import timestamp_millis
-from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import ERROR, INFO, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
@@ -96,7 +95,6 @@ from polylogue.pipeline.ingest_outcomes import (
     downstream_failure_disposition,
     non_session_artifact_disposition,
     success_disposition,
-    transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path
@@ -735,16 +733,6 @@ def _captured_jsonl_ends_at_record_boundary(
 _FullRecordKey = tuple[str, str, int | None]
 
 
-def _emit_write_hold_spent_during_acquisition(exc: WriteHoldBudgetError) -> None:
-    emit(
-        "live.ingest.write_hold_spent_during_acquisition",
-        level=WARNING,
-        outcome="degraded",
-        reason="acquired_files_finish",
-        error_detail=str(exc),
-    )
-
-
 def _full_record_key(record: RawSessionRecord) -> _FullRecordKey:
     return record.raw_id, record.source_path, record.source_index
 
@@ -806,7 +794,6 @@ class _ArchiveFullWriteResult:
     # written and its cursor unrecorded, and every later pass would re-parse
     # and re-write the same bytes forever. The caller records its cursors and
     # then stops taking new work.
-    write_hold_exhausted: bool = False
 
 
 def _snapshot_fault_kinds(exc: BaseException) -> frozenset[StorageFaultKind]:
@@ -1211,11 +1198,7 @@ class LiveBatchProcessor:
         # A spent writer hold is a property of the pass, not of these inputs
         # (the adapter reports the page retryable); record it that way rather
         # than as the non-retryable parser-defect fallback.
-        disposition = (
-            transient_error_disposition(evidence_ref="write_hold_budget", diagnostic=str(exc))
-            if isinstance(exc, WriteHoldBudgetError)
-            else classify_archive_write_exception(exc)
-        )
+        disposition = classify_archive_write_exception(exc)
         fault = storage_fault_kind(exc)
         emit(
             "live.ingest.attempt_escaped",
@@ -1689,11 +1672,6 @@ class LiveBatchProcessor:
                         error=str(exc),
                     )
                     break
-                except WriteHoldBudgetError:
-                    # A spent writer hold is a property of the pass, not of
-                    # these files: marking them failed would put ordinary
-                    # backlog into retry backoff. The watcher ends the unit.
-                    raise
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Archive contention is infrastructure state, not a
@@ -1843,20 +1821,6 @@ class LiveBatchProcessor:
                     files=len(full_result.succeeded),
                     duration_ms=parse_elapsed * 1000,
                 )
-                if full_result.write_hold_exhausted:
-                    # The cursors above are durable now, so ending the unit
-                    # here costs this pass its remaining groups and nothing
-                    # else -- the alternative, raising before the cursor
-                    # write, re-parsed the same bytes on every later pass
-                    # forever (polylogue-3ijaa).
-                    emit(
-                        "live.ingest.write_hold_spent_after_commit",
-                        level=WARNING,
-                        outcome="degraded",
-                        source_id=source_name,
-                        reason="cursors_recorded_before_unit_end",
-                    )
-                    break
             # A held revision the loop ended before reaching was never
             # attempted: it stays retryable instead of reading as settled.
             failed_now = set(failed_paths)
@@ -3460,32 +3424,17 @@ class LiveBatchProcessor:
         excluded_paths: dict[Path, str] = {}
         detection_fallbacks: dict[Path, str] = {}
         acquisition_time_budget_exceeded = False
-        acquisition_write_hold_exhausted = False
         reached_any_path = False
 
         def admit_acquisition(path: Path) -> bool:
             # The same item boundary covers ordinary files and vendor
             # conversions. An unattempted item is backlog, never poison.
-            nonlocal acquisition_time_budget_exceeded, acquisition_write_hold_exhausted, reached_any_path
-            try:
-                pass_exhausted = _ingest_pass_exhausted(
-                    max_pass_seconds=max_pass_seconds if reached_any_path else None,
-                    pass_started=pass_clock_started,
-                    checkpoint="full_acquisition_file",
-                )
-            except WriteHoldBudgetError as exc:
-                if not reached_any_path:
-                    # Nothing acquired yet, so ending the unit loses nothing.
-                    blob_store.discard_pending()
-                    raise
-                # Files already acquired in this pass are finished, not
-                # discarded: a file whose own acquisition outlasts the bound
-                # would otherwise be re-acquired and refused on every pass
-                # and never land. It stops the pass taking new files; the
-                # ones acquired go on to publish their cursors.
-                _emit_write_hold_spent_during_acquisition(exc)
-                acquisition_write_hold_exhausted = True
-                pass_exhausted = True
+            nonlocal acquisition_time_budget_exceeded, reached_any_path
+            pass_exhausted = _ingest_pass_exhausted(
+                max_pass_seconds=max_pass_seconds if reached_any_path else None,
+                pass_started=pass_clock_started,
+                checkpoint="full_acquisition_file",
+            )
             if pass_exhausted:
                 acquisition_time_budget_exceeded = True
                 excluded_paths[path] = REFUSED_UNATTEMPTED_TIME_BUDGET
@@ -3540,8 +3489,6 @@ class LiveBatchProcessor:
                 ):
                     if raw_data is not None:
                         antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
-            except WriteHoldBudgetError:
-                raise
             except Exception as exc:
                 # Conversion publishes each raw into the archive blob store; a
                 # full or read-only archive is not a property of these files.
@@ -4202,19 +4149,12 @@ class LiveBatchProcessor:
         # here. The acquired files are finished rather than discarded (the
         # same forward-progress rule as the archive-write checkpoints): the
         # unit ends once their cursors are durable.
-        try:
-            check_write_hold_budget("full_acquisition_complete")
-        except WriteHoldBudgetError as exc:
-            if not acquisition_write_hold_exhausted:
-                _emit_write_hold_spent_during_acquisition(exc)
-            acquisition_write_hold_exhausted = True
 
         summary: _IngestBatchSummary | None = None
         archive_write: _ArchiveFullWriteResult | None = None
         raw_deferred_paths: list[Path] = []
         skipped_paths: set[Path] = set()
         time_budget_exceeded = acquisition_time_budget_exceeded
-        write_hold_exhausted = acquisition_write_hold_exhausted
         if raw_records:
             try:
                 for publisher in publishers:
@@ -4342,7 +4282,6 @@ class LiveBatchProcessor:
                 stage_timings_s=archive_write.stage_timings_s,
             )
             time_budget_exceeded = time_budget_exceeded or archive_write.time_budget_exceeded
-            write_hold_exhausted = write_hold_exhausted or archive_write.write_hold_exhausted
 
         failed_set = set(failed)
         raw_fingerprints = (
@@ -4429,7 +4368,6 @@ class LiveBatchProcessor:
                 *sorted(antigravity_excised_paths),
             ),
             time_budget_exceeded=time_budget_exceeded,
-            write_hold_exhausted=write_hold_exhausted,
         )
         raw_records.clear()
         raw_by_record.clear()
@@ -4569,27 +4507,11 @@ class LiveBatchProcessor:
                 # checkpoint and qlae's drive-catchup batch checkpoint) --
                 # only records after the first are ever skipped for time.
                 if record_index > 0:
-                    try:
-                        pass_exhausted = _ingest_pass_exhausted(
-                            max_pass_seconds=max_pass_seconds,
-                            pass_started=pass_clock_started,
-                            checkpoint="archive_write_record",
-                        )
-                    except WriteHoldBudgetError as exc:
-                        # Earlier records in this pass already committed, so
-                        # raising here would strand their cursors exactly the
-                        # way the post-commit checkpoint used to
-                        # (polylogue-3ijaa). The remaining records become
-                        # ordinary unattempted backlog instead.
-                        emit(
-                            "live.ingest.write_hold_spent_mid_pass",
-                            level=WARNING,
-                            outcome="degraded",
-                            reason="remaining_records_stay_backlog",
-                            error_detail=str(exc),
-                        )
-                        result.write_hold_exhausted = True
-                        pass_exhausted = True
+                    pass_exhausted = _ingest_pass_exhausted(
+                        max_pass_seconds=max_pass_seconds,
+                        pass_started=pass_clock_started,
+                        checkpoint="archive_write_record",
+                    )
                     if pass_exhausted:
                         for remaining in records[record_index:]:
                             result.skipped_raw_ids.add(_full_record_key(remaining))
@@ -5550,17 +5472,6 @@ class LiveBatchProcessor:
         # committed-and-failed batch whose cursor never lands (polylogue-3ijaa),
         # so an overrun is reported on the result instead. The caller records
         # the cursor the commit earned and ends the unit.
-        try:
-            check_write_hold_budget("archive_write_complete")
-        except WriteHoldBudgetError as exc:
-            emit(
-                "live.ingest.write_hold_spent_after_archive_commit",
-                level=WARNING,
-                outcome="degraded",
-                reason="cursor_recorded_before_unit_end",
-                error_detail=str(exc),
-            )
-            result.write_hold_exhausted = True
         return result
 
     def _parse_raw_revision_chain(

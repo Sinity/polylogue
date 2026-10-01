@@ -10,14 +10,13 @@ import sqlite3
 import uuid
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from contextlib import closing, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, Literal, cast, overload
-from urllib.parse import quote
 
 import ijson
 
@@ -95,6 +94,8 @@ from polylogue.sources.prepared_message_sink import (
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    _prepared_ordinal_rows,
+    _prepared_reader,
     discard_decoded_sessions,
     read_chatgpt_mapping_object,
 )
@@ -770,8 +771,7 @@ class PreparedJsonl:
             raise ValueError("JSONL preparation has no row shard")
         self.verify_files(full=False)
         shard = open_session_shard(self.shard_path)
-        uri = f"file:{quote(str(self.sessions_path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with _prepared_reader(self.sessions_path) as conn:
             seal = conn.execute(
                 "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
                 "FROM artifact_seal"
@@ -789,54 +789,48 @@ class PreparedJsonl:
             session_count = conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0]
             if session_count != len(shard.sessions):
                 raise ValueError("JSONL preparation session count disagrees with row shard")
-            shard_by_id = shard.by_session_id()
-            for (
-                _ordinal,
-                session_id,
-                metadata_json,
-                message_ordinal,
-                message_count,
-                event_ordinal,
-                event_count,
-                attachment_ordinal,
-                attachment_count,
-            ) in conn.execute(
-                "SELECT ordinal, session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count "
-                "FROM prepared_session ORDER BY ordinal"
-            ):
-                try:
-                    shard_entry = shard_by_id[session_id]
-                except KeyError as exc:
-                    raise ValueError("JSONL preparation session is absent from row shard") from exc
-                metadata = json.loads(metadata_json)
-                physical_count = conn.execute(
-                    "SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = ?", (message_ordinal,)
-                ).fetchone()[0]
-                if physical_count != message_count or physical_count != shard_entry.message_row_count:
-                    raise ValueError("JSONL preparation message count disagrees with row shard")
-                physical_events = conn.execute(
-                    "SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = ?", (event_ordinal,)
-                ).fetchone()[0]
-                if physical_events != event_count:
-                    raise ValueError("JSONL preparation event count changed")
-                physical_attachments = conn.execute(
-                    "SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = ?", (attachment_ordinal,)
-                ).fetchone()[0]
-                if physical_attachments != attachment_count:
-                    raise ValueError("JSONL preparation attachment count changed")
-                metadata["messages"] = []
-                metadata["session_events"] = []
-                metadata["attachments"] = []
-                session = ParsedSession.model_validate(metadata)
-                yield session.model_copy(
-                    update={
-                        "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
-                        "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
-                        "attachments": SqliteAttachmentSink(
-                            self.sessions_path, attachment_ordinal, count=attachment_count
-                        ),
-                    }
-                )
+        shard_by_id = shard.by_session_id()
+        for row in _prepared_ordinal_rows(
+            self.sessions_path,
+            table="prepared_session",
+            ordinal="ordinal",
+            session=None,
+            columns=(
+                "session_id, metadata_json, message_ordinal, message_count, event_ordinal, event_count, "
+                "attachment_ordinal, attachment_count, "
+                "(SELECT COUNT(*) FROM prepared_message WHERE session_ordinal = prepared_session.message_ordinal), "
+                "(SELECT COUNT(*) FROM prepared_event WHERE session_ordinal = prepared_session.event_ordinal), "
+                "(SELECT COUNT(*) FROM prepared_attachment WHERE session_ordinal = prepared_session.attachment_ordinal)"
+            ),
+        ):
+            session_id = str(row[0])
+            metadata_json = str(row[1])
+            message_ordinal, message_count, event_ordinal, event_count, attachment_ordinal, attachment_count = (
+                int(cast(int, value)) for value in row[2:8]
+            )
+            physical_count, physical_events, physical_attachments = (int(cast(int, value)) for value in row[8:])
+            try:
+                shard_entry = shard_by_id[session_id]
+            except KeyError as exc:
+                raise ValueError("JSONL preparation session is absent from row shard") from exc
+            metadata = json.loads(metadata_json)
+            if physical_count != message_count or physical_count != shard_entry.message_row_count:
+                raise ValueError("JSONL preparation message count disagrees with row shard")
+            if physical_events != event_count:
+                raise ValueError("JSONL preparation event count changed")
+            if physical_attachments != attachment_count:
+                raise ValueError("JSONL preparation attachment count changed")
+            metadata["messages"] = []
+            metadata["session_events"] = []
+            metadata["attachments"] = []
+            session = ParsedSession.model_validate(metadata)
+            yield session.model_copy(
+                update={
+                    "messages": SqliteMessageSink(self.sessions_path, message_ordinal, count=message_count),
+                    "session_events": SqliteSessionEventSink(self.sessions_path, event_ordinal, count=event_count),
+                    "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
+                }
+            )
 
     @property
     def codex_state_snapshot(self) -> codex_state.CodexStateSnapshot | None:
@@ -924,8 +918,7 @@ class PreparedJsonl:
         if self.sessions_path is None:
             raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
         self.verify_files(full=False)
-        uri = f"file:{quote(str(self.sessions_path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with _prepared_reader(self.sessions_path) as conn:
             seal = conn.execute(
                 "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
                 "FROM artifact_seal"
@@ -954,8 +947,7 @@ class PreparedJsonl:
             raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
         self.verify_files(full=False)
         shard = _shard if _shard is not None else open_session_shard(self.shard_path)
-        uri = f"file:{quote(str(self.sessions_path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with _prepared_reader(self.sessions_path) as conn:
             seal = conn.execute(
                 "SELECT version, source_hash, session_count, enrichment_digest, enrichment_index_path "
                 "FROM artifact_seal"
@@ -1043,9 +1035,18 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
         if self.artifact.sessions_path is None:
             raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
         self.artifact.verify_files(full=False)
-        uri = f"file:{quote(str(self.artifact.sessions_path))}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
-            for (session_id,) in conn.execute("SELECT session_id FROM prepared_session ORDER BY session_id"):
+        after: str | None = None
+        while True:
+            with _prepared_reader(self.artifact.sessions_path) as connection:
+                rows = connection.execute(
+                    "SELECT session_id FROM prepared_session WHERE (? IS NULL OR session_id > ?) "
+                    "ORDER BY session_id LIMIT 512",
+                    (after, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            for (session_id,) in rows:
                 yield str(session_id)
 
     def __iter__(self) -> Iterator[ParsedSession]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
@@ -870,7 +871,7 @@ async def test_tools_renders_against_real_archive_backed_store(tmp_path: Path) -
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
     (
         SessionBuilder(db_path, "conv-tools-real")

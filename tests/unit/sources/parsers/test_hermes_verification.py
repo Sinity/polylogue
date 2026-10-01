@@ -502,14 +502,13 @@ def test_parse_verification_evidence_db_closes_its_private_reader_on_success(
 ) -> None:
     """A leaked connection is invisible to any assertion about parsed rows.
 
-    ``open_logical_source`` unlinks the reconstruction it builds for a
+    ``logical_source_context`` owns the reconstruction it builds for a
     retained export, so the connection is the only reference keeping that
     inode alive; ``sqlite3``'s own context manager commits or rolls back and
     never closes.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` in
-    ``parse_verification_evidence_db`` to a bare ``with
-    _connect_readonly(...)`` and ``probe.closed`` is ``False`` while the two
+    Anti-vacuity: omit context exit in
+    ``parse_verification_evidence_db`` and ``probe.closed`` is ``False`` while the two
     parsed sessions below stay exactly right.
     """
     path = tmp_path / "verification_evidence.db"
@@ -527,7 +526,7 @@ def test_parse_verification_evidence_db_closes_its_private_reader_when_it_refuse
 ) -> None:
     """The refusal path owns the connection too.
 
-    Anti-vacuity: revert to a bare ``with`` and this probe reports ``closed is
+    Anti-vacuity: omit native close on context exit and this probe reports ``closed is
     False`` while the ``ValueError`` still raises, so only the lifecycle
     assertion can catch it.
     """
@@ -546,7 +545,7 @@ def test_parse_verification_evidence_db_closes_its_private_reader_when_it_refuse
 def test_parse_verification_evidence_db_leaves_no_handle_on_the_unlinked_reconstruction(tmp_path: Path) -> None:
     """The production route, with nothing patched, strands no inode.
 
-    Anti-vacuity: revert ``closing(_connect_readonly(...))`` to a bare
+    Anti-vacuity: revert ``closing(_readonly_context(...))`` to a bare
     ``with`` and the descriptor count rises by one per parse and never falls.
     """
     path = tmp_path / "verification_evidence.db"

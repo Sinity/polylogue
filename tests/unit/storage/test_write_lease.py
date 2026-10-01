@@ -14,13 +14,19 @@ write-mode connection without the lease raises instead of contending.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import os
+import select
 import sqlite3
 import threading
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
@@ -30,11 +36,13 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.write_lease import (
     UnleasedWriteError,
-    WriteHoldExceededError,
     adopt_write_lease,
     arm_write_lease_enforcement,
+    async_write_lease,
+    bind_write_lease_thread,
     current_write_lease,
     delegate_write_lease,
+    grant_write_lease_thread,
     require_write_lease,
     write_lease,
     write_lease_enforced,
@@ -87,7 +95,7 @@ def test_overlapping_process_wide_arming_remains_until_last_exit() -> None:
 
 def test_a_leased_write_open_succeeds(db_path: Path) -> None:
     """The lease authorizes; it does not merely record."""
-    with arm_write_lease_enforcement(), write_lease("test.writer"):
+    with arm_write_lease_enforcement(), write_lease("test.writer", archive_root=db_path.parent):
         with closing(open_connection(db_path, validate_schema=False)) as conn:
             conn.execute("INSERT INTO t VALUES (1)")
             conn.commit()
@@ -150,6 +158,7 @@ def test_index_generation_bootstrap_requires_the_archive_bound_lease(
     from polylogue.storage.index_generation import IndexGenerationStore
 
     root = tmp_path / "archive"
+    root.mkdir()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     store = IndexGenerationStore.for_archive_root(root)
@@ -177,6 +186,7 @@ def test_index_generation_lifecycle_receipts_and_recovery_require_admission(
     from polylogue.storage.index_generation import IndexGenerationStore
 
     root = tmp_path / "archive"
+    root.mkdir()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     store = IndexGenerationStore.for_archive_root(root)
@@ -213,6 +223,7 @@ def test_generation_checkpoint_binds_to_its_archive_root(tmp_path: Path, monkeyp
     assert guarded_archive_tier_path("/proc/self/fd/7") is None
 
     root = tmp_path / "archive"
+    root.mkdir()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     index_db = root / "index.db"
@@ -244,6 +255,7 @@ def test_cold_generation_open_binds_to_the_declared_archive_root(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
+    root.mkdir()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     store = IndexGenerationStore.for_archive_root(root)
@@ -271,6 +283,400 @@ def test_cold_generation_open_binds_to_the_declared_archive_root(
         )
 
 
+def test_writable_archive_store_releases_open_custody_and_gates_each_mutation(tmp_path: Path) -> None:
+    """A persistent SQLite handle does not hold physical custody between writes."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with arm_write_lease_enforcement(), write_lease("test.archive.open", archive_root=root):
+        initialize_active_archive_root(root)
+        archive = ArchiveStore(root, initialize=False, read_only=False)
+    assert current_write_lease() is None
+
+    # A second archive owner can acquire custody while the first store's
+    # persistent handles remain open; the active-store SH lease is a
+    # separate lifecycle lock and is intentionally retained.
+    with write_lease("test.archive.between-writes", archive_root=root):
+        assert current_write_lease() is not None
+
+    try:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b"{}",
+            source_path="synthetic/session.jsonl",
+            acquired_at_ms=1,
+        )
+        assert raw_id
+        assert current_write_lease() is None
+    finally:
+        archive.close()
+
+
+def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(tmp_path: Path) -> None:
+    """An early handle-close failure cannot leave an index transaction live."""
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with write_lease("test.archive.open", archive_root=root):
+        initialize_active_archive_root(root)
+        archive = ArchiveStore(root, initialize=False, read_only=False)
+    archive._enter_mutation_lease()
+    archive._conn.execute("BEGIN IMMEDIATE")
+    archive._conn.execute("CREATE TABLE close_probe (value INTEGER)")
+    vector = SettlementHandle(connect_measured(":memory:"))
+    vector.connection.execute("BEGIN")
+    archive.operation_vector_connection = vector  # type: ignore[assignment]
+    try:
+        with pytest.raises(ArchiveStoreSettlementError) as failure:
+            archive.close()
+        assert failure.value.store is archive
+        assert isinstance(failure.value.failure, NativeConnectionSettlementError)
+        assert isinstance(failure.value.failure.failure, OSError)
+        assert current_write_lease() is not None
+        vector.allow_cleanup.set()
+        archive.close()
+        assert current_write_lease() is None
+        with write_lease("test.archive.after-close-failure", archive_root=root):
+            with closing(connect_measured(root / "index.db")) as conn:
+                assert (
+                    conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='close_probe'").fetchone()
+                    is None
+                )
+        archive.close()
+    finally:
+        vector.allow_cleanup.set()
+        archive.close()
+
+
+@pytest.mark.uses_real_clock("a competing physical writer waits for actual SQLite settlement")
+def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled(
+    tmp_path: Path,
+) -> None:
+    """Failed rollback and close keep the live writer behind its physical gate."""
+    import threading
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    class FailingConnection:
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            self.connection = connection
+            self.fail_settlement = True
+
+        @property
+        def in_transaction(self) -> bool:
+            return self.connection.in_transaction
+
+        def rollback(self) -> None:
+            if self.fail_settlement:
+                raise OSError("synthetic rollback failure")
+            self.connection.rollback()
+
+        def close(self) -> None:
+            if self.fail_settlement:
+                raise OSError("synthetic close failure")
+            self.connection.close()
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.connection, name)
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with write_lease("test.archive.open", archive_root=root):
+        initialize_active_archive_root(root)
+        archive = ArchiveStore(root, initialize=False, read_only=False)
+    archive._enter_mutation_lease()
+    archive._conn.execute("BEGIN IMMEDIATE")
+    archive._conn.execute("CREATE TABLE unsettled_probe (value INTEGER)")
+    proxy = FailingConnection(archive._conn)
+    archive._conn = proxy  # type: ignore[assignment]
+
+    with pytest.raises(ArchiveStoreSettlementError) as failure:
+        archive.close()
+
+    assert failure.value.store is archive
+    assert proxy.in_transaction
+    assert cast(object, archive._conn) is proxy
+    assert current_write_lease() is not None
+    acquired = threading.Event()
+    finished = threading.Event()
+
+    def competing_writer() -> None:
+        with write_lease("test.archive.waiting-writer", archive_root=root):
+            acquired.set()
+        finished.set()
+
+    contender = threading.Thread(target=competing_writer)
+    contender.start()
+    assert not acquired.wait(0.05)
+
+    proxy.fail_settlement = False
+    archive.close()
+    assert acquired.wait(2)
+    contender.join(timeout=2)
+    assert finished.is_set()
+    assert current_write_lease() is None
+    with sqlite3.connect(root / "index.db") as conn:
+        assert (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unsettled_probe'").fetchone() is None
+        )
+
+
+@pytest.mark.uses_real_clock("foreign-thread refusal precedes native SQLite cleanup")
+def test_archive_store_wrong_thread_close_preserves_owner_recovery(tmp_path: Path) -> None:
+    """A foreign thread cannot strand a thread-affine SQLite transaction."""
+    import threading
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with write_lease("test.archive.open", archive_root=root):
+        initialize_active_archive_root(root)
+        archive = ArchiveStore(root, initialize=False, read_only=False)
+    archive._enter_mutation_lease()
+    archive._conn.execute("BEGIN IMMEDIATE")
+    archive._conn.execute("CREATE TABLE owner_thread_probe (value INTEGER)")
+    failures: list[BaseException] = []
+
+    def foreign_close() -> None:
+        try:
+            archive.close()
+        except BaseException as exc:
+            failures.append(exc)
+
+    closer = threading.Thread(target=foreign_close)
+    closer.start()
+    closer.join(timeout=2)
+    assert not closer.is_alive()
+    assert len(failures) == 1
+    assert isinstance(failures[0], RuntimeError)
+    assert archive._conn.in_transaction
+    assert current_write_lease() is not None
+
+    archive.close()
+    assert current_write_lease() is None
+    with sqlite3.connect(root / "index.db") as conn:
+        assert (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='owner_thread_probe'").fetchone()
+            is None
+        )
+
+
+def test_archive_insight_rebuild_uses_store_mutation_admission(tmp_path: Path) -> None:
+    """The retained adapter cannot bypass daemon admission with Store._conn."""
+    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    archive = ArchiveStore(root, initialize=False)
+    observed_writes: list[tuple[str, bool]] = []
+
+    def observe(sql: str) -> None:
+        if sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE", "REPLACE")):
+            observed_writes.append((sql, current_write_lease() is not None))
+
+    try:
+        archive._conn.set_trace_callback(observe)
+        rebuild_archive_session_insights(archive)
+        assert observed_writes
+        assert all(admitted for _sql, admitted in observed_writes)
+        assert current_write_lease() is None
+        with arm_write_lease_enforcement(), pytest.raises(UnleasedWriteError):
+            rebuild_archive_session_insights(archive)
+    finally:
+        archive._conn.set_trace_callback(None)
+        archive.close()
+
+
+@pytest.mark.uses_real_clock("raw connection cleanup runs on its actual aiosqlite worker")
+def test_async_writer_grant_is_retained_until_worker_connection_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed aiosqlite close cannot retire the grant protecting its worker."""
+
+    class FakeGrant:
+        completed = False
+
+        def complete(self) -> None:
+            self.completed = True
+
+    class RawConnection:
+        fail_close = True
+        worker: threading.Thread | None = None
+
+        def set_progress_handler(self, callback: object, steps: int) -> None:
+            assert threading.current_thread() is self.worker
+            assert callback is None and steps == 0
+
+        def rollback(self) -> None:
+            assert threading.current_thread() is self.worker
+
+        def close(self) -> None:
+            assert threading.current_thread() is self.worker
+            if self.fail_close:
+                raise OSError("synthetic worker close failure")
+
+    import aiosqlite
+
+    from polylogue.storage.sqlite import async_sqlite
+
+    backend = cast(async_sqlite.SQLiteBackend, object())
+    raw = RawConnection()
+
+    def connect() -> RawConnection:
+        raw.worker = threading.current_thread()
+        return raw
+
+    connection = aiosqlite.Connection(connect, iter_chunk_size=64)  # type: ignore[arg-type]
+    grant = FakeGrant()
+
+    async def scenario() -> None:
+        monkeypatch.setitem(
+            async_sqlite._BACKEND_CONNECTIONS,
+            id(connection),
+            async_sqlite._BackendConnectionOwner(
+                backend,
+                connection,
+                threading.current_thread(),
+                asyncio.current_task(),
+                os.getpid(),
+                grant,  # type: ignore[arg-type]
+            ),
+        )
+        _ = await connection
+        try:
+            with pytest.raises(OSError, match="synthetic worker close failure"):
+                await async_sqlite._close_backend_connection(connection, rollback=True)
+            assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
+            assert not grant.completed
+            assert cast(object, connection._connection) is raw
+            assert connection._running
+            assert connection._thread.is_alive()
+            raw.fail_close = False
+            await async_sqlite._close_backend_connection(connection, rollback=True)
+            assert id(connection) not in async_sqlite._BACKEND_CONNECTIONS
+            assert grant.completed
+            assert connection._connection is None
+            connection._thread.join()
+            assert not connection._thread.is_alive()
+        finally:
+            if connection._running:
+                raw.fail_close = False
+                await connection.close()
+
+    asyncio.run(scenario())
+
+
+def test_archive_close_can_settle_a_finished_task_only_on_its_original_thread(tmp_path: Path) -> None:
+    """A completed task leaves cleanup custody, never mutation authority."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+
+    async def scenario() -> None:
+        admitted = asyncio.Event()
+        finish = asyncio.Event()
+        stores: list[ArchiveStore] = []
+
+        async def owner() -> None:
+            async with async_write_lease("test.store.owner", archive_root=root):
+                store = ArchiveStore(root, initialize=False)
+                stores.append(store)
+                store._enter_mutation_lease()
+                store._conn.execute("BEGIN IMMEDIATE")
+                store._conn.execute("CREATE TABLE finished_task_probe (value INTEGER)")
+                admitted.set()
+                await finish.wait()
+
+        task = asyncio.create_task(owner())
+        await admitted.wait()
+        store = stores[0]
+        try:
+            with pytest.raises(RuntimeError):
+                store.close()
+            finish.set()
+            await task
+            with pytest.raises(RuntimeError):
+                store.commit()
+            store.close()
+            assert store._owned_index_connection is None
+            assert current_write_lease() is None
+            async with async_write_lease("test.store.successor", archive_root=root):
+                with sqlite3.connect(root / "index.db") as conn:
+                    assert (
+                        conn.execute("SELECT 1 FROM sqlite_master WHERE name='finished_task_probe'").fetchone() is None
+                    )
+        finally:
+            finish.set()
+            await task
+            store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.uses_real_clock("terminal cleanup drains the actual original SQLite worker")
+def test_async_manual_cleanup_retires_a_finished_task_without_borrowing_live_authority(
+    tmp_path: Path,
+) -> None:
+    """Only terminal cleanup may settle another task's retained real worker."""
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    backend = SQLiteBackend(db_path=root / "index.db")
+
+    async def scenario() -> None:
+        admitted = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def owner() -> None:
+            await backend.begin()
+            admitted.set()
+            await finish.wait()
+            # Deliberately leave an unsettled manual transaction, as after a
+            # cleanup failure. The backend retains its real connection/lease.
+
+        task = asyncio.create_task(owner())
+        await admitted.wait()
+        connection = backend._txn_conn
+        assert connection is not None
+        try:
+            with pytest.raises(UnleasedWriteError):
+                await backend.close()
+            with pytest.raises(UnleasedWriteError):
+                async with backend.transaction():
+                    pytest.fail("another task entered the live manual transaction")
+            with pytest.raises(UnleasedWriteError):
+                async with backend.bulk_connection():
+                    pytest.fail("another task acquired custody ahead of owner validation")
+            assert backend._txn_conn is connection
+            assert connection._thread.is_alive()
+            finish.set()
+            await task
+            await backend.close()
+            assert backend._txn_conn is None
+            assert backend._manual_lease_cm is None
+            assert current_write_lease() is None
+            connection._thread.join()
+            assert not connection._thread.is_alive()
+            async with async_write_lease("test.successor", archive_root=root):
+                assert current_write_lease() is not None
+        finally:
+            finish.set()
+            await task
+            await backend.close()
+
+    asyncio.run(scenario())
+
+
 def test_cold_generation_discard_requires_the_archive_bound_lease(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -285,6 +691,7 @@ def test_cold_generation_discard_requires_the_archive_bound_lease(
     from polylogue.sources.live.watcher import WatchSource
 
     root = tmp_path / "archive"
+    root.mkdir()
     initialize_active_archive_root(root)
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
     with write_lease("test.generation", archive_root=root):
@@ -331,7 +738,7 @@ def test_enforcement_is_off_by_default_so_one_shot_writers_are_unaffected(db_pat
 
 def test_the_lease_does_not_leak_past_its_block(db_path: Path) -> None:
     with arm_write_lease_enforcement():
-        with write_lease("test.writer"):
+        with write_lease("test.writer", archive_root=db_path.parent):
             assert current_write_lease() is not None
         assert current_write_lease() is None
         with pytest.raises(UnleasedWriteError):
@@ -351,8 +758,8 @@ def test_a_nested_acquisition_returns_the_outer_lease(db_path: Path) -> None:
     and a long outer hold stops being reported, which is the exact blindness the
     budget exists to remove.
     """
-    with write_lease("outer", max_hold_seconds=10.0) as outer:
-        with write_lease("inner", max_hold_seconds=0.001) as inner:
+    with write_lease("outer", max_hold_seconds=10.0, archive_root=db_path.parent) as outer:
+        with write_lease("inner", max_hold_seconds=0.001, archive_root=db_path.parent) as inner:
             assert inner is outer
             assert inner.actor == "outer"
 
@@ -375,25 +782,93 @@ def test_a_nested_acquisition_inherits_the_outer_archive_identity(tmp_path: Path
                 pass
 
 
-def test_a_hold_past_its_declared_budget_is_a_typed_failure() -> None:
-    """An over-long hold fails rather than being absorbed as a longer wait.
-
-    The budget cannot preempt a writer already inside a SQLite transaction, so
-    it fires at release: its job is to make an 18,623 s hold impossible to miss.
-    """
-    with pytest.raises(WriteHoldExceededError, match="budget"):
-        with write_lease("test.slow", max_hold_seconds=0.0):
-            pass
+def test_a_slow_valid_hold_is_measured_without_changing_its_outcome(tmp_path: Path) -> None:
+    """A duration budget is telemetry and cannot turn a completed write into failure."""
+    with write_lease("test.slow", max_hold_seconds=0.0, archive_root=tmp_path) as lease:
+        assert lease.over_budget is True
 
 
-def test_a_hold_within_its_budget_is_silent() -> None:
-    with write_lease("test.fast", max_hold_seconds=60.0) as lease:
+def test_a_hold_within_its_budget_is_silent(tmp_path: Path) -> None:
+    with write_lease("test.fast", max_hold_seconds=60.0, archive_root=tmp_path) as lease:
         assert lease.over_budget is False
 
 
-def test_require_write_lease_returns_the_lease_for_an_authorized_caller() -> None:
-    with write_lease("test.writer") as lease:
-        assert require_write_lease("probe") is lease
+def test_unused_thread_grant_cannot_bind_after_its_owner_releases(tmp_path: Path) -> None:
+    with write_lease("test.owner", archive_root=tmp_path):
+        grant = grant_write_lease_thread()
+
+    observed: list[BaseException] = []
+
+    def bind_late() -> None:
+        try:
+            bind_write_lease_thread(grant)
+        except BaseException as exc:
+            observed.append(exc)
+
+    worker = threading.Thread(target=lambda: contextvars.Context().run(bind_late))
+    worker.start()
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert len(observed) == 1
+    assert isinstance(observed[0], UnleasedWriteError)
+
+
+@pytest.mark.uses_real_clock("coordinates a real forked process and a queued flock owner")
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="fork is unavailable on this platform")
+def test_forked_child_cannot_reuse_or_unlock_parent_custody(tmp_path: Path) -> None:
+    """A child drops inherited authority without unlocking its parent's flock."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    read_fd, write_fd = os.pipe()
+    queued = threading.Event()
+    acquired = threading.Event()
+
+    def queued_writer() -> None:
+        def run() -> None:
+            queued.set()
+            with write_lease("test.queued_writer", archive_root=root):
+                acquired.set()
+
+        contextvars.Context().run(run)
+
+    worker = threading.Thread(target=queued_writer, name="queued-archive-writer")
+    with write_lease("test.parent", archive_root=root):
+        grant = grant_write_lease_thread()
+        worker.start()
+        assert queued.wait(timeout=2)
+        child_pid = os.fork()
+        if child_pid == 0:  # pragma: no cover - assertions are reported to parent by pipe
+            os.close(read_fd)
+            try:
+                try:
+                    bind_write_lease_thread(grant)
+                except UnleasedWriteError:
+                    os.write(write_fd, b"R")
+                else:
+                    os.write(write_fd, b"X")
+                with write_lease("test.forked_child", archive_root=root):
+                    os.write(write_fd, b"A")
+            except BaseException:
+                os.write(write_fd, b"E")
+            finally:
+                os._exit(0)
+        os.close(write_fd)
+        assert os.read(read_fd, 1) == b"R"
+        assert select.select((read_fd,), (), (), 0.05)[0] == []
+        assert not acquired.is_set()
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert acquired.is_set()
+    assert os.read(read_fd, 1) == b"A"
+    _, status = os.waitpid(child_pid, 0)
+    assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+    os.close(read_fd)
+
+
+def test_require_write_lease_returns_the_lease_for_an_authorized_caller(tmp_path: Path) -> None:
+    with write_lease("test.writer", archive_root=tmp_path) as lease:
+        assert require_write_lease("probe", archive_root=tmp_path) is lease
 
 
 def test_a_child_task_cannot_inherit_its_parents_write_lease(db_path: Path) -> None:
@@ -405,22 +880,87 @@ def test_a_child_task_cannot_inherit_its_parents_write_lease(db_path: Path) -> N
     """
 
     async def scenario() -> None:
-        with arm_write_lease_enforcement(), write_lease("test.owner"):
+        async with async_write_lease("test.owner", archive_root=db_path.parent):
+            with arm_write_lease_enforcement():
 
-            async def child_writer() -> None:
+                async def child_writer() -> None:
+                    with closing(open_connection(db_path, validate_schema=False)):
+                        pass
+
+                child = asyncio.create_task(child_writer())
+                with pytest.raises(UnleasedWriteError, match="inherited by a child task"):
+                    await child
+
+                # The owning task retains its own authority after refusing the
+                # inherited child context.
                 with closing(open_connection(db_path, validate_schema=False)):
                     pass
 
-            child = asyncio.create_task(child_writer())
-            with pytest.raises(UnleasedWriteError, match="inherited by a child task"):
-                await child
-
-            # The owning task retains its own authority after refusing the
-            # inherited child context.
-            with closing(open_connection(db_path, validate_schema=False)):
-                pass
-
     asyncio.run(scenario())
+
+
+def test_two_child_tasks_cannot_borrow_offline_archive_custody(tmp_path: Path) -> None:
+    """Ambient offline custody is not a way for child tasks to mint writers."""
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody, archive_write_custody
+
+    async def scenario(custody: ArchiveWriteCustody) -> None:
+        async def child_writer() -> None:
+            with write_lease(
+                "test.inherited_offline_custody",
+                archive_root=tmp_path,
+                _custody=custody,
+            ):
+                pytest.fail("a child task borrowed its parent's physical archive custody")
+
+        tasks = (asyncio.create_task(child_writer()), asyncio.create_task(child_writer()))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        assert len(results) == 2
+        assert all(isinstance(result, UnleasedWriteError) for result in results)
+
+    # The synchronous owner scope deliberately survives into asyncio.run so
+    # both tasks see the same thread-local carrier. Its exact owner task is
+    # still ``None``; neither new task is allowed to turn that carrier into
+    # separate authorities over the same flock descriptor.
+    with archive_write_custody(tmp_path) as custody:
+        asyncio.run(scenario(custody))
+
+
+@pytest.mark.uses_real_clock("settles an adopted writer while the rebuild exclusion remains held")
+def test_rebuild_exclusion_waits_for_an_adopted_writer(tmp_path: Path) -> None:
+    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLease, RebuildLeaseUnavailableError
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+    observed_rebuild_exclusion: list[bool] = []
+
+    with RebuildLease(root):
+        delegation = delegate_write_lease()
+
+        def adopted_writer() -> None:
+            with adopt_write_lease(delegation):
+                started.set()
+                assert release.wait(timeout=5)
+                active = ActiveWriterLease(root)
+                try:
+                    active.acquire()
+                except RebuildLeaseUnavailableError:
+                    observed_rebuild_exclusion.append(True)
+                else:
+                    active.close()
+                    observed_rebuild_exclusion.append(False)
+
+        worker = threading.Thread(target=lambda: contextvars.Context().run(adopted_writer))
+        worker.start()
+        assert started.wait(timeout=5)
+        # RebuildLease.__exit__ now blocks on this already-adopted writer. It
+        # cannot release the exclusive rebuild lock before the worker probes.
+        release.set()
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert observed_rebuild_exclusion == [True]
 
 
 def test_require_write_lease_is_permissive_when_unarmed() -> None:
@@ -502,6 +1042,7 @@ def test_an_unleased_backend_admits_an_established_archive_read_only(tmp_path: P
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     root = tmp_path / "archive"
+    root.mkdir()
     index_db = root / "index.db"
     initialize_active_archive_root(root)
     os.chmod(index_db, 0o644)
@@ -532,16 +1073,16 @@ def test_the_cached_write_connection_is_refused_without_a_lease(tmp_path: Path) 
                 pass
 
 
-def test_an_over_budget_hold_does_not_displace_its_own_failure() -> None:
+def test_an_over_budget_hold_does_not_displace_its_own_failure(tmp_path: Path) -> None:
     """A failing over-budget hold reports its own error, not the budget breach.
 
     Determinism: ``max_hold_seconds=0.0`` puts the hold over budget on every
     run without a sleep, since ``held_seconds`` is strictly positive by the
     time release is reached. No timing window is raced.
 
-    Anti-vacuity: raising ``WriteHoldExceededError`` from the release
-    ``finally`` -- the previous behavior -- turns this red. That masking is not
-    cosmetic: ``_publication_commit_known`` in ``daemon/convergence.py``
+    Anti-vacuity: raising a timing error from the release
+    ``finally`` turns this red. That masking is not cosmetic:
+    ``_publication_commit_known`` in ``daemon/convergence.py``
     recovers a partial-write fact by ``isinstance`` on the raised exception, so
     a displaced error makes a committed index replacement with an unlowered
     marker report as an ordinary failure carrying no committed fact.
@@ -553,14 +1094,14 @@ def test_an_over_budget_hold_does_not_displace_its_own_failure() -> None:
             self.index_family_committed = True
 
     with pytest.raises(PartialWriteError) as caught:
-        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0):
+        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0, archive_root=tmp_path):
             raise PartialWriteError
 
     # The typed fact an ``except`` clause needs survives the over-budget release.
     assert caught.value.index_family_committed is True
 
 
-def test_a_failing_over_budget_hold_still_releases_the_lease() -> None:
+def test_a_failing_over_budget_hold_still_releases_the_lease(tmp_path: Path) -> None:
     """The contextvar is restored on the failing path, not only the clean one.
 
     Deterministic for the same reason as above; a leaked lease would let the
@@ -571,13 +1112,13 @@ def test_a_failing_over_budget_hold_still_releases_the_lease() -> None:
         pass
 
     with pytest.raises(BoomError):
-        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0):
+        with write_lease("test.failing_slow_writer", max_hold_seconds=0.0, archive_root=tmp_path):
             raise BoomError
 
     assert current_write_lease() is None
 
 
-def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
+def test_an_unbound_thread_that_inherits_the_lease_is_still_refused(tmp_path: Path) -> None:
     """A spawned thread must not write on a lease it merely inherited.
 
     This interpreter is a free-threading (no-GIL) CPython build, and on it a
@@ -603,13 +1144,13 @@ def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
     def worker() -> None:
         observed["inherited_lease"] = current_write_lease()
         try:
-            require_write_lease("worker durable write")
+            require_write_lease("worker durable write", archive_root=tmp_path)
         except UnleasedWriteError as exc:
             observed["outcome"] = f"refused: {exc}"
         else:
             observed["outcome"] = "allowed"
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
         thread = threading.Thread(target=worker, name="inheriting-worker")
         thread.start()
         thread.join()
@@ -622,7 +1163,7 @@ def test_an_unbound_thread_that_inherits_the_lease_is_still_refused() -> None:
     assert lease.bound_thread_ids == {lease.owner_thread_id}
 
 
-def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else() -> None:
+def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else(tmp_path: Path) -> None:
     """Ownership travels as a value, so a hand-off survives thread + loop changes.
 
     Anti-vacuity: drop the ``adopt_write_lease`` block from ``worker`` and the
@@ -633,13 +1174,13 @@ def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else() -> N
     seen: list[str] = []
 
     with arm_write_lease_enforcement():
-        with write_lease("owner"):
+        with write_lease("owner", archive_root=tmp_path):
             delegation = delegate_write_lease()
 
             def worker() -> None:
                 async def body() -> None:
                     with adopt_write_lease(delegation):
-                        lease = require_write_lease("user.db write")
+                        lease = require_write_lease("user.db write", archive_root=tmp_path)
                         seen.append("adopted" if lease is not None else "unleased")
 
                 asyncio.run(body())
@@ -651,7 +1192,7 @@ def test_delegation_authorizes_a_foreign_thread_and_loop_but_nothing_else() -> N
     assert seen == ["adopted"]
 
 
-def test_a_thread_without_the_delegation_is_still_refused_inside_the_hold() -> None:
+def test_a_thread_without_the_delegation_is_still_refused_inside_the_hold(tmp_path: Path) -> None:
     """The load-bearing negative: admission is not ambient authorization.
 
     Anti-vacuity: authorize the rogue thread ambiently -- call
@@ -662,12 +1203,12 @@ def test_a_thread_without_the_delegation_is_still_refused_inside_the_hold() -> N
     refused: list[BaseException | None] = []
 
     with arm_write_lease_enforcement():
-        with write_lease("owner"):
+        with write_lease("owner", archive_root=tmp_path):
             delegate_write_lease()
 
             def rogue() -> None:
                 try:
-                    require_write_lease("user.db write")
+                    require_write_lease("user.db write", archive_root=tmp_path)
                 except UnleasedWriteError as exc:
                     refused.append(exc)
                 else:
@@ -681,7 +1222,7 @@ def test_a_thread_without_the_delegation_is_still_refused_inside_the_hold() -> N
     assert isinstance(refused[0], UnleasedWriteError)
 
 
-def test_delegation_admits_one_writer_at_a_time() -> None:
+def test_delegation_admits_one_writer_at_a_time(tmp_path: Path) -> None:
     """One admission cannot fan out into concurrent writers.
 
     Anti-vacuity: remove the ``_adopted_by`` guard in ``adopt_write_lease``
@@ -691,7 +1232,7 @@ def test_delegation_admits_one_writer_at_a_time() -> None:
     release = threading.Event()
 
     with arm_write_lease_enforcement():
-        with write_lease("owner"):
+        with write_lease("owner", archive_root=tmp_path):
             delegation = delegate_write_lease()
 
             def first() -> None:
@@ -711,14 +1252,14 @@ def test_delegation_admits_one_writer_at_a_time() -> None:
                 thread.join()
 
 
-def test_delegation_is_revoked_when_its_lease_is_released() -> None:
+def test_delegation_is_revoked_when_its_lease_is_released(tmp_path: Path) -> None:
     """A stashed grant authorizes nothing once the admission is over.
 
     Anti-vacuity: delete the revoke loop in ``write_lease``'s finally block and
     this adoption succeeds outside any admission.
     """
     with arm_write_lease_enforcement():
-        with write_lease("owner"):
+        with write_lease("owner", archive_root=tmp_path):
             delegation = delegate_write_lease()
         assert not delegation.live
         with pytest.raises(UnleasedWriteError, match="revoked"):
@@ -737,7 +1278,7 @@ def test_delegation_cannot_be_minted_without_holding_the_lease() -> None:
             delegate_write_lease()
 
 
-def test_delegation_is_revoked_when_its_lease_fails() -> None:
+def test_delegation_is_revoked_when_its_lease_fails(tmp_path: Path) -> None:
     """A failing hold releases the lease, so it must revoke the same grants.
 
     The delegation contract is that a stashed delegation authorizes nothing
@@ -751,7 +1292,7 @@ def test_delegation_is_revoked_when_its_lease_fails() -> None:
     with arm_write_lease_enforcement():
         delegation = None
         with pytest.raises(RuntimeError, match="hold failed"):
-            with write_lease("owner"):
+            with write_lease("owner", archive_root=tmp_path):
                 delegation = delegate_write_lease()
                 raise RuntimeError("hold failed")
         assert delegation is not None
@@ -761,7 +1302,7 @@ def test_delegation_is_revoked_when_its_lease_fails() -> None:
                 pass
 
 
-def test_an_inheriting_thread_cannot_bind_itself_into_the_live_lease() -> None:
+def test_an_inheriting_thread_cannot_bind_itself_into_the_live_lease(tmp_path: Path) -> None:
     """polylogue-1oa7o residual 1: binding must be delegated, not self-served.
 
     ``bind_write_lease_thread()`` used to read the ambient lease and add the
@@ -787,7 +1328,7 @@ def test_an_inheriting_thread_cannot_bind_itself_into_the_live_lease() -> None:
         else:
             observed["outcome"] = "bound"
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
         thread = threading.Thread(target=worker, name="self-binding-worker")
         thread.start()
         thread.join()
@@ -797,18 +1338,21 @@ def test_an_inheriting_thread_cannot_bind_itself_into_the_live_lease() -> None:
         assert lease.authorized_threads() == frozenset({lease.owner_thread_id})
 
 
-def test_a_granted_thread_may_bind_and_write() -> None:
+def test_a_granted_thread_may_bind_and_write(tmp_path: Path) -> None:
     """The owner-minted grant is the admitted path the coordinator uses."""
     from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
 
     observed: dict[str, object] = {}
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
         grant = grant_write_lease_thread()
 
         def worker() -> None:
-            bind_write_lease_thread(grant)
-            observed["lease"] = require_write_lease("granted worker write")
+            try:
+                bind_write_lease_thread(grant)
+                observed["lease"] = require_write_lease("granted worker write", archive_root=tmp_path)
+            finally:
+                grant.complete()
 
         thread = threading.Thread(target=worker, name="granted-worker")
         thread.start()
@@ -816,6 +1360,100 @@ def test_a_granted_thread_may_bind_and_write() -> None:
 
         assert observed["lease"] is lease
         assert threading.get_ident() in lease.authorized_threads()
+
+
+def test_bound_thread_grant_keeps_an_already_open_writer_valid_until_settled(tmp_path: Path) -> None:
+    """Owner retirement revokes future grants while an admitted worker settles."""
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    ready = threading.Event()
+    finish = threading.Event()
+    observed: dict[str, object] = {}
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
+        grant = grant_write_lease_thread()
+
+        def worker() -> None:
+            try:
+                bind_write_lease_thread(grant)
+                ready.set()
+                assert finish.wait(timeout=5)
+                observed["lease"] = require_write_lease("settling an admitted SQLite writer", archive_root=tmp_path)
+            except BaseException as exc:
+                observed["error"] = exc
+            finally:
+                grant.complete()
+
+        thread = threading.Thread(target=worker, name="settling-granted-writer")
+        thread.start()
+        assert ready.wait(timeout=5)
+
+    finish.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert observed.get("error") is None
+    assert observed["lease"] is lease
+    assert lease.custody is not None and not lease.custody.held
+
+
+def test_unused_thread_grant_cannot_bind_after_owner_release(tmp_path: Path) -> None:
+    """A grant cannot become a late writer after the physical owner exits."""
+    from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
+
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path):
+        grant = grant_write_lease_thread()
+
+    outcome: list[str] = []
+
+    def worker() -> None:
+        try:
+            bind_write_lease_thread(grant)
+        except UnleasedWriteError:
+            outcome.append("refused")
+        else:
+            outcome.append("bound")
+        finally:
+            grant.complete()
+
+    thread = threading.Thread(target=worker, name="late-granted-writer")
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert outcome == ["refused"]
+
+
+def test_repeated_cancellation_does_not_abandon_settling_sqlite_work() -> None:
+    """The queued operation settles before its original cancellation escapes."""
+    import asyncio
+
+    from polylogue.storage.sqlite.async_sqlite import _await_settled
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        settled = asyncio.Event()
+
+        async def queued_work() -> None:
+            started.set()
+            await release.wait()
+            settled.set()
+
+        task = asyncio.create_task(_await_settled(queued_work()))
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("caller cancellation was not propagated")
+        assert settled.is_set(), "queued SQLite work was abandoned before its operation settled"
+
+    asyncio.run(scenario())
 
 
 def test_archive_bound_lease_can_grant_a_thread_without_dropping_identity(tmp_path: Path) -> None:
@@ -849,7 +1487,7 @@ def test_archive_bound_lease_can_delegate_without_dropping_identity(tmp_path: Pa
             assert require_write_lease("adopted archive writer", archive_root=tmp_path) is adopted
 
 
-def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() -> None:
+def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority(tmp_path: Path) -> None:
     """Authority belongs to the bound thread object, not its reusable ident.
 
     OS thread idents are recycled once a thread exits. A granted worker that
@@ -860,18 +1498,23 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() ->
     Anti-vacuity: restore the ident-only membership check in
     ``require_write_lease`` and the impostor below is admitted.
     """
+    from types import SimpleNamespace
     from unittest.mock import patch
 
+    from polylogue.storage.sqlite import write_lease as lease_module
     from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
 
     observed: dict[str, object] = {}
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
         grant = grant_write_lease_thread()
 
         def granted() -> None:
-            bind_write_lease_thread(grant)
-            observed["retired_ident"] = threading.get_ident()
+            try:
+                bind_write_lease_thread(grant)
+                observed["retired_ident"] = threading.get_ident()
+            finally:
+                grant.complete()
 
         retired = threading.Thread(target=granted, name="retired-granted-worker")
         retired.start()
@@ -880,17 +1523,11 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() ->
         assert retired_ident in lease.authorized_threads()
 
         def impostor() -> None:
-            from types import SimpleNamespace
-
-            import polylogue.storage.sqlite.write_lease as lease_owner
-
-            actual_thread = threading.current_thread()
-            observation = SimpleNamespace(get_ident=lambda: retired_ident, current_thread=lambda: actual_thread)
-            # Simulate reuse at the admission owner only. Real Thread teardown
-            # must retain its actual ident and threading._active registration.
-            with patch.object(lease_owner, "threading", observation):
+            threading_view = SimpleNamespace(**vars(threading))
+            threading_view.get_ident = lambda: retired_ident
+            with patch.object(lease_module, "threading", threading_view):
                 try:
-                    require_write_lease("write from a thread that reused a retired ident")
+                    require_write_lease("write from a thread that reused a retired ident", archive_root=tmp_path)
                 except UnleasedWriteError:
                     observed["outcome"] = "refused"
                 else:
@@ -903,12 +1540,12 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() ->
     assert observed["outcome"] == "refused"
 
 
-def test_a_grant_authorizes_exactly_one_thread() -> None:
+def test_a_grant_authorizes_exactly_one_thread(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, grant_write_lease_thread
 
     outcomes: list[str] = []
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer"):
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path):
         grant = grant_write_lease_thread()
 
         def worker() -> None:
@@ -918,6 +1555,8 @@ def test_a_grant_authorizes_exactly_one_thread() -> None:
                 outcomes.append("refused")
             else:
                 outcomes.append("bound")
+            finally:
+                grant.complete()
 
         first = threading.Thread(target=worker)
         first.start()
@@ -929,7 +1568,7 @@ def test_a_grant_authorizes_exactly_one_thread() -> None:
     assert outcomes == ["bound", "refused"]
 
 
-def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
+def test_a_nested_lease_in_an_inheriting_thread_is_refused(tmp_path: Path) -> None:
     """polylogue-1oa7o residual 2: the re-entrant branch had no thread check.
 
     An inheriting thread asking for ``write_lease(...)`` took the re-entrant
@@ -943,12 +1582,12 @@ def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
 
     def worker() -> None:
         try:
-            with write_lease("nested.worker"):
+            with write_lease("nested.worker", archive_root=tmp_path):
                 observed["outcome"] = "granted"
         except UnleasedWriteError as exc:
             observed["outcome"] = f"refused: {exc}"
 
-    with arm_write_lease_enforcement(), write_lease("daemon.writer") as lease:
+    with arm_write_lease_enforcement(), write_lease("daemon.writer", archive_root=tmp_path) as lease:
         assert lease is not None
         thread = threading.Thread(target=worker, name="nested-inheriting-worker")
         thread.start()
@@ -958,19 +1597,373 @@ def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
     assert "unauthorized thread" in str(observed["outcome"])
 
 
+def test_persistent_store_refuses_replaced_archive_directory_before_sql(tmp_path: Path) -> None:
+    """A new directory's custody cannot authorize old SQLite handles."""
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    archive = ArchiveStore(root, initialize=False)
+    parked = tmp_path / "parked"
+    root.rename(parked)
+    root.mkdir()
+    try:
+        with pytest.raises(UnleasedWriteError):
+            archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=b"{}",
+                source_path="synthetic/directory-binding.jsonl",
+                acquired_at_ms=1,
+            )
+        assert current_write_lease() is None
+        from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+
+        assert tuple(root.iterdir()) == (root / ARCHIVE_WRITE_CUSTODY_LOCK_NAME,)
+    finally:
+        replacement = tmp_path / "replacement"
+        root.rename(replacement)
+        parked.rename(root)
+        archive.close()
+
+
+def test_direct_blackboard_writer_acquires_custody_and_retires_temporary_user_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers import archive as archive_module
+
+    initialize_active_archive_root(tmp_path)
+    store = archive_module.ArchiveStore(tmp_path, initialize=False)
+    real_open = cast(Callable[..., sqlite3.Connection], vars(archive_module)["open_connection"])
+    admissions: list[bool] = []
+
+    def observe_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        if path.name == "user.db":
+            lease = current_write_lease()
+            admissions.append(lease is not None and lease.custody is not None and lease.custody.held)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(archive_module, "open_connection", observe_open)
+    try:
+        note = store.post_blackboard_note("synthetic note")
+        assert note.body == "synthetic note"
+        assert admissions == [True]
+        assert not store._user_write_connections
+        assert store._sql_custody is None
+        assert current_write_lease() is None
+    finally:
+        store.close()
+
+
+def test_store_successful_sql_settlement_retires_context_before_late_custody_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    initialize_active_archive_root(tmp_path)
+    store = ArchiveStore(tmp_path, initialize=False)
+    original_close = os.close
+    store._enter_mutation_lease()
+    store._conn.execute("BEGIN IMMEDIATE")
+    store._conn.execute("CREATE TABLE terminal_scope_probe (value INTEGER)")
+    assert store._sql_custody is not None
+    selected_fd = store._sql_custody._fd
+    injected = False
+
+    def late_close(fd: int) -> None:
+        nonlocal injected
+        original_close(fd)
+        if fd == selected_fd and not injected:
+            injected = True
+            raise OSError("synthetic late close error")
+
+    monkeypatch.setattr(os, "close", late_close)
+    try:
+        with pytest.raises(OSError):
+            store.commit()
+        assert injected
+        assert store._pending_archive_mutation_lease_context is None
+        assert store._sql_custody is None
+        assert current_write_lease() is None
+        store.commit()
+    finally:
+        store.close()
+
+
+def test_late_custody_close_error_never_closes_a_reused_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A close error is diagnostic; the kernel may already have retired its FD."""
+    original_close = os.close
+    replacement_fd: list[int] = []
+    selected_fd = -1
+    attempts: list[int] = []
+
+    def close_then_report_error(fd: int) -> None:
+        original_close(fd)
+        if fd == selected_fd:
+            attempts.append(fd)
+            replacement = os.open(tmp_path / "replacement-file", os.O_CREAT | os.O_RDWR, 0o600)
+            assert replacement == selected_fd
+            replacement_fd.append(replacement)
+            raise OSError("synthetic late close error")
+
+    context = write_lease("test.custody.close-once", archive_root=tmp_path)
+    lease = context.__enter__()
+    custody = lease.custody
+    assert custody is not None
+    selected_fd = custody._fd
+    monkeypatch.setattr(os, "close", close_then_report_error)
+    try:
+        with pytest.raises(OSError):
+            context.__exit__(None, None, None)
+        assert current_write_lease() is None
+        assert not custody.held
+        custody.close_owner()
+        with write_lease("test.custody.after-late-close-error", archive_root=tmp_path):
+            assert current_write_lease() is not None
+        assert attempts == [selected_fd]
+        assert os.write(replacement_fd[0], b"still owned by its new opener") > 0
+    finally:
+        for fd in replacement_fd:
+            original_close(fd)
+
+
+def test_cached_handle_reuses_only_within_one_physical_operation(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite import connection as cached
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    connections: list[sqlite3.Connection] = []
+    try:
+        with arm_write_lease_enforcement():
+            for actor in ("test.cached_first", "test.cached_second"):
+                with write_lease(actor, archive_root=root):
+                    with cached.connection_context(root / "index.db") as connection:
+                        connections.append(connection)
+                        connection.execute("BEGIN IMMEDIATE")
+                    connection.commit()
+                    with cached.connection_context(root / "index.db") as reused:
+                        assert reused is connection
+                        assert reused.execute("SELECT 1").fetchone()[0] == 1
+                    assert not archive_custody_available(root)
+                assert archive_custody_available(root)
+                with pytest.raises(sqlite3.ProgrammingError):
+                    connection.execute("SELECT 1")
+            assert connections[0] is not connections[1]
+            with pytest.raises(UnleasedWriteError):
+                with cached.connection_context(root / "index.db"):
+                    pytest.fail("cached reuse bypassed current write authority")
+    finally:
+        cached._clear_connection_cache()
+
+
+@pytest.mark.uses_real_clock("retirement/adoption ordering exercises actual physical custody")
+def test_delegation_cannot_adopt_after_source_retirement_before_revoke(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.write_lease import WriteLeaseDelegation
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    minted = threading.Event()
+    finish_body = threading.Event()
+    retirement_paused = threading.Event()
+    resume_retirement = threading.Event()
+    delegations: list[WriteLeaseDelegation] = []
+    failures: list[BaseException] = []
+    real_revoke = WriteLeaseDelegation.revoke
+
+    def paused_revoke(delegation: WriteLeaseDelegation) -> None:
+        retirement_paused.set()
+        resume_retirement.wait()
+        real_revoke(delegation)
+
+    monkeypatch.setattr(WriteLeaseDelegation, "revoke", paused_revoke)
+
+    def owner() -> None:
+        try:
+            with write_lease("test.retirement_owner", archive_root=tmp_path):
+                delegations.append(delegate_write_lease())
+                minted.set()
+                finish_body.wait()
+        except BaseException as error:
+            failures.append(error)
+
+    thread = threading.Thread(target=owner)
+    thread.start()
+    ran = False
+    try:
+        assert minted.wait(timeout=30)
+        delegation = delegations[0]
+        finish_body.set()
+        assert retirement_paused.wait(timeout=30)
+        assert not delegation.lease.active
+        assert not delegation.live
+        with pytest.raises(UnleasedWriteError):
+            with adopt_write_lease(delegation):
+                ran = True
+        assert not ran
+        assert delegation.settled
+        assert not delegation.adopted
+        assert not archive_custody_available(tmp_path)
+    finally:
+        finish_body.set()
+        resume_retirement.set()
+        thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert failures == []
+    assert archive_custody_available(tmp_path)
+
+
+def test_adoption_cleanup_retires_every_grant_and_preserves_body_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.write_lease import WriteLeaseThreadGrant
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    grants: list[WriteLeaseThreadGrant] = []
+    real_revoke = WriteLeaseThreadGrant.revoke
+
+    def fail_after_first_retirement(grant: WriteLeaseThreadGrant) -> None:
+        real_revoke(grant)
+        if grant is grants[0]:
+            raise OSError("synthetic late grant-release failure")
+
+    with write_lease("test.adoption_cleanup", archive_root=tmp_path):
+        delegation = delegate_write_lease()
+        monkeypatch.setattr(WriteLeaseThreadGrant, "revoke", fail_after_first_retirement)
+        with pytest.raises(ValueError) as caught:
+            with adopt_write_lease(delegation):
+                grants.extend([grant_write_lease_thread(), grant_write_lease_thread()])
+                raise ValueError("synthetic body failure")
+        assert len(grants) == 2
+        assert all(not grant._custody_held for grant in grants)
+        assert all(grant._revoked for grant in grants)
+        assert delegation.settled
+        assert not delegation.adopted
+        assert any("cleanup also failed" in note for note in caught.value.__notes__)
+        assert not archive_custody_available(tmp_path)
+    assert archive_custody_available(tmp_path)
+
+
+def test_native_anchor_cleanup_attempts_all_and_never_recloses_reused_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+    actual_close = os.close
+    first = os.open(tmp_path / "first-anchor", os.O_CREAT | os.O_RDWR, 0o600)
+    second = os.open(tmp_path / "second-anchor", os.O_CREAT | os.O_RDWR, 0o600)
+    replacement: list[int] = []
+    attempts: list[int] = []
+    from polylogue.storage.io_phase_metrics import connect_measured
+
+    connection = connect_measured(tmp_path / "anchor-probe.db")
+
+    def close(descriptor: int) -> None:
+        actual_close(descriptor)
+        if descriptor in (first, second):
+            attempts.append(descriptor)
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+        if descriptor == first and not replacement:
+            replacement.append(os.open(tmp_path / "replacement-anchor", os.O_CREAT | os.O_RDWR, 0o600))
+            assert replacement[0] == first
+            raise OSError("synthetic terminal descriptor close error")
+
+    with write_lease("test.anchor_cleanup", archive_root=tmp_path):
+        owner = NativeSQLCustodyOwner(connection, anchored_descriptors=(first, second))
+        monkeypatch.setattr(os, "close", close)
+        try:
+            with pytest.raises(OSError):
+                owner.close()
+            assert owner.connection is None
+            assert owner.anchored_descriptors == ()
+            assert attempts == [first, second]
+            owner.close()
+            assert os.write(replacement[0], b"still owned by replacement") > 0
+        finally:
+            for descriptor in replacement:
+                actual_close(descriptor)
+
+
+def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.archive_custody_probe import archive_custody_available
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    initialize_active_archive_root(tmp_path)
+    actual_open = profiles.open_daemon_connection
+    handles: list[SettlementHandle] = []
+
+    def open_connection(*args: object, **kwargs: object) -> sqlite3.Connection:
+        handle = SettlementHandle(actual_open(*args, **kwargs))  # type: ignore[arg-type]
+        handles.append(handle)
+        return handle  # type: ignore[return-value]
+
+    def materialize(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
+        assert tier is ArchiveTier.OPS
+        connection.execute("BEGIN IMMEDIATE")
+        raise ValueError("synthetic higher factory schema failure")
+
+    monkeypatch.setattr(profiles, "open_daemon_connection", open_connection)
+    monkeypatch.setattr(bootstrap, "converge_same_version_tier", materialize)
+    owner = None
+    try:
+        with write_lease("test.initialized_tier_cleanup", archive_root=tmp_path):
+            with pytest.raises(profiles.NativeConnectionSettlementError) as refused:
+                bootstrap.open_initialized_tier_connection(tmp_path / "ops.db", ArchiveTier.OPS, archive_root=tmp_path)
+            owner = refused.value.owner
+            assert cast(object, owner.connection) is handles[0]
+            assert handles[0].connection.in_transaction
+        assert not archive_custody_available(tmp_path)
+        handles[0].allow_cleanup.set()
+        owner.close()
+        assert archive_custody_available(tmp_path)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        if owner is not None:
+            owner.close()
+
+
 @pytest.mark.asyncio
 async def test_coordinator_lease_observation_rejects_inherited_child_task(tmp_path: Path) -> None:
-    """An inherited coordinator token cannot authorize a child execution unit."""
+    """Only the actual admitted execution unit observes coordinator authority."""
     from polylogue.core.write_lease import coordinator_write_lease_active
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 
     assert not coordinator_write_lease_active()
-    with write_lease("test.offline", archive_root=tmp_path):
-        assert not coordinator_write_lease_active()
-    with write_lease("test.coordinator", archive_root=tmp_path, coordinator=object()):
+
+    def offline() -> bool:
+        with write_lease("test.offline", archive_root=tmp_path):
+            return coordinator_write_lease_active()
+
+    assert not await asyncio.to_thread(offline)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+
+    async def admitted() -> None:
         assert coordinator_write_lease_active()
 
         async def child() -> bool:
             return coordinator_write_lease_active()
 
         assert not await asyncio.create_task(child())
+        assert coordinator_write_lease_active()
+
+    try:
+        await coordinator.run("test.coordinator.observation", admitted)
+    finally:
+        await coordinator.shutdown(timeout=1.0)
     assert not coordinator_write_lease_active()

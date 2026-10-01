@@ -31,7 +31,7 @@ edges from a still-running or crashed child).
 This module owns detecting and parsing that state. It is deliberately
 independent of ``parsers/codex.py`` (which owns JSONL rollout parsing) and of
 ``sources/assembly_codex.py`` (which owns live, ambient title enrichment
-during ingest). It reads through ``sources/sqlite_export.open_logical_source``,
+during ingest). It reads through ``sources/sqlite_export.logical_source_context``,
 so the same functions serve a retained canonical export and the operator's
 live file.
 """

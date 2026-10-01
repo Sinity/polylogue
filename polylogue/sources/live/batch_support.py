@@ -31,7 +31,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_failure_evidence import PartialAdmission
-from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
@@ -344,11 +343,6 @@ class _FullIngestResult:
     # ``succeeded`` and ``failed`` in that case were never attempted this
     # pass -- they remain ordinary backlog for the caller's next tick.
     time_budget_exceeded: bool = False
-    # polylogue-3ijaa: True when the archive write finished past the declared
-    # writer-hold bound. The writes are committed, so the caller records this
-    # group's cursors first and only then stops taking new work -- a batch is
-    # never left committed-and-failed with its cursor unrecorded.
-    write_hold_exhausted: bool = False
     #: Planned paths held back for publication order: each shares a
     #: canonical session with a path this group published, so it was not
     #: attempted here and publishes in the next group.
@@ -379,7 +373,6 @@ def _full_ingest_result_from_summary(
     excised_skips: int = 0,
     excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
-    write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
     return _FullIngestResult(
         succeeded=succeeded,
@@ -409,7 +402,6 @@ def _full_ingest_result_from_summary(
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
-        write_hold_exhausted=write_hold_exhausted,
     )
 
 
@@ -827,16 +819,11 @@ def _ingest_pass_exhausted(
 ) -> bool:
     """Whether this pass must stop taking new work at ``checkpoint``.
 
-    Two bounds meet here. The caller's ``max_pass_seconds`` is the graceful
-    one: remaining work stays ordinary backlog for the next tick. The writer
-    hold's declared bound is the hard one: past it the unit of work ends with
-    a typed ``WriteHoldBudgetError``, because a hold that keeps running
-    past its bound is one every non-gated writer is already timing out
-    against.
-
-    Call it at every work item so overshoot past either bound is one item.
+    The caller's ``max_pass_seconds`` schedules the next work item.
+    An item already acquired finishes and publishes its cursor before later
+    work remains backlog. Writer hold thresholds are telemetry only.
     """
-    check_write_hold_budget(checkpoint)
+    del checkpoint
     return max_pass_seconds is not None and (time.monotonic() - pass_started) > max_pass_seconds
 
 

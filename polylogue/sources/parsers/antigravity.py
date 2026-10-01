@@ -499,13 +499,10 @@ def looks_like_trajectory_db_path(path: Path, *, immutable: bool = False) -> boo
     if path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES:
         return False
     try:
-        from polylogue.sources.sqlite_export import open_logical_source
+        from polylogue.sources.sqlite_export import logical_source_context
 
-        connection = open_logical_source(path, immutable=immutable)
-        try:
+        with logical_source_context(path, immutable=immutable) as connection:
             return _trajectory_schema_matches(connection)
-        finally:
-            connection.close()
     except Exception as error:
         if _is_trajectory_storage_error(error):
             return False
@@ -861,11 +858,10 @@ def parse_trajectory_db(
     typed admission outcomes, so the writer can never report full coverage
     for a partially understood trajectory.
     """
-    from polylogue.sources.sqlite_export import LogicalExportError, open_logical_source
+    from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context
 
-    connection = open_logical_source(path, immutable=immutable)
-    connection.row_factory = sqlite3.Row
-    try:
+    with logical_source_context(path, immutable=immutable) as connection:
+        connection.row_factory = sqlite3.Row
         if not _trajectory_schema_matches(connection):
             raise LogicalExportError("Antigravity SQLite lacks the declared trajectory schema")
         meta_columns = _sqlite_columns(connection, "trajectory_meta")
@@ -1281,8 +1277,6 @@ def parse_trajectory_db(
                 unit_accounting=ParseAccounting(expected={}, outcomes=[]),
                 ingest_flags=["degraded:unmatched-trajectory-summary"],
             )
-    finally:
-        connection.close()
 
 
 class _AntigravityLanguageServerExportClient(Protocol):

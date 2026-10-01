@@ -168,7 +168,7 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
     # on the fixture file metadata rather than the ambient test process clock.
     observed_now = recovered.target_source.stat().st_mtime + 1.0
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     adapter = make_session_profile_derivation(
         recovered.index_db,
         archive_root=recovered.root,

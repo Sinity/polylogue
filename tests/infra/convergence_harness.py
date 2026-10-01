@@ -26,7 +26,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TypeVar, cast
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import BlockType, Provider
@@ -68,7 +67,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 from tests.infra.source_composer import (
     ComposedSources,
     compose_append_revision_chain,
@@ -297,7 +296,7 @@ def ingest_composed_sources(
         ):
             index_conn.row_factory = sqlite3.Row
             with index_conn, source_conn:
-                changed, counts = ingest_batch_core._write_session(
+                changed, counts = write_fixture_ingest_payload(
                     index_conn,
                     payload_model,
                     blob_publisher=blob_publisher,
@@ -356,7 +355,7 @@ def converge_session_profiles(
 
     async def run() -> DerivationReport:
         compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-        coordinator = DaemonWriteCoordinator()
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
         try:
             adapter = make_session_profile_derivation(
                 index_db,
@@ -1028,7 +1027,7 @@ def _seed_raw_source_session(conn: sqlite3.Connection, *, session_id: str, sourc
             ),
         )
         source_conn.commit()
-    return write_prepared_session(
+    return write_fixture_index_session(
         conn,
         ParsedSession(
             source_name=Provider.CODEX,

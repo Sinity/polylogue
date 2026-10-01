@@ -27,7 +27,7 @@ from tests.infra.convergence_harness import (
     initialize_active_archive,
     rich_convergence_sources,
 )
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.source_composer import ComposedSources
 
 
@@ -69,7 +69,7 @@ def _add_real_action_result(archive_root: Path) -> None:
         ],
     )
     with open_connection(archive_root / "index.db") as conn:
-        write_prepared_session(conn, session, content_hash=session_content_hash(session))
+        write_fixture_index_session(conn, session, content_hash=session_content_hash(session))
 
 
 def _build_archive(root: Path, composed: ComposedSources | None = None) -> ConvergenceArchive:

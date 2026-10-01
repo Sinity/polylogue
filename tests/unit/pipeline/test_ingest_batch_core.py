@@ -25,11 +25,15 @@ from polylogue.core.json import JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
+from polylogue.sinex.models import PublicationMode
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 _COHORT_SIZE = 12
 _LINEAGE_COLUMNS = (
@@ -96,7 +100,7 @@ def _ingest_drive_cohort(
         ):
             for revision, raw_id in enumerate(raw_ids):
                 session = parse_payload("gemini", _drive_revision_payload(revision, filler=filler), "fallback-id")[0]
-                ingest_batch_core._write_session(
+                write_fixture_ingest_payload(
                     conn,
                     SessionWritePayload(
                         session_id=str(make_session_id(session.source_name, session.provider_session_id)),
@@ -153,6 +157,47 @@ def test_drive_cohort_blob_loads_do_not_grow_with_the_cohort(tmp_path: Path) -> 
     # asserted from the design.
     assert uncached_opens > _COHORT_SIZE * _COHORT_SIZE
     assert cache.served_from_cache == uncached_opens - _COHORT_SIZE
+
+
+def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: Path) -> None:
+    """The exact Drive lineage commit keeps its same-observer seal current."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    with write_lease("test.drive-prepared-rows", archive_root=root):
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            archive.write_raw_payload(
+                provider=Provider.GEMINI,
+                payload=json.dumps(_drive_revision_payload(0)).encode(),
+                source_path="Google AI Studio/chat.json",
+                acquired_at_ms=1_767_000_000_000,
+            )
+            second_raw_id = archive.write_raw_payload(
+                provider=Provider.GEMINI,
+                payload=json.dumps(_drive_revision_payload(1)).encode(),
+                source_path="Google AI Studio/chat.json",
+                acquired_at_ms=1_767_000_000_500,
+            )
+
+    prepared = ingest_batch_core._prepare_ingest_unit_sync(
+        second_raw_id,
+        db_path=root / "index.db",
+        archive_root=root,
+        validation_mode="strict",
+        publication_mode=PublicationMode.OFF,
+        measure_ingest_result_size=False,
+    )
+    assert prepared is not None
+    assert second_raw_id in {str(row[-1]) for row in prepared.drive_revision_updates}
+
+    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+        original_version = seal.observer_version("source")
+        with write_lease("test.drive-prepared-publication", archive_root=root):
+            ingest_batch_core._publish_prepared_drive_revision_updates(prepared, root, seal)
+            seal.validate_observers_current()
+            with open_connection(root / "index.db", archive_root=root) as conn:
+                with seal.mutation_scope(conn):
+                    pass
+        assert seal.observer_version("source") != original_version
 
 
 def test_drive_cohort_blob_cache_leaves_lineage_bit_identical(tmp_path: Path) -> None:

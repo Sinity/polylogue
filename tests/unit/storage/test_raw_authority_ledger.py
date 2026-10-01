@@ -15,6 +15,7 @@ from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, Outcome, converge
+from polylogue.operations import raw_observation_derivation as raw_observation_derivation_mod
 from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
     raw_observation_frame,
@@ -22,11 +23,12 @@ from polylogue.operations.raw_observation_derivation import (
 from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.derived import raw as raw_derivation_mod
 from polylogue.storage.derived.raw import RawObservationDerivation
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
     RawReplayPlan,
     build_raw_replay_plans,
+    raw_authority_parser_fingerprint,
     validate_raw_replay_plan,
 )
 from polylogue.storage.raw_reconciler import (
@@ -391,7 +393,7 @@ def test_stale_per_raw_parser_fingerprint_is_recensused_before_planning(tmp_path
                 "SELECT parser_fingerprint FROM raw_authority_parser_census WHERE raw_id = ?",
                 (raw_id,),
             ).fetchone()[0]
-            == RAW_AUTHORITY_PARSER_FINGERPRINT
+            == raw_authority_parser_fingerprint()
         )
 
 
@@ -405,10 +407,9 @@ def _seed_ambiguous_membership_component(
 
     ``parser_fingerprint`` controls what (if anything) the per-raw
     ``raw_authority_parser_census`` row records: the CURRENT fingerprint (the
-    ambiguous verdict should still be terminal), a fingerprint listed in
-    ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS`` (the verdict is stale and must be
-    replayable), or ``None`` (no census row at all -- absent evidence must
-    stay conservative and remain terminal).
+    ambiguous verdict should still be terminal), an older semantic fingerprint
+    (the verdict is stale and must be replayable), or ``None`` (no census row
+    at all -- absent evidence must stay conservative and remain terminal).
     """
     raw_id = _write_codex_raw(tmp_path, native_id=native_id, source_path=f"{native_id}.jsonl", acquired_at_ms=1)
     logical_source_key = f"codex-session:{native_id}"
@@ -446,29 +447,37 @@ def test_ambiguous_verdict_under_current_fingerprint_stays_terminal(tmp_path: Pa
     """
     bootstrap_archive_root(tmp_path)
     _raw_id, observation_status = _seed_ambiguous_membership_component(
-        tmp_path, native_id="current-ambiguous", parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT
+        tmp_path, native_id="current-ambiguous", parser_fingerprint=raw_authority_parser_fingerprint()
     )
     assert observation_status == "valid"
 
 
-@pytest.mark.parametrize("superseded_fingerprint", ["revision-membership-v1", "revision-membership-v2"])
-def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(
-    tmp_path: Path, superseded_fingerprint: str
+def test_ambiguous_verdict_under_previous_dynamic_fingerprint_is_replayable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """polylogue-9dxn: an 'ambiguous' decision recorded under a fingerprint
-    listed in SUPERSEDED_MEMBERSHIP_FINGERPRINTS is stale -- a corrected
-    classifier deserves a chance to re-derive it, so it must not be
-    terminal.
+    """A changed executable fingerprint invalidates a former terminal verdict.
 
     Anti-vacuity: this exercises the canonical ``RawObservationDerivation``
     inspection route. Reverting its fingerprint-gating clause makes this test
     fail by re-classifying the plan as terminal.
     """
     bootstrap_archive_root(tmp_path)
-    assert superseded_fingerprint in raw_authority_mod.SUPERSEDED_MEMBERSHIP_FINGERPRINTS
+    previous_fingerprint = raw_authority_parser_fingerprint()
     _raw_id, observation_status = _seed_ambiguous_membership_component(
-        tmp_path, native_id="superseded-ambiguous", parser_fingerprint=superseded_fingerprint
+        tmp_path, native_id="previous-dynamic-ambiguous", parser_fingerprint=previous_fingerprint
     )
+    assert observation_status == "valid"
+    changed_fingerprint = previous_fingerprint[:-1] + ("0" if previous_fingerprint[-1] != "0" else "1")
+    monkeypatch.setattr(raw_derivation_mod, "raw_authority_parser_fingerprint", lambda: changed_fingerprint)
+    monkeypatch.setattr(
+        raw_observation_derivation_mod,
+        "raw_authority_parser_fingerprint",
+        lambda: changed_fingerprint,
+    )
+    observation_status = RawObservationDerivation(tmp_path).inspect(
+        raw_observation_frame(tmp_path, raw_ids=(_raw_id,)),
+        (_raw_id,),
+    )[_raw_id]
     assert observation_status != "valid"
 
 
@@ -755,3 +764,39 @@ def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(tmp_pa
 
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
+
+
+@pytest.mark.parametrize("prior_decision", ["ambiguous", "deferred"])
+def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
+    tmp_path: Path, prior_decision: str
+) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id, _status = _seed_ambiguous_membership_component(
+        tmp_path, native_id="semantic-receipt", parser_fingerprint="revision-membership-v5"
+    )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_session_memberships SET decision = ? WHERE raw_id = ?", (prior_decision, raw_id))
+    derivation = RawObservationDerivation(tmp_path)
+    assert derivation.inspect(raw_observation_frame(tmp_path, raw_ids=(raw_id,)), (raw_id,))[raw_id] == "stale"
+
+    report = _derive_after_source_stages(tmp_path)
+    assert _derived_success(report)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (raw_authority_parser_fingerprint(), "complete")
+        assert (
+            source.execute("SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+            == "accepted"
+        )
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive.resolve_exact_session_ids(("codex-session:semantic-receipt",)) == {
+            "codex-session:semantic-receipt": "codex-session:semantic-receipt",
+        }
+        assert (
+            archive._conn.execute(
+                "SELECT text FROM messages WHERE session_id = ?", ("codex-session:semantic-receipt",)
+            ).fetchone()[0]
+            == "authored content"
+        )
+    assert derivation.inspect(raw_observation_frame(tmp_path, raw_ids=(raw_id,)), (raw_id,))[raw_id] == "valid"

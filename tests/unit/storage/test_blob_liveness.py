@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import sqlite3
@@ -455,7 +456,7 @@ async def test_acquired_sidecar_bytes_outlive_their_source_tree_and_the_index_ti
     # the whole index tier, rebuilt empty as a reindex would leave it.
     shutil.rmtree(tree_root)
     (archive_root / "index.db").unlink()
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
 
     store = BlobStore(archive_root / "blob")
     aged = time.time() - 3600

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.operations.daemon_ingest import _spool_source_receipt
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import (
     SourceGenerationBlocker,
     source_generation_receipt,
@@ -67,7 +67,7 @@ def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
             raw_id, parser_fingerprint, status, logical_keys_json, detail
         ) VALUES ('raw-1', ?, 'complete', '["codex:session-1"]', '')
         """,
-        (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+        (raw_authority_parser_fingerprint(),),
     )
     source.execute(
         """
@@ -75,7 +75,7 @@ def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
             raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail
         ) VALUES ('raw-1', ?, 'complete', 1, 1, '')
         """,
-        (RAW_AUTHORITY_PARSER_FINGERPRINT,),
+        (raw_authority_parser_fingerprint(),),
     )
     record_source_item_raw_member(
         source,

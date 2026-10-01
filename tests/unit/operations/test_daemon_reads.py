@@ -20,7 +20,7 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_sampled_and_moving_date_queries_are_not_cached() -> None:
@@ -499,7 +499,7 @@ def _seed_lineage_child(root: Path) -> str:
     try:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
@@ -511,7 +511,7 @@ def _seed_lineage_child(root: Path) -> str:
                 ],
             ),
         )
-        child_id = write_prepared_session(
+        child_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

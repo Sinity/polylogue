@@ -25,7 +25,7 @@ from polylogue.sources.parsers.claude import parse_ai
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 SESSION_UUID = "reacquisition-session"
 FILE_UUID = "upload-only-file"
@@ -98,7 +98,7 @@ def test_upload_only_reference_gains_bytes_at_a_stable_identity(
     conn = _connect(tmp_path / "index.db")
 
     before = parse_ai(_capture(extracted_content=None), "fallback")
-    write_prepared_session(conn, before, preacquired_attachment_blobs=_preacquired(store, before))
+    write_fixture_index_session(conn, before, preacquired_attachment_blobs=_preacquired(store, before))
 
     unfetched = _attachment_state(conn)
     assert unfetched["acquisition_status"] == "unfetched"
@@ -108,7 +108,7 @@ def test_upload_only_reference_gains_bytes_at_a_stable_identity(
     assert _ref_count(conn) == 1
 
     after = parse_ai(_capture(extracted_content=PAYLOAD), "fallback")
-    write_prepared_session(conn, after, preacquired_attachment_blobs=_preacquired(store, after))
+    write_fixture_index_session(conn, after, preacquired_attachment_blobs=_preacquired(store, after))
 
     acquired = _attachment_state(conn)
     assert str(acquired["attachment_id"]) == identity
@@ -126,7 +126,7 @@ def test_replaying_the_acquired_revision_changes_nothing(tmp_path: Path, monkeyp
 
     for _ in range(2):
         session = parse_ai(_capture(extracted_content=PAYLOAD), "fallback")
-        write_prepared_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
+        write_fixture_index_session(conn, session, preacquired_attachment_blobs=_preacquired(store, session))
 
     acquired = _attachment_state(conn)
     assert acquired["acquisition_status"] == "acquired"

@@ -29,8 +29,8 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.live_ingest import ingest_session
-from tests.infra.prepared_session import write_prepared_session
 
 
 @pytest.fixture
@@ -524,7 +524,7 @@ def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys = ON")
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 session,
                 content_hash=session_content_hash(session),
@@ -843,7 +843,7 @@ def test_merge_append_duplicate_message_coordinates_also_guarded(test_db: Path) 
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         with pytest.raises(ValueError) as exc_info:
-            write_prepared_session(
+            write_fixture_index_session(
                 conn,
                 appended_session,
                 content_hash=session_content_hash(appended_session),

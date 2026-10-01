@@ -168,7 +168,7 @@ def test_reconcile_embedding_orphans_once_refuses_stale_index_schema(tmp_path: P
 def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) -> None:
     """Production-route proof; bypassing run_sync or its authority token makes this fail."""
     index_db, embeddings_db, session_id, orphan_message_id = _build_fixture(tmp_path)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
 
     async def run() -> EmbeddingOrphanReconcileReport | None:
         with patch("polylogue.daemon.convergence_stages.load_polylogue_config") as mock_cfg:

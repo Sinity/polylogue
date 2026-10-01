@@ -17,7 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 _NOW_MS = 1_760_000_000_000
 
@@ -73,7 +73,7 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_prepared_session(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),

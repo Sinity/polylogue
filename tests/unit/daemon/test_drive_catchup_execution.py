@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import threading
@@ -422,3 +423,135 @@ async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
             ).fetchone()[0]
             == 1
         )
+
+
+@pytest.mark.parametrize("failure_phase", ["prepare", "publish"])
+async def test_prepared_publication_retains_failed_sql_on_its_original_compute_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_phase: str
+) -> None:
+    """A failed observer or publisher close remains recoverable on the real worker.
+
+    Returning the compute slot or losing a seal during its constructor would
+    make successor admission unable to settle the original SQLite handles.
+    """
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.write_coordinator import DaemonWriterSettlementError
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.archive_custody_probe import archive_custody_available
+    from tests.infra.sqlite_settlement_handle import SettlementHandle
+
+    bootstrap_archive_root(tmp_path)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    adapter = BoundedComputeAdapter(max_workers=1)
+    execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)
+    handles: list[SettlementHandle] = []
+    original_threads: list[threading.Thread] = []
+    read_references = PreparedIndexMutation._read_resolved_references
+
+    def read_and_fail(seal: PreparedIndexMutation) -> None:
+        read_references(seal)
+        handle = SettlementHandle(seal._observers["index"])
+        handles.append(handle)
+        original_threads.append(threading.current_thread())
+        seal._observers["index"] = handle  # type: ignore[assignment]
+        if failure_phase == "prepare":
+            raise RuntimeError("synthetic failure after observer acquisition")
+
+    monkeypatch.setattr(PreparedIndexMutation, "_read_resolved_references", read_and_fail)
+
+    def prepare() -> PreparedIndexMutation:
+        return PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+
+    def publish(_seal: PreparedIndexMutation) -> None:
+        store = ArchiveStore(tmp_path, initialize=False)
+        store._enter_mutation_lease()
+        store._conn.execute("BEGIN IMMEDIATE")
+        store._conn.execute("SELECT COUNT(*) FROM sessions")
+        handle = SettlementHandle(store._conn)
+        handles.append(handle)
+        store._conn = handle  # type: ignore[assignment]
+        store.close()
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await execution.publish_prepared_sync("test.retained_prepare", prepare, publish)
+        assert original_threads[0].is_alive()
+        assert coordinator.snapshot().unsettled_writer_workers == 1
+        assert adapter.snapshot().active_units == 1
+        if failure_phase == "publish":
+            assert not archive_custody_available(tmp_path)
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.unsettled_successor", lambda: None)
+        assert all(any(name == "close" for name, _thread in handle.calls) for handle in handles)
+        for handle in handles:
+            handle.allow_cleanup.set()
+        await coordinator.run_sync("test.settled_successor", lambda: None)
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        assert archive_custody_available(tmp_path)
+        assert all(thread is handle.owner for handle in handles for _name, thread in handle.calls)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)
+        assert adapter.close(join_timeout_s=30.0) == ()
+
+
+async def test_prepared_publication_cancellation_reaches_and_settles_the_reference_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling the owner stops its off-gate proof and closes every observer."""
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, _check_reference_cancellation
+
+    bootstrap_archive_root(tmp_path)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    adapter = BoundedComputeAdapter(max_workers=1)
+    execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)
+    census_started = threading.Event()
+    seals: list[PreparedIndexMutation] = []
+    read_references = PreparedIndexMutation._read_resolved_references
+
+    def observe_cancellation(seal: PreparedIndexMutation) -> None:
+        read_references(seal)
+        seals.append(seal)
+        cancellation = compute_cancel.get()
+        assert cancellation is not None
+        census_started.set()
+        assert cancellation.wait(15)
+        _check_reference_cancellation()
+
+    monkeypatch.setattr(PreparedIndexMutation, "_read_resolved_references", observe_cancellation)
+    published = False
+
+    def publish(_seal: PreparedIndexMutation) -> None:
+        nonlocal published
+        published = True
+
+    task = asyncio.create_task(
+        execution.publish_prepared_sync(
+            "test.cancelled_census",
+            lambda: PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path),
+            publish,
+        )
+    )
+    try:
+        assert await asyncio.to_thread(census_started.wait, 15)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert not published
+        assert seals[0]._closed
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        await coordinator.run_sync("test.after_cancelled_census", lambda: None)
+    finally:
+        cancellation = compute_cancel.get()
+        if cancellation is not None:
+            cancellation.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert await coordinator.shutdown(timeout=30.0)
+        assert adapter.close(join_timeout_s=30.0) == ()

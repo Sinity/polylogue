@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Literal, TypeAlias
 
-from polylogue.context.compiler import (
+from polylogue.archive.context_models import (
     ContextImage,
     ContextSnapshotRecord,
     canonical_context_image_json,

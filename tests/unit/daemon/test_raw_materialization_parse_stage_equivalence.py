@@ -64,7 +64,7 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
     rather than the intake item is the source of idempotence.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -83,7 +83,7 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
     assert session_ids == ("codex-session:raw-profile-handoff",)
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         composed = compose_session_profile_callback(
             archive_root,
@@ -134,7 +134,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
     config = _config(archive_root)
     repository = SessionRepository(backend=SQLiteBackend(db_path=archive_root / "index.db"), archive_root=archive_root)
     service = ParsingService(repository=repository, archive_root=archive_root, config=config, ingest_workers=1)
@@ -198,7 +198,7 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
         assert retained[0][0] < retained[1][0]
 
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator()
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     try:
         composed = compose_session_profile_callback(
             archive_root,

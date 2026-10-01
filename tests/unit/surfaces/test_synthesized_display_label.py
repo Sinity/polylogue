@@ -31,7 +31,7 @@ from polylogue.surfaces.payloads import (
     session_list_envelope_from_summary,
     session_summary_envelope_from_summary,
 )
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 ECHOED_PROMPT = "please look at the failing test in the parser and tell me what is wrong"
 
@@ -73,7 +73,7 @@ def _write_session(
                     ],
                 )
             )
-        write_prepared_session(
+        write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,

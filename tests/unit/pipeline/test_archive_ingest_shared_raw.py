@@ -20,7 +20,7 @@ import pytest
 from polylogue.config import Source
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -230,7 +230,7 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
         ).fetchone()
 
     assert receipt == (
-        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        raw_authority_parser_fingerprint(),
         "complete",
         '["claude-code-session:journal-session"]',
     )

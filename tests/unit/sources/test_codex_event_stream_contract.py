@@ -37,7 +37,7 @@ from polylogue.sources.parsers.codex import (
 )
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
-from tests.infra.prepared_session import write_prepared_session
+from tests.infra.index_writer import write_fixture_index_session
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 
@@ -665,7 +665,7 @@ class TestFunctionsExecLowering:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_prepared_session(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
         conn.close()
 

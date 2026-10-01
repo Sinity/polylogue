@@ -103,9 +103,8 @@ from polylogue.sources.sqlite_snapshot import (
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
-    RAW_AUTHORITY_PARSER_FINGERPRINT,
-    SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     parser_census_logical_keys,
+    raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
@@ -979,7 +978,7 @@ def _prepared_retained_outcome(
         ("source_path", prepared.source_path, source_path),
         ("payload_bytes", prepared.payload_bytes, size),
         ("native_id", prepared.native_id, native_id),
-        ("parser_fingerprint", prepared.parser_fingerprint, RAW_AUTHORITY_PARSER_FINGERPRINT),
+        ("parser_fingerprint", prepared.parser_fingerprint, raw_authority_parser_fingerprint()),
         ("fallback_timestamp", prepared.fallback_timestamp, fallback_timestamp),
     )
     changed = [name for name, expected, actual in mismatched if expected != actual]
@@ -1056,32 +1055,20 @@ def uncensused_historical_revision_raw_ids(
 ) -> tuple[str, ...]:
     """Return inputs whose current parser identity has not been persisted.
 
-    The dedicated receipt proves that *some* parser version whose semantics
-    are still known to this codebase actually observed every relevant raw.
-    Durable revision or membership rows alone may have been produced by an
-    older parser and therefore cannot establish current quiescence.
-
-    This deliberately accepts any *known* fingerprint (the current one, or
-    one listed in ``SUPERSEDED_MEMBERSHIP_FINGERPRINTS``), not only the
-    current one (polylogue-9dxn): the census answers "was this raw ever
-    observed by a real parser?", which a fingerprint bump alone does not
-    change -- only ``classify_membership_revisions`` semantics changing (a
-    superseded fingerprint) can make a *verdict* stale, which is a separate
-    question the terminal-decision check in ``storage/derived/raw.py`` answers.
-    Treating a bump as forcing full re-census here would mean every
-    fingerprint bump re-parses the entire archive just to re-confirm facts
-    that did not change.
+    The dedicated receipt proves that the parser whose current executable
+    semantics fingerprint is stored actually observed every relevant raw.
+    Any fingerprint change makes a former receipt stale, so no growing list of
+    manually-known revisions can accidentally keep a changed parser authority
+    current.
 
     Current-fingerprint receipts also have to prove the durable authority
-    shape. Older receipts can contain an empty key list even when membership
-    rows establish a canonical identity, so those rows must be selected for
-    recomputation instead of remaining permanently blocked by the readiness
-    predicate.
+    shape. Receipts with another fingerprint, or an empty key list when
+    membership rows establish a canonical identity, are selected for
+    recomputation instead of remaining permanently blocked by readiness.
     """
     if not raw_ids:
         return ()
-    known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
-    known_placeholders = ",".join("?" for _ in known_fingerprints)
+    current_fingerprint = raw_authority_parser_fingerprint()
     with read_frame(
         archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
     ) as source_frame:
@@ -1097,14 +1084,14 @@ def uncensused_historical_revision_raw_ids(
                 LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
                 WHERE r.raw_id IN ({placeholders})
                   AND NOT COALESCE(
-                      c.parser_fingerprint IN ({known_placeholders})
+                      c.parser_fingerprint = ?
                       AND c.status = 'complete'
                       AND c.detail LIKE 'parser-observed:%',
                       0
                   )
                 ORDER BY r.raw_id
                 """,
-                [*raw_id_chunk, *known_fingerprints],
+                [*raw_id_chunk, current_fingerprint],
             )
             uncensused.extend(str(row[0]) for row in rows)
             current_receipt_shapes: dict[str, _CurrentParserReceiptShape] = {}
@@ -1143,11 +1130,11 @@ def uncensused_historical_revision_raw_ids(
                 ORDER BY r.raw_id, m.logical_source_key
                 """,
                 (
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    raw_authority_parser_fingerprint(),
+                    raw_authority_parser_fingerprint(),
                     RawRevisionAuthority.BYTE_PROVEN.value,
                     *raw_id_chunk,
-                    RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    raw_authority_parser_fingerprint(),
                 ),
             ):
                 raw_id = str(raw_id_value)
@@ -1211,7 +1198,7 @@ def _census_historical_revision_evidence(
                 archive.replace_raw_membership_census(
                     raw_id,
                     None,
-                    parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                    parser_fingerprint=raw_authority_parser_fingerprint(),
                     censused_at_ms=0,
                     detail=BYTE_AUTHORITY_CENSUS_DETAIL,
                     manage_transaction=True,
@@ -1230,7 +1217,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 None,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 detail=str(outcome),
                 manage_transaction=True,
@@ -1285,7 +1272,7 @@ def _census_historical_revision_evidence(
                     archive.replace_raw_membership_census(
                         raw_id,
                         [],
-                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=LEGACY_PAGE_IMAGE_CENSUS_DETAIL if _retained_page_image_raw(archive, raw_id) else "",
                         retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
@@ -1329,7 +1316,7 @@ def _census_historical_revision_evidence(
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 manage_transaction=True,
                 revision_authority=None,
@@ -1442,7 +1429,7 @@ def require_current_parser_source_census(
                 if raw_id in transient_non_session_raw_ids:
                     recorded_logical_keys[raw_id] = ()
                     continue
-                if fingerprint != RAW_AUTHORITY_PARSER_FINGERPRINT or status != "complete":
+                if fingerprint != raw_authority_parser_fingerprint() or status != "complete":
                     stale_raw_ids.append(raw_id)
                     continue
                 normalized_keys = parser_census_logical_keys(logical_keys_json)
@@ -1469,8 +1456,8 @@ def require_current_parser_source_census(
         ):
             where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
             params = (
-                RAW_AUTHORITY_PARSER_FINGERPRINT,
-                RAW_AUTHORITY_PARSER_FINGERPRINT,
+                raw_authority_parser_fingerprint(),
+                raw_authority_parser_fingerprint(),
                 RawRevisionAuthority.BYTE_PROVEN.value,
                 *selection,
             )
@@ -2476,7 +2463,7 @@ def apply_prepared_revision_replay(
                     archive.replace_raw_membership_census(
                         raw_id,
                         sessions,
-                        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+                        parser_fingerprint=raw_authority_parser_fingerprint(),
                         censused_at_ms=0,
                         detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                         retire_full_revision_governance=True,
@@ -3791,7 +3778,7 @@ def _parse_stream_raw(
 
 
 __all__ = [
-    "RAW_AUTHORITY_PARSER_FINGERPRINT",
+    "raw_authority_parser_fingerprint",
     "RetainedSessionEnricher",
     "PreparedRevisionReplayResult",
     "RevisionCensusResult",

@@ -27,7 +27,7 @@ import pytest
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -86,7 +86,7 @@ def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path
             (raw_id,),
         ).fetchone()
     assert receipt == (
-        RAW_AUTHORITY_PARSER_FINGERPRINT,
+        raw_authority_parser_fingerprint(),
         "complete",
         '["codex-session:reparse-session"]',
     )
