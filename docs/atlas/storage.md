@@ -139,6 +139,12 @@ the opened single-ZIP acquisition also retains its one-input manifest. Decoder
 completion compares streamed coordinates against the caller's uncommitted
 Source membership using regular indexed rows and a disk journal in a private
 Native-owned scratch database. It never changes the caller's TEMP policy.
+Read evidence uses that same enumeration measurement on the supplied Source
+snapshot. Input headers are paged separately from their nested raw witnesses;
+the daemon streams those witnesses into its existing private receipt spool and
+authenticates each historical raw page without retaining all pages. Private
+spool files remain under their exact Native lifetime until every opened owner
+settles, including failed reader or writer closes.
 Writable canonical bootstrap admits installed trains before runtime version
 validation. Read-only and acquisition-only opens refuse a baseline Source
 tier without applying migrations. A crash after baseline publication resumes

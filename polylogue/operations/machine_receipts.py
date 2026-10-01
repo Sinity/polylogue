@@ -1,7 +1,7 @@
 """Closed, bounded terminal receipts retained only by audit operation events.
 
-These models are intentionally separate from ``SourceGenerationReceipt``.  A
-source-generation receipt is a current projection over live source and index
+These models are separate from the paged source-generation evidence. That
+evidence is a current projection over live source and index
 tiers; these values are the immutable fact checkpointed when a machine
 operation terminalizes.  They are the only domain payload eligible for the
 audit continuity command and final event.
@@ -146,9 +146,11 @@ class IngestInputRawPageHistoricalReceipt(_Receipt):
         return self
 
 
-def ingest_input_raw_pages_digest(pages: list[IngestInputRawPageHistoricalReceipt]) -> str:
-    payload = [page.model_dump(mode="json") for page in pages]
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+def ingest_input_raw_pages_digest(pages: Iterable[IngestInputRawPageHistoricalReceipt]) -> str:
+    digest = IngestInputRawPagesDigest()
+    for page in pages:
+        digest.update(page)
+    return digest.hexdigest()
 
 
 def _page_digest(items: list[IngestInputHistoricalReceipt]) -> str:
@@ -209,8 +211,8 @@ class IngestRefusalPageHistoricalReceipt(_Receipt):
     refusals: list[IngestRefusedMembershipHistorical] = Field(min_length=1, max_length=MAX_PAGE_ITEMS)
 
 
-class IngestRefusalPagesDigest:
-    """Canonical digest of an ordered refusal page sequence, one page at a time.
+class _CanonicalPagesDigest:
+    """Canonical JSON array digest of receipt pages, one page at a time.
 
     Equal to the SHA-256 of the canonical JSON array of the pages, so a
     builder can persist each page and forget it.
@@ -220,7 +222,7 @@ class IngestRefusalPagesDigest:
         self._hasher = hashlib.sha256(b"[")
         self._pages = 0
 
-    def update(self, page: IngestRefusalPageHistoricalReceipt) -> None:
+    def update(self, page: _Receipt) -> None:
         if self._pages:
             self._hasher.update(b",")
         self._hasher.update(json.dumps(page.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode())
@@ -230,6 +232,14 @@ class IngestRefusalPagesDigest:
         final = self._hasher.copy()
         final.update(b"]")
         return final.hexdigest()
+
+
+class IngestRefusalPagesDigest(_CanonicalPagesDigest):
+    """Incremental canonical JSON array digest for refusal pages."""
+
+
+class IngestInputRawPagesDigest(_CanonicalPagesDigest):
+    """Incremental canonical JSON array digest for input raw pages."""
 
 
 def ingest_refusal_pages_digest(pages: Iterable[IngestRefusalPageHistoricalReceipt]) -> str:

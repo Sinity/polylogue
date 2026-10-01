@@ -10,6 +10,7 @@ from polylogue.operations.machine_receipts import (
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
     IngestInputRawPageHistoricalReceipt,
+    IngestInputRawPagesDigest,
     IngestInsightPageHistoricalReceipt,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
@@ -20,6 +21,29 @@ from polylogue.operations.machine_receipts import (
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
 )
+
+
+def test_streamed_input_raw_pages_preserve_the_authenticated_historical_digest() -> None:
+    import hashlib
+    import json
+
+    pages = [
+        IngestInputRawPageHistoricalReceipt(
+            source_item_id="source-item:non-ascii-α",
+            ordinal=ordinal,
+            raws=[IngestInputRawMemberHistorical(raw_id=f"raw:{ordinal}:α", unresolved=bool(ordinal))],
+        )
+        for ordinal in range(3)
+    ]
+    expected = hashlib.sha256(
+        json.dumps([page.model_dump(mode="json") for page in pages], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    digest = IngestInputRawPagesDigest()
+    for page in pages:
+        digest.update(page)
+    assert digest.hexdigest() == expected
+    assert ingest_input_raw_pages_digest(iter(pages)) == expected
+    assert IngestInputRawPagesDigest().hexdigest() == hashlib.sha256(b"[]").hexdigest()
 
 
 def test_ingest_history_keeps_known_unresolved_ids_in_bounded_input_page() -> None:

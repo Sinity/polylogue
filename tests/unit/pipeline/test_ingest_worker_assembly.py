@@ -93,6 +93,45 @@ def _ingest_title(record: RawSessionRecord, tmp_path: Path, store: BlobStore) ->
     return parsed.title, str(source) if source is not None else None
 
 
+@pytest.mark.parametrize("late_session", [False, True])
+def test_canonical_worker_classifies_complete_checkpoint_stream_with_declared_path(
+    blob_store: BlobStore,
+    tmp_path: Path,
+    late_session: bool,
+) -> None:
+    rows: list[dict[str, object]] = [{"type": "file-history-snapshot"}] * 65
+    if late_session:
+        rows.append(
+            {
+                "type": "user",
+                "uuid": "message",
+                "sessionId": "session",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": "preserve the actual late turn"},
+            }
+        )
+    content = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+    raw_id, size = blob_store.write_from_bytes(content)
+    record = RawSessionRecord(
+        raw_id=raw_id,
+        source_name=Provider.CLAUDE_CODE.value,
+        payload_provider=Provider.CLAUDE_CODE,
+        source_path=str(tmp_path / ".claude" / "projects" / "project" / "session.jsonl"),
+        source_index=None,
+        blob_size=size,
+        acquired_at="2026-01-01T00:00:00+00:00",
+        file_mtime=None,
+    )
+    result = ingest_record(record, str(tmp_path / "archive"), "advisory", blob_root_str=str(blob_store.root))
+    assert result.error is None
+    if late_session:
+        assert result.sessions
+        assert result.sessions[0].parsed_session.messages[0].text == "preserve the actual late turn"
+    else:
+        assert not result.sessions
+        assert result.evidence_ref == "artifact_not_session:file_history_snapshot"
+
+
 def test_canonical_ingest_applies_thread_name(blob_store: BlobStore, tmp_path: Path) -> None:
     """The daemon worker resolves the provider thread name, like direct ingest."""
     session_id = "aaaa1111-2222-3333-4444-555566667777"

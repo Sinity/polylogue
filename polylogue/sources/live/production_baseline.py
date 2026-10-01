@@ -658,7 +658,6 @@ def _archive_members(
         zipfile.ZipFile(physical.stream) as archive,
     ):
         central_directory = archive.infolist()
-        ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         # The location binds, not the sniffed dominant provider: an inbox
         # archive stays unbound so each member classifies, as in live intake.
@@ -671,12 +670,18 @@ def _archive_members(
         def fault(info: zipfile.ZipInfo, reason: str) -> None:
             members.append(SourceDecision(source_name, f"{path}:{info.filename}", "fault", reason))
 
-        entries = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path).filter_entries(
-            central_directory,
-            allowed_path=admission.allowed_path,
-            on_unselected=excluded,
-        )
-        for info in entries:
+        validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path)
+        for entry_ordinal, info in enumerate(central_directory):
+            if (
+                next(
+                    iter(
+                        validator.filter_entries((info,), allowed_path=admission.allowed_path, on_unselected=excluded)
+                    ),
+                    None,
+                )
+                is None
+            ):
+                continue
             _check_observation_cancelled(cancelled)
             if info.file_size == 0:
                 excluded(info, "empty_member")
@@ -696,7 +701,7 @@ def _archive_members(
                     captured_input_identity=captured.captured_identity,
                     container_blob_hash=physical.blob_hash,
                     decoder_fingerprint=zip_acquisition_fingerprint(provider),
-                    entry_ordinal=ordinals[id(info)],
+                    entry_ordinal=entry_ordinal,
                 )
                 for unit in replay_zip_entry_acquisition_revisions(
                     archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
@@ -710,7 +715,7 @@ def _archive_members(
                             "accepted",
                             "archive_member",
                             unit.revision,
-                            zip_member_source_index(entry_ordinal=ordinals[id(info)], split_index=split),
+                            zip_member_source_index(entry_ordinal=entry_ordinal, split_index=split),
                             unit.size_bytes,
                         )
                     )

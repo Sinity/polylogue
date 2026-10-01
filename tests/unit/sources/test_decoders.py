@@ -496,6 +496,133 @@ def test_complete_jsonl_candidacy_preserves_healthy_records_before_bad_utf8() ->
     assert not handle.closed
 
 
+def test_complete_taxonomy_rewinds_multibyte_text_using_its_opaque_cookie() -> None:
+    from polylogue.archive.raw_payload.streams import raw_byte_stream
+
+    class CookieText(io.StringIO):
+        def tell(self) -> int:
+            return 1_000_000 + super().tell()
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            assert whence == 0
+            assert offset >= 1_000_000
+            return 1_000_000 + super().seek(offset - 1_000_000)
+
+    payload = '{"label":"α😀"}\n{"label":"終"}\n'
+    caller = CookieText(payload)
+    with raw_byte_stream(caller) as view:
+        expected = payload.encode("utf-8")
+        assert view.read(7) == expected[:7]
+        view.seek(0)
+        assert view.read() == expected
+        assert view.tell() == len(expected)
+        view.seek(5)
+        assert view.read() == expected[5:]
+    assert not caller.closed
+    caller.seek(1_000_000)
+    scan = scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN)
+    assert scan.proved_non_session
+    assert scan.valid_records == 2
+    assert not caller.closed
+
+
+@pytest.mark.parametrize("text", [False, True])
+@pytest.mark.parametrize("advertises_seek", [False, True])
+def test_complete_taxonomy_preserves_nonseekable_input_and_caller_closure(text: bool, advertises_seek: bool) -> None:
+    payload = '{"label":"α😀"}\n{"label":"終"}\n'
+
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return advertises_seek
+
+        def seek(self, *_args: object) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+        def tell(self) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+    class TextPipe(io.StringIO):
+        def seekable(self) -> bool:
+            return advertises_seek
+
+        def seek(self, *_args: object) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+        def tell(self) -> int:
+            raise io.UnsupportedOperation("synthetic pipe")
+
+    caller = TextPipe(payload) if text else BinaryPipe(payload.encode())
+    scan = scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN)
+    assert scan.proved_non_session
+    assert scan.valid_records == 2
+    assert not caller.closed
+    assert caller.read() in (b"", "")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_nonseekable_taxonomy_failed_native_close_retains_replay_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    cancelled: bool,
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import connection_profile
+
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+    actual_connect = sqlite3.connect
+    fail_close = [True]
+
+    class FailingClose(sqlite3.Connection):
+        def close(self) -> None:
+            if fail_close[0]:
+                raise sqlite3.OperationalError("synthetic replay close failure")
+            super().close()
+
+    def connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        if str(database).endswith("bytes.db"):
+            kwargs["factory"] = FailingClose
+        return actual_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    caller = BinaryPipe(b'{"metadata":1}\n')
+    cancellation = InterruptedError("synthetic replay cancellation")
+
+    def stop() -> None:
+        if cancelled:
+            raise cancellation
+
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as refused:
+        scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN, check_stop=stop)
+    owner = refused.value.owner
+    assert not caller.closed
+    directory = owner.scratch_directory
+    assert directory is not None
+    assert Path(directory.name).is_dir()
+    if cancelled:
+        assert refused.value.__cause__ is cancellation
+    fail_close[0] = False
+    owner.close()
+    assert not Path(directory.name).exists()
+
+
+def test_nonseekable_taxonomy_cancellation_keeps_the_caller_open() -> None:
+    class BinaryPipe(io.BytesIO):
+        def seekable(self) -> bool:
+            return False
+
+    caller = BinaryPipe(b'{"metadata":1}\n' * 100)
+
+    def stop() -> None:
+        raise InterruptedError("synthetic replay cancellation")
+
+    with pytest.raises(InterruptedError):
+        scan_jsonl_session_artifact(caller, provider=Provider.UNKNOWN, check_stop=stop)
+    assert not caller.closed
+
+
 @pytest.mark.parametrize("text", [b"\xed\xa0\x80", b"\\ud800", b"\xed\xa0\xbd\xed\xb8\x80"])
 def test_complete_jsonl_projection_preserves_provider_surrogates(text: bytes) -> None:
     from polylogue.core.json import decode_provider_utf8

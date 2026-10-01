@@ -6250,7 +6250,6 @@ class LiveBatchProcessor:
                 zipfile.ZipFile(physical.stream) as zf,
             ):
                 central_directory = zf.infolist()
-                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 container_hash, _container_size, input_receipt = physical.retain()
                 if input_receipt is None:
                     raise ValueError("ZIP input lacks its accepted publication receipt")
@@ -6270,9 +6269,9 @@ class LiveBatchProcessor:
                 def disposition(info: zipfile.ZipInfo, reason: str, kind: str = "unselected") -> None:
                     captured_input.dispositions.append(
                         SourceInputRecord(
-                            coordinate=json_dumps(["zip-member-v1", entry_ordinals[id(info)]], separators=(",", ":")),
+                            coordinate=json_dumps(["zip-member-v1", entry_ordinal], separators=(",", ":")),
                             data=None,
-                            entry_ordinal=entry_ordinals[id(info)],
+                            entry_ordinal=entry_ordinal,
                             member_name=info.filename,
                             member_disposition=kind,
                             diagnostic=reason,
@@ -6280,18 +6279,23 @@ class LiveBatchProcessor:
                     )
 
                 allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
-                for info in validator.filter_entries(
-                    central_directory,
-                    allowed_path=allowed_path,
-                    on_unselected=disposition,
-                ):
+                for entry_ordinal, info in enumerate(central_directory):
+                    if (
+                        next(
+                            iter(
+                                validator.filter_entries((info,), allowed_path=allowed_path, on_unselected=disposition)
+                            ),
+                            None,
+                        )
+                        is None
+                    ):
+                        continue
                     if info.file_size == 0:
                         with open_zip_entry(zf, info) as empty:
                             if empty.read(1):
                                 raise zipfile.BadZipFile("empty member yielded data")
                         disposition(info, "member is empty")
                         continue
-                    entry_ordinal = entry_ordinals[id(info)]
                     split_index = 0
                     source_index = zip_member_source_index(
                         entry_ordinal=entry_ordinal,
