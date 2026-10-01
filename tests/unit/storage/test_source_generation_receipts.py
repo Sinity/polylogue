@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -141,6 +142,78 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     )
     assert SourceGenerationBlocker.APPLICATION_STALE in stale.items[0].raws[0].logicals[0].blockers
     assert stale.unresolved_raw_ids == ("raw-1",)
+
+
+def test_parser_census_writer_preserves_inherited_duplicate_receipt_spelling() -> None:
+    """Failed inherited census keeps its original sorted canonical JSON evidence."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+
+    source, index, _item = _connections()
+    try:
+        record_current_parser_source_census(
+            source, "raw-1", inherited_logical_keys=("codex:session-1", "codex-session:session-1")
+        )
+        assert source.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
+        ).fetchone() == ("failed", '["codex-session:session-1", "codex-session:session-1"]')
+        record_current_parser_source_census(source, "raw-1", inherited_logical_keys=("codex:session-1",))
+        assert source.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
+        ).fetchone() == ("complete", '["codex-session:session-1"]')
+    finally:
+        source.close()
+        index.close()
+
+
+def test_receipt_spools_one_raws_complete_logical_denominator_without_collecting_it(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import spool_connection
+
+    source, index, _item = _connections()
+    keys = ["codex:session-1"]
+    for number in range(1_024):
+        native_id = f"logical-{number:05d}"
+        keys.append(f"codex:{native_id}")
+        source.execute(
+            "INSERT INTO raw_session_memberships(raw_id, logical_source_key, provider_session_id, source_revision, "
+            "normalized_content_hash, message_count, acquisition_generation, decision) "
+            "VALUES ('raw-1', ?, ?, 'revision-1', ?, 1, 1, 'applied')",
+            (keys[-1], native_id, b"c" * 32),
+        )
+    source.execute(
+        "UPDATE raw_authority_parser_census SET logical_keys_json=? WHERE raw_id='raw-1'", (json.dumps(sorted(keys)),)
+    )
+    source.execute("UPDATE raw_membership_census SET member_count=? WHERE raw_id='raw-1'", (len(keys),))
+    assert source.in_transaction
+    spool = _spool_source_receipt(source, index, "source-43", tmp_path / "logical-receipt.sqlite")
+    try:
+        assert source.in_transaction
+        assert spool.unresolved_raw_count == 1
+        assert spool.confirmed_raw_count == 0
+        with spool_connection(spool.path, read_only=True) as observed:
+            assert observed.execute("SELECT COUNT(*) FROM logicals").fetchone() == (1_025,)
+            assert observed.execute("SELECT COUNT(*) FROM logicals WHERE complete=1").fetchone() == (1,)
+            assert observed.execute("SELECT parser_complete FROM raws WHERE raw_id='raw-1'").fetchone() == (1,)
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        '["codex:session-1","codex:session-1"]',
+        '["codex:session-1","codex:logical-earlier"]',
+        '["codex-session:session-1","codex:session-1"]',
+    ],
+)
+def test_receipt_refuses_invalid_order_or_duplicate_canonical_identity(recorded: str) -> None:
+    source, index, _item = _connections()
+    source.execute("UPDATE raw_authority_parser_census SET logical_keys_json=? WHERE raw_id='raw-1'", (recorded,))
+    receipt = observe_source_generation_receipt(
+        source, index, source_generation_id="source-43", active_generation="index-1"
+    )
+    assert not receipt.complete
+    assert receipt.unresolved_raw_ids == ("raw-1",)
+    assert receipt.items[0].raws[0].parser_blockers == (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
 
 
 def test_receipt_rejects_incomplete_enumeration_despite_current_raw_witnesses() -> None:

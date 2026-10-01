@@ -10,20 +10,20 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterator
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 
 from polylogue.archive.revision_authority import (
+    ParserCensusIdentityMeasurement,
     RawRevisionAuthority,
     canonical_authority_logical_key,
-    durable_authority_logical_keys,
-    parser_census_is_complete,
+    parser_census_identity_measurement,
 )
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.storage.raw_authority import (
-    parser_census_logical_keys,
+    iter_parser_census_logical_keys,
     raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.revision_governance import _application_decision_for
@@ -79,11 +79,9 @@ class SourceGenerationRawReceipt:
     parsed_at_ms: int | None
     parser_complete: bool
     parser_blockers: tuple[SourceGenerationBlocker, ...]
-    logicals: tuple[SourceGenerationLogicalReceipt, ...]
-
-    @property
-    def complete(self) -> bool:
-        return self.parser_complete and all(logical.complete for logical in self.logicals)
+    # Consume before advancing the enclosing raw iterator. Its Native disk
+    # identity owner and the caller's Source snapshot remain live meanwhile.
+    logicals: Iterator[SourceGenerationLogicalReceipt]
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,7 +194,8 @@ def iter_source_item_raw_receipts(
             for row in cursor:
                 if check_stop is not None:
                     check_stop()
-                yield _raw_receipt(source_conn, index_conn, str(row[0]))
+                with _raw_receipt(source_conn, index_conn, str(row[0]), check_stop=check_stop) as receipt:
+                    yield receipt
 
 
 def _enumeration_complete(
@@ -270,150 +269,171 @@ def _enumeration_complete(
     return measured[:4] == (expected_count, str(digest), expected_members, str(member_digest))
 
 
+@contextmanager
 def _raw_receipt(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection,
     raw_id: str,
-) -> SourceGenerationRawReceipt:
-    raw = source_conn.execute(
-        """
-        SELECT raw_id, source_index, parsed_at_ms, logical_source_key, revision_kind,
-               source_revision, acquisition_generation
-        FROM main.raw_sessions WHERE raw_id = ?
-        """,
-        (raw_id,),
-    ).fetchone()
+    *,
+    check_stop: Callable[[], None] | None,
+) -> Iterator[SourceGenerationRawReceipt]:
+    with closing(
+        source_conn.execute(
+            "SELECT raw_id, source_index, parsed_at_ms, logical_source_key, revision_kind, "
+            "source_revision, acquisition_generation FROM main.raw_sessions WHERE raw_id=?",
+            (raw_id,),
+        )
+    ) as rows:
+        raw = rows.fetchone()
     if raw is None:
-        return SourceGenerationRawReceipt(
-            raw_id=raw_id,
-            parsed_at_ms=None,
-            parser_complete=False,
-            parser_blockers=(SourceGenerationBlocker.PARSER_CENSUS_MISSING,),
-            logicals=(),
+        yield SourceGenerationRawReceipt(
+            raw_id, None, False, (SourceGenerationBlocker.PARSER_CENSUS_MISSING,), iter(())
         )
-    memberships = source_conn.execute(
-        """
-        SELECT logical_source_key, provider_session_id, source_revision,
-               normalized_content_hash, acquisition_generation, decision
-        FROM main.raw_session_memberships
-        WHERE raw_id = ?
-        ORDER BY logical_source_key
-        """,
-        (raw_id,),
-    ).fetchall()
-    parser_complete, parser_blockers, logical_keys = _parser_census_state(source_conn, raw, memberships)
-    memberships_by_key: dict[str, tuple[object, ...]] = {}
+        return
+    with closing(
+        source_conn.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json FROM main.raw_authority_parser_census WHERE raw_id=?",
+            (raw_id,),
+        )
+    ) as rows:
+        receipt = rows.fetchone()
+    membership_count = 0
     membership_identity_matches = True
-    for membership in memberships:
-        try:
-            key = canonical_authority_logical_key(str(membership[0]))
-        except ValueError:
-            membership_identity_matches = False
-            continue
-        if key.partition(":")[2] != str(membership[1]):
-            membership_identity_matches = False
-        memberships_by_key.setdefault(key, membership)
-    if not membership_identity_matches:
-        parser_complete = False
-        parser_blockers = (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
-    logicals = tuple(
-        _logical_receipt(
+
+    def membership_keys(rows: sqlite3.Cursor) -> Iterator[str]:
+        nonlocal membership_count, membership_identity_matches
+        for value, native_id in rows:
+            if check_stop is not None:
+                check_stop()
+            membership_count += 1
+            try:
+                key = canonical_authority_logical_key(str(value))
+            except ValueError:
+                membership_identity_matches = False
+            else:
+                membership_identity_matches &= key.partition(":")[2] == str(native_id)
+            yield str(value)
+
+    observed = None if receipt is None else iter_parser_census_logical_keys(receipt[2])
+    with (
+        closing(
+            source_conn.execute(
+                "SELECT logical_source_key, provider_session_id FROM main.raw_session_memberships "
+                "WHERE raw_id=? ORDER BY logical_source_key",
+                (raw_id,),
+            )
+        ) as memberships,
+        parser_census_identity_measurement(
+            raw_logical_key=raw[3],
+            revision_kind=raw[4],
+            membership_logical_keys=membership_keys(memberships),
+            observed_logical_keys=observed,
+            observed_are_receipt=True,
+            check_stop=check_stop,
+        ) as measured,
+    ):
+        memberships.close()
+        parser_complete, parser_blockers = _parser_census_state(
             source_conn,
-            index_conn,
-            raw_id=raw_id,
-            raw_source_revision=None if raw[5] is None else str(raw[5]),
-            raw_acquisition_generation=_int_cell(raw[6]),
-            logical_key=logical_key,
-            membership=memberships_by_key.get(logical_key),
-            parser_complete=parser_complete,
+            raw,
+            receipt,
+            measured,
+            membership_count,
         )
-        for logical_key in logical_keys
-    )
-    return SourceGenerationRawReceipt(
-        raw_id=raw_id,
-        parsed_at_ms=_int_cell(raw[2]),
-        parser_complete=parser_complete,
-        parser_blockers=parser_blockers,
-        logicals=logicals,
-    )
+        if not membership_identity_matches:
+            parser_complete = False
+            parser_blockers = (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
+
+        def logical_receipts() -> Iterator[SourceGenerationLogicalReceipt]:
+            if not measured.durable_valid:
+                return
+            with closing(measured.iter_durable_bindings()) as bindings:
+                for logical_key, source_key in bindings:
+                    if check_stop is not None:
+                        check_stop()
+                    membership = None
+                    if source_key is not None:
+                        with closing(
+                            source_conn.execute(
+                                "SELECT logical_source_key, provider_session_id, source_revision, "
+                                "normalized_content_hash, acquisition_generation, decision "
+                                "FROM main.raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
+                                (raw_id, source_key),
+                            )
+                        ) as rows:
+                            membership = rows.fetchone()
+                    yield _logical_receipt(
+                        source_conn,
+                        index_conn,
+                        raw_id=raw_id,
+                        raw_source_revision=None if raw[5] is None else str(raw[5]),
+                        raw_acquisition_generation=_int_cell(raw[6]),
+                        logical_key=logical_key,
+                        membership=membership,
+                        parser_complete=parser_complete,
+                    )
+
+        with closing(logical_receipts()) as logicals:
+            yield SourceGenerationRawReceipt(raw_id, _int_cell(raw[2]), parser_complete, parser_blockers, logicals)
 
 
 def _parser_census_state(
     source_conn: sqlite3.Connection,
     raw: tuple[object, ...],
-    memberships: list[tuple[object, ...]],
-) -> tuple[bool, tuple[SourceGenerationBlocker, ...], tuple[str, ...]]:
-    """Apply archive-readiness' parser classifier plus exact membership census."""
+    receipt: tuple[object, ...] | None,
+    measured: ParserCensusIdentityMeasurement,
+    membership_count: int,
+) -> tuple[bool, tuple[SourceGenerationBlocker, ...]]:
+    """Apply the shared disk identity law and this snapshot's typed disposition."""
     raw_id = str(raw[0])
-    durable_keys = durable_authority_logical_keys(
-        raw_logical_key=raw[3],
-        revision_kind=raw[4],
-        membership_logical_keys=(membership[0] for membership in memberships),
-    )
-    receipt = source_conn.execute(
-        """
-        SELECT parser_fingerprint, status, logical_keys_json
-        FROM main.raw_authority_parser_census WHERE raw_id = ?
-        """,
-        (raw_id,),
-    ).fetchone()
     if receipt is None:
-        return False, (SourceGenerationBlocker.PARSER_CENSUS_MISSING,), durable_keys or ()
-    typed_non_session = source_conn.execute(
-        "SELECT EXISTS(SELECT 1 FROM main.raw_artifacts WHERE raw_id = ? AND parse_as_session = 0)",
-        (raw_id,),
-    ).fetchone()[0]
-    membership_census = source_conn.execute(
-        """
-        SELECT parser_fingerprint, status, member_count, revision_authority
-        FROM main.raw_membership_census WHERE raw_id = ?
-        """,
-        (raw_id,),
-    ).fetchone()
-    membership_count = _int_cell(membership_census[2]) if membership_census is not None else None
+        return False, (SourceGenerationBlocker.PARSER_CENSUS_MISSING,)
+    with closing(
+        source_conn.execute(
+            "SELECT EXISTS(SELECT 1 FROM main.raw_artifacts WHERE raw_id=? AND parse_as_session=0)", (raw_id,)
+        )
+    ) as rows:
+        typed_non_session = bool(rows.fetchone()[0])
+    with closing(
+        source_conn.execute(
+            "SELECT parser_fingerprint, status, member_count, revision_authority "
+            "FROM main.raw_membership_census WHERE raw_id=?",
+            (raw_id,),
+        )
+    ) as rows:
+        census = rows.fetchone()
+    recorded_count = _int_cell(census[2]) if census is not None else None
+    census_status = None if census is None else str(census[1])
+    census_authority = None if census is None else str(census[3])
+    current = census is not None and str(census[0]) == raw_authority_parser_fingerprint()
+    parser_confirmed_non_session = current and census_status == "non_session" and recorded_count == 0
     source_index = _int_cell(raw[1])
-    parser_confirmed_non_session = (
-        membership_census is not None
-        and str(membership_census[0]) == raw_authority_parser_fingerprint()
-        and str(membership_census[1]) == "non_session"
-        and membership_count == 0
-    )
     byte_governed_fragment = (
         source_index is not None
         and source_index < 0
-        and membership_census is not None
-        and str(membership_census[0]) == raw_authority_parser_fingerprint()
-        and str(membership_census[1]) == "failed"
-        and membership_count == 0
-        and str(membership_census[3]) == RawRevisionAuthority.BYTE_PROVEN.value
+        and current
+        and census_status == "failed"
+        and recorded_count == 0
+        and census_authority == RawRevisionAuthority.BYTE_PROVEN.value
     )
-    expected_membership_census = (
+    expected_census = (
         parser_confirmed_non_session
         or byte_governed_fragment
-        or (
-            membership_census is not None
-            and str(membership_census[0]) == raw_authority_parser_fingerprint()
-            and str(membership_census[1]) == "complete"
-            and membership_count == len(memberships)
-        )
+        or current
+        and census_status == "complete"
+        and recorded_count == membership_count
     )
     complete = (
         str(receipt[0]) == raw_authority_parser_fingerprint()
         and str(receipt[1]) == "complete"
-        and expected_membership_census
-        and parser_census_is_complete(
-            recorded_keys=parser_census_logical_keys(receipt[2]),
-            durable_keys=durable_keys,
-            typed_non_session=bool(typed_non_session),
+        and expected_census
+        and measured.complete(
+            typed_non_session=typed_non_session,
             parser_confirmed_non_session=parser_confirmed_non_session,
             byte_governed_fragment=byte_governed_fragment,
         )
     )
-    return (
-        (True, (), durable_keys or ())
-        if complete
-        else (False, (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,), durable_keys or ())
-    )
+    return (True, ()) if complete else (False, (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,))
 
 
 def _logical_receipt(
