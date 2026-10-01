@@ -19,6 +19,7 @@ import os
 import sqlite3
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import AbstractContextManager, ExitStack, contextmanager
@@ -737,7 +738,7 @@ def _archive_mutator(
 
     @wraps(method)
     def wrapped(self: ArchiveStore, /, *args: _MutationArgs.args, **kwargs: _MutationArgs.kwargs) -> _MutationResult:
-        self._require_writable(method.__name__)
+        self._require_writable(method.__name__, cleanup=method.__name__ == "rollback")
         self._enter_mutation_lease(settlement=method.__name__ in {"commit", "rollback"})
         try:
             result = method(self, *args, **kwargs)
@@ -818,6 +819,7 @@ class ArchiveStore:
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._index_mutation_destination: IndexMutationDestination | None = None
+        self._pending_index_mutation_scope: IndexMutationScope | None = None
         self._frozen_index_path = frozen_index_path
         self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
@@ -990,11 +992,10 @@ class ArchiveStore:
         except BaseException as primary:
             try:
                 self.close()
-            except ArchiveStoreSettlementError as cleanup_error:
-                cleanup_error.add_note(f"ArchiveStore construction failed first: {type(primary).__name__}: {primary}")
-                raise cleanup_error from primary
             except BaseException as cleanup_error:
-                primary.add_note(f"ArchiveStore construction cleanup also failed: {cleanup_error}")
+                raise BaseExceptionGroup(
+                    "Archive construction and cleanup failed", [primary, cleanup_error]
+                ) from primary
             raise
         finally:
             if (
@@ -1276,14 +1277,22 @@ class ArchiveStore:
             raise RuntimeError("ArchiveStore must use its SQLite handles on their owning thread")
 
         if not cleanup:
+            pending = self._pending_index_mutation_scope
+            if pending is not None and not pending._active and not pending.settled:
+                raise ArchiveStoreSettlementError(
+                    self, RuntimeError("failed Index scope requires original-owner cleanup")
+                )
             from polylogue.storage.sqlite.connection_profile import native_sql_children
 
-            if any(owner.close_required and not owner._settled for owner in native_sql_children(self)):
+            if any(
+                (owner.close_required or owner._parent_cleanup_requested) and not owner._settled
+                for owner in native_sql_children(self)
+            ):
                 raise ArchiveStoreSettlementError(self, RuntimeError("archive SQL close remains unsettled"))
 
-    def _require_writable(self, operation: str) -> None:
+    def _require_writable(self, operation: str, *, cleanup: bool = False) -> None:
         """Reject mutations before they can open or use a writable tier."""
-        self._require_sql_owner()
+        self._require_sql_owner(cleanup=cleanup)
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
 
@@ -1349,7 +1358,10 @@ class ArchiveStore:
             current.require_connection(self._conn)
             yield current
             return
+        if self._pending_index_mutation_scope is not None:
+            raise RuntimeError("the prior Index mutation scope must settle before another transaction")
         destination = self._index_mutation_destination
+        scope: IndexMutationScope | None = None
         try:
             with ExitStack() as stack:
                 if destination is not None:
@@ -1364,16 +1376,26 @@ class ArchiveStore:
                         )
                     self._enter_mutation_lease()
                     scope = stack.enter_context(seal.mutation_scope(self._conn))
+                self._pending_index_mutation_scope = scope
                 yield scope
                 if scope._active:
                     self.commit()
         except BaseException as primary:
             try:
-                self.rollback()
+                # The mutation-scope context already attempted its Index and
+                # User children. Settle the other tiers without retrying that
+                # failed child during the same terminal call.
+                pending = self._pending_index_mutation_scope or scope
+                if pending is None or not pending._archive_cleanup_started:
+                    self._rollback_archive_writes(settle_index=False)
             except BaseException as rollback_error:
-                primary.add_note(f"Index rollback also failed: {rollback_error}")
+                raise BaseExceptionGroup(
+                    "Index mutation and archive rollback failed", [primary, rollback_error]
+                ) from primary
             raise
         finally:
+            if self._pending_index_mutation_scope is not None and self._pending_index_mutation_scope.settled:
+                self._pending_index_mutation_scope = None
             if not self._has_pending_write_sql():
                 self._release_mutation_lease(None)
 
@@ -1407,7 +1429,8 @@ class ArchiveStore:
             return connection.in_transaction
 
         return bool(
-            in_transaction(self._owned_index_connection)
+            (self._pending_index_mutation_scope is not None and not self._pending_index_mutation_scope.settled)
+            or in_transaction(self._owned_index_connection)
             or in_transaction(self._source_conn)
             or in_transaction(self.operation_vector_connection)
             or self._user_write_connections
@@ -1979,27 +2002,28 @@ class ArchiveStore:
         Used by a bulk caller to discard an uncommitted, half-applied batch when
         a write raises, before propagating the error.
         """
-        first_error: BaseException | None = None
+        self._rollback_archive_writes(settle_index=True)
+
+    def _rollback_archive_writes(self, *, settle_index: bool) -> None:
+        self._require_sql_owner(cleanup=True)
+        failures: list[BaseException] = []
 
         def settle(action: Callable[[], object]) -> bool:
-            nonlocal first_error
             try:
                 action()
                 return True
             except BaseException as error:
-                if first_error is None:
-                    first_error = error
-                else:
-                    first_error.add_note(f"another archive rollback failed: {error}")
+                failures.append(error)
                 return False
 
         from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
 
-        scope = current_index_mutation_scope()
+        scope = current_index_mutation_scope() or self._pending_index_mutation_scope
         if scope is not None:
-            scope.require_connection(self._conn)
+            scope.require_cleanup_connection(self._conn)
+            scope._archive_cleanup_started = True
         for connection in (
-            self._owned_index_connection,
+            self._owned_index_connection if settle_index else None,
             self._source_conn,
             self.operation_vector_connection,
             *self._user_write_connections,
@@ -2012,40 +2036,60 @@ class ArchiveStore:
             if self._source_conn is not None:
                 settle(self._source_conn.rollback)
         else:
-            if settle(scope.rollback if scope is not None else self._conn.rollback):
+            index_settled = (
+                settle(scope.close if scope is not None else self._conn.rollback)
+                if settle_index
+                else (scope.settled if scope is not None else not self._conn.in_transaction)
+            )
+            if index_settled:
                 self._pending_index_blob_receipts.clear()
                 self._pending_raw_parse_states.clear()
             if self._source_conn is not None:
                 settle(self._source_conn.rollback)
             if self.operation_vector_connection is not None:
                 settle(self.operation_vector_connection.rollback)
+            if scope is not None:
+                scope._archive_cleanup_failed = bool(failures)
+                if scope.settled:
+                    self._pending_index_mutation_scope = None
             if not self._has_pending_write_sql():
                 settle(self._release_replay_publisher_slot)
-        if first_error is not None:
-            raise first_error
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Archive rollback failed", failures)
 
     def close(self) -> None:
         self._require_sql_owner(cleanup=True)
-        first_error: BaseException | None = None
+        from polylogue.storage.sqlite.connection_profile import request_native_sql_parent_cleanup
+
+        request_native_sql_parent_cleanup(self)
+        failures: list[BaseException] = []
+        attempted_connections: set[int] = set()
 
         def settle(action: Callable[[], object]) -> bool:
-            nonlocal first_error
             try:
                 action()
                 return True
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                failures.append(exc)
                 return False
 
         def settle_connection(connection: sqlite3.Connection) -> bool:
             if isinstance(connection, _SourceTierOnlyIndexConnection):
                 return True
+            attempted_connections.add(id(connection))
             return settle(lambda: self._close_native_connection(connection))
 
         # Finish every handle before releasing physical custody. One failed
         # close must not strand a later SQL connection or let another writer
         # enter while its transaction is still live.
+        pending_scope = self._pending_index_mutation_scope
+        if pending_scope is not None and pending_scope._user_owner is not None:
+            attempted_connections.add(pending_scope._user_owner._connection_identity)
+        scope_settled = pending_scope is None or settle(pending_scope.close)
+        if scope_settled:
+            self._pending_index_mutation_scope = None
         for connection in tuple(self._user_write_connections):
             if settle_connection(connection):
                 self._user_write_connections[:] = [
@@ -2062,14 +2106,18 @@ class ArchiveStore:
             connection = self._source_conn
             if settle_connection(connection):
                 self._source_conn = None
-        if self._owned_index_connection is not None:
+        if self._owned_index_connection is not None and scope_settled:
             connection = self._owned_index_connection
             if settle_connection(connection):
                 self._owned_index_connection = None
         from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
 
         for owner in native_sql_children(self):
-            if not owner._settled:
+            if (
+                not owner._settled
+                and owner._connection_identity not in attempted_connections
+                and (scope_settled or owner._connection_identity != id(self._owned_index_connection))
+            ):
                 settle(owner.close)
         transactions_settled = not self._has_pending_write_sql()
         handles_closed = (
@@ -2086,11 +2134,10 @@ class ArchiveStore:
         if transactions_settled and handles_closed:
             try:
                 self._release_mutation_lease(
-                    None if first_error is None else (type(first_error), first_error, first_error.__traceback__)
+                    None if not failures else (type(failures[0]), failures[0], failures[0].__traceback__)
                 )
             except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
+                failures.append(exc)
         if (
             handles_closed
             and self._active_writer_lease is None
@@ -2098,10 +2145,11 @@ class ArchiveStore:
             and self._sql_custody is None
         ):
             settle(lambda: retire_native_sql_parent(self))
-        if first_error is not None:
+        if failures:
+            failure = failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive close failed", failures)
             if not handles_closed:
-                raise ArchiveStoreSettlementError(self, first_error) from first_error
-            raise first_error
+                raise ArchiveStoreSettlementError(self, failure) from failure
+            raise failure
 
     @contextmanager
     def attached_session_shard(
@@ -8255,14 +8303,10 @@ class ArchiveStore:
     ) -> None:
         try:
             self.close()
-        except ArchiveStoreSettlementError as close_error:
-            if exc is None:
-                raise
-            raise close_error from exc
         except BaseException as close_error:
             if exc is None:
                 raise
-            exc.add_note(f"ArchiveStore cleanup also failed: {close_error}")
+            raise BaseExceptionGroup("Archive operation and Store cleanup failed", [exc, close_error]) from exc
 
 
 def _summary_from_row(row: sqlite3.Row, conn: sqlite3.Connection) -> ArchiveSessionSummary:

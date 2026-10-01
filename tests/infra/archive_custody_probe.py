@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+
 
 def archive_custody_available(root: Path) -> bool:
     import subprocess
@@ -21,7 +23,7 @@ def archive_custody_available(root: Path) -> bool:
     )
 
     result = subprocess.run(
-        [sys.executable, "-c", probe, str(root / ".archive-write-custody.lock")],
+        [sys.executable, "-c", probe, str(root / ARCHIVE_WRITE_CUSTODY_LOCK_NAME)],
         capture_output=True,
         text=True,
         check=False,

@@ -26,6 +26,7 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnlyArchiveError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
     ArtifactGcReport,
@@ -3015,7 +3016,9 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
     released = root / ".maintenance-state/durable-change-trains/source-002.json"
     assert provenance.read_bytes() != released.read_bytes()
     assert {item["path"] for item in manifest_files} == {
-        str(path.relative_to(root)) for path in root.rglob("*") if path.is_file() and path.name != "manifest.json"
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_file() and path.name not in {"manifest.json", ARCHIVE_WRITE_CUSTODY_LOCK_NAME}
     }
     if artifact_kind == "seeded":
         assert artifact is not None
@@ -3027,3 +3030,53 @@ def test_sealed_archive_copy_publication_owns_its_released_train(
         cloned_tree = clone_immutable_tree(tree, tmp_path / "clone")
         with ArchiveStore.open_existing(cloned_tree.root, read_only=False) as archive:
             assert archive.count_sessions() == 0
+
+
+@pytest.mark.uses_real_clock("independent process observes the held destination write lock")
+@pytest.mark.parametrize("force_copy", [False, True])
+def test_authenticated_clone_preserves_actual_destination_write_custody_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, force_copy: bool
+) -> None:
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.archive_population import ArchivePopulationProof
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME, current_write_lease, write_lease
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    def builder(root: Path) -> None:
+        with write_lease("test.fixture-control-file", archive_root=root):
+            initialize_active_archive_root(root)
+
+    artifact = build_immutable_tree(cache_root=tmp_path / "cache", key="owned-lock-clone", builder=builder)
+    assert all(item["path"] != ARCHIVE_WRITE_CUSTODY_LOCK_NAME for item in artifact.files)
+    actual_population = archive_population.populate_authenticated_archive
+    observed: list[tuple[int, int]] = []
+
+    def population(source: Path, destination: Path, **kwargs: Any) -> ArchivePopulationProof | None:
+        lock = destination / ARCHIVE_WRITE_CUSTODY_LOCK_NAME
+        before = lock.stat()
+        identity = before.st_dev, before.st_ino
+        lease = current_write_lease()
+        assert lease is not None and lease.custody is not None
+        lease.custody.assert_namespace()
+        assert not archive_custody_available(destination)
+        proof = actual_population(source, destination, **kwargs)
+        after = lock.stat()
+        assert (after.st_dev, after.st_ino) == identity
+        lease.custody.assert_namespace()
+        observed.append(identity)
+        return proof
+
+    monkeypatch.setattr(archive_population, "populate_authenticated_archive", population)
+    if force_copy:
+        actual_run = subprocess.run
+
+        def refuse_reflink(args: Any, *extra: Any, **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+            if args[0] == "cp":
+                raise subprocess.CalledProcessError(1, args)
+            return actual_run(args, *extra, **kwargs)
+
+        monkeypatch.setattr(subprocess, "run", refuse_reflink)
+    clone = clone_immutable_tree(artifact, tmp_path / "destination")
+    assert len(observed) == 1
+    assert archive_custody_available(clone.root)

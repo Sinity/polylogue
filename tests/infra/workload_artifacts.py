@@ -62,6 +62,7 @@ from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
+from polylogue.storage.sqlite.write_lease import ARCHIVE_WRITE_CUSTODY_LOCK_NAME
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 from tests.infra.workload_declarations import (
     BENCHMARK_WORKLOAD_PROFILES,
@@ -79,7 +80,7 @@ if TYPE_CHECKING:
 # Part of the artifact key, so a change to the manifest's shape or to what
 # sealing guarantees gives published artifacts a distinct identity instead of
 # leaving two code versions to overwrite each other's tree at one key.
-_ARTIFACT_PROTOCOL_VERSION = 6
+_ARTIFACT_PROTOCOL_VERSION = 7
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -787,7 +788,14 @@ def _clone_immutable_tree_unlocked(
                 retained_artifact_reference=retained_artifact_reference,
                 retain_manifest=retain_manifest,
                 authenticate_copy=authenticate_copy,
-                protected_names=frozenset({".archive-population.pending", ".archive-ownership.lock", "daemon.pid"}),
+                protected_names=frozenset(
+                    {
+                        ".archive-population.pending",
+                        ".archive-ownership.lock",
+                        "daemon.pid",
+                        ARCHIVE_WRITE_CUSTODY_LOCK_NAME,
+                    }
+                ),
             )
     return _clone_into_reserved_destination(
         artifact,
@@ -1337,7 +1345,11 @@ def _is_reserved_root_file(path: Path, root: Path) -> bool:
         relative = path.relative_to(root)
     except ValueError:
         return False
-    return len(relative.parts) == 1 and relative.name in {"manifest.json", ".build.lock"}
+    return len(relative.parts) == 1 and relative.name in {
+        "manifest.json",
+        ".build.lock",
+        ARCHIVE_WRITE_CUSTODY_LOCK_NAME,
+    }
 
 
 def _is_symlink_node(path: Path) -> bool:

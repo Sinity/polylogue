@@ -307,3 +307,88 @@ def test_same_file_descriptor_reuse_is_not_an_open_file_description_proof(
         if owner.anchored_descriptors:
             os.close(descriptor)
             owner.close()
+
+
+def test_nested_failed_new_child_preserves_entry_parent_until_parent_requests_cleanup(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import (
+        native_sql_children,
+        request_native_sql_parent_cleanup,
+        retained_native_settlement_owners_on_current_thread,
+        retire_native_sql_parent,
+    )
+
+    class Parent:
+        def close(self) -> None:
+            request_native_sql_parent_cleanup(self)
+            for child in native_sql_children(self):
+                child.close()
+            retire_native_sql_parent(self)
+
+    parent = Parent()
+    first = NativeSQLCustodyOwner(connect_measured(tmp_path / "entry.db"), terminal_parent=parent)
+    entry = (first,)
+    second = NativeSQLCustodyOwner(connect_measured(tmp_path / "nested.db"), terminal_parent=parent)
+    cursor = second.require_connection().cursor(factory=ControlledCursor)
+    cursor.execute("SELECT 1 UNION ALL SELECT 2")
+    next(cursor)
+    cursor.allow_cleanup.clear()
+    try:
+        with pytest.raises(NativeConnectionSettlementError):
+            second.close()
+        assert retained_native_settlement_owners_on_current_thread(entry) == (second,)
+        assert first.require_connection().execute("SELECT 1").fetchone()[0] == 1
+        cursor.allow_cleanup.set()
+        second.close()
+        assert retained_native_settlement_owners_on_current_thread(entry) == ()
+        request_native_sql_parent_cleanup(parent)
+        assert retained_native_settlement_owners_on_current_thread(entry) == (parent,)
+        with pytest.raises(RuntimeError):
+            first.require_connection()
+        with pytest.raises(RuntimeError):
+            first.handoff()
+        parent.close()
+        assert not native_sql_children(parent)
+    finally:
+        cursor.allow_cleanup.set()
+        parent.close()
+
+
+def test_failed_cursor_close_cannot_handoff_its_creator_native_owner(tmp_path: Path) -> None:
+    from polylogue.core.sql_settlement import retained_native_sql_owners
+
+    owner = NativeSQLCustodyOwner(connect_measured(tmp_path / "handoff.db"))
+    connection = owner.require_connection()
+    cursor = connection.cursor(factory=ControlledCursor)
+    cursor.execute("SELECT 1 UNION ALL SELECT 2")
+    next(cursor)
+    cursor.allow_cleanup.clear()
+    try:
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert cursor.close_attempts == 1
+        with pytest.raises(RuntimeError):
+            owner.handoff()
+        with pytest.raises(RuntimeError):
+            owner.require_connection()
+        assert owner.connection is connection and owner in retained_native_sql_owners()
+        assert cursor.close_attempts == 1
+        cursor.allow_cleanup.set()
+        owner.close()
+        assert cursor.close_attempts == 2 and owner not in retained_native_sql_owners()
+        with pytest.raises(sqlite3.ProgrammingError):
+            connection.execute("SELECT 1")
+    finally:
+        cursor.allow_cleanup.set()
+        owner.close()
+
+
+def test_healthy_native_construction_handoff_preserves_the_idle_connection(tmp_path: Path) -> None:
+    from polylogue.core.sql_settlement import retained_native_sql_owners
+
+    owner = NativeSQLCustodyOwner(connect_measured(tmp_path / "healthy-handoff.db"))
+    connection = owner.handoff()
+    try:
+        assert owner not in retained_native_sql_owners()
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+    finally:
+        connection.close()

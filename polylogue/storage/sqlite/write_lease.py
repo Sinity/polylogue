@@ -43,7 +43,10 @@ from typing import Any
 from polylogue.core.sql_settlement import SQLCustodyOwner
 from polylogue.logging import WARNING, emit, get_logger
 
+ARCHIVE_WRITE_CUSTODY_LOCK_NAME = ".archive-write-custody.lock"
+
 __all__ = [
+    "ARCHIVE_WRITE_CUSTODY_LOCK_NAME",
     "UnleasedWriteError",
     "declared_unguarded_write",
     "install_archive_write_guard",
@@ -398,7 +401,7 @@ def _acquire_archive_write_custody(archive_root: str | Path) -> ArchiveWriteCust
     root = Path(archive_root).resolve()
     if not root.is_dir():
         raise UnleasedWriteError(f"archive root is not an existing directory: {root}")
-    path = root / ".archive-write-custody.lock"
+    path = root / ARCHIVE_WRITE_CUSTODY_LOCK_NAME
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     before: tuple[int, int] | None
     try:
