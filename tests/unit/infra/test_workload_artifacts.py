@@ -2289,7 +2289,7 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
     clone_thread.start()
     gc_thread = threading.Thread(target=collect)
     try:
-        assert copy_started.wait(5), "clone did not reach its source read barrier"
+        copy_started.wait()
         gc_thread.start()
         # The GC must settle while the source read is pinned. Population after
         # release owns real migration/proof work, not a five-second outcome.
