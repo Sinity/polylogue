@@ -81,7 +81,7 @@ def test_cold_archive_initialization_preserves_source_item_and_policy_models() -
                     "from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec",
                     "from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier",
                     "member = SourceItemAdmission('generation', 'item', 'record:0')",
-                    "raw = RawSessionRecord(raw_id='raw', source_path='/synthetic/source.json', source_item=member)",
+                    "raw = RawSessionRecord(raw_id='raw', source_path='/synthetic/source.json', source_item=member, blob_size=0, acquired_at='2026-01-01T00:00:00Z')",
                     "assert raw.source_item == member",
                     "policy = ExcisionPolicySnapshot((), (), 0, 0, 'head', None)",
                     "assert policy.schema_identity == ';'.join(f'{tier.value}:{archive_tier_spec(tier).version}' for tier in (ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT))",
