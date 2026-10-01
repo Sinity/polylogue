@@ -1413,8 +1413,7 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
     that fails to parse stays permanently dark even after the parser bug that
     poisoned it is fixed -- the file on disk never changes, only the code
     that reads it. A ``_PARSER_FINGERPRINT`` bump (this module's existing,
-    deliberately-versioned marker for a parser-semantics change, the same
-    pattern ``raw_authority_parser_fingerprint()`` uses) must be enough to
+    deliberately-versioned marker for a parser-semantics change) must be enough to
     trigger a fresh attempt through the real ``LiveWatcher._needs_work`` path,
     not merely through ``CursorStore.revive_replaced_exclusion`` directly.
     """
@@ -3187,6 +3186,51 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
         assert fallback is None
     finally:
         await archive.close()
+
+
+@pytest.mark.parametrize("cursor_state", ["settled", "excluded", "failed", "deferred"])
+def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path, cursor_state: str) -> None:
+    root = tmp_path / "src"
+    root.mkdir()
+    path = root / "session.jsonl"
+    path.write_text('{"a":1}\n')
+    watcher, full_ingest = _make_watcher(tmp_path, root)
+    stat = path.stat()
+    watcher._cursor.set(
+        path,
+        stat.st_size,
+        parser_fingerprint="live-batched-v5",
+        content_fingerprint=None if cursor_state == "deferred" else "old-revision",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+        failure_count=1 if cursor_state in {"excluded", "failed"} else 0,
+        excluded=cursor_state == "excluded",
+        next_retry_at="2999-01-01T00:00:00+00:00" if cursor_state in {"failed", "deferred"} else None,
+    )
+
+    # Use the dispatcher's bulk selection, then the actual batch cursor
+    # publication path. Only provider work is substituted by this harness.
+    selected, deferred = watcher.classify_ingest_candidates([path])
+    assert selected == (path,)
+    assert deferred == ()
+    asyncio.run(watcher._ingest_files(selected))
+
+    after = path.stat()
+    assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+    assert full_ingest.await_count == 1
+    record = watcher._cursor.get_record(path)
+    assert record is not None
+    assert record.parser_fingerprint == live_watcher._PARSER_FINGERPRINT
+    assert record.parser_fingerprint != "live-batched-v5"
+    assert not record.excluded
+    assert record.failure_count == 0
+    assert watcher.classify_ingest_candidates([path]) == ((), ())
 
 
 def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
