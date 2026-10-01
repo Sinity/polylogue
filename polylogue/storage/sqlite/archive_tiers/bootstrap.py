@@ -32,6 +32,8 @@ from polylogue.storage.sqlite.connection_profile import (
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
     open_readonly_connection,
+    retained_native_sql_owners_for_lifetime,
+    scratch_connection_context,
 )
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -238,11 +240,17 @@ def archive_tier_init_counts() -> dict[str, int]:
         return {f"{tier}.{outcome}": count for (tier, outcome), count in sorted(_TIER_INIT_COUNTS.items())}
 
 
+def _cleanup_tier_prototype_dir(directory: Path) -> None:
+    if retained_native_sql_owners_for_lifetime(directory):
+        raise RuntimeError("tier prototype directory retains unsettled native SQL")
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 def _tier_prototype_dir() -> Path:
     global _TIER_PROTOTYPE_DIR
     if _TIER_PROTOTYPE_DIR is None:
         directory = Path(tempfile.mkdtemp(prefix="polylogue-tier-prototype-"))
-        atexit.register(shutil.rmtree, directory, True)
+        atexit.register(_cleanup_tier_prototype_dir, directory)
         _TIER_PROTOTYPE_DIR = directory
     return _TIER_PROTOTYPE_DIR
 
@@ -281,7 +289,9 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
 
         source = open_readonly_connection(prototype.resolve(strict=True), immutable=True, validate_schema=False)
-        source_owner = NativeSQLCustodyOwner(source)
+        source_owner = NativeSQLCustodyOwner(
+            source, lifetime_dependencies=(_TIER_PROTOTYPE_DIR,) if _TIER_PROTOTYPE_DIR is not None else ()
+        )
         try:
             source.backup(conn)
         except BaseException as primary:
@@ -308,8 +318,9 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         if key in _TIER_PROTOTYPES:
             return
     staging: Path | None = None
+    directory = _tier_prototype_dir()
     try:
-        destination = _tier_prototype_dir() / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
+        destination = directory / f"{tier.value}-v{required_version}-{key[2]}-p{key[3]}.db"
         staging_fd, staging_name = tempfile.mkstemp(
             prefix=f".{destination.name}.",
             suffix=".tmp",
@@ -320,7 +331,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
 
         target = connect_measured(staging)
-        target_owner = NativeSQLCustodyOwner(target)
+        target_owner = NativeSQLCustodyOwner(target, lifetime_dependencies=(directory,))
         try:
             conn.backup(target)
         except BaseException as primary:
@@ -338,7 +349,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
     except (OSError, sqlite3.Error):
         return
     finally:
-        if staging is not None:
+        if staging is not None and not retained_native_sql_owners_for_lifetime(directory):
             with contextlib.suppress(OSError):
                 staging.unlink(missing_ok=True)
     with _TIER_PROTOTYPE_LOCK:
@@ -425,23 +436,19 @@ def initialize_runtime_tier_probe(
         # The numbered runner proves actual file custody. Build that proof on
         # an owned isolated file, then copy its proved schema into the probe;
         # an in-memory connection never supplies a fabricated archive identity.
-        with tempfile.TemporaryDirectory(prefix="polylogue-tier-probe-") as directory:
+        with scratch_connection_context(prefix="polylogue-tier-probe-", filename=f"{tier.value}.db") as temporary:
             from polylogue.storage.sqlite.migration_runner import (
                 _durable_literal_rows_digest,
                 capture_durable_schema_inventory,
             )
 
-            path = Path(directory) / f"{tier.value}.db"
-            temporary = connect_measured(path)
-            try:
-                initialize_runtime_tier_probe(temporary, tier, probe_path=path)
-                admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
-                evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
-                temporary.backup(conn)
-                if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
-                    raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
-            finally:
-                temporary.close()
+            path = Path(next(row[2] for row in temporary.execute("PRAGMA database_list") if row[1] == "main"))
+            initialize_runtime_tier_probe(temporary, tier, probe_path=path)
+            admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
+            evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
+            temporary.backup(conn)
+            if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
+                raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
         conn.execute("PRAGMA foreign_keys = ON")
         if int(conn.execute("PRAGMA user_version").fetchone()[0]) != admitted_version:
             raise RuntimeError("runtime tier probe backup did not retain its admitted version")
