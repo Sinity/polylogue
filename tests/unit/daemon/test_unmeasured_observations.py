@@ -59,7 +59,7 @@ def test_uninspected_fts_triggers_do_not_report_all_present(tmp_path: Path, monk
     ``samples=[(None, 1 if all(triggers.values()) else 0)]`` turns this red --
     the ``1`` reappears and the unmeasured marker does not.
     """
-    from polylogue.daemon import metrics as metrics_module
+    from polylogue.operations import daemon_metrics as metrics_module
     from tests.infra.archive_templates import bootstrap_archive_root
 
     index_db = tmp_path / "index.db"
@@ -197,7 +197,7 @@ def test_build_identity_failure_does_not_attest_clean(monkeypatch: pytest.Monkey
     makes the emitted label ``dirty=\"false\"`` and fails this assertion.
     """
     import polylogue.version as version_module
-    from polylogue.daemon import metrics as metrics_module
+    from polylogue.operations import daemon_metrics as metrics_module
     from tests.infra.archive_templates import bootstrap_archive_root
 
     index_db = tmp_path / "index.db"
