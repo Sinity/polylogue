@@ -254,6 +254,13 @@ def test_global_residue_key_deletes_only_docsize_proven_orphans(test_conn: sqlit
     assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (live_rowid,)).fetchone()
     assert test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = 999999").fetchone() is None
     assert adapter.inspect_partition(test_conn, GLOBAL_PARTITION).status is FtsKeyStatus.VALID
+    assert test_conn.execute("SELECT 1 FROM messages_fts_identity WHERE rowid = 999999").fetchone() is None
+    assert test_conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'orphan'").fetchall() == []
+    assert (
+        test_conn.execute("SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'derivation'").fetchone()[0]
+        == live_rowid
+    )
+    assert _converge(adapter, _frame(test_db, ())).made_no_publication_attempts
 
 
 def test_global_orphan_discovery_uses_exists_not_an_unbounded_rowid_collection(
@@ -432,3 +439,18 @@ def test_partition_publish_chunks_rowids_under_the_connection_variable_limit(
 
     assert adapter.inspect_partition(test_conn, session_id).valid
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 6
+
+
+def test_exact_status_describes_only_the_live_message_surface(test_conn: sqlite3.Connection) -> None:
+    """A retired surface must not be advertised as an independently measured index."""
+    from polylogue.daemon.fts_status import _exact_readiness_payload
+    from polylogue.storage.fts.fts_lifecycle import fts_index_status_sync, fts_invariant_snapshot_sync
+
+    _seed_session(test_conn, "status-surface")
+    snapshot = fts_invariant_snapshot_sync(test_conn)
+    assert snapshot.ready
+    assert tuple(surface.name for surface in snapshot.surfaces) == ("messages_fts",)
+    surfaces = _exact_readiness_payload(snapshot)["surfaces"]
+    assert isinstance(surfaces, dict)
+    assert set(surfaces) == {"messages_fts"}
+    assert fts_index_status_sync(test_conn) == {"exists": True, "count": 1}

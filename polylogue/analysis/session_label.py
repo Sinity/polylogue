@@ -22,7 +22,6 @@ freeze mid-session ("340 msgs" becomes wrong the moment message 341 lands).
 from __future__ import annotations
 
 import sqlite3
-from collections import Counter
 from dataclasses import dataclass
 
 from polylogue.archive.session.repo_identity import repo_relative_path
@@ -34,7 +33,6 @@ __all__ = [
     "SessionRepoRootPath",
     "compute_session_structural_label",
     "distinct_repo_relative_file_count_for_session",
-    "dominant_repo_relative_path_for_session",
     "session_structural_label_for_session",
 ]
 
@@ -67,12 +65,8 @@ class SessionLabelInputs:
     is_directory: bool
     """``True`` when ``repo_name`` names a bare directory rather than a
     resolved repository (no git remote, no discoverable git root)."""
-    dominant_path: str | None
-    """Retained for compatibility with the earlier path-based projection."""
-    additional_file_count: int
-    """Retained for compatibility with the earlier path-based projection."""
     message_count: int
-    distinct_file_count: int | None = None
+    distinct_file_count: int
     distinct_file_count_capped: bool = False
     """``True`` when ``distinct_file_count`` is a floor that hit
     :data:`MAX_DISTINCT_FILE_COUNT`; the label then reads ``"<n>+ files"``."""
@@ -100,8 +94,6 @@ def compute_session_structural_label(inputs: SessionLabelInputs) -> str:
         parts.append(inputs.repo_name)
 
     distinct_file_count = inputs.distinct_file_count
-    if distinct_file_count is None:
-        distinct_file_count = (1 + inputs.additional_file_count) if inputs.dominant_path else 0
     if distinct_file_count:
         noun = "file" if distinct_file_count == 1 and not inputs.distinct_file_count_capped else "files"
         suffix = "+" if inputs.distinct_file_count_capped else ""
@@ -168,45 +160,6 @@ def _session_repo_root(conn: sqlite3.Connection, session_id: str) -> SessionRepo
         root_path=root_path or "",
         is_directory=False,
     )
-
-
-def dominant_repo_relative_path_for_session(
-    conn: sqlite3.Connection,
-    session_id: str,
-) -> tuple[str | None, int]:
-    """Return ``(dominant_repo_relative_path, additional_file_count)``.
-
-    Reads ``action_pairs.tool_path`` for the session, strips the resolved
-    checkout root (decision 2), and picks the most frequently touched
-    distinct path as dominant. Ties break on lexical order for determinism.
-    """
-    repo_root = _session_repo_root(conn, session_id)
-    root_path = repo_root.root_path if repo_root else ""
-
-    rows = conn.execute(
-        """
-        SELECT tool_path
-        FROM action_pairs
-        WHERE session_id = ? AND tool_path IS NOT NULL AND tool_path != ''
-        """,
-        (session_id,),
-    ).fetchall()
-    if not rows:
-        return None, 0
-
-    counts: Counter[str] = Counter()
-    for (raw_path,) in rows:
-        relative = repo_relative_path(str(raw_path), root_path) if root_path else str(raw_path)
-        if relative:
-            counts[relative] += 1
-
-    if not counts:
-        return None, 0
-
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
-    dominant_path = ranked[0][0]
-    additional_file_count = len(ranked) - 1
-    return dominant_path, additional_file_count
 
 
 def distinct_repo_relative_file_count_for_session(
@@ -278,8 +231,6 @@ def session_structural_label_for_session(
         provider_title=provider_title,
         repo_name=repo_root.repo_name if repo_root else None,
         is_directory=repo_root.is_directory if repo_root else True,
-        dominant_path=None,
-        additional_file_count=0,
         message_count=message_count,
         distinct_file_count=distinct_files.count,
         distinct_file_count_capped=distinct_files.capped,

@@ -15,19 +15,16 @@ depended on it and no pass ever enumerates a whole spool.
 
 from __future__ import annotations
 
-import inspect
 import time
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, TypeVar, cast, overload, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from polylogue.core.raw_failure_evidence import PartialAdmission
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.logging import ERROR, WARNING, emit
-
-_T = TypeVar("_T")
 
 __all__ = [
     "AdmissionOutcome",
@@ -471,7 +468,7 @@ class FairIntakeDispatcher:
         limit = spec.page_size
         discovery_started = self._clock()
         try:
-            page: list[IntakeItem] = list(await _maybe_await(spec.adapter.discover(limit=limit)))
+            page: list[IntakeItem] = list(await spec.adapter.discover(limit=limit))
         except Exception as exc:
             emit(
                 "daemon.intake.discovery_failed",
@@ -554,7 +551,7 @@ class FairIntakeDispatcher:
                     reason=result.reason,
                 )
             if result.acknowledgeable:
-                await _maybe_await(spec.adapter.acknowledge(item))
+                await spec.adapter.acknowledge(item)
                 runtime.attempts.pop(item.item_id, None)
                 runtime.windows.pop(item.item_id, None)
                 runtime.retry_after.pop(item.item_id, None)
@@ -699,7 +696,7 @@ class FairIntakeDispatcher:
 
     async def _admit(self, spec: IntakeClassSpec, item: IntakeItem) -> AdmissionResult:
         try:
-            return await _maybe_await(spec.adapter.admit(item))
+            return await spec.adapter.admit(item)
         except Exception as exc:
             return AdmissionResult(
                 AdmissionOutcome.RETRYABLE,
@@ -725,7 +722,7 @@ class FairIntakeDispatcher:
         try:
             results = cast(
                 Mapping[str, AdmissionResult],
-                await _maybe_await(admit_page(tuple(items))),
+                await admit_page(tuple(items)),
             )
         except Exception as exc:
             # The adapter handled none of it, so say so once per page: an
@@ -806,18 +803,3 @@ class FairIntakeDispatcher:
                     frame=self._frame or None,
                 )
             )
-
-
-@overload
-async def _maybe_await(value: Awaitable[_T]) -> _T: ...
-
-
-@overload
-async def _maybe_await(value: _T) -> _T: ...
-
-
-async def _maybe_await(value: object) -> object:
-    """Await an adapter result while keeping tiny synchronous test doubles useful."""
-    if inspect.isawaitable(value):
-        return await cast(Awaitable[object], value)
-    return value

@@ -269,20 +269,6 @@ def insert_all_message_rows_sql() -> str:
     """
 
 
-def insert_missing_message_rows_sql() -> str:
-    return f"""
-        WITH missing(rowid, search_text) AS (
-            SELECT b.rowid, b.search_text
-            FROM blocks AS b
-            LEFT JOIN messages_fts_docsize AS d ON d.id = b.rowid
-            WHERE d.id IS NULL AND b.search_text != ''
-        )
-        INSERT INTO messages_fts (rowid, text)
-        SELECT rowid, {pl_fold_sql_expr("search_text")}
-        FROM missing
-    """
-
-
 def insert_missing_message_rows_range_sql() -> str:
     return f"""
         WITH missing(rowid, search_text) AS (
@@ -300,21 +286,9 @@ def insert_missing_message_rows_range_sql() -> str:
     """
 
 
-def excess_message_rows_sql(limit: int) -> str:
-    return f"""
-        SELECT d.id
-        FROM messages_fts_docsize AS d
-        LEFT JOIN blocks AS b
-          ON b.rowid = d.id
-         AND b.search_text != ''
-        WHERE b.rowid IS NULL
-        LIMIT {max(1, int(limit))}
-    """
-
-
 # polylogue-1xc.12: identity-ledger companions to the messages_fts bulk SQL
 # above. Every place that bulk-writes/deletes messages_fts rows outside the
-# per-row triggers (rebuild, batched missing/excess repair, session-scoped
+# per-row triggers (rebuild, batched missing-row insertion, session-scoped
 # repair) pairs its call with the matching function here so
 # messages_fts_identity never lags messages_fts for those paths. `FTS_REBUILD_SQL`
 # (``DELETE FROM messages_fts``) has no companion constant; use
@@ -430,34 +404,6 @@ def repair_message_identity_rows_range_sql() -> str:
     """
 
 
-def repair_all_message_identity_rows_sql() -> str:
-    """Return the set-based identity-ledger reconciliation statement.
-
-    Global recovery must not turn sparse SQLite rowids into millions of
-    numeric windows.  This is the same conflict policy as
-    :func:`repair_message_identity_rows_range_sql`, but evaluates the archive
-    once while the caller owns a global FTS repair transaction.
-    """
-    return f"""
-        INSERT INTO messages_fts_identity (rowid, block_id, source_hash, recipe_id)
-        SELECT b.rowid, b.block_id, b.content_hash, '{FTS_MESSAGES_IDENTITY_RECIPE_ID}'
-        FROM blocks AS b
-        JOIN messages_fts_docsize AS d ON d.id = b.rowid
-        WHERE b.search_text != ''
-        ON CONFLICT(rowid) DO UPDATE SET
-            block_id = excluded.block_id,
-            source_hash = excluded.source_hash,
-            recipe_id = excluded.recipe_id
-        WHERE messages_fts_identity.block_id != excluded.block_id
-           OR messages_fts_identity.source_hash IS NOT excluded.source_hash
-           OR messages_fts_identity.recipe_id != excluded.recipe_id
-        ON CONFLICT(block_id) DO UPDATE SET
-            rowid = excluded.rowid,
-            source_hash = excluded.source_hash,
-            recipe_id = excluded.recipe_id
-    """
-
-
 def message_identity_mismatch_sql() -> str:
     """Exact rowid+block_id+source+recipe identity CONFLICT check for ``messages_fts``.
 
@@ -531,14 +477,11 @@ __all__ = [
     "chunked",
     "delete_session_identity_rows_sql",
     "delete_session_rows_sql",
-    "excess_message_rows_sql",
     "insert_all_message_identity_rows_sql",
     "insert_all_message_rows_sql",
     "insert_missing_message_rows_range_sql",
-    "insert_missing_message_rows_sql",
     "insert_session_identity_rows_sql",
     "insert_session_rows_sql",
     "message_identity_mismatch_sql",
     "repair_message_identity_rows_range_sql",
-    "repair_all_message_identity_rows_sql",
 ]

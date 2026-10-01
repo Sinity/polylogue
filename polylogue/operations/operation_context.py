@@ -241,26 +241,16 @@ def open_operation_read(
         with publication_guard() if publication_guard is not None else nullcontext():
             location = ArchiveLocation.resolve(root)
             identity = ArchiveIdentity.resolve_location(location)
-            opened = ArchiveStore.open_existing(
+            archive = ArchiveStore.open_existing(
                 root,
                 index_path=location.active_index_path,
                 read_timeout=read_timeout,
                 read_only=True,
             )
-            # ``ArchiveStore.open_existing`` returns the store directly,
-            # while lightweight test doubles may return a context manager
-            # (the historical call site used ``with`` directly). Support
-            # both shapes without weakening the production boundary.
-            archive = opened if callable(getattr(opened, "close", None)) else cleanup.enter_context(opened)
-            close = getattr(archive, "close", None)
-            if callable(close):
-                cleanup.callback(close)
-            end_snapshot = getattr(archive, "end_read_snapshot", None)
-            if callable(end_snapshot):
-                cleanup.callback(end_snapshot)
+            cleanup.callback(archive.close)
+            cleanup.callback(archive.end_read_snapshot)
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
-            pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
             # The read-result cache epoch is the announced index-content
             # revision, and it must describe the snapshot this read actually
             # evaluates -- not whatever is current when the query finishes.
@@ -269,12 +259,7 @@ def open_operation_read(
             # leaves no single view describing the snapshot, so the read is
             # named uncacheable instead of being given the newer epoch.
             epoch_before_pin = current_cache_epoch()
-            if callable(pin_snapshot):
-                versions, degraded = pin_snapshot()
-            else:
-                # Keep operation-read adapters compatible with intentionally
-                # minimal doubles; production ArchiveStore always pins here.
-                versions, degraded = {}, ()
+            versions, degraded = archive.pin_operation_snapshot()
             read_view = (
                 capture_read_view(
                     archive_root=archive.archive_root,
@@ -292,7 +277,7 @@ def open_operation_read(
                     "archive was republished while pinning an unguarded operation read; retry the read"
                 )
             vector_failure = None
-            if vector_recipe is not None and callable(pin_snapshot):
+            if vector_recipe is not None:
                 from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
 
                 try:
@@ -324,7 +309,7 @@ def open_operation_read(
             if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
                 raise RuntimeError("archive changed while pinning operation read authority")
             pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure, read_view)
-        vector_connection = getattr(archive, "operation_vector_connection", None)
+        vector_connection = archive.operation_vector_connection
         if vector_connection is not None:
             from polylogue.storage.search_providers.sqlite_vec_runtime import prepare_vector_read_projection
 

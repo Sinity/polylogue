@@ -2685,7 +2685,7 @@ def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: 
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
-    readiness = fts_readiness_info(archive_db, exact=True)
+    readiness = completed_fts_readiness(archive_db, lambda: fts_readiness_info(archive_db, exact=True))
 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is False
