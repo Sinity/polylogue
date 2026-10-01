@@ -509,11 +509,12 @@ def test_commented_scoped_writes_preserve_scope_and_quoted_evidence(tmp_path: Pa
             assert (
                 archive._conn.execute("SELECT COUNT(*) FROM messages_fts WHERE rowid = ?", (rowid,)).fetchone()[0] == 1
             )
-            sql = (
-                insert_session_rows_sql(1)
-                .replace("WITH", "WITH /* scope */", 1)
-                .replace("INSERT OR REPLACE INTO", "INSERT /* scope */ OR REPLACE /* scope */ INTO /* scope */", 1)
+            native_sql = insert_session_rows_sql(1)
+            assert "INSERT INTO messages_fts" in native_sql
+            sql = native_sql.replace("WITH", "WITH /* scope */", 1).replace(
+                "INSERT INTO", "INSERT /* scope */ INTO /* scope */", 1
             )
+            assert "INSERT /* scope */ INTO /* scope */ messages_fts" in sql
             changes = archive._conn.total_changes
             archive._conn.execute(sql, (session_id,))
             assert archive._conn.total_changes > changes
@@ -535,8 +536,54 @@ def test_commented_scoped_writes_preserve_scope_and_quoted_evidence(tmp_path: Pa
             )
             assert archive._conn.total_changes > changes
             archive.commit()
-    assert len(recorded) == 1
-    assert recorded[0] == ("index", "update action_pairs set tool_name='/* keep */ -- keep'")
+    # Opening an archive also prepares temporary/bootstrap relations; SQLite
+    # repeats the UPDATE trace for triggers. Neither changes this witness.
+    index_mutations = [sql for tier, sql in recorded if tier == "index"]
+    assert index_mutations
+    assert all(sql == "update action_pairs set tool_name='/* keep */ -- keep'" for sql in index_mutations)
+
+
+def test_fts_shadow_execution_retains_derived_vm_accounting(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Comment-stripping the VM trace drops actual FTS5 shadow work."""
+    import tests.infra.sqlite_work_counter as work_module
+
+    root = tmp_path / "fts-shadow-work"
+    _seed_raw_archive(root, 2, prefix="fts-shadow")
+    _materialize_all(root, 2)
+    original = work_module._mentions_derived_surface
+    shadow_vm = 0
+    measuring = False
+
+    def observe_vm_frame(sql: str) -> bool:
+        nonlocal shadow_vm
+        derived = original(sql)
+        # This observes each real VM progress callback without altering its
+        # classification. SQLite's annotated FTS shadow frames are execution
+        # evidence, whereas e.g. its data_version PRAGMA is not derived work.
+        if measuring and sql.startswith("--") and "messages_fts" in sql and derived:
+            shadow_vm += 1
+        return derived
+
+    monkeypatch.setattr(work_module, "_mentions_derived_surface", observe_vm_frame)
+    with sqlite_work_counter(step_interval=1) as counter:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            populated = archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            assert populated > 0
+            archive._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+            assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
+            before_vm = counter.metric("vm_steps")
+            before_derived = counter.metric("derived_vm_steps")
+            before_changes = archive._conn.total_changes
+            measuring = True
+            assert archive._conn.execute(insert_all_message_rows_sql()).rowcount > 0
+            measuring = False
+            measured_vm = counter.metric("vm_steps") - before_vm
+            measured_derived = counter.metric("derived_vm_steps") - before_derived
+            assert shadow_vm > 0
+            assert measured_vm >= measured_derived >= shadow_vm
+            assert archive._conn.total_changes > before_changes
+            assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == populated
+            archive.commit()
 
 
 @pytest.mark.timeout(0)

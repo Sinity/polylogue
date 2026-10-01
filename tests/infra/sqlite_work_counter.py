@@ -230,7 +230,10 @@ class SQLiteWorkCounter:
         def trace(sql: str) -> None:
             normalized = _normalize_sql(sql)
             self.statements_by_database[database] += 1
-            self._current_sql_by_connection[connection_id] = normalized
+            # SQLite annotates real FTS5 shadow operations with a leading
+            # "--" in its trace. Preserve that execution evidence for VM
+            # accounting; SQL comment removal owns write classification only.
+            self._current_sql_by_connection[connection_id] = sql.lower()
             if _is_archive_wide_derived_statement(normalized):
                 self.archive_wide_derived_statements_by_database[database] += 1
 
