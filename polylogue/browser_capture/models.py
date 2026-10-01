@@ -196,6 +196,12 @@ class BrowserCaptureTurn(BaseModel):
     def require_content(self) -> BrowserCaptureTurn:
         if (self.text is None or not self.text.strip()) and not self.attachments and not self.blocks:
             raise ValueError("browser capture turn must include text, blocks, or attachments")
+        if (
+            not self.provider_turn_id
+            and any(not attachment.message_provider_id for attachment in self.attachments)
+            and "ordinal" not in self.model_fields_set
+        ):
+            raise ValueError("an id-less attachment turn requires an explicit native ordinal")
         return self
 
 
@@ -286,7 +292,7 @@ class BrowserCaptureEnvelope(BaseModel):
     provenance: BrowserCaptureProvenance
     session: BrowserCaptureSession
     provider_meta: dict[str, object] = Field(default_factory=dict)
-    raw_provider_payload: dict[str, object] | None = None
+    raw_provider_payload: dict[str, object] | list[dict[str, object]] | None = None
 
     @field_validator("provider_meta", mode="before")
     @classmethod
@@ -295,14 +301,20 @@ class BrowserCaptureEnvelope(BaseModel):
 
     @field_validator("raw_provider_payload", mode="before")
     @classmethod
-    def coerce_raw_provider_payload(cls, value: object) -> dict[str, object] | None:
+    def coerce_raw_provider_payload(cls, value: object) -> dict[str, object] | list[dict[str, object]] | None:
         if value is None:
             return None
+        if isinstance(value, list):
+            if not value or any(not is_json_document(record) for record in value):
+                raise ValueError("native record payload must contain JSON objects")
+            return [dict(json_document(record)) for record in value]
         payload: dict[str, object] = dict(json_document(value))
         return payload
 
     @model_validator(mode="after")
     def fill_capture_id(self) -> BrowserCaptureEnvelope:
+        if isinstance(self.raw_provider_payload, list) and self.session.provider is not Provider.CODEX:
+            raise ValueError("native record arrays are supported only for Codex")
         if self.capture_id is None:
             self.capture_id = f"{self.session.provider.value}:{self.session.provider_session_id}"
         return self
@@ -821,6 +833,8 @@ def envelope_has_native_provider_payload(envelope: BrowserCaptureEnvelope) -> bo
     lower-fidelity content permanently.
     """
     payload = envelope.raw_provider_payload
+    if envelope.session.provider is Provider.CODEX:
+        return isinstance(payload, list) and bool(payload)
     if envelope.session.provider is Provider.CHATGPT:
         return has_chatgpt_native_payload(payload)
     if envelope.session.provider is Provider.CLAUDE_AI:

@@ -150,9 +150,15 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     read_amp = source_payload_read_bytes / input_bytes if input_bytes > 0 else 0.0
     stage_timings_s = getattr(metrics, "stage_timings_s", {})
     stage_summary = _stage_timing_summary(stage_timings_s if isinstance(stage_timings_s, dict) else {})
+    partial_paths = getattr(metrics, "partial_admission_paths", {}) or {}
+    partial_reasons = getattr(metrics, "partial_reasons", {}) or {}
+    partial_left_out_bytes = sum(
+        int(partial.source_bytes) - int(partial.complete_prefix_bytes) for partial in partial_paths.values()
+    )
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
-        "succeeded=%d failed=%d excluded=%d parse_s=%.3f convergence_s=%.3f stages=%s "
+        "succeeded=%d partial=%d partial_reasons=%s partial_left_out_bytes=%d "
+        "failed=%d excluded=%d parse_s=%.3f convergence_s=%.3f stages=%s "
         "time_budget_exceeded=%s",
         prefix,
         source_payload_read_bytes / 1e6,
@@ -161,6 +167,9 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "append_file_count", 0),
         getattr(metrics, "full_file_count", 0),
         getattr(metrics, "succeeded_file_count", 0),
+        len(partial_paths),
+        ", ".join(f"{reason} x{count}" for reason, count in sorted(partial_reasons.items())) or "none",
+        partial_left_out_bytes,
         getattr(metrics, "failed_file_count", 0),
         getattr(metrics, "excluded_file_count", 0),
         getattr(metrics, "parse_time_s", 0.0),

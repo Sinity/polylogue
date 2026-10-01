@@ -461,41 +461,6 @@
   },
   {
     "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.sources.origin_specs"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.archive_readiness"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.sqlite.connection_profile"
-  },
-  {
-    "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_standing_queries.py",
     "import": "polylogue.storage.sqlite.archive_tiers.user_write"
   },
@@ -747,46 +712,6 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/lineage_startup.py",
-    "import": "polylogue.storage.sqlite.connection_profile"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.archive_layout"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.embeddings.materialization"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.fts.derivation"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
     "import": "polylogue.storage.sqlite.connection_profile"
   },
   {

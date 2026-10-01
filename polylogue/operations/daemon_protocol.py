@@ -1344,7 +1344,8 @@ class DaemonOperationSpec:
     authority: DaemonAuthority
     fallback: DaemonFallback
     capability: str = "read"
-    deadline_s: float = 2.0
+    deadline_s: float | None = None
+    """No implicit READ limit; other authorities declare their execution bound."""
     cancellable: bool = True
     progress: bool = False
     accepted_reference: bool = False
@@ -1415,6 +1416,10 @@ class DaemonOperationSpec:
             raise ValueError("operation declarations require concrete request and result models")
         if self.authority is DaemonAuthority.READ and self.authorization is not DaemonAuthorization.NONE:
             raise ValueError("a read operation carries no authorization binding")
+        if self.authority is DaemonAuthority.READ and self.deadline_s is not None:
+            raise ValueError("read operations have no implicit execution deadline")
+        if self.authority is not DaemonAuthority.READ and self.deadline_s is None:
+            raise ValueError("non-read operations declare an execution deadline")
         if not self.handler:
             object.__setattr__(self, "handler", self.name.replace(".", "_"))
         if self.request_type and self.result_type:
@@ -1479,6 +1484,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=OperationStatusRequest,
         result_model=MutationResult,
         handler="operation_status",
+        deadline_s=2.0,
     ),
     DaemonOperationSpec(
         "operation.await",
@@ -1498,6 +1504,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=OperationCancelRequest,
         result_model=MutationResult,
         handler="operation_cancel",
+        deadline_s=2.0,
     ),
     DaemonOperationSpec(
         "cli.query",
@@ -1524,7 +1531,6 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
         # Aggregates scan the selection rather than one page of it.
-        deadline_s=10.0,
         result_contract="query.aggregate.result/v1",
         request_type="QueryAggregateRequest",
         result_type="QueryAggregateResult",
@@ -1617,7 +1623,6 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "read.correlation",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
-        deadline_s=30.0,
         result_contract="read.correlation.result/v1",
         request_model=CorrelationReadRequest,
         result_model=CorrelationReadResult,
@@ -2170,7 +2175,6 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "session.reference",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
-        deadline_s=5.0,
         result_contract="session.reference.result/v1",
         request_type="SessionReferenceRequest",
         result_type="SessionReferenceResult",

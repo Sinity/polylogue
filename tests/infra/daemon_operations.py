@@ -28,6 +28,7 @@ from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
+from polylogue.operations.daemon_reads import DaemonReadDependencies
 from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -118,6 +119,7 @@ def running_daemon_operations(
     compute_queue_units: int = 4,
     socket_path: Path | None = None,
     session_derivation: bool = False,
+    read_dependencies: DaemonReadDependencies | None = None,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -177,6 +179,7 @@ def running_daemon_operations(
         execution_kernel=kernel,
         owner_loop=bridge.owner_loop,
         session_maintenance=session_maintenance,
+        read_dependencies=read_dependencies,
     )
     server = DaemonAPIUnixHTTPServer(
         socket_path,
@@ -275,14 +278,15 @@ __all__ = [
 
 
 @contextlib.contextmanager
-def daemon_serving_archive(archive_root: Path) -> Iterator[DaemonOperationStack]:
+def daemon_serving_archive(archive_root: Path, *, session_derivation: bool = False) -> Iterator[DaemonOperationStack]:
     """Run the archive's resident writer on its own socket for one test.
 
     Public archive writes are daemon-owned (#5550): the facade submits a
     declared operation to ``polylogued run`` and refuses with
     ``FacadeDaemonRequiredError`` when none answers. A test that writes
     through the ``Polylogue`` facade wraps the write in this, so it reaches
-    the production operation stack.
+    the production operation stack. Ingest fixtures enable session derivation,
+    which the accepted ingest owner requires before accepting retained work.
     """
     from unittest.mock import patch
 
@@ -290,6 +294,10 @@ def daemon_serving_archive(archive_root: Path) -> Iterator[DaemonOperationStack]
 
     with (
         patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
-        running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root.resolve())) as stack,
+        running_daemon_operations(
+            archive_root,
+            socket_path=daemon_socket_path(archive_root.resolve()),
+            session_derivation=session_derivation,
+        ) as stack,
     ):
         yield stack

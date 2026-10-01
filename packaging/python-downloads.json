@@ -1,0 +1,36 @@
+{
+  "cpython-3.14.7+freethreaded-linux-aarch64-gnu": {
+    "name": "cpython",
+    "arch": {
+      "family": "aarch64",
+      "variant": null
+    },
+    "os": "linux",
+    "libc": "gnu",
+    "major": 3,
+    "minor": 14,
+    "patch": 7,
+    "prerelease": "",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.14.7%2B20260929-aarch64-unknown-linux-gnu-freethreaded-install_only_stripped.tar.gz",
+    "sha256": "57c4633c68b206f9f42e3b5b46a4395b49cc6ff867a90340a617e9861383ea4e",
+    "variant": "freethreaded",
+    "build": "20260929"
+  },
+  "cpython-3.14.7+freethreaded-linux-x86_64-gnu": {
+    "name": "cpython",
+    "arch": {
+      "family": "x86_64",
+      "variant": null
+    },
+    "os": "linux",
+    "libc": "gnu",
+    "major": 3,
+    "minor": 14,
+    "patch": 7,
+    "prerelease": "",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260929/cpython-3.14.7%2B20260929-x86_64-unknown-linux-gnu-freethreaded-install_only_stripped.tar.gz",
+    "sha256": "a938c5902cf057989f03707eb706cb7275f9ab2da639b5b34f41948016aef872",
+    "variant": "freethreaded",
+    "build": "20260929"
+  }
+}

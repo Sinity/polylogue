@@ -42,7 +42,7 @@ from polylogue.operations.daemon_protocol import (
     DaemonOperationRequest,
     daemon_operation_spec,
 )
-from polylogue.operations.daemon_reads import DaemonReadDependencies, operation_deadline_s, read_is_archive_scan
+from polylogue.operations.daemon_reads import DaemonReadDependencies, read_is_archive_scan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
@@ -149,8 +149,8 @@ class _StagedTask(Generic[_T]):
 class _Exchange:
     request: DaemonOperationRequest
     context: OperationContext
-    deadline: float
-    deadline_unix_ms: int
+    deadline: float | None
+    deadline_unix_ms: int | None
     future: Future[DaemonOperationEnvelope] | None = None
     cancellation: CancellationHandle = field(default_factory=CancellationHandle)
     acceptance_started: bool = False
@@ -407,13 +407,15 @@ class DaemonOperationRuntime:
                 exchange.cancellation.add_listener(snapshot.archive.interrupt_reads)
 
     def request_deadline_unix_ms(self, request: DaemonOperationRequest) -> int:
-        return self._exchanges[str(request.request_id)].deadline_unix_ms
+        deadline = self._exchanges[str(request.request_id)].deadline_unix_ms
+        assert deadline is not None  # only write owners request durable deadline evidence
+        return deadline
 
     def stop_reason(self, request: DaemonOperationRequest) -> str | None:
         exchange = self._exchanges[str(request.request_id)]
         if exchange.cancellation.cancelled:
             return "cancelled"
-        return "deadline" if monotonic() >= exchange.deadline else None
+        return "deadline" if (exchange.deadline is not None and monotonic() >= exchange.deadline) else None
 
     def _notify(self) -> None:
         with self._condition:
@@ -467,7 +469,9 @@ class DaemonOperationRuntime:
 
         def before_prepare() -> None:
             with self._condition:
-                if exchange.cancellation.cancelled or monotonic() >= exchange.deadline:
+                if exchange.cancellation.cancelled or (
+                    exchange.deadline is not None and monotonic() >= exchange.deadline
+                ):
                     raise BeforeAcceptanceCancelledError("operation cancelled before durable acceptance")
                 exchange.acceptance_started = True
 
@@ -484,7 +488,7 @@ class DaemonOperationRuntime:
         """Fence a snapshotless filesystem write before its first possible effect."""
         with self._condition:
             exchange = self._exchanges[str(request.request_id)]
-            if exchange.cancellation.cancelled or monotonic() >= exchange.deadline:
+            if exchange.cancellation.cancelled or (exchange.deadline is not None and monotonic() >= exchange.deadline):
                 raise BeforeAcceptanceCancelledError("operation cancelled before backup admission")
             exchange.snapshot = snapshot
             exchange.acceptance_started = True
@@ -495,7 +499,7 @@ class DaemonOperationRuntime:
         return {
             "actor_ref": principal.actor_ref,
             "capabilities": sorted(principal.capabilities),
-            "surface": principal.surface.value,
+            "surface": principal.surface,
             "role_label": principal.role_label,
         }
 
@@ -610,7 +614,13 @@ class DaemonOperationRuntime:
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(packet, stream, sort_keys=True, separators=(",", ":"))
                 stream.flush()
+                os.fsync(stream.fileno())
             os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         finally:
             Path(temporary).unlink(missing_ok=True)
 
@@ -691,8 +701,11 @@ class DaemonOperationRuntime:
         archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
             request.operation, request.payload
         )
-        deadline_s = operation_deadline_s(request.operation, request.payload)
-        deadline = started + min(deadline_s, (request.deadline_ms or int(deadline_s * 1000)) / 1000)
+        deadline_s = spec.deadline_s
+        if request.deadline_ms is not None:
+            caller_deadline_s = request.deadline_ms / 1000
+            deadline_s = caller_deadline_s if deadline_s is None else min(deadline_s, caller_deadline_s)
+        deadline = None if deadline_s is None else started + deadline_s
         read_control = (
             QueryExecutionContext(
                 call_id=str(request.request_id),
@@ -927,7 +940,7 @@ class DaemonOperationRuntime:
                     request,
                     context,
                     deadline,
-                    int((time() + max(0, deadline - monotonic())) * 1000),
+                    None if deadline is None else int((time() + max(0, deadline - monotonic())) * 1000),
                     started_at=started,
                 )
                 self._exchanges[request_id] = exchange
@@ -1085,9 +1098,7 @@ class DaemonOperationRuntime:
                         audit = AuditRepository.for_archive_root(self.archive_root)
                         try:
                             with audit.settled_machine_read():
-                                record = (
-                                    audit.machine_request(exchange.binding) if exchange.binding is not None else None
-                                )
+                                record = audit.machine_request(exchange.binding)
                                 if record is None and envelope.get("outcome") == "indeterminate":
                                     # The actual worker settled and continuity
                                     # proves there is no accepted domain work.
@@ -1114,8 +1125,8 @@ class DaemonOperationRuntime:
                     return envelope
                 if record is not None:
                     return self._pending_envelope(exchange, outcome="accepted", record=record)
-                remaining = deadline - monotonic()
-                if remaining <= 0:
+                remaining = None if deadline is None else deadline - monotonic()
+                if remaining is not None and remaining <= 0:
                     if not exchange.acceptance_started:
                         exchange.cancellation.cancel()
                         return self._pending_envelope(exchange, outcome="timed-out")
@@ -1142,8 +1153,11 @@ class DaemonOperationRuntime:
         if execution_context is not None:
             if execution_context.cancelled:
                 raise QueryCancelledError("operation control exchange disconnected")
-            if execution_context.deadline_exceeded():
+            if request.operation != "operation.await" and execution_context.deadline_exceeded():
                 raise QueryTimeoutError("operation control exchange deadline expired")
+        # Await's deadline limits waiting, not the one lifecycle read owed to
+        # an accepted operation. Even an already-expired poll authenticates
+        # its reference and reads the actual state before returning below.
         # Set only when *this* request cancelled a live, pre-acceptance
         # exchange. The scheduler completes a queued task's future
         # synchronously inside ``cancel()`` and the runtime's ``settled``
@@ -1261,7 +1275,7 @@ class DaemonOperationRuntime:
                 if execution_context is not None and request.operation != "operation.cancel":
                     if execution_context.cancelled:
                         raise QueryCancelledError("operation control exchange disconnected")
-                    if execution_context.deadline_exceeded():
+                    if request.operation != "operation.await" and execution_context.deadline_exceeded():
                         raise QueryTimeoutError("operation control exchange deadline expired")
                 if self._closing:
                     raise QueryCancelledError("operation runtime is stopping")

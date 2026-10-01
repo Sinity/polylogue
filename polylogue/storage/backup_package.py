@@ -334,10 +334,12 @@ def _readable_sqlite_index(path: Path) -> bool:
     stale pointer must not turn an otherwise valid backup into a copy of
     arbitrary bytes. Relocation still authenticates that pointer separately.
     """
-    try:
-        _sqlite_user_version(path)
-    except (OSError, sqlite3.Error):
-        return False
+    # Non-SQLite pointer targets are not archive operands. Once the literal
+    # header selects a SQLite operand, read faults must reach the caller.
+    with path.open("rb") as stream:
+        if stream.read(16) != b"SQLite format 3\x00":
+            return False
+    _sqlite_user_version(path)
     return True
 
 

@@ -25,9 +25,9 @@ class SqliteVecQueryMixin:
     if TYPE_CHECKING:
         db_path: Path
         archive_root: Path | None
-        _legacy_compatibility: bool
         model: str
         dimension: int
+        voyage_key: str | None
 
         def _lifecycle_admission(self) -> AbstractContextManager[None]: ...
 
@@ -45,20 +45,18 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
+        def _get_read_connection(self) -> sqlite3.Connection: ...
+
         def _release_connection(self, conn: sqlite3.Connection) -> None: ...
 
     def upsert(self, session_id: str, messages: list[MessageRecord], *, origin: str | None = None) -> None:
         """Upsert embeddings while holding managed lifecycle admission.
 
         ``embeddings.db`` is a split tier and intentionally has no ``sessions``
-        table.  Callers that know the archive origin should supply it; the
-        message source is the compatibility fallback for older callers.
+        table. Callers supply the archive origin or use the message source identity.
         """
         if getattr(self, "_snapshot_connection", None) is not None:
             raise SqliteVecError("operation vector snapshots are read-only")
-        if getattr(self, "_legacy_compatibility", False) or self.db_path.name != "embeddings.db":
-            self._upsert_unlocked(session_id, messages, origin=origin)
-            return
         with self._lifecycle_admission():
             self._upsert_unlocked(session_id, messages, origin=origin)
 
@@ -101,17 +99,6 @@ class SqliteVecQueryMixin:
         conn = self._get_connection()
         try:
             message_origin = origin
-            db_path = getattr(self, "db_path", None)
-            # Legacy arbitrary-path providers historically carried a sessions
-            # table beside vectors. Prefer that authoritative legacy value;
-            # canonical split embeddings.db never queries its absent table.
-            if message_origin is None and db_path is not None and db_path.name != "embeddings.db":
-                row = conn.execute(
-                    "SELECT origin FROM sessions WHERE session_id = ?",
-                    (session_id,),
-                ).fetchone()
-                if row:
-                    message_origin = row[0]
             if message_origin is None:
                 message_origin = next(
                     (msg.source_name.strip() for msg in embeddable if msg.source_name and msg.source_name.strip()),
@@ -158,6 +145,10 @@ class SqliteVecQueryMixin:
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Run the provider route under managed lifecycle admission."""
+        if not self.voyage_key:
+            raise EmbeddingRetrievalNotReadyError(
+                "text retrieval requires embedding acquisition credentials", readiness_status="disabled"
+            )
         with self._lifecycle_admission():
             return self._query_unlocked(text, limit)
 
@@ -235,9 +226,7 @@ class SqliteVecQueryMixin:
         embeddings (including when the vector table does not exist yet) so the caller
         fails typed rather than returning an empty/unfiltered listing.
         """
-        self._ensure_vec_available()
-
-        conn = self._get_connection()
+        conn = self._get_read_connection()
         try:
             seed_rows: list[sqlite3.Row] = []
             try:
@@ -252,7 +241,7 @@ class SqliteVecQueryMixin:
                     (session_id,),
                 ).fetchall()
             except sqlite3.OperationalError as exc:
-                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+                raise SqliteVecError("stored session vectors could not be read") from exc
             if not seed_rows:
                 raise SqliteVecError(
                     f"session {session_id!r} has no stored message embeddings; cannot run session-seeded similarity"
@@ -287,6 +276,8 @@ class SqliteVecQueryMixin:
 
             ranked = sorted(best_distance.items(), key=lambda item: (item[1], item[0]))
             return ranked[:limit]
+        except sqlite3.Error as exc:
+            raise SqliteVecError("stored session vectors could not be read") from exc
         finally:
             self._release_connection(conn)
 
@@ -303,8 +294,7 @@ class SqliteVecQueryMixin:
         embedded, and a session mid-materialization or with failed embeds
         would otherwise report vectors it does not have.
         """
-        self._ensure_vec_available()
-        conn = self._get_connection()
+        conn = self._get_read_connection()
         try:
             try:
                 row = conn.execute(
@@ -318,8 +308,10 @@ class SqliteVecQueryMixin:
                     (session_id,),
                 ).fetchone()
             except sqlite3.OperationalError as exc:
-                raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
+                raise SqliteVecError("stored session vectors could not be read") from exc
             return int(row["count"]) if row is not None else 0
+        except sqlite3.Error as exc:
+            raise SqliteVecError("stored session vectors could not be read") from exc
         finally:
             self._release_connection(conn)
 

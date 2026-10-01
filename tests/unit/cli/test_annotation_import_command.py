@@ -52,7 +52,7 @@ def _import_args(source: Path, *, target_ref: str) -> list[str]:
         "--schema-id",
         "seed.activity",
         "--schema-version",
-        "1",
+        "2",
         "--target-ref",
         target_ref,
         "--source-result-ref",

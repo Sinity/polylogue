@@ -212,7 +212,7 @@ def test_workspace_fixture_teardown_retains_failed_population_fence(
     from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
     from tests import conftest
 
-    fixture = conftest.workspace_paths.__wrapped__(tmp_path, monkeypatch)
+    fixture = cast(Any, conftest.workspace_paths).__wrapped__(tmp_path, monkeypatch)
     paths = next(fixture)
     root = paths["archive_root"]
     root.mkdir()

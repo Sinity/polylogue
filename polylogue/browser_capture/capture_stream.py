@@ -428,7 +428,7 @@ class _RawFold:
     """``raw_provider_payload`` as a structural digest plus its root shape."""
 
     digest: bytes = b"none"
-    shape: dict[str, object] | None = None
+    shape: dict[str, object] | list[dict[str, object]] | None = None
 
 
 class _MapFrame:
@@ -514,6 +514,21 @@ def _structural_digest(events: Iterator[_Event], event: str, value: object) -> b
 def _read_raw_payload(events: Iterator[_Event], event: str, value: object) -> _RawFold:
     if event == "null":
         return _RawFold()
+    if event == "start_array":
+        digest = hashlib.sha256(b"a")
+        populated = False
+        while True:
+            event, value = next(events)
+            if event == "end_array":
+                break
+            if event != "start_map":
+                raise CaptureEnvelopeError("invalid_payload", "native record payload must contain JSON objects")
+            populated = True
+            digest.update(_structural_digest(events, event, value))
+        if not populated:
+            raise CaptureEnvelopeError("invalid_payload", "native record payload must not be empty")
+        # Admission needs the root shape, not another copy of the transcript.
+        return _RawFold(digest=digest.digest(), shape=[{}])
     if event != "start_map":
         # The envelope coerces a non-object payload to ``{}``.
         _skip(events, event)
@@ -705,6 +720,7 @@ def _summary(
     provenance_meta_digest: bytes,
 ) -> CaptureSummary:
     head_input: dict[str, object] = dict(root)
+    head_input["raw_provider_payload"] = raw.shape
     if session is not None:
         # Each turn was validated as it streamed past; the session's own
         # rule is only that it has one, so a placeholder stands in for them

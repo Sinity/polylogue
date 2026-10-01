@@ -39,8 +39,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-toolchain:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: extension-release-tools
+          path: |
+            browser-extension/package.json
+            browser-extension/package-lock.json
+            browser-extension/scripts/screenshots.mjs
+            browser-extension/scripts/screenshots.test.mjs
+          if-no-files-found: error
+
   build:
     name: build-validate-screenshot
+    needs: release-toolchain
+    env:
+      RELEASE_TOOLS: ${{ runner.temp }}/extension-release-tools
     timeout-minutes: 15
     runs-on: ubuntu-latest
     defaults:
@@ -49,7 +70,7 @@ jobs:
     outputs:
       version: ${{ steps.summary.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Recovery builds the extension sources that belong to the release,
           # not whatever code later reached the default branch.
@@ -89,16 +110,17 @@ jobs:
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
       - name: Setup Node
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "20"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: extension-release-tools
+          path: ${{ runner.temp }}/extension-release-tools
+      - name: Install locked release tools
+        run: npm ci --prefix "${RELEASE_TOOLS}"
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
+        run: npm ci
       - name: Validate manifest (in-tree, fast)
         run: npm run validate
       - name: Lint sources
@@ -111,17 +133,17 @@ jobs:
         run: |
           set -euo pipefail
           xpi=$(find dist -maxdepth 1 -type f -name 'polylogue-browser-capture-*-firefox.xpi' | sort | head -n1)
-          npx --yes web-ext@8 lint --self-hosted --source-dir <(unzip -p "$xpi" /dev/null 2>/dev/null || true) || true
           # web-ext lint actually wants a directory; unpack the xpi.
           mkdir -p dist/firefox-unpacked
           unzip -qo "$xpi" -d dist/firefox-unpacked
-          npx --yes web-ext@8 lint --source-dir dist/firefox-unpacked
+          "${RELEASE_TOOLS}/node_modules/.bin/web-ext" lint --source-dir dist/firefox-unpacked
       - name: Install Playwright Chromium
-        run: npx --yes playwright@1 install --with-deps chromium
+        run: npm run --prefix "${RELEASE_TOOLS}" install:screenshot-browser
       - name: Capture submission screenshots
         run: |
-          npm install --no-save playwright@1
-          npm run screenshots
+          cp -R src "${RELEASE_TOOLS}/src"
+          npm run --prefix "${RELEASE_TOOLS}" test:screenshots
+          npm run --prefix "${RELEASE_TOOLS}" screenshots -- --out "${GITHUB_WORKSPACE}/browser-extension/dist/screenshots"
       - name: Summarize artifacts
         id: summary
         run: |
@@ -177,7 +199,7 @@ jobs:
           print(target.read_text(), end="")
           PY
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: browser-extension-${{ steps.summary.outputs.version }}
           path: |
@@ -197,9 +219,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download workflow artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: browser-extension-${{ needs.build.outputs.version }}
           path: artifacts/

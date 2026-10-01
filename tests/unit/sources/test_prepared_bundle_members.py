@@ -32,6 +32,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.source_builders import ChatGPTExportBuilder
 from tests.unit.sources.test_prepared_claude_ai_object import _conversation
 
@@ -360,8 +361,11 @@ def _retained(tmp_path: Path, payload: object, provider: Provider, source_path: 
     index_db = tmp_path / "index.db"
     for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
         if not path.exists():
-            with sqlite3.connect(path) as conn:
-                initialize_archive_tier(conn, tier)
+            if tier is ArchiveTier.SOURCE:
+                initialize_runtime_source_fixture(path)
+            else:
+                with sqlite3.connect(path) as conn:
+                    initialize_archive_tier(conn, tier)
     return revision_backfill.prepare_retained_jsonl_artifact(
         f"synthetic-{source_path.stem}",
         provider.value,

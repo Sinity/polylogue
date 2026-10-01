@@ -249,7 +249,7 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "--schema-id",
             "seed.activity",
             "--schema-version",
-            "1",
+            "2",
             "--target-ref",
             f"session:{_SESSION_ID}",
             "--source-result-ref",

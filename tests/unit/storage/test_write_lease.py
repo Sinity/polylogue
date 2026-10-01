@@ -101,7 +101,7 @@ def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path)
     Anti-vacuity: omitting the explicit ``archive_root`` from the convergence
     writer lets this open succeed because the factory has no root to compare.
     """
-    from polylogue.daemon.convergence_stages import _open_archive_insight_write_connection
+    from polylogue.operations.session_profile_convergence import make_session_profile_derivation
 
     owner_root = tmp_path / "owner"
     target_root = tmp_path / "target"
@@ -114,7 +114,7 @@ def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path)
         write_lease("test.owner", archive_root=owner_root),
         pytest.raises(UnleasedWriteError, match="outside the archive"),
     ):
-        _open_archive_insight_write_connection(target_db, archive_root=target_root)
+        make_session_profile_derivation(target_db, archive_root=target_root, now=lambda: 0.0)._write_connection()
 
 
 def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> None:
@@ -880,15 +880,21 @@ def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() ->
         assert retired_ident in lease.authorized_threads()
 
         def impostor() -> None:
-            with patch.object(threading, "get_ident", return_value=retired_ident):
+            from types import SimpleNamespace
+
+            import polylogue.storage.sqlite.write_lease as lease_owner
+
+            actual_thread = threading.current_thread()
+            observation = SimpleNamespace(get_ident=lambda: retired_ident, current_thread=lambda: actual_thread)
+            # Simulate reuse at the admission owner only. Real Thread teardown
+            # must retain its actual ident and threading._active registration.
+            with patch.object(lease_owner, "threading", observation):
                 try:
                     require_write_lease("write from a thread that reused a retired ident")
                 except UnleasedWriteError:
                     observed["outcome"] = "refused"
                 else:
                     observed["outcome"] = "admitted"
-                finally:
-                    threading._active.pop(retired_ident, None)  # type: ignore[attr-defined]
 
         thread = threading.Thread(target=impostor, name="ident-reuse-impostor")
         thread.start()
@@ -950,3 +956,21 @@ def test_a_nested_lease_in_an_inheriting_thread_is_refused() -> None:
 
     assert str(observed["outcome"]).startswith("refused: ")
     assert "unauthorized thread" in str(observed["outcome"])
+
+
+@pytest.mark.asyncio
+async def test_coordinator_lease_observation_rejects_inherited_child_task(tmp_path: Path) -> None:
+    """An inherited coordinator token cannot authorize a child execution unit."""
+    from polylogue.core.write_lease import coordinator_write_lease_active
+
+    assert not coordinator_write_lease_active()
+    with write_lease("test.offline", archive_root=tmp_path):
+        assert not coordinator_write_lease_active()
+    with write_lease("test.coordinator", archive_root=tmp_path, coordinator=object()):
+        assert coordinator_write_lease_active()
+
+        async def child() -> bool:
+            return coordinator_write_lease_active()
+
+        assert not await asyncio.create_task(child())
+    assert not coordinator_write_lease_active()

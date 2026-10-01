@@ -6046,6 +6046,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
                 ParsedMessage(
                     provider_message_id="m1",
                     role=Role.ASSISTANT,
+                    message_type=MessageType.TOOL_USE,
                     blocks=[
                         ParsedContentBlock(type=BlockType.TEXT, text="running a check"),
                         ParsedContentBlock(
@@ -6056,6 +6057,28 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
             ],
         )
         session_id = write_parsed_session_to_archive(conn, rich, raw_id="raw-generation-1")
+
+        def semantic_rows() -> tuple[tuple[object, ...], list[tuple[object, ...]]]:
+            # The stored digest covers semantic message fields independently
+            # of the ordered blocks. Capture both before removing evidence.
+            message_fields = tuple(
+                conn.execute(
+                    "SELECT session_id, native_id, position, variant_index, role, message_type, material_origin, "
+                    "user_context_text, stop_reason, model_name, model_effort, sender_name, recipient, "
+                    "delivery_status, end_turn, occurred_at_ms, fields_digest FROM messages "
+                    "WHERE session_id = ? AND native_id = 'm1'",
+                    (session_id,),
+                ).fetchone()
+            )
+            blocks = [
+                tuple(block)
+                for block in conn.execute(
+                    "SELECT * FROM blocks WHERE session_id = ? ORDER BY message_id, position", (session_id,)
+                )
+            ]
+            return message_fields, blocks
+
+        original_semantics = semantic_rows()
         original_hash = conn.execute(
             "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'", (session_id,)
         ).fetchone()["content_hash"]
@@ -6067,6 +6090,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
                 ParsedMessage(
                     provider_message_id="m1",
                     role=Role.ASSISTANT,
+                    message_type=MessageType.TOOL_USE,
                     blocks=[ParsedContentBlock(type=BlockType.TEXT, text="running a check")],
                 )
             ],
@@ -6080,9 +6104,26 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
         assert row["has_tool_use"] == 1, (
             "the restored tool_use block must flip has_tool_use back on, not keep the incoming acquisition's 0"
         )
-        assert row["content_hash"] != original_hash, (
-            "content_hash must be recomputed once blocks change, not reused from either acquisition's own write"
+        assert semantic_rows() == original_semantics
+        assert row["content_hash"] == original_hash
+
+        changed = poorer.model_copy(
+            update={
+                "messages": [
+                    poorer.messages[0].model_copy(
+                        update={
+                            "blocks": [ParsedContentBlock(type=BlockType.TEXT, text="a different check")],
+                        }
+                    )
+                ]
+            }
         )
+        write_parsed_session_to_archive(conn, changed, raw_id="raw-generation-3")
+        assert semantic_rows() != original_semantics
+        changed_hash = conn.execute(
+            "SELECT content_hash FROM messages WHERE session_id = ? AND native_id = 'm1'", (session_id,)
+        ).fetchone()["content_hash"]
+        assert changed_hash != original_hash
     finally:
         conn.close()
 

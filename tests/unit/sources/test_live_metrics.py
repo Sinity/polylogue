@@ -141,6 +141,32 @@ def test_split_offered_bytes_counts_each_path_once() -> None:
     assert (ingested, failed, refused) == (512, 0, {})
 
 
+def test_split_offered_bytes_separates_an_admitted_partial_prefix() -> None:
+    from pathlib import Path
+
+    from polylogue.core.raw_failure_evidence import PartialAdmission
+    from polylogue.sources.live.metrics import split_offered_bytes
+
+    path = Path("stable.jsonl")
+    partial = PartialAdmission(
+        reason="truncated_tail",
+        complete_record_count=2,
+        complete_prefix_bytes=72,
+        source_bytes=100,
+    )
+    ingested, failed, refused = split_offered_bytes(
+        {path: 100},
+        succeeded=[path],
+        partial_admissions={path: partial},
+        failed=[],
+        excluded={},
+        deferred=[],
+        unattempted_reason="unattempted",
+    )
+
+    assert (ingested, failed, refused) == (72, 0, {"truncated_tail": 28})
+
+
 def test_live_batch_metrics_payload_reports_excluded_files() -> None:
     """A refused file is a counted outcome of the batch, not an absence.
 

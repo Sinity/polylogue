@@ -131,6 +131,7 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
     assert {schema.qualified_id for schema in SEED_ANNOTATION_SCHEMAS} <= qualified_ids
     assert len({schema.definition_fingerprint for schema in SEED_ANNOTATION_SCHEMAS}) == 5
     for schema in SEED_ANNOTATION_SCHEMAS:
+        assert schema.version == 2
         assert schema.status == "active"
         assert schema.evidence_policy == "required"
         assert {"confidence", "abstain", "rationale"} <= {field.name for field in schema.fields}
@@ -189,8 +190,8 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
         }
         assert {schema.qualified_id for schema in SEED_ANNOTATION_SCHEMAS} <= rows
 
-        activity_v2 = replace(SEED_ACTIVITY_SCHEMA, version=2, title="Activity v2")
-        persist_annotation_schema(conn, activity_v2, registered_at_ms=1)
+        activity_v3 = replace(SEED_ACTIVITY_SCHEMA, version=3, title="Activity v3")
+        persist_annotation_schema(conn, activity_v3, registered_at_ms=1)
         with pytest.raises(AnnotationSchemaError, match="incompatible durable definition"):
             persist_annotation_schema(
                 conn,
@@ -227,7 +228,7 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
                 "SELECT schema_version FROM annotation_schemas WHERE schema_id = ? ORDER BY schema_version",
                 (SEED_ACTIVITY_SCHEMA.schema_id,),
             ).fetchall()
-        ] == [1, 2]
+        ] == [2, 3]
 
 
 def test_goal_events_exclude_derived_inactivity_and_remain_distinct_from_outcomes() -> None:

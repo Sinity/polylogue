@@ -108,6 +108,28 @@ def test_zero_length_blob_classifies_corrupt_input(tmp_path: Path) -> None:
     assert result.retryable is False
 
 
+def test_a_streamed_decoder_refusal_classifies_corrupt_input() -> None:
+    """A truncated document refused by the streamed (ijson) decoder is CORRUPT_INPUT, not a parser defect.
+
+    Anti-vacuity: ``ijson.JSONError`` is not a ``ValueError``, so the decode
+    classifier reported such a document as ``parser_defect``
+    (polylogue-6r7wv sibling).
+    """
+    import io
+
+    import ijson
+
+    try:
+        list(ijson.items(io.BytesIO(b'{"title": "cut", "mapping": {"n": {"id": "n", '), ""))
+    except ijson.JSONError as exc:
+        disposition = classify_decode_exception(exc)
+    else:
+        pytest.fail("expected a real ijson refusal")
+
+    assert disposition.outcome is IngestOutcome.CORRUPT_INPUT
+    assert disposition.retryable is False
+
+
 def test_undecodable_bytes_classify_corrupt_input_via_real_decode_failure() -> None:
     """A genuine decode-stage exception (invalid UTF-8) classifies as CORRUPT_INPUT.
 

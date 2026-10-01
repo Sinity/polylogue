@@ -1006,3 +1006,18 @@ def test_one_package_pass_feeds_every_whole_package_census(
         ("derived_sweep_undeclared", "polylogue/ops/sweeper.py"),
         ("sqlite_degradation_site_added", "polylogue/storage/degraded.py"),
     } <= reported
+
+
+def test_daemon_collection_and_stage_adapters_have_no_substrate_exemptions() -> None:
+    """F756: restoring either direct acquisition or its exemption makes this red."""
+    root = Path(__file__).resolve().parents[3]
+    adapters = {"polylogue/daemon/convergence_stages.py", "polylogue/daemon/metrics.py"}
+    for adapter in adapters:
+        imports = verify_layering._module_imports(ast.parse((root / adapter).read_text(encoding="utf-8")))
+        assert not any(
+            verify_layering._package_matches(package, imported)
+            for imported in imports
+            for package in ("polylogue/storage", "polylogue/sources")
+        )
+    baseline = verify_layering._load_baseline(root / "docs/plans/layering-surface-baseline.json")
+    assert not any(file in adapters for _, file, _ in baseline)

@@ -59,6 +59,9 @@ class _FakeV1VectorProvider:
         self.texts.extend(texts)
         return [[0.01] * 1024 for _ in texts]
 
+    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("this fixture does not perform retained-session reads")
+
 
 # ---------------------------------------------------------------------------
 # Schema bootstrap (same DDL as sqlite_vec_runtime.py)

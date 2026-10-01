@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,9 +198,9 @@ _BACKEND_CONNECTIONS_LOCK = threading.Lock()
 
 
 async def _settled_connection_operation(
-    awaitable: object,
+    awaitable: Awaitable[object],
 ) -> tuple[BaseException | None, asyncio.CancelledError | None]:
-    task = asyncio.ensure_future(awaitable)  # type: ignore[arg-type]
+    task = asyncio.ensure_future(awaitable)
     cancellation = None
     while not task.done():
         try:
@@ -228,7 +228,7 @@ async def _settle_connection_close(conn: aiosqlite.Connection, *, rollback: bool
             conn._conn.close()
             conn._connection = None
 
-        close_error, close_cancellation = await _settled_connection_operation(conn._execute(close_raw))
+        close_error, close_cancellation = await _settled_connection_operation(conn._execute(close_raw))  # type: ignore[no-untyped-call]
         error = error or close_error
         cancellation = cancellation or close_cancellation
     actual_closed = conn._connection is None

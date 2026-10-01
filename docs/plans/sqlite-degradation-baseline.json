@@ -151,10 +151,6 @@
       "digest": "d12cc3652d9cbc72aa95836708c30c8054d2c93e"
     },
     {
-      "file": "polylogue/operations/archive_backup.py",
-      "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
-    },
-    {
       "file": "polylogue/daemon/catchup_status.py",
       "digest": "4b3006182f4d41706f2bb43b6e16fe0f2b77b694"
     },
@@ -165,10 +161,6 @@
     {
       "file": "polylogue/daemon/cli.py",
       "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
-    },
-    {
-      "file": "polylogue/daemon/convergence_stages.py",
-      "digest": "f99cb98e7c7632c36db993b143bcdbe812c3fec0"
     },
     {
       "file": "polylogue/daemon/convergence_standing_queries.py",
@@ -240,34 +232,6 @@
       "digest": "cff0078d415dc7aec786d0633140e95efbfa08c6"
     },
     {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "35ce87112e3c2e14bee114837c58d686eed6a1cd"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "48c998e17585948b11978de09fc0b3db6704c452"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "658ba416bce9ab5336225e7a860eccfc2c930bf2"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "84fbefa515fe4578bdaca44f2ba571832d8a5629"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "9d88af426ea7ec8eac90b1ded0294790b9d0cfed"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "a58b6f69d87674d81597cf75549b7f60e9442dcf"
-    },
-    {
-      "file": "polylogue/daemon/metrics.py",
-      "digest": "eb9caff932c44c042e0bab313f6100aa13c4379d"
-    },
-    {
       "file": "polylogue/daemon/provenance.py",
       "digest": "e4e0c777299343f2d06750895e431402df1fc7f1"
     },
@@ -281,12 +245,7 @@
     },
     {
       "file": "polylogue/daemon/status.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
-    },
-    {
-      "file": "polylogue/daemon/status.py",
-      "digest": "af05094a0146bf059222848c96ade347028f380b"
+      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
     },
     {
       "file": "polylogue/daemon/status.py",
@@ -904,11 +863,6 @@
     {
       "file": "polylogue/storage/sqlite/archive_tiers/archive.py",
       "digest": "e14acf26c2e2b319ce44760fb6c9e17f5408ab24"
-    },
-    {
-      "file": "polylogue/storage/sqlite/archive_tiers/archive_plan.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed",
-      "count": 2
     },
     {
       "file": "polylogue/storage/sqlite/archive_tiers/bootstrap.py",

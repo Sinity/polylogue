@@ -770,6 +770,11 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
     versions = dict(ARCHIVE_VERSION_BY_TIER)
     versions[ArchiveTier.SOURCE] = _NEXT_SOURCE_SLOT
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    from polylogue.storage.sqlite import archive_tiers
+
+    baseline = dict(ARCHIVE_BASELINE_DDL_BY_TIER)
+    baseline[ArchiveTier.SOURCE] = _BASE_ITEMS_DDL
+    monkeypatch.setattr(archive_tiers, "ARCHIVE_BASELINE_DDL_BY_TIER", baseline)
     ddl = dict(ARCHIVE_DDL_BY_TIER)
     ddl[ArchiveTier.SOURCE] = """
     CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;

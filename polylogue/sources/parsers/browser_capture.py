@@ -26,7 +26,9 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
 from polylogue.core.hashing import hash_bytes
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.pipeline.ids import _message_owner_coordinate
 from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
@@ -38,6 +40,22 @@ from polylogue.sources.parsers.base_models import (
 )
 from polylogue.sources.parsers.base_support import decode_attachment_base64, derive_attachment_provenance
 from polylogue.sources.tool_result_reasons import unknown_reason
+
+
+class NativeCaptureIdentityMismatchError(ValueError):
+    """Native content cannot be composed with another session's capture evidence."""
+
+    def __init__(self, expected_session_id: str, actual_session_id: str) -> None:
+        self.expected_session_id = expected_session_id
+        self.actual_session_id = actual_session_id
+        super().__init__("native provider session identity disagrees with the capture envelope")
+
+
+def _require_matching_native_identity(parsed: ParsedSession, provider_session_id: str) -> ParsedSession:
+    observed = legacy_browser_capture_native_id(parsed.source_name, parsed.provider_session_id)
+    if (observed or parsed.provider_session_id) != provider_session_id:
+        raise NativeCaptureIdentityMismatchError(provider_session_id, parsed.provider_session_id)
+    return parsed
 
 
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
@@ -379,15 +397,24 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
     the native payload never does.
     """
 
-    envelope_attachments = [
-        _browser_capture_parsed_attachment(
-            attachment,
-            message_provider_id=attachment.message_provider_id or turn.provider_turn_id,
-            role=turn.role,
-        )
-        for turn in envelope.session.turns
-        for attachment in turn.attachments
-    ]
+    envelope_attachments = []
+    for turn in envelope.session.turns:
+        for attachment in turn.attachments:
+            provider_id = attachment.message_provider_id or turn.provider_turn_id or None
+            role = turn.role
+            owner_coordinate = None
+            if provider_id is None:
+                if "ordinal" not in turn.model_fields_set or not 0 <= turn.ordinal < len(parsed.messages):
+                    raise MessageOwnerAmbiguityError("capture attachment lacks a witnessed native message")
+                native_message = parsed.messages[turn.ordinal]
+                if native_message.role != turn.role or native_message.text != turn.text:
+                    raise MessageOwnerAmbiguityError("capture attachment turn disagrees with its native message")
+                provider_id = native_message.provider_message_id or None
+                role = native_message.role
+                owner_coordinate = _message_owner_coordinate(native_message, turn.ordinal)
+            candidate = _browser_capture_parsed_attachment(attachment, message_provider_id=provider_id, role=role)
+            candidate.owner_coordinate = owner_coordinate
+            envelope_attachments.append(candidate)
     parsed_roles = {
         message.provider_message_id: message.role for message in parsed.messages if message.provider_message_id
     }
@@ -454,6 +481,7 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         merged[existing.provider_attachment_id] = existing.model_copy(
             update={
                 "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
+                "owner_coordinate": existing.owner_coordinate or candidate.owner_coordinate,
                 "name": existing.name or candidate.name,
                 "mime_type": existing.mime_type or candidate.mime_type,
                 "size_bytes": existing.size_bytes if existing.size_bytes is not None else candidate.size_bytes,
@@ -810,13 +838,38 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id
     )
     raw_provider_payload = envelope.raw_provider_payload
+    if provider is Provider.CODEX and raw_provider_payload is not None:
+        from polylogue.sources.parsers.codex import is_supported_session_stream
+        from polylogue.sources.parsers.codex import parse as parse_codex
+
+        if not isinstance(raw_provider_payload, list) or not is_supported_session_stream(raw_provider_payload):
+            raise ValueError("Codex native capture requires a supported record stream")
+        return _merge_envelope_session_events(
+            _apply_browser_capture_session_kind(
+                _merge_envelope_attachments(
+                    _require_matching_native_identity(
+                        parse_codex(raw_provider_payload, provider_session_id), provider_session_id
+                    ),
+                    envelope,
+                ),
+                envelope,
+                provider_session_id,
+                has_native_payload=True,
+            ),
+            envelope,
+        )
     if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 
         return _merge_envelope_session_events(
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
-                    _merge_envelope_title(parse_chatgpt(raw_provider_payload, provider_session_id), envelope),
+                    _merge_envelope_title(
+                        _require_matching_native_identity(
+                            parse_chatgpt(raw_provider_payload, provider_session_id), provider_session_id
+                        ),
+                        envelope,
+                    ),
                     envelope,
                 ),
                 envelope,
@@ -832,7 +885,9 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
             _apply_browser_capture_session_kind(
                 _merge_envelope_attachments(
                     _merge_envelope_native_metadata(
-                        parse_claude_ai(raw_provider_payload, provider_session_id),
+                        _require_matching_native_identity(
+                            parse_claude_ai(raw_provider_payload, provider_session_id), provider_session_id
+                        ),
                         envelope,
                     ),
                     envelope,
@@ -931,6 +986,7 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
 
 
 __all__ = [
+    "NativeCaptureIdentityMismatchError",
     "COMPACT_BROWSER_CAPTURE_INGEST_FLAG",
     "DOM_FALLBACK_INGEST_FLAG",
     "NATIVE_BROWSER_CAPTURE_INGEST_FLAG",

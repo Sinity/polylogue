@@ -240,6 +240,27 @@ def test_backup_ignores_an_invalid_external_active_index_target(workspace_env: d
     assert backup_mod._all_archive_tiers(root)["index"] == conventional
 
 
+@pytest.mark.parametrize("fault", [sqlite3.OperationalError, PermissionError])
+def test_backup_does_not_replace_selected_sqlite_evidence_after_a_read_fault(
+    workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: type[Exception]
+) -> None:
+    root = workspace_env["archive_root"]
+    external = tmp_path / "selected" / "index.db"
+    external.parent.mkdir()
+    initialize_archive_database(external, ArchiveTier.INDEX)
+    pointer = root / ".index-active-pointer"
+    pointer.unlink(missing_ok=True)
+    pointer.write_text(str(external) + "\n", encoding="utf-8")
+
+    def refuse_read(path: Path) -> int:
+        assert path == external
+        raise fault("synthetic selected evidence read fault")
+
+    monkeypatch.setattr(backup_mod, "_sqlite_user_version", refuse_read)
+    with pytest.raises(fault):
+        backup_mod._all_archive_tiers(root)
+
+
 def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2849,6 +2870,7 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     assert not any(package.glob("*.db-shm"))
     assert detail["operational_admission"] == "degraded"
     assert detail["requires_convergence"] == ["index.db", "ops.db"]
+    assert isinstance(detail["restored_tiers"], list)
     assert "index.db" not in detail["restored_tiers"]
     assert "ops.db" not in detail["restored_tiers"]
     assert "embeddings.db" in detail["restored_tiers"]
@@ -2883,8 +2905,7 @@ def test_verified_source1_backup_restores_through_destination_owned_source002(
     with closing(sqlite3.connect(destination / "ops.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0] == 0
     with ArchiveStore.open_existing(destination) as store:
-        assert store._source_conn is not None
-        assert tuple(store._source_conn.execute("SELECT raw_id,native_id FROM raw_sessions").fetchone()) == (
+        assert tuple(store.source_connection.execute("SELECT raw_id,native_id FROM raw_sessions").fetchone()) == (
             raw_id,
             None,
         )

@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from polylogue.config import Config, active_archive_root
-from polylogue.core.errors import PolylogueError
+from polylogue.core.errors import PolylogueError, SessionNotFoundError
 from polylogue.operations.mutation_transaction import (
     MutationActuator,
     MutationPlan,
@@ -17,12 +17,6 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _Args = TypeVar("_Args")
-
-
-class SessionNotFoundError(PolylogueError):
-    """A requested session does not exist in the archive."""
-
-    http_status_code = 404
 
 
 class MutationBlockedError(PolylogueError):
@@ -45,8 +39,7 @@ class MutationTargetVanishedError(PolylogueError):
 
 def require_archive_write_authority(config: Config, purpose: str) -> None:
     """Permit a scoped daemon lease or a proven exclusive offline owner."""
-    from polylogue.core.write_lease import require_write_lease
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.core.write_lease import coordinator_write_lease_active, require_write_lease
     from polylogue.maintenance.offline_guard import (
         ArchiveWriterOwnershipError,
         ArchiveWriterOwnershipUndecidableError,
@@ -65,7 +58,7 @@ def require_archive_write_authority(config: Config, purpose: str) -> None:
             archive_root=root,
         ) from exc
 
-    if block_reason is not None and not daemon_write_lease_active():
+    if block_reason is not None and not coordinator_write_lease_active():
         daemon_pid = resident_daemon_pid(root)
         resident_writer = (
             f"polylogued PID {daemon_pid} is running for this archive" if daemon_pid is not None else block_reason
@@ -119,7 +112,6 @@ def execute_archive_mutation(
 __all__ = [
     "MutationBlockedError",
     "MutationTargetVanishedError",
-    "SessionNotFoundError",
     "execute_archive_mutation",
     "require_archive_write_authority",
 ]
