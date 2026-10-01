@@ -181,21 +181,24 @@ definitions; `annotation_batches` records label-run provenance; each label is
 an `assertions` row with `kind="annotation"`. Agent-authored labels are always
 candidate-scoped and non-injected until an operator judgment accepts them.
 Schema vocabulary can therefore grow by inserting immutable registry rows;
-the five v1 seed families do not change the user-tier DDL or the user tier's
+the five seed families do not change the user-tier DDL or the user tier's
 `PRAGMA user_version`.
 
 | Schema | Grain | Required construct fields | Authority model |
 |--------|-------|---------------------------|-----------------|
-| `seed.activity@v1` | session, phase, message, block | `activity`, `confidence` | Evidence-linked candidate label; activities are debugging, design, implementation, research, writing, ideation, ops, or procurement. |
-| `seed.goal-event@v1` | message, block, work event, observed event | `event_type`, `goal_ref`, `declared_by_ref`, `declaration_authority`, `confidence` | Prospective actor declaration only. Events are opened, blocked, resumed, declared resolved, superseded, or explicitly abandoned. Inactive unresolved goals are a separate, horizon-bound goal-graph derivation and are never emitted as abandonment annotations. |
-| `seed.outcome-evidence@v1` | session, work/observed event, commit, check run, pull request, delegation | `outcome_type`, `authority`, `authority_ref`, `temporal_mode`, `confidence` | Structural, rule, and judged evidence remain distinct. Historical backfill is explicit. Outcomes are test passed, commit observed, deployment observed, user accepted, answer declared, or unknown. |
-| `seed.knowledge-artifact@v1` | session, message, block, work event, assertion | `artifact_type`, `statement`, `authority`, `authority_ref`, `confidence` | Decision, lesson, preference, fact candidate, fact established, or commitment under a named agent, actor, structural, rule, or operator authority. |
-| `seed.reusability@v1` | session, phase, message, block, work event, assertion | `purpose`, `worthy`, `authority`, `authority_ref`, `confidence` | Purpose-specific snippet, recipe, or demo judgment; agent labels remain candidates and operator judgments are explicit. |
+| `seed.activity@v2` | session, message, block | `activity`, `confidence` | Evidence-linked candidate label; activities are debugging, design, implementation, research, writing, ideation, ops, or procurement. |
+| `seed.goal-event@v2` | message, block, observed event | `event_type`, `goal_ref`, `declared_by_ref`, `declaration_authority`, `confidence` | Prospective actor declaration only. Events are opened, blocked, resumed, declared resolved, superseded, or explicitly abandoned. Inactive unresolved goals are a separate, horizon-bound goal-graph derivation and are never emitted as abandonment annotations. |
+| `seed.outcome-evidence@v2` | session, observed event, commit, check run, pull request, delegation | `outcome_type`, `authority`, `authority_ref`, `temporal_mode`, `confidence` | Structural, rule, and judged evidence remain distinct. Historical backfill is explicit. Outcomes are test passed, commit observed, deployment observed, user accepted, answer declared, or unknown. |
+| `seed.knowledge-artifact@v2` | session, message, block, assertion | `artifact_type`, `statement`, `authority`, `authority_ref`, `confidence` | Decision, lesson, preference, fact candidate, fact established, or commitment under a named agent, actor, structural, rule, or operator authority. |
+| `seed.reusability@v2` | session, message, block, assertion | `purpose`, `worthy`, `authority`, `authority_ref`, `confidence` | Purpose-specific snippet, recipe, or demo judgment; agent labels remain candidates and operator judgments are explicit. |
 
 Every seed also permits optional `abstain` and `rationale` fields and requires
 evidence refs. A schema row is identified by `(schema_id, schema_version)` and
 its canonical definition fingerprint; a conflicting re-registration fails
 closed rather than mutating the existing definition.
+
+The five seed definitions are registered at version 2 on fresh archives and ordinary USER opens. Existing version 1 definitions and their fingerprints remain immutable, including both definitions published before and after the removal of phase and work-event operations. Explicit historical schema and batch reads retain their recorded versions and target strings. Retired targets remain inspectable provenance; structural joins report them as missing targets, and new registration, writes, and imports refuse those operations. Import requests select an explicit schema version. Occupied schema versions still refuse conflicting definitions. This vocabulary change does not alter USER DDL.
+
 
 ### Governed archive-local bootstrap
 

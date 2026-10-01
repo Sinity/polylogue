@@ -17,6 +17,7 @@ from polylogue.annotations.schema import (
     AnnotationSchema,
     AnnotationSchemaError,
 )
+from polylogue.annotations.targets import normalize_annotation_target_ref
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
@@ -120,6 +121,7 @@ def persist_annotation_schema(
                 f"annotation schema {schema.qualified_id!r} already exists with an incompatible durable definition"
             )
         return existing
+    schema.require_live_targets()
     definition_json = schema.canonical_definition_json()
     conn.execute(
         """
@@ -354,7 +356,7 @@ def list_annotation_batches(
         params.append(schema_version)
     if target_ref is not None:
         where.append("target_ref = ?")
-        params.append(normalize_object_ref_text(target_ref))
+        params.append(normalize_annotation_target_ref(target_ref))
     query = """
         SELECT batch_id, schema_id, schema_version, target_ref, source_result_ref,
                actor_ref, model_ref, prompt_ref, total_count, valid_count,

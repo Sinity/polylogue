@@ -11,6 +11,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from polylogue.annotations.targets import normalize_annotation_target_ref
 from polylogue.core.digest import RECEIPT, REFERENCE, KeyCollisionError, canonical_bytes
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
@@ -145,7 +146,11 @@ class AnnotationBatch:
         if len(self.validation_failures) != self.invalid_count:
             raise AnnotationBatchError("validation_failures count must equal invalid_count")
 
-        object.__setattr__(self, "target_ref", _normalized_ref(self.target_ref, label="target_ref"))
+        try:
+            target_ref = normalize_annotation_target_ref(self.target_ref)
+        except ValueError as exc:
+            raise AnnotationBatchError("target_ref must be a valid annotation provenance target") from exc
+        object.__setattr__(self, "target_ref", target_ref)
         object.__setattr__(
             self,
             "source_result_ref",
