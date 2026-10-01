@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 from polylogue import Polylogue
+from polylogue.archive.context_models import ContextImage, ContextSpec
 from polylogue.archive.message.roles import Role
-from polylogue.context.compiler import ContextImage, ContextSpec
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

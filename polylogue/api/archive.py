@@ -24,6 +24,10 @@ from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.blackboard import BlackboardNote
+from polylogue.archive.context_models import (
+    DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
+    DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
+)
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter, Role
@@ -40,10 +44,6 @@ from polylogue.archive.query.transaction import archive_read_context, run_archiv
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.config import active_archive_root as _active_archive_root
-from polylogue.context.compiler import (
-    DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE,
-    DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
-)
 from polylogue.context.scheduler import (
     ContextLedgerRecord,
     read_context_ledger,
@@ -115,6 +115,7 @@ if TYPE_CHECKING:
     from polylogue.annotations.join import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
     from polylogue.api import Polylogue
+    from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSpec
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -126,7 +127,6 @@ if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.context.claude_agent_dispatch_correlation import ClaudeAgentDispatchCorrelation
     from polylogue.context.codex_spawn_edge_correlation import CodexSpawnEdgeReconciliation
-    from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
     from polylogue.operations import ArchiveStats
@@ -3410,7 +3410,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         spec: ContextSpec,
     ) -> tuple[list[str], dict[str, str], list[ContextOmission]]:
         """Resolve ContextSpec query/filter seed selection into session ids."""
-        from polylogue.context.compiler import ContextOmission
+        from polylogue.archive.context_models import ContextOmission
         from polylogue.context.selection import clamp_context_image_limit, select_context_image_sessions
 
         session_ids: list[str] = []
@@ -3552,7 +3552,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         accumulation, omission accounting, and assertion inclusion are all
         delegated to :meth:`compile_context`.
         """
-        from polylogue.context.compiler import ContextSpec
+        from polylogue.archive.context_models import ContextSpec
         from polylogue.surfaces.projection_spec import projection_from_views
 
         views: tuple[str, ...] = ("messages",) if include_messages else ()

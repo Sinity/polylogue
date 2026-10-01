@@ -4,13 +4,8 @@ import sqlite3
 
 import pytest
 
-from polylogue.context.compiler import (
-    ContextImage,
-    ContextOmission,
-    ContextSegment,
-    ContextSpec,
-    context_snapshot_record_from_image,
-)
+from polylogue.archive.context_models import ContextImage, ContextOmission, ContextSegment, ContextSpec
+from polylogue.context.compiler import context_snapshot_record_from_image
 from polylogue.core.refs import EvidenceRef
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
