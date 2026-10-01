@@ -114,3 +114,30 @@ def test_backup_failure_preserves_partial_result(
     else:
         assert f"Partial output: {partial.output_path}" in result.output
         assert "Warning: source.db could not be verified" in result.output
+
+
+def test_restore_command_submits_explicit_fresh_destination_and_reports_missing_vectors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.cli.commands.maintenance._restore_verified_backup import restore_verified_backup_command
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def submit(_env: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        calls.append((operation, payload))
+        return {"result": {"operational_admission": "degraded", "unrestored_purchased_tiers": ["embeddings.db"]}}
+
+    monkeypatch.setattr("polylogue.cli.archive_query.submit_cli_mutation", submit)
+    destination = tmp_path / "new-root"
+    result = CliRunner().invoke(
+        restore_verified_backup_command,
+        ["--backup-dir", str(tmp_path), "--destination", str(destination)],
+        obj=object(),
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0
+    assert calls == [
+        ("maintenance.restore_verified_backup", {"backup_dir": str(tmp_path), "destination": str(destination)})
+    ]
+    assert "unrestored" in result.output
+    assert not destination.exists()

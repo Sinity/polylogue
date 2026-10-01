@@ -27,12 +27,13 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _make_db(root: Path) -> sqlite3.Connection:
     """Bootstrap fresh v1 source and index tiers under ``root``; return a source writer."""
     root.mkdir(parents=True, exist_ok=True)
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(root / "source.db")
     initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
     return sqlite3.connect(root / "source.db")
 
@@ -197,7 +198,7 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
 
 def test_source_tier_without_index_authority_is_refused(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
 
     with pytest.raises(RuntimeError, match="canonical blob liveness projection blocked"):
         referenced_blob_hashes(source_db)
@@ -216,7 +217,7 @@ def test_scan_blob_reference_debt_reads_initialized_source_tier(tmp_path: Path) 
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
     present_hash, present_size = store.write_from_bytes(b"present")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """

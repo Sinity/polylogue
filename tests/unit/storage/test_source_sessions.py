@@ -6,6 +6,7 @@ from pathlib import Path
 from polylogue.storage.source_sessions import session_ids_for_source_path, session_ids_for_source_paths
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_source_session_lookup_reads_archive_file_set(tmp_path: Path) -> None:
@@ -13,7 +14,7 @@ def test_source_session_lookup_reads_archive_file_set(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     source_path = tmp_path / "sessions" / "current.jsonl"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
@@ -60,7 +61,7 @@ def test_embedding_path_scope_uses_archive_source_tier_when_index_is_generation(
     source_path = root / "sessions" / "current.jsonl"
     index_db.parent.mkdir(parents=True)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """

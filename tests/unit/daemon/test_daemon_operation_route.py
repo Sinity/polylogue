@@ -1352,7 +1352,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
                 archive_root=str(stack.archive_root),
                 deadline_ms=25,
             )
-            assert timed_out is not None and timed_out["outcome"] == "timed-out"
+            assert timed_out is not None and timed_out["outcome"] == "timed-out", timed_out
             assert monotonic() - started < 1.0
             assert not release_apply.is_set()
 
@@ -1996,3 +1996,245 @@ def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
             release.set()
             releaser.cancel()
             caller.join(timeout=10)
+
+
+def test_verified_backup_restore_crosses_the_real_machine_operation_route(tmp_path: Path) -> None:
+    """Dropping registry dispatch or fresh destination authority breaks this route."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING
+    from tests.infra.workload_artifacts import _archive_files
+
+    destination = tmp_path / "restored"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        package = backup["result"]["result"]["output_path"]
+        package_path = Path(package)
+        package_before = (_archive_files(package_path), (package_path / "manifest.json").read_bytes())
+        restored = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            {"backup_dir": package, "destination": str(destination)},
+            archive_root=str(stack.archive_root),
+        )
+        assert (_archive_files(package_path), (package_path / "manifest.json").read_bytes()) == package_before
+        assert not any(package_path.glob("*.db-wal"))
+        assert not any(package_path.glob("*.db-shm"))
+    assert restored is not None and restored["outcome"] == "completed", restored
+    assert restored["result"]["result"]["operational_admission"] == "ready"
+    assert not (destination / POPULATION_PENDING).exists()
+    with ArchiveStore.open_existing(destination, read_only=True):
+        pass
+
+
+@pytest.mark.parametrize("fault_kind", ["permission", "wrapped_permission", "wrapped_busy"])
+def test_restore_machine_operation_preserves_retryable_io_fault_and_pending_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_kind: str
+) -> None:
+    import sqlite3
+
+    from polylogue.storage.sqlite import archive_population
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.migration_runner import MigrationError
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    def fault(*_args: object, **_kwargs: object) -> object:
+        if fault_kind == "wrapped_busy":
+            error = sqlite3.OperationalError("synthetic reader contention")
+            error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise MigrationError("migration evidence unavailable") from error
+        error = PermissionError("synthetic evidence access fault")
+        if fault_kind == "wrapped_permission":
+            raise MigrationError("migration evidence unavailable") from error
+        raise error
+
+    destination = tmp_path / "pending-restoration"
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        monkeypatch.setattr(archive_population, "_populate_authenticated_archive", fault)
+        restored = stack.client.operation(
+            "maintenance.restore_verified_backup",
+            {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+            archive_root=str(stack.archive_root),
+        )
+    assert restored is not None and restored["outcome"] == "failed"
+    assert restored["error"]["code"] == "restore_io_fault"
+    assert restored["error"]["retryable"] is True
+    assert restored["error"]["retained_pending_destination"] == str(destination)
+    assert (destination / POPULATION_PENDING).is_file()
+    with pytest.raises(ArchivePopulationPendingError):
+        ArchiveStore.open_existing(destination)
+
+
+@pytest.mark.parametrize("audit_read_gap,spill_failure", [(False, False), (True, False), (True, True)])
+def test_accepted_restore_outlives_implicit_deadline_and_control_returns_terminal_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, audit_read_gap: bool, spill_failure: bool
+) -> None:
+    from time import monotonic
+
+    from polylogue.daemon import operation_runtime
+    from polylogue.operations import archive_backup
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    entered, release = threading.Event(), threading.Event()
+    restore = archive_backup.restore_verified_backup
+    offset = 0.0
+    responses: queue.Queue[Any] = queue.Queue()
+    destination = tmp_path / "restored"
+
+    def blocked_restore(**kwargs: Any) -> Any:
+        entered.set()
+        release.wait()
+        return restore(**kwargs)
+
+    monkeypatch.setattr(archive_backup, "restore_verified_backup", blocked_restore)
+    monkeypatch.setattr(operation_runtime, "monotonic", lambda: monotonic() + offset)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        backup = stack.client.operation(
+            "maintenance.backup",
+            {"output_dir": str(tmp_path / "packages"), "verify": True, "profile": "full_evidence"},
+            archive_root=str(stack.archive_root),
+        )
+        assert backup is not None and backup["outcome"] == "completed"
+        request_id = "slow-accepted-restore"
+
+        def submit() -> None:
+            try:
+                responses.put(
+                    stack.client.operation(
+                        "maintenance.restore_verified_backup",
+                        {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+                        archive_root=str(stack.archive_root),
+                        request_id=request_id,
+                    )
+                )
+            except BaseException as exc:
+                responses.put(exc)
+
+        thread = threading.Thread(target=submit)
+        thread.start()
+        try:
+            assert entered.wait(timeout=5)
+            offset = 301.0
+            with stack.runtime._condition:
+                stack.runtime._condition.notify_all()
+            response = responses.get(timeout=5)
+            assert not isinstance(response, BaseException)
+            assert response["outcome"] == "indeterminate"
+            assert not release.is_set()
+            if audit_read_gap:
+                from polylogue.storage.sqlite.audit_continuity import AuditContinuityError
+
+                def unavailable_control_read(*args: Any, **kwargs: Any) -> Any:
+                    raise AuditContinuityError("synthetic temporary control read gap")
+
+                monkeypatch.setattr(operation_runtime, "open_operation_control", unavailable_control_read)
+            if spill_failure:
+
+                def refuse_terminal_transfer(exchange: Any) -> None:
+                    raise OSError("synthetic result publication refusal")
+
+                monkeypatch.setattr(stack.runtime, "_retain_unbound_terminal", refuse_terminal_transfer)
+            release.set()
+            terminal = stack.client.await_operation(request_id, archive_root=str(stack.archive_root))
+            while terminal is not None and terminal["result"]["outcome"] in {"accepted", "running", "indeterminate"}:
+                state = terminal["result"]
+                terminal = stack.client.await_operation(
+                    request_id,
+                    archive_root=str(stack.archive_root),
+                    after_sequence=state["sequence"],
+                    after_progress_sequence=state.get("progress_sequence", 0),
+                )
+            assert terminal is not None and terminal["result"]["outcome"] == "completed", terminal
+            assert terminal["result"]["result"]["operational_admission"] == "ready"
+            status = stack.client.operation(
+                "operation.status", {"request_id": request_id}, archive_root=str(stack.archive_root)
+            )
+            assert status is not None and status["result"] == terminal["result"]
+            if spill_failure:
+                assert terminal["result"]["terminal_custody_error"] == "OSError"
+                assert request_id in stack.runtime._exchanges
+                blocked_destination = tmp_path / "blocked-result-custody"
+                blocked = stack.client.operation(
+                    "maintenance.restore_verified_backup",
+                    {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(blocked_destination)},
+                    archive_root=str(stack.archive_root),
+                )
+                assert blocked is not None and blocked["outcome"] == "rejected", blocked
+                assert blocked["error"]["code"] == "operation_result_custody_unavailable"
+                assert not blocked_destination.exists()
+                scratch = None
+            else:
+                assert request_id not in stack.runtime._exchanges
+                assert stack.runtime._terminal_scratch is not None
+                scratch = Path(stack.runtime._terminal_scratch.name)
+                assert len(tuple(scratch.iterdir())) == 1
+            from polylogue.core.enums import PrincipalSurface
+            from polylogue.operations.daemon_protocol import DaemonOperationRequest
+            from polylogue.operations.mutation_transaction import MutationPrincipal
+
+            if spill_failure:
+                held = stack.runtime._exchanges[request_id]
+                principal = held.context.principal
+                assert held.snapshot is not None
+                archive_identity = held.snapshot.identity.authority_identity_digest
+            else:
+                assert scratch is not None
+                with next(scratch.iterdir()).open(encoding="utf-8") as stream:
+                    packet = json.load(stream)
+                declared = packet["principal"]
+                principal = MutationPrincipal(
+                    actor_ref=declared["actor_ref"],
+                    capabilities=frozenset(declared["capabilities"]),
+                    surface=PrincipalSurface(declared["surface"]),
+                    role_label=declared["role_label"],
+                )
+                archive_identity = packet["archive_identity"]
+            control_request = DaemonOperationRequest(
+                operation="operation.status", payload={"request_id": request_id}, request_id="inspect-retained-result"
+            )
+            with pytest.raises(PermissionError):
+                stack.runtime.control(
+                    control_request, replace(principal, actor_ref="synthetic-unrelated"), archive_identity
+                )
+            with pytest.raises(ValueError, match="archive_identity_stale"):
+                stack.runtime.control(control_request, principal, "synthetic-different-archive")
+            # A result is not a five-minute progress buffer. An identical
+            # replay must not execute restoration against the occupied root.
+            offset += 601.0
+            replay = stack.client.operation(
+                "maintenance.restore_verified_backup",
+                {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+                archive_root=str(stack.archive_root),
+                request_id=request_id,
+            )
+            assert replay is not None and replay["outcome"] == "completed", replay
+            assert replay["result"]["result"] == terminal["result"]["result"]
+            later = stack.client.operation(
+                "operation.cancel", {"request_id": request_id}, archive_root=str(stack.archive_root)
+            )
+            assert later is not None and later["result"]["outcome"] == "completed", later
+            conflicting = stack.client.operation(
+                "maintenance.restore_verified_backup",
+                {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(tmp_path / "conflict")},
+                archive_root=str(stack.archive_root),
+                request_id=request_id,
+            )
+            assert conflicting is not None and conflicting["outcome"] == "rejected", conflicting
+            assert not (tmp_path / "conflict").exists()
+        finally:
+            release.set()
+            thread.join()
+    if scratch is not None:
+        assert not scratch.exists()
+    assert stack.runtime.shutdown_settled
+    with ArchiveStore.open_existing(destination, read_only=True):
+        pass

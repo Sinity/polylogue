@@ -510,6 +510,11 @@ class BackupRequest(_OperationPayload):
     )
 
 
+class RestoreVerifiedBackupRequest(_OperationPayload):
+    backup_dir: str = Field(min_length=1)
+    destination: str = Field(min_length=1)
+
+
 class SecretScanRequest(_OperationPayload):
     session_id: str | None = None
     scan_all: bool = False
@@ -1183,6 +1188,9 @@ class MutationResult(_OperationPayload):
     artifact_refs: list[str] | None = None
     result: dict[str, object] | None = None
     cancellation_requested: bool | None = None
+    #: The actual terminal future is still owned because private scratch
+    #: transfer failed; this is separate from the operation's own error.
+    terminal_custody_error: str | None = None
     accepted: bool | None = None
     progress_sequence: int | None = Field(default=None, ge=0)
     progress_events: list[dict[str, object]] | None = None
@@ -2228,6 +2236,19 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BackupRequest,
         result_model=MutationResult,
         handler="maintenance_backup",
+    ),
+    DaemonOperationSpec(
+        "maintenance.restore_verified_backup",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.restore_verified_backup",
+        deadline_s=300.0,
+        cancellable=False,
+        request_contract="maintenance.restore_verified_backup.request/v1",
+        result_contract="maintenance.restore_verified_backup.result/v1",
+        request_model=RestoreVerifiedBackupRequest,
+        result_model=MutationResult,
+        handler="maintenance_restore_verified_backup",
     ),
     DaemonOperationSpec(
         "maintenance.secret_scan",

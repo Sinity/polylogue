@@ -15,6 +15,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.tier_access import TierHandle, TierRefusal, acquire_tier_reader, open_tier_reader, tier_evidence
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _index_path(root: Path) -> Path:
@@ -23,7 +24,10 @@ def _index_path(root: Path) -> Path:
 
 def _initialize_tiers(root: Path) -> None:
     for tier, spec in ARCHIVE_TIER_SPECS.items():
-        initialize_archive_database(root / spec.filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(root / spec.filename)
+        else:
+            initialize_archive_database(root / spec.filename, tier)
 
 
 def test_missing_tier_refuses_with_the_probe_status(tmp_path: Path) -> None:

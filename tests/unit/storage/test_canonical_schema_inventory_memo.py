@@ -1,11 +1,11 @@
-"""The canonical fresh-DDL inventory is built once per (tier, version, DDL).
+"""The canonical fresh-DDL inventory is built once per exact baseline and ordered declared steps.
 
 ``initialize_active_archive_root`` runs once per ingest batch -- once per
 catch-up chunk of a rebuild -- and its startup reconciliation rebuilds the
 canonical schema image of every durable tier from an in-memory database. That
 image is a pure function of the tier, the target version and the registered
-DDL: it never reads the archive. Recomputing it per chunk is the per-chunk
-fixed cost this memo removes.
+baseline and ordered declared migration SQL: it never reads the archive.
+Recomputing it per chunk is the per-chunk fixed cost this memo removes.
 
 Anti-vacuity:
 
@@ -19,13 +19,14 @@ Anti-vacuity:
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from typing import Any, cast
 
 import pytest
 
+from polylogue.storage.sqlite import archive_tiers, migration_runner
 from polylogue.storage.sqlite import durable_change_train as durable
-from polylogue.storage.sqlite import migration_runner
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _TIER = ArchiveTier.SOURCE
@@ -74,9 +75,9 @@ def test_substituted_ddl_is_not_served_from_the_memo(monkeypatch: pytest.MonkeyP
     version = _target_version()
     original = durable._canonical_schema_inventory(_TIER, version)
 
-    registry = dict(ARCHIVE_DDL_BY_TIER)
+    registry = dict(ARCHIVE_BASELINE_DDL_BY_TIER)
     registry[_TIER] = f"{registry[_TIER]}\nCREATE TABLE memo_probe_table (probe_id TEXT PRIMARY KEY) STRICT;\n"
-    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", registry)
+    monkeypatch.setattr(archive_tiers, "ARCHIVE_BASELINE_DDL_BY_TIER", registry)
 
     substituted = durable._canonical_schema_inventory(_TIER, version)
 
@@ -87,7 +88,7 @@ def test_substituted_ddl_is_not_served_from_the_memo(monkeypatch: pytest.MonkeyP
 def test_a_different_target_version_is_its_own_entry() -> None:
     version = _target_version()
     first = durable._canonical_schema_inventory(_TIER, version)
-    second = durable._canonical_schema_inventory(_TIER, version + 1)
+    second = durable._canonical_schema_inventory(_TIER, durable.DURABLE_MIGRATION_ADOPTION_FLOORS[_TIER])
 
     assert first is not second
 
@@ -101,3 +102,18 @@ def test_normalized_schema_sql_memo_preserves_the_transform() -> None:
     # A literal is part of the inventory and must survive normalization.
     literal = "CREATE TABLE memo_probe (probe_id TEXT DEFAULT 'kept')"
     assert "kept" in migration_runner._normalize_schema_sql(literal)
+
+
+def test_baseline_inventory_keeps_pre_migration_index_predicates() -> None:
+    floor = durable.DURABLE_MIGRATION_ADOPTION_FLOORS[_TIER]
+    baseline = durable._canonical_schema_inventory(_TIER, floor)
+    runtime = durable._canonical_schema_inventory(_TIER, _target_version())
+    assert baseline.sha256 != runtime.sha256
+    with closing(sqlite3.connect(":memory:")) as connection:
+        connection.executescript(ARCHIVE_BASELINE_DDL_BY_TIER[_TIER])
+        assert baseline.sha256 == migration_runner.capture_durable_schema_inventory(connection).sha256
+
+
+def test_undeclared_future_inventory_is_refused() -> None:
+    with pytest.raises(migration_runner.DurableChangeTrainError):
+        durable._canonical_schema_inventory(_TIER, _target_version() + 1)

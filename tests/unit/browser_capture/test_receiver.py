@@ -3,7 +3,6 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
-import shutil
 import socket
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -779,7 +778,7 @@ def test_mission_control_resolves_the_default_archive_root(tmp_path: Path, monke
     assert projection["cost"] == {"status": "available", "total_usd": 1.5, "provenance": []}
 
 
-def test_mission_control_archive_facts_read_a_real_archive(empty_archive_template: Path, tmp_path: Path) -> None:
+def test_mission_control_archive_facts_read_a_real_archive(tmp_path: Path) -> None:
     """A schema-complete archive answers the projection instead of degrading.
 
     Anti-vacuity: if either read route is renamed or the facade construction
@@ -787,7 +786,9 @@ def test_mission_control_archive_facts_read_a_real_archive(empty_archive_templat
     returns None, and this fails.
     """
     root = tmp_path / "archive"
-    shutil.copytree(empty_archive_template, root)
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
+
+    bootstrap_ready_archive_root(root)
 
     facts = mission_control_archive_facts(root, "chatgpt:conv-123")
 

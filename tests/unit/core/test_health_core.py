@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+
 
 @pytest.mark.parametrize(
     ("name", "status_name", "detail", "expected"),
@@ -116,7 +118,10 @@ def test_raw_frontier_readiness_check_errors_on_missing_source_evidence(tmp_path
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     sample = {
         "session_id": "codex-session:missing",
         "missing_raw_id": "raw-missing",
@@ -148,7 +153,10 @@ def test_public_readiness_route_blocks_cursor_ahead_source_selection(tmp_path: P
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     source_path = tmp_path / "session.jsonl"
     unmaterialized_path = tmp_path / "unmaterialized.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")

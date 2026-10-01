@@ -597,6 +597,7 @@ class RawFailureSample(BaseModel):
         "terminal_unknown_json_decode",
         "terminal_unknown_export_no_session",
         "terminal_unsupported_shape",
+        "terminal_missing_source_coordinates",
     ]
     provider_hint: str | None = None
     redacted_error: str = ""

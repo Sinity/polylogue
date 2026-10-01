@@ -19,9 +19,9 @@ import pytest
 from polylogue.cli.commands.maintenance._backup_plan import _backup_plan_payload
 from polylogue.operations.archive_space_report import build_space_report
 from polylogue.storage.blob_gc import run_blob_gc
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from tests.benchmarks.helpers import BenchmarkFixture
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _seed_archive_tiers(root: Path) -> None:
@@ -34,7 +34,7 @@ def _seed_archive_tiers(root: Path) -> None:
 
 
 def _seed_gc_db(path: Path) -> None:
-    initialize_archive_database(path, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(path)
 
 
 def _seed_sharded_blobs(blob_root: Path, count: int) -> None:

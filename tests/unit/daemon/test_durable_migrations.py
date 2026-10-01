@@ -22,7 +22,7 @@ from polylogue.core.write_lease import write_lease
 from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
 from polylogue.operations.durable_change_train import acquire_durable_archive_ownership
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.durable_tier_fixtures import refresh_archive_format_marker, refresh_fresh_bootstrap_marker
+from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive
 
 
 def _declare_future_migration(
@@ -103,9 +103,15 @@ def _declare_future_migrations(
             json.dumps(durable_change_train_to_payload(declared)), "utf-8"
         )
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: f"{package}.{tier.value}")
+    canonical_package = migration_runner._migration_package
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.durable_change_train._migration_package", lambda _tier: f"{package}.{tier.value}"
+        migration_runner,
+        "_migration_package",
+        lambda observed: f"{package}.{tier.value}" if observed is tier else canonical_package(observed),
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.durable_change_train._migration_package",
+        lambda observed: f"{package}.{tier.value}" if observed is tier else canonical_package(observed),
     )
     monkeypatch.setattr(
         "polylogue.storage.sqlite.durable_change_train.DURABLE_MIGRATION_ADOPTION_FLOORS",
@@ -151,10 +157,13 @@ def test_an_archive_at_the_runtime_version_is_left_alone(cli_workspace: dict[str
 
 
 def test_an_additive_migration_applies_at_open_without_a_backup(
-    cli_workspace: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    one_shot_workspace_env: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = cli_workspace["archive_root"]
-    base = "CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_DDL_BY_TIER
+
+    root = one_shot_workspace_env["archive_root"]
+    bootstrap_baseline_archive(root, monkeypatch)
+    base = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE]
     _declare_future_migration(
         tmp_path,
         monkeypatch,
@@ -164,13 +173,6 @@ def test_an_additive_migration_applies_at_open_without_a_backup(
         base_ddl=base,
     )
     source_db = root / "source.db"
-    source_db.unlink()
-    with sqlite3.connect(source_db) as conn:
-        conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
-        conn.execute("PRAGMA user_version = 1")
-        conn.commit()
-    refresh_fresh_bootstrap_marker(root)
-    refresh_archive_format_marker(root)
 
     applied = _apply(root)
 

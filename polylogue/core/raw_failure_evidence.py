@@ -30,6 +30,7 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
+    TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
     TERMINAL_MISSING_PROFILE_IDENTITY = "terminal_missing_profile_identity"
 
     @property
@@ -37,6 +38,7 @@ class RawFailureEvidenceKind(StrEnum):
         if self in {
             RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
             RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
         }:
             return ArtifactSupportStatus.UNKNOWN
         if self in {

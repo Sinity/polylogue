@@ -31,12 +31,12 @@ from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _source_db(path: Path, rows: tuple[tuple[str, str] | tuple[str, int, str], ...]) -> Path:
-    initialize_archive_database(path, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(path)
     for row in rows:
         if len(row) == 3:
             _retain_row(path, *row)

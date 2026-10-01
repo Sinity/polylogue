@@ -2222,6 +2222,13 @@ async def _run_daemon_services_under_active_writer_lease(
         # Declared durable migrations are ordinary lifecycle: apply them now,
         # under the same exclusive ownership, before anything serves.
         from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
+        from polylogue.operations.durable_change_train import initialize_fresh_archive_on_startup
+
+        initialize_fresh_archive_on_startup(
+            archive_root_path,
+            archive_owner=archive_owner,
+            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
+        )
 
         applied_migrations = apply_declared_durable_migrations(
             archive_root_path,

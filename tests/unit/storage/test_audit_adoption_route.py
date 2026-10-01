@@ -75,4 +75,12 @@ def test_lost_audit_refusal_needs_lineage_proof(tmp_path: Path, damage: str) -> 
         initialize_active_archive_root(root)
 
     assert "established archive is missing audit.db" not in str(refusal.value)
+    if damage == "foreign":
+        from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
+
+        assert isinstance(refusal.value, DurableChangeTrainError)
+        with closing(sqlite3.connect(root / "source.db")) as connection:
+            assert connection.execute("SELECT name FROM sqlite_schema WHERE name='intruder'").fetchone() == (
+                "intruder",
+            )
     assert not (root / "audit.db").exists()

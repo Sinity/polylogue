@@ -88,66 +88,58 @@ tier links still resolve absolutely into the old one.
 
 Active index pointer targets must resolve inside the configured archive root, with one exception for a target that is also the resolved target of the configured `index.db` symlink used by a symlink farm. Copied archives are refused by `ArchiveLocation`: an out-of-root pointer is admitted only when every durable tier at the root is also a symlink, so a symlink-preserving copy — which keeps real durable files inside itself — does not resolve into the archive it was copied from.
 
-## Runtime Pin for a Restored Archive
+## Explicit verified restore
 
-A restored file set is not readable on its own. Durable tiers carry a
-`PRAGMA user_version` and derived tiers carry a stamped schema identity; a
-runtime that matches neither refuses to open the archive instead of patching
-it. For ordinary restore work, the complete recovery artifact is the archive files plus the commit that can read them. Pinning that commit costs no write to the archive, while migrating the tiers forward mutates the copy being kept as the fallback.
-
-Read the versions the commit has to match out of the archive itself:
+A verified backup is evidence, not an operational archive at its copied inodes.
+Restore it through the declared daemon operation into a destination that does
+not exist:
 
 ```bash
-for tier in source user audit; do
-  printf '%s ' "$tier"
-  sqlite3 "file:$POLYLOGUE_ARCHIVE_ROOT/$tier.db?mode=ro" 'PRAGMA user_version;'
-done
-sqlite3 "file:$(readlink -f "$POLYLOGUE_ARCHIVE_ROOT/index.db")?mode=ro" 'PRAGMA user_version;'
+polylogue ops maintenance restore-verified-backup \
+  --backup-dir /verified/backup --destination /new/archive --format json
 ```
 
-For an ordinary restored archive, the candidate is the newest first-parent `master` commit whose
-`ARCHIVE_VERSION_BY_TIER` in
-`polylogue/storage/sqlite/archive_tiers/__init__.py` maps every tier to those
-numbers. This is the single version authority; the durable tier modules do not
-declare parallel `SOURCE_SCHEMA_VERSION`, `USER_SCHEMA_VERSION`, or
-`AUDIT_SCHEMA_VERSION` constants. Tiers migrate on independent schedules, so
-an archive whose durable tiers were migrated at different times may have no
-commit that matches every tier. Pin on the tiers the restore has to read, and
-record which tier is left unopenable and what that costs.
+`maintenance.restore_verified_backup` verifies the complete signed package,
+blob closure, and original released train bindings. The production archive
+population owner creates the destination with the immutable six-tier v1
+baseline. A Source1 package populates its exact rows before the normal
+Source002 train runs; a Source2 package populates a destination whose own
+train has completed. SQLite backup preserves destination-owned inodes.
+Startup checks that destination's actual train authority. Original
+format and train receipts remain byte-for-byte detached provenance under
+`.archive-population-provenance`; they are never rebound or admitted by
+ordinary startup as authority for copied files.
 
-Historical archive lineages may carry version numbers from an earlier schema era. This procedure applies only to archives intentionally restored for operation. The fresh-start reset does not search Git history for a compatible runtime and does not qualify the preserved archive for application reads.
+A restore requires the complete Source, User, and Audit core. Overlay and
+diagnostics profiles remain verified recovery evidence but receive a typed
+`restore_partial_durable_core` refusal for operational restoration.
+Backup acquisition retains stale Index and Ops as authenticated SQLite evidence
+without serving their read models. Their physical integrity and supported version
+remain required; ordinary query readers still refuse stale derived identity.
+Index and Ops that are omitted or carry an earlier derived identity are
+new empty tiers requiring convergence. Stale copied derived files remain
+detached evidence under `original-derived`; their stamps are never admitted
+or rewritten. `requires_convergence` names these tiers and operational
+admission remains degraded until convergence. Omitted Embeddings are
+`unrestored_purchased_tiers`, with degraded operational admission: the
+canonical constructor's empty tier does not recover purchased vectors.
+The returned `restored_tiers` excludes omitted and replaced derived tiers.
+The backup itself remains immutable throughout restore.
 
-Build the candidate in its own checkout and confirm the executable names it:
+## Runtime admission after restore
 
-```bash
-uv sync --frozen
-./.venv/bin/polylogue --version   # 0.3.0+<short sha>
-```
+Use the installed runtime's explicit verified restore operation for supported
+current-format backups. It applies declared durable evolution on the new
+owned destination; a raw file copy does not grant startup authority. Unknown
+versions or noncanonical schema shapes receive a typed refusal while the
+original package remains intact. Pre-reset archives remain salvage evidence
+and are never migration or restoration inputs.
 
-The build hook requires git metadata. A tree exported without `.git` builds
-only when `polylogue/_build_info.py` is present, carrying `BUILD_COMMIT` and
-`BUILD_DIRTY`.
-
-Verify through the production read route. Opening the tier files with `sqlite3`
-proves the bytes are intact and says nothing about whether the runtime accepts
-the archive:
-
-```bash
-export POLYLOGUE_ARCHIVE_ROOT=/restored/archive/root
-polylogue status                                             # each tier reports vN/N ok
-polylogue --origin ORIGIN find 'FIELD:VALUE' then select --format json
-```
-
-Expect text search to be unavailable. An archive stopped before its search
-index converged refuses FTS queries with `Search index is incomplete` while
-field, origin and date filters answer normally, and the index returns only
-after `polylogued run` converges it. Report field-query readiness and search
-availability separately rather than as one readiness claim.
-
-Reading through the pinned runtime writes nothing durable; only `ops.db`, the
-disposable tier, is touched. When the archive is the only copy, capture a
-size/mtime/ctime/sha256 manifest of the durable tiers before and after the read
-and compare the two, rather than assuming the read was clean.
+Verify the completed destination through production status and query routes.
+Report field-query readiness and FTS availability separately: a restored
+Index may require daemon convergence, and a newly derived empty Index has no
+replayed sessions yet. Purchased vectors and missing referenced blobs remain
+explicit gaps in the restore result.
 
 ## Rollback custody and qualification
 
@@ -155,11 +147,15 @@ For ordinary archive replacement or removal, preserve a full-evidence copy outsi
 
 For the fresh-start reset, move the entire previous Polylogue state aside intact solely as salvage evidence. Do not qualify it for application reads or use it for rollback or readback.
 
-An archive copy is usable only with a runtime that accepts every tier it must read. Read each durable tier's `user_version` and the derived tier identity from the archive, then compare them with the candidate runtime's declared versions and schema identity. A match against only source, user, index, embeddings, or ops does not qualify a runtime if its audit version differs. If no suitable runtime exists in the official first-parent history, record the archive as preserved but unqualified for application reads; do not describe a nearby commit as a rollback runtime.
+A copied archive is custody evidence, not active authority for its new inodes.
+Create and verify a complete backup package, use the explicit restore operation
+for a fresh destination, and qualify that destination through its normal
+startup and read routes. Keep the original backup unchanged. Matching schema
+versions alone does not authenticate copied physical train receipts.
 
 Archive roots may contain absolute symlinks to generation or tier files. Moving the root aside does not preserve those files independently: a link can still resolve through the original path after that path is recreated. Before relying on a moved copy, inventory and preserve the resolved targets as part of the custody copy, or repair links in a separate copy and verify that every target resolves within that copy. Do not modify the sole preserved archive to repair its links.
 
-Qualification requires the production read route with the candidate runtime against the preserved copy. Check status, then run a representative field/origin query. Report field-query and FTS readiness separately; stale search indexes can remain unavailable until daemon convergence. A raw SQLite open or file listing establishes neither runtime compatibility nor query readiness. Never migrate the sole preserved copy as part of qualification.
+Qualification requires the production read route against the completed destination. Check status, then run a representative field/origin query. Report field-query and FTS readiness separately; stale search indexes can remain unavailable until daemon convergence. A raw SQLite open or file listing establishes neither runtime compatibility nor query readiness. Never migrate the sole preserved copy as part of qualification.
 
 Changing a configured archive root is a restore into a new root, not an in-place transition. Create and verify a full-evidence backup, restore it at the new root, and let the daemon converge. `ArchiveLocation` refuses an out-of-root active-generation pointer unless it resolves through the configured index symlink in the supported symlink-farm layout.
 
@@ -168,7 +164,9 @@ Changing a configured archive root is a restore into a new root, not an in-place
 Restore into an isolated archive root first:
 
 ```bash
-export POLYLOGUE_ARCHIVE_ROOT=/tmp/polylogue-restore-check
+polylogue ops maintenance restore-verified-backup \
+  --backup-dir /verified/backup --destination /realm/tmp/work/restore-check
+export POLYLOGUE_ARCHIVE_ROOT=/realm/tmp/work/restore-check
 polylogue ops maintenance backup-plan --output-format json
 polylogue ops status --format json
 ```
@@ -191,8 +189,8 @@ Restore expectations:
   actionable user assertions, and editing assertion metadata is outside the raw
   session content-hash boundary.
 - `index.db` may be rebuilt from `source.db` when schema versions change.
-- `embeddings.db` may be rebuilt, but restore it when possible to avoid
-  provider cost and delay.
+- `embeddings.db` contains purchased vectors. Restore it when present; omitted
+  vectors remain unrestored and require repurchase, never raw replay.
 - `ops.db` does not decide archive correctness; restore it only when preserving
   daemon history matters.
 - A restored blob store is valid only when referenced blobs still match their
@@ -386,3 +384,28 @@ leave multi-hundred-MB restored copies in `/realm/tmp/`:
 ```bash
 rm -rf /realm/tmp/restore-drill-$(date +%Y%m%d)
 ```
+
+The destination is reserved exclusively and carries an unfinished-population
+marker until exact schema, rows, blob files, and ordinary startup admission
+have passed. Other archive readers and writers refuse that destination while
+population is pending. An interrupted restore retains its partial directory
+and marker as evidence; it is not automatically repaired or resumed. A new
+restore requires a different, absent destination.
+
+
+The machine restore exchange has a 300-second response budget. Once its first
+possible filesystem effect has been admitted, expiry returns `indeterminate`
+and the accepted restore continues; it does not cancel progressing work.
+`operation.await` or `operation.status` with the same request ID and principal
+reads its exact terminal result while that daemon remains live. Completed unbound
+results transfer atomically to private runtime scratch before the live exchange
+retires; they are not subject to progress-buffer expiry. A transfer fault keeps
+the original terminal future owned and visible through `terminal_custody_error`;
+new mutation admission pauses retryably until that transfer succeeds. Runtime
+shutdown drains workers before removing its result scratch. These files are not Audit receipts and do
+not grant restart authority.
+An await may return a running observation or progress frame first; consumers
+follow its state and progress cursors until the terminal outcome.
+This unbound filesystem operation does not mint an Audit machine-request
+receipt. After a daemon crash, an unfinished destination therefore remains
+fenced evidence, not a claim of durable terminal success.

@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.conftest import _MANAGED_VERIFY_ENV
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.daemon_operations import cli_daemon_archive
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -992,7 +993,10 @@ class TestStatusDiagnosticIntegration:
             ArchiveTier.AUDIT,
             ArchiveTier.OPS,
         ):
-            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+            if tier is ArchiveTier.SOURCE:
+                initialize_runtime_source_fixture(archive_root / f"{tier.value}.db")
+            else:
+                initialize_archive_database(archive_root / f"{tier.value}.db", tier)
         with sqlite3.connect(archive_root / "ops.db") as conn:
             conn.execute("DROP TABLE convergence_debt")
             conn.execute("CREATE TABLE convergence_debt (wrong_column TEXT)")
@@ -1009,7 +1013,10 @@ class TestStatusDiagnosticIntegration:
             ArchiveTier.AUDIT,
             ArchiveTier.OPS,
         ):
-            initialize_archive_database(archive_root / f"{tier.value}.db", tier)
+            if tier is ArchiveTier.SOURCE:
+                initialize_runtime_source_fixture(archive_root / f"{tier.value}.db")
+            else:
+                initialize_archive_database(archive_root / f"{tier.value}.db", tier)
         with sqlite3.connect(archive_root / "ops.db") as conn:
             conn.execute("DROP TABLE ingest_attempts")
             conn.execute("CREATE TABLE ingest_attempts (wrong_column TEXT)")

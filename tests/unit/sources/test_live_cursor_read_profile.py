@@ -8,9 +8,8 @@ from typing import Any
 import pytest
 
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import ReadFrame
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _seed_unparsed_raw(source_db: Path, source_path: str, raw_id: str) -> None:
@@ -36,7 +35,7 @@ def test_interrupted_cursor_recovery_reads_committed_wal_rows(tmp_path: Path) ->
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     source_path = archive_root / "capture.jsonl"
     writer = sqlite3.connect(source_db)
     try:
@@ -71,7 +70,7 @@ def test_interrupted_cursor_recovery_rebinds_after_midstream_expiry(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     paths = tuple(str(archive_root / name) for name in ("first.jsonl", "second.jsonl"))
     for index, source_path in enumerate(paths):
         _seed_unparsed_raw(source_db, source_path, f"raw-{index}")
@@ -135,7 +134,7 @@ def test_interrupted_attempts_stay_running_when_the_recovery_read_expires(
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     source_path = str(archive_root / "capture.jsonl")
     _seed_unparsed_raw(source_db, source_path, "raw-0")
     store = _store(archive_root)

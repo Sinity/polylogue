@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from contextlib import closing
+from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,6 +49,29 @@ def assert_holds_archive_ownership(owner: OwnedArchiveLocation, archive_root: Pa
     from polylogue.storage.archive_identity import assert_owns_archive_location
 
     assert_owns_archive_location(owner, ArchiveLocation.resolve(archive_root))
+
+
+def initialize_fresh_archive_on_startup(
+    archive_root: Path,
+    *,
+    archive_owner: OwnedArchiveLocation,
+    write_lease: Callable[[str], AbstractContextManager[object]],
+) -> None:
+    """Resume declared fresh construction before ordinary migration admission."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        DURABLE_MIGRATION_TIERS,
+        archive_tier_spec,
+        initialize_active_archive_root,
+    )
+
+    assert_holds_archive_ownership(archive_owner, archive_root)
+    pending = (archive_root / ".maintenance-state/durable-change-trains/.bootstrap.pending").is_file()
+    absent = all(not (archive_root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
+    if pending or absent:
+        # Existing bootstrap owns all-six baseline intent and numbered trains.
+        # Established roots retain their separate durable migration admission.
+        with write_lease("daemon.archive_bootstrap.startup"):
+            initialize_active_archive_root(archive_root)
 
 
 def pending_durable_migrations(archive_root: Path) -> tuple[PendingDurableMigration, ...]:
@@ -146,6 +169,7 @@ __all__ = [
     "PendingDurableMigration",
     "assert_holds_archive_ownership",
     "execute_durable_change_train",
+    "initialize_fresh_archive_on_startup",
     "pending_durable_migrations",
     "rehearse_pending_durable_migration",
     "reconcile_durable_change_trains_on_startup",

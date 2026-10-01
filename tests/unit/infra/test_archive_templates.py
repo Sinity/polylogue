@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import sqlite3
 import stat
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+from tests.infra.archive_templates import _template_key, clone_archive_template, finalize_archive_template
+from tests.infra.workload_artifacts import ImmutableTreeArtifact
 
 
 def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
@@ -35,47 +38,43 @@ def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
     clone = tmp_path / "clone"
     with pytest.raises(ValueError, match="symlink"):
         clone_archive_template(template, clone)
-    assert list(clone.iterdir()) == []
+    # Source validation refuses before reserving or copying a destination.
+    assert not clone.exists()
 
 
-def test_clone_reproduces_the_durable_bootstrap_marker_and_both_roots_open(
+def test_clone_preserves_original_proof_and_both_owned_roots_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A faithful clone carries the template's own bootstrap marker, byte for byte.
-
-    PR #5070 (polylogue-ifb4l) rebound the marker to the archive's durable
-    *content*, dropping the root path and the source/user inodes it used to
-    seal. ``clone_archive_template`` still calls ``rebind_durable_identity``,
-    but that rewrite is now idempotent for a faithful clone: same content,
-    same marker. The transplant property the old location seal was protecting
-    is covered by
-    ``test_fresh_bootstrap_marker_is_refused_in_an_archive_it_does_not_describe``
-    in ``tests/unit/storage/test_durable_change_train.py``.
-
-    Anti-vacuity: re-seal anything location-dependent in
-    ``_record_fresh_durable_bootstrap`` -- the configured root, or the
-    ``dev:``/``ino:`` pair -- and the clone's marker diverges from the
-    template's, which is exactly the regression that made a plain ``mv`` of an
-    archive root refuse to open.
-    """
+    """A clone retains original proof and executes a destination-owned train."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     template = tmp_path / "template"
     clone = tmp_path / "clone"
-    marker = Path(".maintenance-state/durable-change-trains/.bootstrap")
+    marker = Path(".maintenance-state/durable-change-trains/source-002.json")
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "configured")
     with ArchiveStore(template):
         pass
+    finalize_archive_template(template)
     source_identity = template.joinpath(marker).read_bytes()
 
     clone_archive_template(template, clone)
 
-    assert clone.joinpath(marker).read_bytes() == source_identity
-    with ArchiveStore(template):
+    assert clone.joinpath(marker).read_bytes() != source_identity
+    with ArchiveStore.open_existing(template, read_only=True):
         pass
     with ArchiveStore(clone):
         pass
     assert template.joinpath(marker).read_bytes() == source_identity
+    original = template / ".maintenance-state/durable-change-trains/source-002.json"
+    regenerated = clone / ".maintenance-state/durable-change-trains/source-002.json"
+    assert original.read_bytes() != regenerated.read_bytes()
+    source_manifest_id = ImmutableTreeArtifact.adopt(template, key=_template_key(template)).manifest_id
+    source_namespace = hashlib.sha256(source_manifest_id.encode()).hexdigest()
+    provenance = clone / ".archive-population-provenance" / source_namespace / "original-history/source-002.json"
+    assert provenance.read_bytes() == original.read_bytes()
+    provenance_record = json.loads((provenance.parent.parent / "source.json").read_text())
+    assert provenance_record["source_manifest_id"] == source_manifest_id
+    assert provenance_record["owning_artifact"] is None
 
 
 def _leave_crash_recovered_wal(database: Path) -> None:
@@ -160,7 +159,10 @@ def test_clone_requests_reflink_before_copy_fallback(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(subprocess, "run", no_reflink)
     assert clone_archive_template(template, destination) == "copy"
 
-    assert [argv[:4] for argv in calls] == [["cp", "-a", "--reflink=always", str(template)]]
+    assert len(calls) == 1
+    assert calls[0][:3] == ["cp", "-a", "--reflink=always"]
+    assert str(template / "index.db") in calls[0][3:-1]
+    assert calls[0][-1] == str(destination)
     assert (destination / "index.db").read_bytes() == b"snapshot"
     assert (destination / "index.db").stat().st_mode & stat.S_IWUSR
 
@@ -211,8 +213,7 @@ def test_clone_refuses_a_template_that_changed_after_it_was_read(
     def divergent_copy(argv: list[str], **_kwargs: object) -> None:
         raise subprocess.CalledProcessError(1, argv)
 
-    def tampered_copy(source: Path, target: Path) -> None:
-        target.mkdir(parents=True)
+    def tampered_copy(source: Path, target: Path, **_kwargs: object) -> None:
         (target / "index.db").write_bytes(b"tampered")
 
     monkeypatch.setattr(subprocess, "run", divergent_copy)
@@ -220,34 +221,11 @@ def test_clone_refuses_a_template_that_changed_after_it_was_read(
 
     with pytest.raises(ValueError, match="authenticated file-set validation"):
         clone_archive_template(template, destination)
-    assert list(destination.iterdir()) == []
-    assert list(destination.parent.glob(".clone.*")) == []
-
-
-@pytest.fixture
-def bootstrap_template_root(tmp_path: Path) -> Iterator[Path]:
-    """Redirect bootstrap cloning at a private run root for one test.
-
-    The session registers its own root for every worker; a test that left the
-    process pointing at ``None`` would silently put every later archive in that
-    worker back on the production route.
-    """
-    from tests.infra.archive_templates import register_bootstrap_template_root
-
-    run_root = tmp_path / "run"
-    previous = register_bootstrap_template_root(run_root)
-    try:
-        yield run_root
-    finally:
-        register_bootstrap_template_root(previous)
+    assert not destination.exists()
 
 
 def _archive_state(root: Path) -> dict[str, object]:
-    """Every tier's schema, version and rows, minus what is bound to the path.
-
-    The durable bootstrap marker names the tree it belongs to, so it is compared
-    for presence rather than content; :func:`clone_archive_template` rebinds it.
-    """
+    """Compare tier schemas and rows while each root retains its own train history."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
     state: dict[str, object] = {}
@@ -264,9 +242,8 @@ def _archive_state(root: Path) -> dict[str, object]:
                     continue
                 with contextlib.suppress(sqlite3.DatabaseError):
                     state[f"{spec.filename}:{name}:rows"] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
-    # The direct bootstrap can leave empty WAL/SHM coordination files while
-    # the sealed clone has none. They carry no persistent archive inventory;
-    # table rows above already compare any WAL-visible data.
+    # SQLite coordination files carry no persistent archive inventory;
+    # table rows above compare any WAL-visible data.
     sqlite_sidecars = {
         f"{spec.filename}{suffix}" for spec in ARCHIVE_TIER_SPECS.values() for suffix in ("-wal", "-shm")
     }
@@ -279,13 +256,8 @@ def _archive_state(root: Path) -> dict[str, object]:
     return state
 
 
-def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, bootstrap_template_root: Path) -> None:
-    """A cloned root is what the production bootstrap builds, or the clone is a lie.
-
-    Anti-vacuity: seeding the template through any route that adds state the
-    production bootstrap does not create -- a completed raw-authority census,
-    an extra ops row -- makes the two states diverge and this red.
-    """
+def test_fixture_bootstrap_executes_the_canonical_baseline_and_train(tmp_path: Path) -> None:
+    """Each destination must carry its own actually executed train history."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -294,7 +266,6 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
 
     cloned = bootstrap_archive_root(tmp_path / "cloned")
 
-    assert (bootstrap_template_root / ".bootstrap-archive-template").is_dir()
     assert _archive_state(cloned) == _archive_state(produced)
     with sqlite3.connect(cloned / "source.db") as conn:
         assert conn.execute("PRAGMA journal_mode=DELETE").fetchone() == ("delete",)
@@ -305,14 +276,11 @@ def test_bootstrap_clone_reproduces_the_production_bootstrap(tmp_path: Path, boo
     assert _archive_state(cloned) != _archive_state(produced)
 
 
-def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
-    tmp_path: Path,
-    bootstrap_template_root: Path,
-) -> None:
+def test_fixture_bootstrap_preserves_an_existing_seeded_root(tmp_path: Path) -> None:
     """A destination that already holds state must not be replaced by a clone.
 
     Anti-vacuity: cloning over it would drop the planted row, so the read below
-    fails the moment the pristine-destination guard stops deciding the route.
+    fails if fixture construction replaces an already populated destination.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from tests.infra.archive_templates import bootstrap_archive_root
@@ -329,15 +297,110 @@ def test_bootstrap_falls_back_to_the_production_route_for_a_seeded_root(
         assert conn.execute("SELECT value FROM planted").fetchall() == [("kept",)]
 
 
-def test_bootstrap_without_a_registered_run_root_uses_the_production_route(tmp_path: Path) -> None:
-    """No template location means no clone, never a half-built archive."""
-    from tests.infra.archive_templates import bootstrap_archive_root, register_bootstrap_template_root
+def test_fixture_bootstrap_creates_no_copied_template_history(tmp_path: Path) -> None:
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    previous = register_bootstrap_template_root(None)
-    try:
-        root = bootstrap_archive_root(tmp_path / "plain")
-    finally:
-        register_bootstrap_template_root(previous)
-
+    root = bootstrap_archive_root(tmp_path / "plain")
     assert (root / "index.db").is_file()
     assert not list(tmp_path.glob(".bootstrap-archive-template*"))
+
+
+def test_clone_accepts_only_an_empty_destination_reservation(tmp_path: Path) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    destination = tmp_path / "empty"
+    destination.mkdir()
+    clone_archive_template(template, destination)
+    assert (destination / "payload").read_bytes() == b"synthetic fixture"
+
+    occupied = tmp_path / "occupied"
+    occupied.mkdir()
+    (occupied / "custody").write_bytes(b"unrelated evidence")
+    with pytest.raises(ValueError, match="not empty"):
+        clone_archive_template(template, occupied)
+    assert {path.name for path in occupied.iterdir()} == {"custody"}
+    assert (occupied / "custody").read_bytes() == b"unrelated evidence"
+    with pytest.raises(ValueError, match="same"):
+        clone_archive_template(template, template)
+    assert (template / "payload").read_bytes() == b"synthetic fixture"
+
+
+def test_clone_refuses_symlink_ancestor_before_touching_destination(tmp_path: Path) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    original = tmp_path / "original"
+    original.mkdir()
+    (original / "custody").write_bytes(b"unrelated evidence")
+    alias = tmp_path / "alias"
+    alias.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError):
+        clone_archive_template(template, alias / "original")
+    assert (original / "custody").read_bytes() == b"unrelated evidence"
+
+
+def test_clone_exclusive_recreation_refuses_a_competing_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "payload").write_bytes(b"synthetic fixture")
+    destination = tmp_path / "empty"
+    destination.mkdir()
+    actual = Path.rmdir
+
+    def competing_creator(path: Path) -> None:
+        actual(path)
+        if path == destination:
+            path.mkdir()
+            (path / "custody").write_bytes(b"concurrent creator")
+
+    monkeypatch.setattr(Path, "rmdir", competing_creator)
+    with pytest.raises(FileExistsError):
+        clone_archive_template(template, destination)
+    assert {path.name for path in destination.iterdir()} == {"custody"}
+    assert (destination / "custody").read_bytes() == b"concurrent creator"
+
+
+def test_generic_clone_rejects_a_borrowed_manifest_before_making_it_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    import tests.infra.workload_artifacts as artifacts
+
+    tree = artifacts.build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="literal-tree",
+        builder=lambda root: (root / "payload").write_bytes(b"synthetic fixture"),
+    )
+    source_manifest = tree.root / "manifest.json"
+    original_bytes = source_manifest.read_bytes()
+    original_mode = source_manifest.stat().st_mode
+    copy = artifacts._copy_tree
+
+    def borrowed_manifest(source: Path, target: Path, **kwargs: Any) -> None:
+        copy(source, target, **kwargs)
+        (target / "manifest.json").unlink()
+        os.link(source / "manifest.json", target / "manifest.json")
+
+    monkeypatch.setattr(artifacts, "_copy_tree", borrowed_manifest)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="inode was not detached"):
+        artifacts.clone_immutable_tree(tree, tmp_path / "clone")
+    assert source_manifest.read_bytes() == original_bytes
+    assert source_manifest.stat().st_mode == original_mode
+
+
+def test_empty_template_cannot_be_consumed_as_its_own_reservation(tmp_path: Path) -> None:
+    template = tmp_path / "empty-template"
+    template.mkdir()
+    with pytest.raises(ValueError, match="same"):
+        clone_archive_template(template, template)
+    assert template.is_dir()
+    assert list(template.iterdir()) == []
