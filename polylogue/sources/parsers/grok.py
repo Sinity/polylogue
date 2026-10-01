@@ -1,4 +1,4 @@
-"""Parser for xAI Grok account-data export documents.
+"""Shared parser for xAI Grok account exports and app-chat endpoint bundles.
 
 Wire shape (no official xAI schema publication exists; this is reconstructed
 from independent evidence and cross-checked across sources rather than taken
@@ -27,7 +27,7 @@ per-response shapes, and both MongoDB extended-JSON and plain (ISO/epoch)
 timestamps, since the shape is reconstructed from secondary sources rather
 than one authoritative spec.
 
-Neither the conversation nor its responses carry a native id in any of the
+In the account-export evidence, neither conversation nor responses carry a native id in the
 confirmed shapes above, so both ``provider_session_id`` and
 ``provider_message_id`` are content-derived (``pipeline.ids``'s declared
 ``idless_session_identity`` vocabulary, and ``synthetic_message_id`` under a
@@ -45,15 +45,21 @@ from collections.abc import Iterable, Mapping, MutableSequence
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.enums import BlockType, Provider, TitleSource, ToolResultUnknownReason
+from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import canonical_timestamp_text
 from polylogue.pipeline.ids import idless_session_identity
 from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import (
+    AdmissionLedger,
+    AdmissionRefusalReason,
+    AdmissionUnit,
+    ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
+    ParsedSessionEvent,
     human_authored_override,
     parser_admission,
     synthetic_message_id,
@@ -166,6 +172,8 @@ def _session_identity(messages: Iterable[ParsedMessage], created_at: str | None,
 @parser_admission("grok")
 def parse_conversation(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     """Parse a single Grok export conversation entry into a session."""
+    if looks_like_native_bundle(payload):
+        return _parse_native_session(payload, fallback_id)
     conversation = _mapping(payload.get("conversation"))
     responses_raw = payload.get("responses")
     responses = responses_raw if isinstance(responses_raw, list) else []
@@ -253,6 +261,8 @@ __all__ = [
     "looks_like_conversation",
     "looks_like_export",
     "parse_conversation",
+    "looks_like_native_bundle",
+    "parse_native_bundle",
 ]
 
 
@@ -264,3 +274,347 @@ def detection_projection() -> DetectorProjection:
             "conversations": DetectorProjection(item=item, array_fold="any", array_predicate=looks_like_conversation),
         }
     )
+
+
+# These fields are emitted by the retained app-chat /responses reply and
+# were previously projected only by the browser adapter. Outcome-free search
+# evidence is not a successful tool execution.
+_RESULT_FIELDS = {
+    "webSearchResults": "web_search",
+    "citedWebSearchResults": "web_search",
+    "xposts": "x_search",
+    "citedXposts": "x_search",
+    "ragResults": "rag_search",
+    "citedRagResults": "rag_search",
+    "searchProductResults": "product_search",
+    "connectorSearchResults": "connector_search",
+    "citedConnectorSearchResults": "connector_search",
+    "collectionSearchResults": "collection_search",
+    "citedCollectionSearchResults": "collection_search",
+}
+
+
+def _string(value: object) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _list(value: object) -> list[object]:
+    return value if isinstance(value, list) else []
+
+
+def _native_conversation(payload: Mapping[str, object]) -> Mapping[str, object]:
+    reply = _mapping(payload.get("conversation"))
+    return _mapping(reply["conversation"]) if isinstance(reply.get("conversation"), Mapping) else reply
+
+
+def looks_like_native_bundle(payload: object) -> bool:
+    """Identify original Grok endpoint replies, independently of acquisition metadata."""
+    if not isinstance(payload, Mapping):
+        return False
+    conversation = _native_conversation(payload)
+    responses = payload.get("responses")
+    return bool(_string(conversation.get("conversationId"))) and (
+        isinstance(responses, list) or isinstance(_mapping(responses).get("responses"), list)
+    )
+
+
+def _native_result(
+    value: object, own_id: str | None, *, metadata: dict[str, object], name: str | None = None
+) -> ParsedContentBlock:
+    fields = _mapping(value)
+    # Only explicitly retained structural signals decide outcome. The
+    # provider's unknown tool/search payloads remain verbatim evidence.
+    error = fields.get("is_error")
+    if not isinstance(error, bool):
+        error = fields.get("isError")
+    error = error if isinstance(error, bool) else None
+    exit_code = fields.get("exitCode", fields.get("exit_code"))
+    exit_code = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
+    unknown_reason = (
+        ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
+        if any(key in fields for key in ("is_error", "isError", "exitCode", "exit_code"))
+        else ToolResultUnknownReason.NOT_REPORTED.value
+    )
+    return ParsedContentBlock(
+        type=BlockType.TOOL_RESULT,
+        tool_id=own_id or None,
+        tool_name=name,
+        text=_string(fields.get("text")),
+        metadata=metadata,
+        is_error=error,
+        exit_code=exit_code,
+        outcome_unknown_reason=unknown_reason if error is None and exit_code is None else None,
+    )
+
+
+def _native_blocks(fields: Mapping[str, object], own_id: str) -> list[ParsedContentBlock]:
+    blocks: list[ParsedContentBlock] = []
+    text = _string(fields.get("message"))
+    if text:
+        blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
+    for index, step in enumerate(_list(fields.get("steps"))):
+        step_fields = _mapping(step)
+        lines = step_fields.get("text")
+        thinking = (
+            "\n".join(line for line in _list(lines) if isinstance(line, str))
+            if isinstance(lines, list)
+            else _string(lines)
+        )
+        if thinking is not None:
+            blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.THINKING,
+                    text=thinking,
+                    metadata={"step_index": index, "tags": step_fields.get("tags")},
+                )
+            )
+        for field in ("toolUsageResults", "toolUsageCards"):
+            for usage in _list(step_fields.get(field)):
+                usage_fields = _mapping(usage)
+                name = _string(
+                    usage_fields.get("toolName")
+                    or usage_fields.get("tool_name")
+                    or usage_fields.get("name")
+                    or usage_fields.get("type")
+                )
+                blocks.append(
+                    _native_result(
+                        usage, own_id, name=name, metadata={"step_index": index, "source": field, "raw": usage}
+                    )
+                )
+        if thinking is None and not step_fields.get("toolUsageResults") and not step_fields.get("toolUsageCards"):
+            blocks.append(
+                _native_result(
+                    step,
+                    own_id,
+                    metadata={"source": "steps", "step_index": index, "unrecognized_shape": True, "raw": step},
+                )
+            )
+    if fields.get("query") is not None:
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE,
+                tool_id=own_id or None,
+                tool_name="web_search",
+                tool_input={"query": fields["query"], "query_type": fields.get("queryType")},
+            )
+        )
+    for field, name in _RESULT_FIELDS.items():
+        results = _list(fields.get(field))
+        if results:
+            blocks.append(_native_result({}, own_id, name=name, metadata={"field": field, "results": results}))
+    for index, entry in enumerate(_list(fields.get("toolResponses"))):
+        tool = _mapping(entry)
+        name = _string(tool.get("toolName") or tool.get("tool_name") or tool.get("name"))
+        tool_id = _string(tool.get("toolId")) or (f"{own_id}:tool_response:{index}" if own_id else None)
+        if name:
+            inputs = tool.get("input", tool.get("tool_input"))
+            blocks.append(
+                ParsedContentBlock(
+                    type=BlockType.TOOL_USE,
+                    tool_id=tool_id,
+                    tool_name=name,
+                    tool_input=inputs if isinstance(inputs, Mapping) else None,
+                    metadata={"source": "toolResponses", "index": index, "raw": entry},
+                )
+            )
+        # Unlike the retired projection, a named response's output/outcome
+        # must survive alongside its invocation.
+        if not name or any(
+            key in tool for key in ("text", "output", "result", "is_error", "isError", "exitCode", "exit_code")
+        ):
+            blocks.append(
+                _native_result(
+                    entry, tool_id, name=name, metadata={"source": "toolResponses", "index": index, "raw": entry}
+                )
+            )
+    if fields.get("imageAttachments"):
+        blocks.append(
+            ParsedContentBlock(
+                type=BlockType.IMAGE, metadata={"field": "imageAttachments", "raw": fields["imageAttachments"]}
+            )
+        )
+    return blocks
+
+
+def _native_attachments(fields: Mapping[str, object], own_id: str) -> list[ParsedAttachment]:
+    attachments: list[ParsedAttachment] = []
+    assets = {
+        _string(_mapping(asset).get("assetId")): _mapping(asset)
+        for asset in _list(fields.get("fileAttachmentAssetMetadata"))
+    }
+    seen: set[str] = set()
+    for entry in _list(fields.get("fileAttachmentsMetadata")):
+        meta = _mapping(entry)
+        attachment_id = _string(meta.get("fileMetadataId"))
+        if not attachment_id or attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        asset = assets.get(attachment_id, {})
+        size = asset.get("sizeBytes")
+        attachments.append(
+            ParsedAttachment(
+                provider_attachment_id=attachment_id,
+                message_provider_id=own_id,
+                name=_string(meta.get("fileName") or asset.get("name")),
+                mime_type=_string(meta.get("fileMimeType") or asset.get("mimeType")),
+                size_bytes=size if isinstance(size, int) and not isinstance(size, bool) else None,
+                source_url=_string(meta.get("fileUri") or asset.get("key")),
+            )
+        )
+    for attachment_id, asset in assets.items():
+        if not attachment_id or attachment_id in seen:
+            continue
+        seen.add(attachment_id)
+        size = asset.get("sizeBytes")
+        attachments.append(
+            ParsedAttachment(
+                provider_attachment_id=attachment_id,
+                message_provider_id=own_id,
+                name=_string(asset.get("name")),
+                mime_type=_string(asset.get("mimeType")),
+                size_bytes=size if isinstance(size, int) and not isinstance(size, bool) else None,
+                source_url=_string(asset.get("key")),
+            )
+        )
+    for field in ("generatedImageUrls", "imageEditUris"):
+        for url in _list(fields.get(field)):
+            if not isinstance(url, str) or not url or url in seen:
+                continue
+            seen.add(url)
+            # The provider URL itself is the durable locator. No filename or
+            # ordinal is promoted into a provider-issued asset identity.
+            attachments.append(ParsedAttachment(provider_attachment_id=url, message_provider_id=own_id, source_url=url))
+    return attachments
+
+
+def _parse_native_session(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
+    conversation = _native_conversation(payload)
+    responses_reply = payload.get("responses")
+    responses = (
+        responses_reply if isinstance(responses_reply, list) else _list(_mapping(responses_reply).get("responses"))
+    )
+    messages: list[ParsedMessage] = []
+    attachments: list[ParsedAttachment] = []
+    events: list[ParsedSessionEvent] = []
+    variants: dict[str, int] = {}
+    ledger = AdmissionLedger()
+    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
+    ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "bundle")
+    ledger.expect(AdmissionUnit.MESSAGE, len(responses))
+    # Match the acquired browser record ordering, independent of pagination
+    # or the endpoint's array ordering; identity still uses native IDs.
+    ordered = sorted(
+        responses,
+        key=lambda entry: (
+            _timestamp_text(_response_fields(entry).get("createTime")) or "",
+            _string(_response_fields(entry).get("responseId")) or "",
+        ),
+    )
+    for ordinal, entry in enumerate(ordered):
+        if not isinstance(entry, Mapping):
+            ledger.refusal(AdmissionUnit.MESSAGE, ordinal, str(ordinal), AdmissionRefusalReason.MALFORMED)
+            events.append(
+                ParsedSessionEvent(event_type="grok_response_refusal", payload={"reason": "malformed", "raw": entry})
+            )
+            continue
+        ledger.materialized(AdmissionUnit.MESSAGE, ordinal, str(ordinal))
+        fields = _response_fields(entry)
+        own_id = _string(fields.get("responseId"))
+        if not own_id:
+            # Native absence remains absence; the shared archive identity
+            # owner derives an intrinsic ID rather than a positional one.
+            own_id = ""
+        text = _string(fields.get("message"))
+        timestamp = _timestamp_text(fields.get("createTime"))
+        role = _role_for_sender(fields.get("sender"))
+        blocks = _native_blocks(fields, own_id)
+        variant = variants.get(own_id, 0)
+        variants[own_id] = variant + 1
+        coordinate = MessageOwnerCoordinate(stable_key=own_id or None, position=len(messages), variant_index=variant)
+        messages.append(
+            ParsedMessage(
+                provider_message_id=own_id,
+                role=role,
+                text=text,
+                timestamp=timestamp,
+                blocks=blocks,
+                parent_message_provider_id=_string(fields.get("parentResponseId")),
+                position=len(messages),
+                variant_index=variant,
+                owner_coordinate=coordinate,
+                model_name=_string(fields.get("model")),
+                material_origin=human_authored_override(
+                    role,
+                    MessageType.MESSAGE,
+                    classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
+                ),
+            )
+        )
+        for attachment in _native_attachments(fields, own_id):
+            attachment.owner_coordinate = coordinate
+            attachment.message_position = coordinate.position
+            attachment.message_variant_index = variant
+            attachment.message_provider_id = own_id or None
+            attachments.append(attachment)
+        facts = {key: fields[key] for key in ("partial", "manual", "shared", "streamErrors") if key in fields}
+        if facts:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="grok_response_state",
+                    timestamp=timestamp,
+                    source_message_provider_id=own_id or None,
+                    payload=facts,
+                    boundary_message_position=len(messages) - 1,
+                )
+            )
+    # The acquisition order is chronological. Parent edges carry
+    # branches; absence of a selected leaf must not invent one on a fork.
+    children = {message.parent_message_provider_id for message in messages if message.parent_message_provider_id}
+    leaves = [message for message in messages if message.provider_message_id not in children]
+    leaf = leaves[0] if len(leaves) == 1 else None
+    active: set[str] = set()
+    by_id = {message.provider_message_id: message for message in messages if message.provider_message_id}
+    current = leaf
+    while current is not None and current.provider_message_id not in active:
+        active.add(current.provider_message_id)
+        current = by_id.get(current.parent_message_provider_id or "")
+    for message in messages:
+        message.is_active_leaf = message is leaf if leaf is not None else None
+        message.is_active_path = message.provider_message_id in active if leaf is not None else None
+    created_at = _timestamp_text(conversation.get("createTime"))
+    updated_at = _timestamp_text(conversation.get("modifyTime"))
+    events.append(
+        ParsedSessionEvent(event_type="grok_conversation_state", timestamp=updated_at, payload=dict(conversation))
+    )
+    if payload.get("response_nodes") is not None:
+        events.append(
+            ParsedSessionEvent(
+                event_type="grok_response_nodes", timestamp=updated_at, payload={"reply": payload["response_nodes"]}
+            )
+        )
+    title = _string(conversation.get("title"))
+    return ParsedSession(
+        source_name=Provider.GROK,
+        provider_session_id=str(conversation["conversationId"]),
+        title=title or fallback_id,
+        title_source=TitleSource.ORIGIN if title else None,
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=messages,
+        unit_accounting=ledger.close(),
+        attachments=attachments,
+        session_events=events,
+        active_leaf_message_provider_id=leaf.provider_message_id if leaf is not None else None,
+    )
+
+
+def parse_native_bundle(payload: Mapping[str, object], fallback_id: str) -> list[ParsedSession]:
+    """Parse one acquired endpoint bundle through the ordinary Grok owner.
+
+    This ordinary model route materializes Python strings and block lists.
+    It does not establish scalar-independent capture or lowering memory.
+    """
+    if not looks_like_native_bundle(payload):
+        raise ValueError("invalid Grok endpoint bundle")
+    return [parse_conversation(payload, fallback_id)]
