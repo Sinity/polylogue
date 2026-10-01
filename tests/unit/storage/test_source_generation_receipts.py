@@ -323,7 +323,8 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     assert mismatch.unresolved_raw_ids == ("raw-1",)
 
 
-def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head() -> None:
+@pytest.mark.parametrize("corruption", [None, "cycle", "missing-predecessor"])
+def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head(corruption: str | None) -> None:
     """A later head must not turn a source member's immutable prefix receipt into a false gap."""
     source, index, _item_id = _connections()
     source.execute(
@@ -359,14 +360,41 @@ def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head() ->
         decided_at_ms=3,
     )
 
+    if corruption == "cycle":
+        source.execute("UPDATE raw_sessions SET predecessor_raw_id='raw-2' WHERE raw_id='raw-2'")
+    elif corruption == "missing-predecessor":
+        source.execute("UPDATE raw_sessions SET predecessor_raw_id=NULL WHERE raw_id='raw-2'")
+
     receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
     logical = receipt.items[0].raws[0].logicals[0]
     assert logical.accepted_raw_id == "raw-2"
-    assert logical.complete is True
-    assert receipt.complete is True
+    assert logical.complete is (corruption is None)
+    assert receipt.complete is (corruption is None)
+    if corruption is not None:
+        assert SourceGenerationBlocker.APPLICATION_STALE in logical.blockers
+    else:
+        chain_read = False
+
+        def trace(statement: str) -> None:
+            nonlocal chain_read
+            if "SELECT raw_id, logical_source_key, revision_kind, revision_authority, source_index" in statement:
+                chain_read = True
+
+        def stop() -> None:
+            if chain_read:
+                raise InterruptedError("synthetic predecessor cancellation")
+
+        source.set_trace_callback(trace)
+        with pytest.raises(InterruptedError):
+            with _raw_receipt(source, index, "raw-1", check_stop=stop) as raw:
+                assert raw is not None
+                tuple(raw.logicals)
+        assert chain_read
+        source.set_trace_callback(None)
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
 
 
 def test_receipt_rejects_ambiguous_application_that_mimics_the_current_head() -> None:
@@ -638,7 +666,7 @@ def test_byte_fragment_receipt_requires_the_exact_durable_baseline_chain(corrupt
 
             def trace(statement: str) -> None:
                 nonlocal chain_read
-                if "SELECT logical_source_key, revision_kind, revision_authority, source_index" in statement:
+                if "SELECT raw_id, logical_source_key, revision_kind, revision_authority, source_index" in statement:
                     chain_read = True
 
             def stop() -> None:
