@@ -21,6 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _write_tier_version(path: Path, version: int) -> None:
@@ -702,7 +703,6 @@ def test_archive_debt_marks_oversized_stream_raw_materialization_actionable(tmp_
 def _seed_codex_model_usage(index_db: Path, *, input_tokens: int) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from tests.infra.index_writer import write_fixture_index_session
 
     with closing(sqlite3.connect(index_db)) as conn:
         session = ParsedSession(

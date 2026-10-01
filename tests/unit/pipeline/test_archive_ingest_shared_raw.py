@@ -323,7 +323,7 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
     tmp_path: Path, one_shot_workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A large ZIP journal artifact must not be read into an admission payload."""
-    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, MAX_UNCOMPRESSED_SIZE, open_bounded_zip_entry
+    from polylogue.sources.decoder_zip import _ZIP_READ_CHUNK_SIZE, open_zip_entry
 
     archive_root = one_shot_workspace_env["archive_root"]
     payload = b'{"contentKey":"artifact","agentId":"workflow-agent","body":"' + b"x" * _ZIP_READ_CHUNK_SIZE + b'"}\n'
@@ -332,17 +332,15 @@ async def test_archive_ingest_large_zip_artifact_streams_to_blob_reference(
         "subagents/workflows/wf-archive/journal.jsonl",
         payload,
     )
-    original_open = open_bounded_zip_entry
+    original_open = open_zip_entry
 
     def reject_unbounded_read(
         zf: zipfile.ZipFile,
         info: zipfile.ZipInfo,
-        *,
-        max_bytes: int = MAX_UNCOMPRESSED_SIZE,
     ) -> _RejectUnboundedRead:
-        return _RejectUnboundedRead(original_open(zf, info, max_bytes=max_bytes))
+        return _RejectUnboundedRead(original_open(zf, info))
 
-    monkeypatch.setattr("polylogue.sources.decoder_zip.open_bounded_zip_entry", reject_unbounded_read)
+    monkeypatch.setattr("polylogue.sources.decoder_zip.open_zip_entry", reject_unbounded_read)
 
     result = await ingest_one_shot_archive(
         archive_root, [Source(name="claude-code", path=journal_zip)], parse_workers=1

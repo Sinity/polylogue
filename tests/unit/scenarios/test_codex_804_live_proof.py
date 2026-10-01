@@ -54,8 +54,8 @@ import pytest
 # module's trees to NVMe scratch so every other test keeps the tmpfs lane.
 pytestmark = pytest.mark.storage_scale
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.derivation import DerivationReport
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery

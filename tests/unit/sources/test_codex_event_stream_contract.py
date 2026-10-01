@@ -37,6 +37,7 @@ from polylogue.sources.parsers.codex import (
 )
 from polylogue.sources.parsers.codex import looks_like as _looks_like_impl
 from polylogue.sources.parsers.codex import parse as _parse_impl
+from tests.infra.index_writer import write_fixture_index_session
 
 CATALOG_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "codex_event_stream"
 
@@ -640,7 +641,6 @@ class TestFunctionsExecLowering:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
-        from tests.infra.index_writer import write_fixture_index_session
 
         session = _parse(
             [

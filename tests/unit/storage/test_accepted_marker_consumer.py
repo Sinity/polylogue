@@ -277,3 +277,26 @@ def test_one_convergence_sweep_delivers_every_accepted_marker_batch(tmp_path: Pa
         assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (3,)
         assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (3,)
     assert converge(registry, frame).done == 0
+
+
+def test_native_marker_consumer_runs_inside_an_active_event_loop(tmp_path: Path) -> None:
+    """The native source connection stays on its opening thread through delivery."""
+    source_db = tmp_path / "source.db"
+    user_db = tmp_path / "user.db"
+    _new_user_tier(user_db)
+    _append_source_batch(
+        source_db, raw_id="loop", candidate=_candidate_record("::note: loop delivery", message_id="m-loop")
+    )
+
+    async def deliver() -> None:
+        adapter = _adapter(source_db, user_db)
+        keys, cursor = adapter.required_page(object(), cursor=None, limit=20)
+        assert len(keys) == 1 and cursor == keys[0]
+        replacement = adapter.compute(object(), keys[0])
+        assert adapter.publish(object(), replacement) is True
+        assert adapter.required_page(object(), cursor=None, limit=20) == ((), None)
+
+    asyncio.run(deliver())
+    with sqlite3.connect(user_db) as user:
+        assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (1,)
+        assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (1,)

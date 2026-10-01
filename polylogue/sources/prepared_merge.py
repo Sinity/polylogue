@@ -9,6 +9,7 @@ from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.chunk_positions import ChunkPositions
@@ -116,12 +117,15 @@ def _merge_into_store(
         )
     attachments: list[ParsedAttachment] = []
     for _, artifact in ordered:
+        check_compute_cancelled()
         session = _single_prepared_session(artifact)
         positions = ChunkPositions(session.messages, len(messages), conn=store.conn)
         for ordinal, message in enumerate(session.messages):
+            check_compute_cancelled()
             messages.append(positions.message(message, ordinal))
         attachments.extend(positions.attachment(attachment) for attachment in session.attachments)
         for event in session.session_events:
+            check_compute_cancelled()
             event = positions.event(event)
             if merged.source_name is Provider.CLAUDE_CODE and event.event_type in claude_summaries:
                 seen.add(event.event_type)
@@ -152,6 +156,7 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
     merged_metadata: ParsedSession | None = None
     identity: tuple[Provider, str] | None = None
     for _, artifact in ordered:
+        check_compute_cancelled()
         session = _single_prepared_session(artifact)
         candidate = (session.source_name, session.provider_session_id)
         if identity is not None and candidate != identity:

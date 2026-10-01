@@ -21,12 +21,16 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, lru_cache
 from itertools import islice
 from pathlib import Path
-from typing import IO, Literal, cast
+from typing import IO, TYPE_CHECKING, Literal, cast
+
+if TYPE_CHECKING:
+    from polylogue.sources.sqlite_inspection import SQLiteClassification
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
 from polylogue.core.json_envelope import jsonl_record_envelopes, sqlite_value_limit, top_level_envelopes
@@ -748,6 +752,7 @@ def recognize_source_class(
     *,
     payload: object | None = None,
     source_only: bool = False,
+    sqlite_classification: SQLiteClassification | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
@@ -766,12 +771,21 @@ def recognize_source_class(
         antigravity,
         codex_state,
         hermes_spans,
-        hermes_state,
-        hermes_verification,
         local_agent,
     )
 
     path = Path(source_path)
+    if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and sqlite_classification is None:
+        from polylogue.sources.sqlite_inspection import SQLiteClassification, classify_sqlite_source
+
+        try:
+            sqlite_classification = classify_sqlite_source(path)
+        except sqlite3.DatabaseError as exc:
+            # Invalid database bytes are an unsupported shape. Storage faults
+            # remain visible to acquisition's retryable-failure owner.
+            if getattr(exc, "sqlite_errorcode", None) not in {None, sqlite3.SQLITE_NOTADB}:
+                raise
+            sqlite_classification = SQLiteClassification(False, False, False, "unknown")
     rule = artifact_rule_for_path(provider, str(path))
     if rule is not None and rule.parse_policy != "session":
         return SourceClassRecognition("non_session", f"declared {rule.kind} artifact")
@@ -791,7 +805,7 @@ def recognize_source_class(
             return SourceClassRecognition("session", "Antigravity declared conversation source class")
         if classification.role.value != "unknown":
             return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
-        if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and antigravity.looks_like_trajectory_db_path(path):
+        if sqlite_classification is not None and sqlite_classification.antigravity:
             return SourceClassRecognition("session", "Antigravity trajectory SQLite schema signature")
 
     if path.suffix.lower() == ".zip":
@@ -810,13 +824,13 @@ def recognize_source_class(
                 return SourceClassRecognition("session", "declared Hermes SQLite source class")
             return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
         if provider is Provider.HERMES:
-            if hermes_state.looks_like_state_db_path(
-                path
-            ) or hermes_verification.looks_like_verification_evidence_db_path(path):
+            if sqlite_classification is not None and (
+                sqlite_classification.hermes_state or sqlite_classification.hermes_verification
+            ):
                 return SourceClassRecognition("session", "Hermes SQLite schema signature")
             return SourceClassRecognition("unsupported", "Hermes SQLite lacks a declared state/verification schema")
         if provider is Provider.CODEX:
-            if codex_state.is_in_scope_codex_sqlite_path(path):
+            if sqlite_classification is not None and sqlite_classification.codex_kind in codex_state.IN_SCOPE_KINDS:
                 return SourceClassRecognition("session", "Codex SQLite schema signature")
             return SourceClassRecognition("unsupported", "Codex SQLite lacks a declared state schema")
         return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
@@ -2202,20 +2216,22 @@ def _grok_spec() -> OriginSpec:
         Origin.GROK_EXPORT,
         provider=Provider.GROK,
         tightness=85,
-        discovery="Grok account-data export document admission.",
-        acquisition_modes=("export-json",),
+        discovery="Grok account export and original app-chat endpoint bundle admission.",
+        acquisition_modes=("export-json", "native-json"),
         parser_paths=("polylogue/sources/parsers/grok.py",),
         fixture_paths=(
             "tests/unit/sources/parsers/test_grok.py",
+            "tests/unit/sources/parsers/test_grok_native.py",
             "tests/unit/sources/parsers/test_origin_regression_pack.py",
         ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_grok_export_payload",),
         fidelity_notes=(
-            "No native conversation or response id is present in any confirmed export shape; "
-            "provider_session_id is derived from file identity and provider_message_id from response content.",
+            "Account exports lack native IDs; original endpoint bundles preserve native conversation/response IDs. "
+            "In account exports, "
+            "provider_session_id and provider_message_id are derived from their declared semantic content.",
             "The export drops attachments/images by xAI's own documentation; only text turns are recoverable.",
         ),
-        display_description="Grok account-data exports (lab: xAI)",
+        display_description="Grok account exports and original endpoint bundles (lab: xAI)",
         topology_capabilities=_no_topology_capabilities(Origin.GROK_EXPORT),
     )
 
@@ -3371,6 +3387,23 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
     ),
     Origin.GROK_EXPORT: (
         _completeness_mode(
+            "provider-package:grok-export/native-json@v1",
+            "native-json",
+            Provider.GROK,
+            "accepted",
+            detector_paths=("polylogue/sources/parsers/grok.py", "polylogue/sources/dispatch.py"),
+            raw_model_paths=("polylogue/sources/parsers/grok.py",),
+            parser_paths=("polylogue/sources/parsers/grok.py",),
+            normalizer_paths=("polylogue/sources/parsers/grok.py",),
+            fixture_paths=("tests/unit/sources/parsers/test_grok_native.py", "tests/fixtures/grok/native-bundle.json"),
+            schema_paths=(),
+            docs_paths=("docs/providers/README.md",),
+            caveats=(
+                "Original endpoint replies preserve native identity and structured material. "
+                "No nonempty response_nodes graph contract or operational schema package is admitted.",
+            ),
+        ),
+        _completeness_mode(
             "provider-package:grok-export/export-json@v1",
             "export-json",
             Provider.GROK,
@@ -3518,6 +3551,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_code (envelope marker, #3428)",
             fixed_provider=Provider.CLAUDE_CODE,
+            stream_projection_path="polylogue.sources.parsers.claude.code_detection:detection_projection",
         ),
         DetectorBinding(
             "claude-code-record-stream",
@@ -3527,6 +3561,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "claude.looks_like_code (record stream envelope markers)",
             mode_rank=0,
             fixed_provider=Provider.CLAUDE_CODE,
+            stream_projection_path="polylogue.sources.parsers.claude.code_detection:detection_projection",
         ),
     ),
     Origin.CODEX_SESSION: (
@@ -3537,6 +3572,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "codex.looks_like (pydantic record validation)",
             fixed_provider=Provider.CODEX,
+            stream_projection_path="polylogue.sources.parsers.codex:detection_projection",
         ),
         DetectorBinding(
             "codex-record-stream",
@@ -3546,6 +3582,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "codex.looks_like (pydantic record stream validation)",
             mode_rank=1,
             fixed_provider=Provider.CODEX,
+            stream_projection_path="polylogue.sources.parsers.codex:detection_projection",
         ),
     ),
     Origin.GEMINI_CLI_SESSION: (
@@ -3556,6 +3593,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "local_agent.looks_like_gemini_cli",
             fixed_provider=Provider.GEMINI_CLI,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
         DetectorBinding(
             "gemini-cli-sequence-stub",
@@ -3564,6 +3602,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "local_agent.looks_like_gemini_cli (stub record)",
             fixed_provider=Provider.GEMINI_CLI,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
     ),
     Origin.HERMES_SESSION: (
@@ -3574,6 +3613,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "hermes_state.looks_like_state_db_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_state:detection_projection",
         ),
         DetectorBinding(
             "hermes-verification-record",
@@ -3582,6 +3622,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "hermes_verification.looks_like_verification_evidence_db_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_verification:detection_projection",
         ),
         DetectorBinding(
             "hermes-atif-record",
@@ -3590,6 +3631,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             2,
             "hermes_spans.looks_like_atif_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
         DetectorBinding(
             "hermes-atof-record",
@@ -3598,6 +3640,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             3,
             "hermes_spans.looks_like_atof_payload",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
         DetectorBinding(
             "hermes-local-agent-record",
@@ -3606,6 +3649,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             4,
             "local_agent.looks_like_hermes",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.local_agent:detection_projection",
         ),
         DetectorBinding(
             "hermes-atof-sequence",
@@ -3614,6 +3658,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "hermes_spans.looks_like_atof_payload (sequence[0])",
             fixed_provider=Provider.HERMES,
+            stream_projection_path="polylogue.sources.parsers.hermes_spans:detection_projection",
         ),
     ),
     Origin.ANTIGRAVITY_SESSION: (
@@ -3624,6 +3669,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "antigravity.looks_like_markdown_export",
             fixed_provider=Provider.ANTIGRAVITY,
+            stream_projection_path="polylogue.sources.parsers.antigravity:detection_projection",
         ),
     ),
     Origin.CHATGPT_EXPORT: (
@@ -3634,6 +3680,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "chatgpt.looks_like_fragment (mapping node shape)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:detection_projection",
         ),
         DetectorBinding(
             "chatgpt-record-shared-decode",
@@ -3642,6 +3689,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "chatgpt.looks_like_shared_decode (shared-page stream decode)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:detection_projection",
         ),
         DetectorBinding(
             "chatgpt-sequence-document",
@@ -3650,6 +3698,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "chatgpt.looks_like (sequence[0] whole-document)",
             fixed_provider=Provider.CHATGPT,
+            stream_projection_path="polylogue.sources.parsers.chatgpt:whole_document_detection_projection",
         ),
     ),
     Origin.CLAUDE_AI_EXPORT: (
@@ -3660,6 +3709,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_claude_memories",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-record-project",
@@ -3668,6 +3718,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "claude.looks_like_claude_project",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-record",
@@ -3676,6 +3727,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             2,
             "claude.looks_like_ai (non-empty plausible chat_messages)",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-chat-messages",
@@ -3684,6 +3736,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "sequence[0] chat_messages dict-key present",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-memories",
@@ -3692,6 +3745,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             1,
             "claude.looks_like_claude_memories (sequence[0])",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-ai-sequence-project",
@@ -3700,6 +3754,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             2,
             "claude.looks_like_claude_project (sequence[0])",
             fixed_provider=Provider.CLAUDE_AI,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
     ),
     Origin.CLAUDE_DESIGN_SESSION: (
@@ -3710,6 +3765,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_claude_design",
             fixed_provider=Provider.CLAUDE_DESIGN,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
         DetectorBinding(
             "claude-design-sequence",
@@ -3718,24 +3774,45 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "claude.looks_like_claude_design (sequence[0])",
             fixed_provider=Provider.CLAUDE_DESIGN,
+            stream_projection_path="polylogue.sources.parsers.claude.ai_parser:detection_projection",
         ),
     ),
     Origin.GROK_EXPORT: (
         DetectorBinding(
+            "grok-native-record",
+            DetectionMode.RECORD,
+            "polylogue.sources.dispatch:_looks_like_grok_native_record",
+            0,
+            "grok.looks_like_native_bundle",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
+            "grok-native-sequence",
+            DetectionMode.SEQUENCE_DOCUMENT,
+            "polylogue.sources.dispatch:_looks_like_grok_native_sequence",
+            0,
+            "grok.looks_like_native_bundle (sequence[0])",
+            fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:native_detection_projection",
+        ),
+        DetectorBinding(
             "grok-record",
             DetectionMode.RECORD,
             "polylogue.sources.dispatch:_looks_like_grok_record",
-            0,
+            1,
             "grok.looks_like_export",
             fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:detection_projection",
         ),
         DetectorBinding(
             "grok-sequence",
             DetectionMode.SEQUENCE_DOCUMENT,
             "polylogue.sources.dispatch:_looks_like_grok_sequence",
-            0,
+            1,
             "grok.looks_like_export (sequence[0])",
             fixed_provider=Provider.GROK,
+            stream_projection_path="polylogue.sources.parsers.grok:detection_projection",
         ),
     ),
     Origin.AISTUDIO_DRIVE: (
@@ -3746,6 +3823,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "drive.looks_like (chunkedPrompt/chunks)",
             fixed_provider=Provider.GEMINI,
+            stream_projection_path="polylogue.sources.parsers.drive:detection_projection",
         ),
         DetectorBinding(
             "aistudio-drive-sequence",
@@ -3754,6 +3832,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "drive.looks_like (sequence[0])",
             fixed_provider=Provider.GEMINI,
+            stream_projection_path="polylogue.sources.parsers.drive:detection_projection",
         ),
     ),
     Origin.OTEL_GENAI: (
@@ -3764,6 +3843,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             0,
             "OTLP-JSON resourceSpans contains a normalizable span with gen_ai.* attributes",
             fixed_provider=Provider.OTEL_GENAI,
+            stream_projection_path="polylogue.sources.parsers.otel_genai:detection_projection",
         ),
     ),
     Origin.UNKNOWN_EXPORT: (
@@ -3775,6 +3855,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "browser_capture.looks_like",
             dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_provider",
             dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+            stream_projection_path="polylogue.sources.parsers.browser_capture:detection_projection",
         ),
         DetectorBinding(
             "browser-capture-sequence",
@@ -3784,6 +3865,7 @@ _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
             "sequence[0] browser_capture.looks_like -> browser_capture.looks_like",
             dynamic_provider_path="polylogue.sources.dispatch:_browser_capture_sequence_provider",
             dynamic_provider_allowlist=_ALL_BROWSER_CAPTURE_PROVIDERS,
+            stream_projection_path="polylogue.sources.parsers.browser_capture:detection_projection",
         ),
     ),
 }

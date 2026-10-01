@@ -14,14 +14,13 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive import zip_admission as zip_admission_module
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt_sidecars import ChatGPTAssetIndex
 from polylogue.storage.blob_store import BlobStore
-from tests.infra.source_builders import ChatGPTExportBuilder
+from tests.infra.source_builders import ChatGPTExportBuilder, acquired_payloads, captured_zip_coordinate
 
 
 def _session(
@@ -110,31 +109,16 @@ class TestDiscoverSidecarsFromZip:
         assert index.resolve_dat("file-first") is not None
         assert index.resolve_dat("file-second") is None
 
-    @pytest.mark.parametrize("limit_name", ["MAX_UNCOMPRESSED_SIZE", "MAX_COMPRESSION_RATIO"])
-    def test_rejects_json_sidecar_before_open_for_size_and_ratio_limits(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        limit_name: str,
-    ) -> None:
-        zip_path = tmp_path / f"rejected-{limit_name}.zip"
-        sidecar_bytes = b'{"file_id":"file-abc","file_name":"notes.md"}' + (b" " * 2048)
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("library_files.json", sidecar_bytes)
-
-        monkeypatch.setattr(zip_admission_module, limit_name, 1)
-        opened: list[object] = []
-
-        def fail_if_open(_archive: zipfile.ZipFile, member: object, *args: object, **kwargs: object) -> object:
-            opened.append(member)
-            raise AssertionError("rejected JSON sidecar must not be opened")
-
-        monkeypatch.setattr(zipfile.ZipFile, "open", fail_if_open)
-
+    def test_high_ratio_json_sidecar_remains_available(self, tmp_path: Path) -> None:
+        zip_path = tmp_path / "sidecar.zip"
+        sidecar = [{"file_id": "file-abc", "file_name": "notes.md", "padding": "x" * (2 * 1024 * 1024)}]
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("library_files.json", json.dumps(sidecar))
+        with zipfile.ZipFile(zip_path) as archive:
+            member = archive.infolist()[0]
+            assert member.file_size / member.compress_size > 1000
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
-
-        assert opened == []
-        assert sidecar_data["chatgpt_asset_index"].is_empty is True
+        assert sidecar_data["chatgpt_asset_index"].resolve_dat("file-abc") is not None
 
 
 class TestEnrichSession:
@@ -308,7 +292,7 @@ class TestAcquireAssetBlobsFromZip:
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
         assert "chatgpt_asset_blobs" not in sidecar_data
 
-    def test_many_dat_members_obey_aggregate_limit_before_second_read(
+    def test_every_dat_member_is_streamed(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -320,7 +304,6 @@ class TestAcquireAssetBlobsFromZip:
             zf.writestr("file-first.dat", first_bytes)
             zf.writestr("file-second.dat", second_bytes)
 
-        monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(first_bytes))
         original_open = zipfile.ZipFile.open
         opened: list[str] = []
 
@@ -337,12 +320,12 @@ class TestAcquireAssetBlobsFromZip:
 
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
 
-        assert opened == ["file-first.dat"]
+        assert opened == ["file-first.dat", "file-second.dat"]
         asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
         assert asset_blobs is not None
-        assert set(asset_blobs) == {"file-first"}
+        assert set(asset_blobs) == {"file-first", "file-second"}
 
-    def test_json_and_dat_members_share_aggregate_limit_before_dat_read(
+    def test_json_sidecar_does_not_exclude_later_dat_member(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -354,7 +337,6 @@ class TestAcquireAssetBlobsFromZip:
             zf.writestr("library_files.json", json_bytes)
             zf.writestr("file-xyz.dat", dat_bytes)
 
-        monkeypatch.setattr(zip_admission_module, "MAX_AGGREGATE_UNCOMPRESSED_SIZE", len(json_bytes))
         original_open = zipfile.ZipFile.open
         opened: list[str] = []
 
@@ -371,8 +353,8 @@ class TestAcquireAssetBlobsFromZip:
 
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
 
-        assert opened == ["library_files.json"]
-        assert "chatgpt_asset_blobs" not in sidecar_data
+        assert opened == ["library_files.json", "file-xyz.dat"]
+        assert "file-xyz" in sidecar_data["chatgpt_asset_blobs"]
 
     def test_extension_carrying_members_are_acquired(self, tmp_path: Path) -> None:
         """bd polylogue-1nd1s: an export that names assets by real extension.
@@ -502,16 +484,7 @@ class TestAcquireAssetBlobsFromDirectory:
     def test_an_asset_larger_than_the_zip_member_bound_is_acquired_from_a_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A loose asset streams into the blob store whatever its size (polylogue-qlvyu).
-
-        Anti-vacuity: the former directory route refused any asset over the
-        ZIP member bound (``MAX_UNCOMPRESSED_SIZE``), although it streams the
-        file and holds none of it in memory, so the asset was never acquired.
-        """
-        from polylogue.sources import decoder_zip
-
-        monkeypatch.setattr(zip_admission_module, "MAX_UNCOMPRESSED_SIZE", 4)
-        monkeypatch.setattr(decoder_zip, "MAX_UNCOMPRESSED_SIZE", 4)
+        """Loose assets use the same complete streaming retention contract."""
         (tmp_path / "conversations-000.json").write_text("[]", encoding="utf-8")
         image_bytes = b"an asset larger than the member bound"
         (tmp_path / "file_0000000000ac6243a75c01ca3ff57b84-c5e08f86.png").write_bytes(image_bytes)
@@ -926,9 +899,15 @@ def test_two_exports_are_two_scopes() -> None:
     """One export's retained maps never address another export's members."""
     from polylogue.sources.retained_assembly import chatgpt_export_scope
 
-    zip_scope = chatgpt_export_scope("/archive/exports/first.zip:conversations.json")
-    other_zip_scope = chatgpt_export_scope("/archive/exports/second.zip:conversations.json")
-    dir_scope = chatgpt_export_scope("/archive/exports/extracted/conversations.json")
+    zip_scope = chatgpt_export_scope(
+        "/archive/exports/first.zip:conversations.json",
+        captured_zip_coordinate=captured_zip_coordinate("/archive/exports/first.zip", "conversations.json"),
+    )
+    other_zip_scope = chatgpt_export_scope(
+        "/archive/exports/second.zip:conversations.json",
+        captured_zip_coordinate=captured_zip_coordinate("/archive/exports/second.zip", "conversations.json"),
+    )
+    dir_scope = chatgpt_export_scope("/archive/exports/extracted/conversations.json", captured_zip_coordinate=None)
 
     assert zip_scope == "/archive/exports/first.zip:"
     assert other_zip_scope == "/archive/exports/second.zip:"
@@ -944,9 +923,21 @@ def test_uppercase_zip_suffix_is_its_own_export_scope() -> None:
     """
     from polylogue.sources.retained_assembly import chatgpt_export_scope
 
-    assert chatgpt_export_scope("/archive/exports/first.ZIP:conversations.json") == "/archive/exports/first.ZIP:"
+    assert (
+        chatgpt_export_scope(
+            "/archive/exports/first.ZIP:conversations.json",
+            captured_zip_coordinate=captured_zip_coordinate("/archive/exports/first.ZIP", "conversations.json"),
+        )
+        == "/archive/exports/first.ZIP:"
+    )
     # "İ" lowercases to two code points; the scope still ends at the separator.
-    assert chatgpt_export_scope("/archive/İ/first.Zip:conversations.json") == "/archive/İ/first.Zip:"
+    assert (
+        chatgpt_export_scope(
+            "/archive/İ/first.Zip:conversations.json",
+            captured_zip_coordinate=captured_zip_coordinate("/archive/İ/first.Zip", "conversations.json"),
+        )
+        == "/archive/İ/first.Zip:"
+    )
 
 
 def test_retained_asset_member_names_still_carry_their_provider_id() -> None:
@@ -973,7 +964,7 @@ def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) ->
     import zipfile
 
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
     from polylogue.storage.blob_store import BlobStore
 
     root = tmp_path / "inbox"
@@ -989,7 +980,9 @@ def test_zip_export_retains_asset_members_and_maps_byte_exact(tmp_path: Path) ->
     store = BlobStore(tmp_path / "blobs")
     acquired = {
         raw.source_path.rsplit(":", 1)[-1]: raw
-        for raw in iter_source_raw_data(Source(name="chatgpt", path=root), blob_store=store)
+        for raw in acquired_payloads(
+            iter_source_acquisition_records(Source(name="chatgpt", path=root), blob_store=store)
+        )
     }
 
     assert "dalle-generations/file-ABC.webp" in acquired
@@ -1011,7 +1004,7 @@ def test_inbox_zip_export_is_sniffed_before_its_asset_members_are_admitted(tmp_p
     acquisition and its bytes are never retained.
     """
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
 
     root = tmp_path / "inbox"
     root.mkdir()
@@ -1044,7 +1037,9 @@ def test_inbox_zip_export_is_sniffed_before_its_asset_members_are_admitted(tmp_p
     store = BlobStore(tmp_path / "blobs")
     acquired = {
         raw.source_path.rsplit(":", 1)[-1]: raw
-        for raw in iter_source_raw_data(Source(name="inbox", path=root), blob_store=store, cursor_state={})
+        for raw in acquired_payloads(
+            iter_source_acquisition_records(Source(name="inbox", path=root), blob_store=store, cursor_state={})
+        )
     }
 
     assert "file-abc.png" in acquired

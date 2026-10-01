@@ -490,3 +490,27 @@ def test_pending_population_blocks_literal_bytes_and_uri_connection_paths(tmp_pa
             with sqlite_connection(path, uri=uri):
                 pytest.fail("a literal filesystem or URI path bypassed pending admission")
     assert not database.exists()
+
+
+def test_writer_source_attachment_retains_reads_and_refuses_native_cursor_mutations(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    source = tmp_path / "source.db"
+    with closing(sqlite3.connect(source)) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT)")
+        connection.execute("INSERT INTO evidence VALUES ('retained')")
+        connection.commit()
+    with write_lease("test.attached-source", archive_root=tmp_path):
+        with closing(
+            connection_profile.open_isolated_write_connection(tmp_path / "index.db", archive_root=tmp_path)
+        ) as index:
+            connection_profile.attach_database(index, source, alias="source_tier")
+            assert index.execute("SELECT value FROM source_tier.evidence").fetchone()[0] == "retained"
+            with closing(index.cursor(factory=sqlite3.Cursor)) as cursor:
+                with pytest.raises(sqlite3.OperationalError):
+                    cursor.execute("UPDATE source_tier.evidence SET value = 'wrong'")
+            index.rollback()
+            index.execute("CREATE TABLE local_evidence (value TEXT)")
+            index.execute("INSERT INTO local_evidence VALUES ('index remains writable')")
+            index.commit()
+            assert index.execute("SELECT value FROM local_evidence").fetchone()[0] == "index remains writable"

@@ -223,11 +223,22 @@ class _PrefixStringReader:
     :data:`_STRING_PREFIX_BYTES` raw bytes reaches the tokenizer cut at a
     boundary that splits no escape or character; the rest is skipped unread
     by the tokenizer. The root fields a signature reads keep their full
-    leading text.
+    leading text. ``syntax_only`` validates grammar without retaining token
+    truncation metadata or decoding large integer values; it cannot supply
+    record fields or identity evidence.
     """
 
-    def __init__(self, source: _Readable, *, whole_ordinals: frozenset[int] = frozenset()) -> None:
+    def __init__(
+        self,
+        source: _Readable,
+        *,
+        whole_ordinals: frozenset[int] = frozenset(),
+        scalar_values: bool = False,
+        syntax_only: bool = False,
+    ) -> None:
         self._source = source
+        self._scalar_values = scalar_values
+        self._syntax_only = syntax_only
         self._whole_ordinals = whole_ordinals
         self._in_string = False
         self._backslashes = 0
@@ -300,7 +311,10 @@ class _PrefixStringReader:
         if chunk_end and (partial := _NON_FINITE_PARTIAL.search(segment)) is not None:
             self._structure_carry = segment[partial.start() :]
             segment = segment[: partial.start()]
-        segment = _NON_FINITE.sub(_NON_FINITE_PLACEHOLDER, segment)
+        # Detector projections use numeric type, truth, and finite literal
+        # equality. A non-finite placeholder must remain truthy and cannot
+        # become a finite discriminator such as schema_version=1.
+        segment = _NON_FINITE.sub(b" 1e999 " if self._scalar_values else _NON_FINITE_PLACEHOLDER, segment)
         position = 0
         for run in _NUMBER_RUN.finditer(segment):
             if self._number_open and run.start() > 0:
@@ -346,7 +360,7 @@ class _PrefixStringReader:
                 self._number_is_integer = False
         if not self._number_long:
             self._number_view += token
-            if len(self._number_view) > _NUMBER_VIEW_BYTES:
+            if len(self._number_view) > _NUMBER_VIEW_BYTES and not self._scalar_values:
                 self._number_long = True
                 self._number_view = bytearray()
 
@@ -354,8 +368,23 @@ class _PrefixStringReader:
         self._number_open = False
         limit = sys.get_int_max_str_digits()
         oversized = self._number_long or self._number_exponent_digits > _NUMBER_EXPONENT_DIGITS
-        if self._number_is_integer and limit and self._number_digits > limit:
+        if not self._syntax_only and self._number_is_integer and limit and self._number_digits > limit:
             out += _INVALID_NUMBER_END
+        elif self._scalar_values:
+            token = bytes(self._number_view)
+            if not self._number_is_integer and self._number_state in _NUMBER_ACCEPTING:
+                # Decimal's exponent range is smaller than json.loads' float
+                # range. Normalize one complete float token before handing it
+                # to the event tokenizer, preserving zero and overflow.
+                number = float(token)
+                token = (
+                    b"-1e999"
+                    if number == float("-inf")
+                    else b"1e999"
+                    if number == float("inf")
+                    else repr(number).encode("ascii")
+                )
+            out += token
         elif oversized and self._number_state not in _NUMBER_ACCEPTING:
             # A malformed long token stays malformed: the placeholder must not
             # turn a document the decoder rejects into one it would accept.
@@ -394,7 +423,11 @@ class _PrefixStringReader:
                 self._validate_skipped(piece, out)
             else:
                 self._string += piece
-                if len(self._string) > _STRING_PREFIX_BYTES and self._ordinal not in self._whole_ordinals:
+                if (
+                    len(self._string) > _STRING_PREFIX_BYTES
+                    and self._ordinal not in self._whole_ordinals
+                    and not self._scalar_values
+                ):
                     cut = _prefix_cut(bytes(self._string[:_STRING_PREFIX_BYTES]))
                     self._emit_string(bytes(self._string[:cut]), out)
                     self._skipped_bytes = len(self._string)
@@ -425,7 +458,8 @@ class _PrefixStringReader:
                         # A UTF-8 sequence left incomplete by the closing quote.
                         self._skip_invalid = True
                         out += _INVALID_ESCAPE
-                self.truncated[self._ordinal] = self._skipped_bytes - self._skip_savings.saved
+                if not self._syntax_only:
+                    self.truncated[self._ordinal] = self._skipped_bytes - self._skip_savings.saved
             else:
                 self._emit_string(bytes(self._string), out)
             out += b'"'
@@ -434,8 +468,11 @@ class _PrefixStringReader:
             position = end + 1
 
     def _emit_string(self, content: bytes, out: bytearray) -> None:
+        if self._scalar_values:
+            out += content
+            return
         replaced, count = _SURROGATE_BYTES.subn(_SURROGATE_STAND_IN, content)
-        if count:
+        if count and not self._syntax_only:
             self.substituted.add(self._ordinal)
         out += replaced
 

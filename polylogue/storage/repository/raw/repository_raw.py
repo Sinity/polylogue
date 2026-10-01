@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import Provider, ValidationMode, ValidationStatus
@@ -18,6 +18,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     RawAdmissionRequest,
     plan_raw_admission,
 )
+from polylogue.storage.sqlite.archive_tiers.source_items import FrozenSourceManifest
 from polylogue.storage.sqlite.queries import artifacts as artifacts_q
 from polylogue.storage.sqlite.queries import cursor as cursor_queries
 from polylogue.storage.sqlite.queries import raw as raw_queries
@@ -38,6 +39,61 @@ class RepositoryRawMixin:
                 conn,
                 plan,
                 self._backend.transaction_depth,
+            )
+
+    async def publish_acquired_zip_input(self, manifest: FrozenSourceManifest, *, observed_at_ms: int) -> str:
+        async with self._backend.connection() as conn:
+            return await raw_writes.publish_acquired_zip_input(
+                conn,
+                manifest,
+                observed_at_ms=observed_at_ms,
+                transaction_depth=self._backend.transaction_depth,
+            )
+
+    async def record_acquired_zip_disposition(
+        self,
+        *,
+        source_generation_id: str,
+        source_item_id: str,
+        entry_ordinal: int,
+        member_name: str,
+        disposition: str,
+        diagnostic: str | None,
+        observed_at_ms: int,
+    ) -> None:
+        async with self._backend.connection() as conn:
+            await raw_writes.record_acquired_zip_disposition(
+                conn,
+                source_generation_id=source_generation_id,
+                source_item_id=source_item_id,
+                entry_ordinal=entry_ordinal,
+                member_name=member_name,
+                disposition=disposition,
+                diagnostic=diagnostic,
+                observed_at_ms=observed_at_ms,
+                transaction_depth=self._backend.transaction_depth,
+            )
+
+    async def complete_acquired_zip_input(
+        self,
+        *,
+        source_generation_id: str,
+        source_item_id: str,
+        enumeration_fingerprint: str,
+        record_coordinates: Iterable[str],
+        member_count: int,
+        observed_at_ms: int,
+    ) -> str:
+        async with self._backend.connection() as conn:
+            return await raw_writes.complete_acquired_zip_input(
+                conn,
+                source_generation_id=source_generation_id,
+                source_item_id=source_item_id,
+                enumeration_fingerprint=enumeration_fingerprint,
+                record_coordinates=record_coordinates,
+                member_count=member_count,
+                observed_at_ms=observed_at_ms,
+                transaction_depth=self._backend.transaction_depth,
             )
 
     async def save_artifact_observation(self, record: ArtifactObservationRecord) -> bool:
@@ -132,6 +188,8 @@ class RepositoryRawMixin:
         self,
         source_path: str,
         *,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         st_dev: int | None = None,
         st_ino: int | None = None,
         st_size: int | None = None,
@@ -143,6 +201,8 @@ class RepositoryRawMixin:
             await _upsert(
                 conn,
                 source_path,
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
                 st_dev=st_dev,
                 st_ino=st_ino,
                 st_size=st_size,

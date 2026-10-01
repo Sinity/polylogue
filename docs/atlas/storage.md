@@ -125,6 +125,20 @@ collations, order, uniqueness and complementary literal predicates in both
 rehearsal and live execution; exact row values, primary keys, foreign keys
 and integrity must survive the owned transaction. Other non-additive changes
 still require verified backup authority (`storage/sqlite/migration_runner.py`).
+Source runtime version 3 adds `raw_profile_identity_receipts`, captured-input
+identity columns in prepared manifests and accepted source items, and the
+complementary failure partition for missing profile evidence. This mixed
+table/column/index migration requires the authenticated pre-migration package,
+including on an empty fresh archive after Source002. Existing raws keep their
+IDs, byte custody and absent historical receipts; replay reports the explicit
+profile gap instead of discovering a qualifier from current source paths.
+New ingest acceptance stages physical inputs pagewise through
+`prepare_source_manifest` and carries a sealed reference into the audit plan.
+Immutable pending commands retain their original inline evidence for restart;
+the opened single-ZIP acquisition also retains its one-input manifest. Decoder
+completion compares streamed coordinates against the caller's uncommitted
+Source membership using regular indexed rows and a disk journal in a private
+Native-owned scratch database. It never changes the caller's TEMP policy.
 Writable canonical bootstrap admits installed trains before runtime version
 validation. Read-only and acquisition-only opens refuse a baseline Source
 tier without applying migrations. A crash after baseline publication resumes
@@ -133,12 +147,13 @@ the same persisted train rather than restamping the baseline as current
 `storage/sqlite/durable_change_train.py`).
 The format marker retains immutable baseline birth versions and fingerprints
 after migration. Isolated runtime consumer probes and canonical schema census
-build their empty connection through the baseline plus the actual numbered
-migration runner. File-backed probes declare their owned temporary path;
-in-memory probes consume a verified SQLite backup from an owned temporary
-file and compare exact schema, rows and version before accepting it. Populated
-or attached connections refuse. Probes never release the train
-whose consumers they are proving.
+replay the baseline and installed numbered SQL as empty schema probes, checking
+the same canonical inventory and version authority after replay. Consumer
+probes carry the authenticated post-apply candidate's schema/version and refuse
+an inventory or version mismatch. They perform no archive migration or backup
+exemption; the live train already holds its required package authority.
+File-backed probes declare their owned temporary path; populated or attached
+connections refuse. Probes never release the train whose consumers they prove.
 Released train admission checks the physical archive identity, installed and
 historical schema bindings, version, `quick_check` and `integrity_check`; it
 does not count or hash mutable rows on ordinary restart. Interrupted APPLIED
@@ -229,8 +244,9 @@ Pending generations are restartable; a restart resumes their exact member set in
 - `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would fire during the DELETE step and permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1255-1274`).
 - A failed or unavailable liveness surface is not equivalent to zero references (`polylogue/storage/blob_liveness.py:321-340`; `polylogue/storage/blob_gc.py:9-13`).
 - A published blob may legitimately have no durable ref yet; its reservation protects that publication window (`polylogue/storage/blob_publication.py:110-150`; `polylogue/storage/sqlite/archive_tiers/source.py:730-739`).
+- Membership preparation stores accepted session output and attachment claims on the canonical sealed PreparedJsonl artifact. Publication queues the same publisher's closed-page claims before the Source transaction, then reads attachment values and references from that artifact. A private captured copy can survive collection of an unreferenced public blob; losing or changing the sealed private capture refuses publication (`polylogue/storage/ingest_governance.py`; `polylogue/sources/prepared_jsonl.py`).
 - GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`gc_generation_members` in `polylogue/storage/sqlite/archive_tiers/source.py:689-704`; `polylogue/storage/blob_gc.py:571-588`).
-- A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`backfill_historical_revision_evidence` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
+- A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`apply_prepared_revision_replay` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
 - Rebuildable `index.db` must not become authority for an irreversible durable mutation; blob GC therefore requires source-ledger and active-index checks to agree (`polylogue/storage/blob_gc.py:7-20`; `polylogue/storage/blob_liveness.py:321-359`).
 
 ## DISCREPANCIES

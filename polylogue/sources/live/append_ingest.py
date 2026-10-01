@@ -155,6 +155,7 @@ def _write_append_raw_payload(
             provider=provider,
             payload=plan.payload,
             source_path=str(plan.path),
+            canonical_source_path=plan.canonical_source_path,
             source_index=plan.source_index,
             acquired_at_ms=acquired_at_ms,
             file_mtime_ms=file_mtime_ms,
@@ -316,6 +317,7 @@ def _ingest_append_plans_archive(
                                 provider=provider,
                                 payload=plan.payload,
                                 source_path=str(plan.path),
+                                canonical_source_path=plan.canonical_source_path,
                                 source_index=-1,
                                 acquired_at_ms=acquired_at_ms,
                                 classification=classification,
@@ -339,6 +341,7 @@ def _ingest_append_plans_archive(
                             provider=provider,
                             payload=plan.payload,
                             source_path=str(plan.path),
+                            canonical_source_path=plan.canonical_source_path,
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
                             classification=path_artifact,
@@ -462,6 +465,7 @@ def _ingest_append_plans_archive(
                             replay_provider,
                             replay_path,
                             parse_retained_raw_sessions(archive, replay_raw_id),
+                            captured_zip_coordinate=archive.raw_captured_zip_coordinate(replay_raw_id),
                         )
                         if len(replay_sessions) != 1:
                             raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")

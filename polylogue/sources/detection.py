@@ -8,11 +8,11 @@ predicate runs for an acquired JSON record or record stream.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
-from typing import Protocol, cast
+from typing import BinaryIO, Protocol, cast
 
 from polylogue.core.enums import Origin, Provider
 
@@ -40,6 +40,8 @@ class DetectorBinding:
     fixed_provider: Provider | None = None
     dynamic_provider_path: str | None = None
     dynamic_provider_allowlist: tuple[Provider, ...] = ()
+    #: Parser-owned complete event projection, consumed by streaming detection.
+    stream_projection_path: str | None = None
 
 
 class _OriginSpecLike(Protocol):
@@ -103,6 +105,128 @@ class CompiledDetectorRegistry:
                 )
             return provider, compiled.binding.evidence_label
         return None, None
+
+    def detect_record_events(
+        self,
+        events_factory: Callable[[], Iterator[tuple[str, object]]],
+        *,
+        sequence: bool,
+    ) -> tuple[Provider | None, str | None]:
+        """Classify one acquisition record through the declared complete folds."""
+        from contextlib import ExitStack
+        from itertools import chain
+
+        from polylogue.sources.detection_projection import DetectorProjection, _project
+
+        first_event = next(events_factory(), None)
+        array_input = sequence or (first_event is not None and first_event[0] == "start_array")
+        modes = (
+            (DetectionMode.SEQUENCE_DOCUMENT, DetectionMode.SEQUENCE_RECORD_STREAM)
+            if array_input
+            else (DetectionMode.RECORD,)
+        )
+        for mode in modes:
+            for compiled in self.by_mode.get(mode, ()):
+                binding = compiled.binding
+                if binding.stream_projection_path is None:
+                    raise DetectorBindingError(f"{binding.binding_id}: complete stream projection is undeclared")
+                factory = _resolve_symbol(
+                    binding.stream_projection_path, binding_id=binding.binding_id, role="stream projection"
+                )
+                rule = factory() if callable(factory) else None
+                if not isinstance(rule, DetectorProjection):
+                    raise DetectorBindingError(f"{binding.binding_id}: invalid stream projection")
+                events = events_factory()
+                if sequence:
+                    events = chain((("start_array", None),), events, (("end_array", None),))
+                first = next(events, None)
+                if first is None:
+                    continue
+                with ExitStack() as stack:
+                    root_rule = (
+                        DetectorProjection(
+                            item=rule,
+                            array_fold="any" if mode is DetectionMode.SEQUENCE_RECORD_STREAM else "first",
+                            array_predicate=(lambda item, predicate=compiled.predicate: predicate([item]))
+                            if mode is DetectionMode.SEQUENCE_RECORD_STREAM
+                            else None,
+                        )
+                        if array_input
+                        else rule
+                    )
+                    payload = _project(events, first[0], first[1], root_rule, stack)
+                    if not compiled.predicate(payload):
+                        continue
+                    provider = (
+                        binding.fixed_provider
+                        if compiled.provider_resolver is None
+                        else compiled.provider_resolver(payload)
+                    )
+                    if (
+                        compiled.provider_resolver is not None
+                        and provider is not None
+                        and (not isinstance(provider, Provider) or provider not in binding.dynamic_provider_allowlist)
+                    ):
+                        raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
+                    return provider, binding.evidence_label
+        return None, None
+
+    def detect_stream(
+        self, handle: BinaryIO, *, check_stop: Callable[[], None] | None = None
+    ) -> tuple[Provider | None, str | None]:
+        """Apply the same registry order to complete parser-declared projections.
+
+        Each candidate consumes and validates the complete input before its
+        predicate decides. The handle is seekable acquired material; retrying
+        a tighter predicate never reopens its mutable source coordinate.
+        """
+        from polylogue.sources.detection_projection import DetectorProjection, project_detection_input
+
+        start = handle.tell()
+        try:
+            for mode in DetectionMode:
+                for compiled in self.by_mode.get(mode, ()):
+                    binding = compiled.binding
+                    if binding.stream_projection_path is None:
+                        raise DetectorBindingError(f"{binding.binding_id}: complete stream projection is undeclared")
+                    factory = _resolve_symbol(
+                        binding.stream_projection_path,
+                        binding_id=binding.binding_id,
+                        role="stream projection",
+                    )
+                    if not callable(factory):
+                        raise DetectorBindingError(f"{binding.binding_id}: stream projection factory is not callable")
+                    rule = factory()
+                    if not isinstance(rule, DetectorProjection):
+                        raise DetectorBindingError(f"{binding.binding_id}: invalid stream projection")
+                    handle.seek(start)
+                    stream_predicate = (
+                        (lambda item, predicate=compiled.predicate: predicate([item]))
+                        if mode is DetectionMode.SEQUENCE_RECORD_STREAM
+                        else None
+                    )
+                    shape, payload = project_detection_input(
+                        handle, rule, stream_predicate=stream_predicate, check_stop=check_stop
+                    )
+                    if (shape == "record") != (mode is DetectionMode.RECORD):
+                        continue
+                    if not compiled.predicate(payload):
+                        continue
+                    provider = (
+                        binding.fixed_provider
+                        if compiled.provider_resolver is None
+                        else compiled.provider_resolver(payload)
+                    )
+                    if (
+                        compiled.provider_resolver is not None
+                        and provider is not None
+                        and (not isinstance(provider, Provider) or provider not in binding.dynamic_provider_allowlist)
+                    ):
+                        raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
+                    return provider, binding.evidence_label
+            return None, None
+        finally:
+            handle.seek(start)
 
 
 def _resolve_symbol(path: str, *, binding_id: str, role: str) -> object:

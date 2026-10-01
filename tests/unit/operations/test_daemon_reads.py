@@ -20,6 +20,7 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_sampled_and_moving_date_queries_are_not_cached() -> None:
@@ -489,7 +490,6 @@ def _seed_lineage_child(root: Path) -> str:
     from polylogue.archive.session.branch_type import BranchType
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from tests.infra.index_writer import write_fixture_index_session
 
     def _msg(pid: str, role: Role, text: str, position: int) -> ParsedMessage:
         return ParsedMessage(provider_message_id=pid, role=role, text=text, position=position)

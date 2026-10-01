@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol, TypeVar
@@ -44,31 +45,41 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     path no source admits still resolves exactly as before.
     """
 
+    declared = Path(os.path.abspath(path.expanduser()))
     try:
-        resolved = path.resolve()
+        resolved: Path | None = declared.resolve()
     except OSError:
-        return None
-    matches: list[tuple[bool, int, SourceT]] = []
+        resolved = None
+    lexical: list[tuple[bool, int, SourceT, Path]] = []
+    explicit: list[tuple[bool, int, SourceT, Path]] = []
+    physical: list[tuple[bool, int, SourceT, Path]] = []
     for source in sources:
-        try:
-            source_root = source.root.resolve()
-            if resolved.is_relative_to(source_root):
-                exact_paths = getattr(source, "exact_paths", None)
-                exact_match = exact_paths is not None and resolved in exact_paths
-                matches.append((exact_match, len(source_root.parts), source))
-        except (OSError, ValueError):
+        declared_root = Path(os.path.abspath(source.root.expanduser()))
+        exact_paths = getattr(source, "exact_paths", None)
+        if exact_paths is not None and resolved is not None and resolved in exact_paths:
+            explicit.append((True, len(declared_root.parts), source, resolved))
             continue
+        if declared.is_relative_to(declared_root):
+            lexical.append((False, len(declared_root.parts), source, declared))
+            continue
+        if resolved is not None:
+            try:
+                source_root = declared_root.resolve()
+                if resolved.is_relative_to(source_root):
+                    physical.append((False, len(source_root.parts), source, resolved))
+            except (OSError, ValueError):
+                continue
+    # A declared namespace owns its subtree even when that subtree is an
+    # accepted directory alias. Physical root aliases select only when no
+    # declared directory contains the offered path; explicit files retain
+    # their stronger physical-file declaration in either case.
+    matches = explicit + (lexical if lexical else physical)
     if not matches:
         return None
     if len(matches) == 1:
-        # Unambiguous ownership needs no acceptance check, which keeps the
-        # declared-artifact lookup out of the common single-root path.
         return matches[0][2]
-    accepting = [match for match in matches if _accepts(match[2], resolved)]
+    accepting = [match for match in matches if _accepts(match[2], match[3])]
     preferred = accepting or matches
-    # An explicit file declaration is stronger than a directory root even
-    # when both roots have the same depth. It expresses ownership of this
-    # exact artifact, while the directory remains a broad discovery root.
     return max(preferred, key=lambda match: (match[0], match[1]))[2]
 
 

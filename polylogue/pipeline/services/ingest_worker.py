@@ -1,10 +1,7 @@
-"""Unified subprocess worker: decode → validate → parse → transform in one pass.
+"""Pure record worker: decode, validate, parse and lower in one pass.
 
-Runs inside ProcessPoolExecutor. Returns plain tuples for direct SQL executemany,
-avoiding Pydantic serialization overhead across the process boundary.
-
-Performance: eliminates double blob decode (was: validate decodes, then parse decodes
-the same blob again). Moves transform into subprocess for true parallelism.
+Shared bounded compute executes immutable requests. Row payloads return to
+one writer; native read handles belong to the worker that opens them.
 """
 
 from __future__ import annotations
@@ -23,13 +20,15 @@ from polylogue.archive.artifact_taxonomy import (
     classify_artifact,
     classify_artifact_path,
 )
-from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.decode import (
+    JSONL_RECORD_INSPECTION_BYTES,
     RawPayloadEnvelope,
     _sample_jsonl_payload_with_detail,
-    jsonl_session_artifact,
+    scan_jsonl_session_artifact,
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
 from polylogue.core.storage_faults import storage_fault_kind
 from polylogue.logging import WARNING, emit, get_logger
@@ -61,6 +60,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, PreparedSessionWrite
 
 
@@ -93,9 +93,15 @@ class SessionWritePayload:
     raw_id: str | None = None
     append_only: bool = False
     fallback_timestamp: str | None = None
-    # A parent-stage carrier may be attached after worker IPC, before writer
-    # admission. The process worker never serializes an open scratch owner.
+    # Canonical preparation attaches sealed carriers before writer admission;
+    # no SQL handle crosses the compute boundary.
     prepared_write: PreparedSessionWrite | None = None
+    prepared_artifact: PreparedJsonl | None = None
+    prepared_session_ordinal: int | None = None
+    prepared_append_skipped_messages: int = 0
+    prepared_append_noop: bool = False
+    prepared_predecessor: tuple[object, ...] | None = None
+    prepared_distinct_messages: bool | None = None
     # Row tuples and message content identities the parse worker built for a
     # full-replace write, so the writer validates them instead of hashing.
     prepared_rows: PreparedSessionRows | None = None
@@ -103,7 +109,7 @@ class SessionWritePayload:
 
 @dataclass(slots=True)
 class IngestRecordResult:
-    """Result from processing one raw record in a subprocess."""
+    """Result from processing one immutable raw-record request."""
 
     raw_id: str
     payload_provider: str | None = None
@@ -112,6 +118,7 @@ class IngestRecordResult:
     parse_error: str | None = None
     error: str | None = None
     sessions: list[SessionWritePayload] = field(default_factory=list)
+    prepared_artifact: PreparedJsonl | None = None
     source_name: str | None = None
     serialized_size_bytes: int | None = None
     schema_drift: SchemaDriftObservation | None = None
@@ -346,61 +353,48 @@ def _build_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    from polylogue.sources.dispatch import detect_provider
+    from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
 
     stream_name = context.raw_record.source_path or context.raw_record.raw_id
-
+    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
+    if runtime_provider not in STREAM_RECORD_PROVIDERS:
+        with context.raw_source.open("rb") as handle:
+            runtime_provider, _detail = detect_provider_from_raw_stream_evidence(
+                handle,
+                stream_name,
+                runtime_provider,
+                truncated_tail_ok=True,
+            )
+        if runtime_provider not in STREAM_RECORD_PROVIDERS:
+            return None
+    path_artifact = classify_artifact_path(context.raw_record.source_path, provider=runtime_provider)
+    path_is_terminal = _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider)
+    scan = scan_jsonl_session_artifact(
+        context.raw_source,
+        provider=runtime_provider,
+        jsonl_dict_only=True,
+    )
+    if scan.artifact is None and scan.malformed_records and not path_is_terminal:
+        # Decode failure is not proof of a non-session artifact. The normal
+        # decode boundary owns its typed refusal/partial outcome.
+        return None
+    # Samples describe diagnostic schema evidence only. They cannot choose the
+    # provider or overrule the complete candidacy fold.
     try:
-        sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
+        sample_payloads, _sample_failures, malformed_detail = _sample_jsonl_payload_with_detail(
             context.raw_source,
             max_samples=64,
             jsonl_dict_only=True,
-            # The sample probe stays bounded (STRICT widens it). The accurate,
-            # whole-file malformed-line count for the operator-facing surface is
-            # produced by the durable artifact observation
-            # (storage/artifacts/inspection.py full-scan, #1745); this probe
-            # only needs to *detect* malformed presence for the advisory warning
-            # and STRICT failure below, which the bounded sample already does.
-            scan_full=context.validation_mode is ValidationMode.STRICT,
+            max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
-    except Exception:
-        # Sampling helper failed entirely (file I/O, decode, or worse). Logging
-        # this is critical because the caller falls back to a different parser
-        # path on `None`, which can produce different content hashes for the
-        # same input depending on whether the helper happened to succeed.
-        logger.exception(
-            "JSONL sample probe failed for %s; falling back to non-stream parsing",
-            stream_name,
-        )
-        return None
-
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
-    if runtime_provider not in STREAM_RECORD_PROVIDERS:
-        detected_provider = detect_provider(sample_payloads)
-        if detected_provider not in STREAM_RECORD_PROVIDERS:
-            return None
-        runtime_provider = detected_provider
-
-    decoded_artifact = classify_artifact(
-        sample_payloads,
-        provider=runtime_provider,
+    except ValueError:
+        sample_payloads, malformed_detail = [], None
+    decoded_artifact = scan.artifact or classify_artifact([], provider=runtime_provider)
+    artifact = (
+        path_artifact
+        if path_is_terminal and path_artifact is not None
+        else (scan.artifact or path_artifact or decoded_artifact)
     )
-    path_artifact = classify_artifact_path(
-        context.raw_record.source_path,
-        provider=runtime_provider,
-    )
-    path_is_terminal = _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider)
-    session_artifact = (
-        jsonl_session_artifact(context.raw_source, provider=runtime_provider, jsonl_dict_only=True)
-        if path_artifact is not None and not path_artifact.parse_as_session and not path_is_terminal
-        else None
-    )
-    if path_is_terminal and path_artifact is not None:
-        artifact = path_artifact
-    else:
-        artifact = session_artifact or (
-            decoded_artifact if decoded_artifact.parse_as_session else path_artifact or decoded_artifact
-        )
     return _build_parse_plan(
         provider=runtime_provider,
         payload_provider=str(runtime_provider),
@@ -410,7 +404,7 @@ def _build_stream_parse_plan(
         payload=sample_payloads,
         schema_payload_source=sample_payloads,
         stream_name=stream_name,
-        malformed_jsonl_lines=malformed_lines,
+        malformed_jsonl_lines=scan.malformed_records,
         malformed_jsonl_detail=malformed_detail,
     )
 
@@ -420,94 +414,7 @@ def _build_fast_stream_parse_plan(
     *,
     payload_provider: str | None,
 ) -> _ParsePlan | None:
-    runtime_provider = Provider.from_string(payload_provider or context.raw_record.source_name)
-    if runtime_provider not in STREAM_RECORD_PROVIDERS:
-        return None
-
-    # The validation-off shortcut still has to honor path-declared fact and
-    # raw-only artifacts. Without this check, a workflow journal's JSONL path
-    # is replaced by the generic session classification below before the
-    # payload is decoded, so session-shaped journal records materialize as
-    # conversations even though the same path is classified as evidence by
-    # the ordinary envelope route.
-    path_artifact = classify_artifact_path(
-        context.raw_record.source_path,
-        provider=runtime_provider,
-    )
-    if path_artifact is not None and not path_artifact.parse_as_session:
-        if _raw_only_path_declaration(context.raw_record.source_path, provider=runtime_provider):
-            return _build_parse_plan(
-                provider=runtime_provider,
-                payload_provider=str(runtime_provider),
-                artifact=path_artifact,
-                source_path=context.raw_record.source_path,
-                mode="stream",
-                schema_payload_source=None,
-                stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-            )
-        try:
-            sample_payloads, malformed_lines, malformed_detail = _sample_jsonl_payload_with_detail(
-                context.raw_source,
-                max_samples=64,
-                jsonl_dict_only=True,
-                scan_full=False,
-            )
-        except Exception:
-            logger.exception(
-                "JSONL sample probe failed for %s; retaining path-declared artifact",
-                context.raw_record.source_path or context.raw_record.raw_id,
-            )
-        else:
-            decoded_artifact = jsonl_session_artifact(
-                context.raw_source,
-                provider=runtime_provider,
-                jsonl_dict_only=True,
-            ) or classify_artifact(sample_payloads, provider=runtime_provider)
-            if decoded_artifact.parse_as_session:
-                return _build_parse_plan(
-                    provider=runtime_provider,
-                    payload_provider=str(runtime_provider),
-                    artifact=decoded_artifact,
-                    source_path=context.raw_record.source_path,
-                    mode="stream",
-                    payload=sample_payloads,
-                    schema_payload_source=sample_payloads,
-                    stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-                    malformed_jsonl_lines=malformed_lines,
-                    malformed_jsonl_detail=malformed_detail,
-                )
-        return _build_parse_plan(
-            provider=runtime_provider,
-            payload_provider=str(runtime_provider),
-            artifact=path_artifact,
-            source_path=context.raw_record.source_path,
-            mode="stream",
-            schema_payload_source=None,
-            stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-        )
-
-    kind = (
-        ArtifactKind.AGENT_TRANSCRIPT
-        if is_subagent_path(context.raw_record.source_path)
-        else ArtifactKind.SESSION_RECORD_STREAM
-    )
-    artifact = ArtifactClassification(
-        provider=runtime_provider,
-        kind=kind,
-        parse_as_session=True,
-        schema_eligible=False,
-        default_priority=90 if kind is ArtifactKind.AGENT_TRANSCRIPT else 120,
-        reason="known JSONL stream provider with validation off",
-    )
-    return _build_parse_plan(
-        provider=runtime_provider,
-        payload_provider=str(runtime_provider),
-        artifact=artifact,
-        source_path=context.raw_record.source_path,
-        mode="stream",
-        schema_payload_source=None,
-        stream_name=context.raw_record.source_path or context.raw_record.raw_id,
-    )
+    return _build_stream_parse_plan(context, payload_provider=payload_provider)
 
 
 def _build_envelope_parse_plan(
@@ -535,8 +442,6 @@ def _validate_parse_plan(
 
     if context.validation_mode is ValidationMode.OFF:
         return _PlanValidation(status=ValidationStatus.SKIPPED)
-    if not plan.artifact.schema_eligible or plan.schema_payload is None:
-        return _PlanValidation(status=ValidationStatus.PASSED)
     if plan.malformed_jsonl_lines:
         malformed_error = _format_malformed_jsonl_error(
             malformed_lines=plan.malformed_jsonl_lines,
@@ -558,6 +463,9 @@ def _validate_parse_plan(
             context.raw_record.source_path or context.raw_record.raw_id,
             malformed_error,
         )
+
+    if not plan.artifact.schema_eligible or plan.schema_payload is None:
+        return _PlanValidation(status=ValidationStatus.PASSED)
 
     try:
         payload_validation = SchemaValidator.validate_payload(
@@ -712,6 +620,7 @@ def _parse_plan_sessions(
             def counted_stream() -> Iterable[object]:
                 nonlocal valid_record_count
                 for item in _iter_json_stream(handle, stream_name):
+                    check_compute_cancelled()
                     valid_record_count += 1
                     yield item
 
@@ -725,7 +634,7 @@ def _parse_plan_sessions(
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")
             # polylogue-9ykn: a session requires positive conversational
-            # evidence -- applied here (the subprocess decode/parse worker's
+            # evidence -- applied here (the shared decode/parse worker's
             # own chokepoint) so this ingest route can't create a
             # zero-message session even though it never touches
             # sources/live/batch.py's or revision_backfill.py's call sites.
@@ -756,9 +665,8 @@ def _enrich_parsed_sessions(
 
     Canonical raw-record ingest historically bypassed provider assembly, so
     daemon-ingested Codex sessions kept native-id titles (polylogue-ih67).
-    ``ingest_record`` (this function's caller) runs inside a
-    ProcessPoolExecutor worker (AC#4: subprocess-safe parse plans). When the
-    main-process batch orchestrator has already resolved a frozen sidecar
+    ``ingest_record`` consumes an immutable request on shared compute. When
+    the batch orchestrator has already resolved a frozen sidecar
     snapshot (``context.raw_record.sidecar_snapshot`` -- see
     ``_resolve_codex_sidecar_snapshots`` in ``ingest_batch/_core.py``), that
     snapshot is authoritative and no disk read happens here at all: an empty
@@ -795,18 +703,25 @@ def _enrich_parsed_sessions(
     # ChatGPT asset maps are retained source artifacts, so the worker resolves
     # them from the archive under the same no-rediscovery contract the Codex
     # lane above already keeps. An acquisition-carried key stays authoritative.
+    borrowed_sidecars = sidecar_data
     sidecar_data = resolve_retained_assembly_evidence(
         sidecar_data,
         provider=plan.provider,
         archive_root=context.archive_root,
         source_path=context.raw_record.source_path,
+        captured_zip_coordinate=context.raw_record.captured_zip_coordinate,
     )
+    from polylogue.sources.assembly import close_sidecar_data
     from polylogue.sources.revision_backfill import stamp_enrichment_evidence
 
-    return [
-        stamp_enrichment_evidence(plan.provider, sidecar_data, spec.enrich_session(convo, sidecar_data))
-        for convo in parsed_sessions
-    ]
+    try:
+        return [
+            stamp_enrichment_evidence(plan.provider, sidecar_data, spec.enrich_session(convo, sidecar_data))
+            for convo in parsed_sessions
+        ]
+
+    finally:
+        close_sidecar_data(sidecar_data, borrowed=borrowed_sidecars)
 
 
 def _with_retained_codex_state_titles(
@@ -856,6 +771,8 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
 
     try:
         return recover_persisted_tool_results(convo, archive_root=archive_root)
+    except DaemonOperationCancelled:
+        raise
     except Exception:
         # Recovery is a best-effort third fallback over evidence the parse
         # itself does not depend on; the un-recovered session is still a
@@ -864,6 +781,7 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
         # so a failure here durably stores a different hash than the
         # recovered path would have, and only this line says why
         # (polylogue-3r36h).
+        check_compute_cancelled()
         emit(
             "pipeline.hook_tool_response.recovery_failed",
             level=WARNING,
@@ -887,9 +805,12 @@ def _worker_prepared_rows(session: ParsedSession, *, append_only: bool) -> Prepa
 
     try:
         return prepare_session_rows(session)
+    except DaemonOperationCancelled:
+        raise
     except Exception:
         # The carrier is optional. Without it the writer lowers the session
         # itself and refuses it there, per session, under its own outcome.
+        check_compute_cancelled()
         return None
 
 
@@ -914,6 +835,7 @@ def _materialize_parsed_sessions(
 
     session_payloads: list[SessionWritePayload] = []
     for convo in parsed_sessions:
+        check_compute_cancelled()
         normalized_convo = _normalized_session(
             _with_hook_recovered_tool_results(convo, archive_root=context.archive_root),
             fallback_timestamp=context.fallback_timestamp,
@@ -935,7 +857,12 @@ def _materialize_parsed_sessions(
                     prepared_rows=_worker_prepared_rows(normalized_convo, append_only=append_only),
                 )
             )
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
+            check_compute_cancelled()
+            if isinstance(exc, DaemonOperationCancelled):
+                raise
             return _record_result(
                 context,
                 plan.payload_provider,
@@ -1066,7 +993,12 @@ def _run_parse_plan(
             context,
             accepted_plan,
         )
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
+        check_compute_cancelled()
+        if isinstance(exc, DaemonOperationCancelled):
+            raise
         return _record_result(
             context,
             plan.payload_provider,
@@ -1086,7 +1018,7 @@ def _run_parse_plan(
 
 
 # ---------------------------------------------------------------------------
-# Main worker function — runs in subprocess
+# Shared pure record worker
 # ---------------------------------------------------------------------------
 
 
@@ -1114,6 +1046,7 @@ def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> 
     def spill(_field_name: str, carrier: str) -> SpilledCarrier | None:
         def write(handle: IO[bytes]) -> None:
             for chunk in iter_carrier_bytes(carrier):
+                check_compute_cancelled()
                 handle.write(chunk)
 
         try:
@@ -1144,9 +1077,9 @@ def ingest_record(
 ) -> IngestRecordResult:
     """Decode + validate + parse + transform one raw record in a single pass.
 
-    Returns DB-ready tuples, not Pydantic models. This function runs in a
-    subprocess via ProcessPoolExecutor and must be self-contained (no shared
-    state, no DB access).
+    Return typed row payloads for the writer. The immutable request carries
+    source identity and retained evidence; caller-owned SQLite connections
+    never cross this boundary.
     """
     from polylogue.archive.raw_payload import build_raw_payload_envelope
     from polylogue.paths import blob_store_root
@@ -1205,7 +1138,12 @@ def ingest_record(
             payload_provider=stored_payload_provider,
             sqlite_immutable=True,
         )
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
+        check_compute_cancelled()
+        if isinstance(exc, DaemonOperationCancelled):
+            raise
         # Spilling a capture's carriers writes to the blob store, so a full or
         # failing archive disk surfaces here; it says nothing about the input.
         fault = storage_fault_kind(exc)

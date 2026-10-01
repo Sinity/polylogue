@@ -175,7 +175,8 @@ def test_source_parser_groups_real_shaped_hermes_atof_jsonl_as_one_retained_stre
     # one shared ``profile_root_for_artifact`` helper every Hermes family uses,
     # polylogue-q5j3o) now artifact- AND profile-qualifies the observer session
     # identity.
-    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_key
 
     expected_key = profile_key(profile_root_for_artifact(HERMES_ATOF_FIXTURE))
     assert session.provider_session_id == f"observer:atof:real-nemo-relay-session-redacted@profile-{expected_key}"

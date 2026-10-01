@@ -331,7 +331,8 @@ def test_real_atof_fixture_subagent_mark_materializes_delegation_edge() -> None:
     )
     assert len(sessions) == 2
 
-    from polylogue.sources.parsers.hermes_identity import profile_key, profile_root_for_artifact
+    from polylogue.core.provider_identity import profile_root_for_artifact
+    from polylogue.sources.parsers.hermes_identity import profile_key
 
     expected_key = profile_key(profile_root_for_artifact(REAL_ATOF_FIXTURE))
     parent = next(s for s in sessions if s.provider_session_id.startswith("observer:atof:real-nemo-relay-session"))

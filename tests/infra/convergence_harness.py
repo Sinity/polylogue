@@ -27,13 +27,13 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
 from polylogue.daemon.derivation import DerivationReport
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationReport,
@@ -288,7 +288,6 @@ def ingest_composed_sources(
             raw_id=raw_id,
             append_only=append_only,
         )
-        pending_attachment_receipts: list[tuple[str, bytes]] = []
         blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
         with (
             closing(open_connection(root / "index.db")) as index_conn,
@@ -300,12 +299,8 @@ def ingest_composed_sources(
                     index_conn,
                     payload_model,
                     blob_publisher=blob_publisher,
-                    pending_attachment_receipts=pending_attachment_receipts,
                     source_conn=source_conn,
                 )
-                if pending_attachment_receipts:
-                    for publication_id, blob_hash in pending_attachment_receipts:
-                        consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
         if not changed and counts["skipped_sessions"] == 0:
             raise AssertionError(f"production ingest writer did not account for {payload_model.session_id}")
         session_id = payload_model.session_id

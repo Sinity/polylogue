@@ -481,7 +481,7 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
 
         from polylogue.sources.revision_backfill import _load_frozen_revision_evidence, _ParsedSessionSpill
 
-        with _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1024 * 1024) as spill:
+        with _ParsedSessionSpill(tmp_path) as spill:
             census = _load_frozen_revision_evidence(
                 archive,
                 spill,
@@ -518,6 +518,7 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
             [session],
             parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=1,
+            revision_authority=None,
         )
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -574,10 +575,7 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
                 raw_id=raw_id,
             )
             archive.replace_raw_membership_census(
-                raw_id,
-                [session],
-                parser_fingerprint="test-parser",
-                censused_at_ms=1,
+                raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, projection)
 
@@ -671,10 +669,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
                 raw_id=raw_id,
             )
             archive.replace_raw_membership_census(
-                raw_id,
-                [session],
-                parser_fingerprint="test-parser",
-                censused_at_ms=1,
+                raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, session_revision_projection(session))
 
@@ -1016,6 +1011,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
                 censused_at_ms=0,
                 detail="test-duplicate-guard",
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
         archive.rollback()
 
@@ -1216,6 +1212,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
                 censused_at_ms=0,
                 detail="historical non-prefix full revision governance",
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
 
         # A THIRD raw for the same logical identity, discovered afterward.
@@ -1429,6 +1426,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                 censused_at_ms=0,
                 detail=unrecognized,
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
 
         # The refusal happens before any mutation: the raw keeps its identity
@@ -1452,6 +1450,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
             censused_at_ms=0,
             detail=unrecognized,
             retire_full_revision_governance=True,
+            revision_authority=None,
         )
 
     # Now the hazard the refusal prevents, reached by rewriting an accepted
@@ -1476,6 +1475,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
             retired.append(raw_id)
 
@@ -1543,6 +1543,7 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
             retired.append(raw_id)
 
@@ -2248,10 +2249,7 @@ def _write_quarantined_member(archive: ArchiveStore, label: str, session: Parsed
         acquired_at_ms=1,
     )
     archive.replace_raw_membership_census(
-        raw_id,
-        [session],
-        parser_fingerprint="test-parser",
-        censused_at_ms=1,
+        raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
     )
     return raw_id
 
@@ -3206,10 +3204,7 @@ def _headless_ambiguous_cohort(
             raw_id=raw_id,
         )
         archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
+            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
         return MembershipRevision(raw_id, session_revision_projection(session))
 
@@ -3428,12 +3423,12 @@ def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path
 
         # Inline path: an empty spill with no prefetcher attached reparses the
         # retained raw through ``for_raw``'s own fallback.
-        inline_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
+        inline_spill = _ParsedSessionSpill(tmp_path)
         inline_sessions, _payload_bytes = inline_spill.for_raw(archive, raw_id)
 
         # Prefetch path: the worker thread opens its own connections and must
         # reach the same evidence.
-        prefetch_spill = _ParsedSessionSpill(tmp_path, max_cached_payload_bytes=1 << 20)
+        prefetch_spill = _ParsedSessionSpill(tmp_path)
         prefetcher = _ReplaySpillPrefetcher(
             prefetch_spill,
             archive_root=tmp_path,

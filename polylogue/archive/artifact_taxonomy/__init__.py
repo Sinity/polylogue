@@ -11,6 +11,7 @@ from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, A
 from polylogue.archive.artifact_taxonomy.runtime import (
     classify_artifact,
     classify_artifact_path,
+    classify_record_candidacy,
     strong_path_classification,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "ArtifactKind",
     "classify_artifact",
     "classify_artifact_path",
+    "classify_record_candidacy",
     "strong_path_classification",
 ]

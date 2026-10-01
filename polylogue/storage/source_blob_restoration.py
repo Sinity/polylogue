@@ -25,7 +25,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import (
+    read_captured_zip_coordinate_receipt,
+    split_zip_member_text,
+    zip_member_coordinate_candidates,
+)
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 
@@ -121,7 +127,8 @@ class RetainedBlobSource:
     window: SourceByteWindow | None = None
 
 
-_RAW_SOURCE_EVIDENCE_COLUMNS = """
+_RAW_SOURCE_EVIDENCE_COLUMNS = f"""
+    {raw_receipt_order_sql("raw_sessions")} AS receipt_order,
     lower(hex(raw_sessions.blob_hash)) AS blob_hash,
     raw_sessions.raw_id AS raw_id,
     raw_sessions.raw_id AS ref_id,
@@ -138,7 +145,8 @@ _RAW_SOURCE_EVIDENCE_COLUMNS = """
     coordinate.entry_ordinal AS entry_ordinal,
     coordinate.split_index AS split_index,
     coordinate.addressing_mode AS addressing_mode,
-    coordinate.content_identity AS content_identity
+    coordinate.content_identity AS content_identity,
+    coordinate.captured_coordinate AS captured_coordinate
 """
 
 
@@ -174,6 +182,61 @@ def is_recorded_container_member(row: Mapping[str, object]) -> bool:
     )
 
 
+def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str, bool]:
+    """Resolve recorded bytes under the active root with one ZIP decision.
+
+    A stored member receipt proves the coordinate kind. A legacy coordinate
+    needs a readable ZIP at a lexical boundary; an unreadable candidate is
+    retryable evidence, rather than permission to try a later boundary.
+    """
+    source = str(row.get("source_path") or "")
+
+    def relocate(path: Path) -> Path:
+        for directory in ("inbox", "browser-capture", "hooks"):
+            if directory in path.parts:
+                candidate = root.joinpath(*path.parts[path.parts.index(directory) :])
+                try:
+                    candidate.stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    continue
+                else:
+                    return candidate
+        return path
+
+    receipt = row.get("captured_coordinate")
+    if receipt is not None:
+        if not isinstance(receipt, str):
+            raise ValueError("captured ZIP coordinate receipt must be text")
+        coordinate = read_captured_zip_coordinate_receipt(receipt)
+        return f"{relocate(Path(coordinate.canonical_container))}:{coordinate.member_name}", True
+
+    literal = relocate(Path(source))
+    recorded = is_recorded_container_member(row)
+    if not recorded:
+        try:
+            literal.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        else:
+            return str(literal), False
+    from polylogue.sources.source_staging import probe_zip_container
+
+    for container, member in zip_member_coordinate_candidates(source):
+        candidate = relocate(container)
+        try:
+            if probe_zip_container(candidate):
+                return f"{candidate}:{member}", True
+        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+            continue
+    if recorded:
+        split = split_zip_member_text(source)
+        if split is not None:
+            container, member = split
+            return f"{relocate(Path(container))}:{member}", True
+        return source, True
+    return str(literal), False
+
+
 def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
     """A pre-offset Codex or Claude Code append row: ``source_index`` -1 and no byte window."""
     provider = Provider.from_string(str(row.get("capture_mode") or ""))
@@ -186,6 +249,26 @@ def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
         and row.get("append_start_offset") is None
         and row.get("append_end_offset") is None
     )
+
+
+def read_prior_full_source_receipts(conn: sqlite3.Connection, row: Mapping[str, object]) -> tuple[tuple[int, int], ...]:
+    """The latest proven full receipt before this windowless append receipt."""
+    order = _optional_int(row.get("receipt_order"))
+    if order is None or not is_legacy_append_without_window(row):
+        return ()
+    rank = raw_receipt_order_sql("prior")
+    cursor = conn.execute(
+        f"SELECT {rank}, prior.blob_size FROM raw_sessions AS prior "
+        "WHERE prior.source_path = ? AND prior.source_index = 0 "
+        "AND prior.revision_kind IN ('full', 'unknown') "
+        f"AND {rank} < ? ORDER BY {rank} DESC LIMIT 1",
+        (row["source_path"], order),
+    )
+    try:
+        predecessor = cursor.fetchone()
+        return () if predecessor is None else ((int(predecessor[0]), int(predecessor[1])),)
+    finally:
+        cursor.close()
 
 
 def retained_blob_source_candidates(
@@ -201,9 +284,10 @@ def retained_blob_source_candidates(
     one route can prove is one the other can restore. ``row`` is the raw's
     recorded evidence (:func:`read_raw_source_evidence`); ``container_member``
     is the caller's container decision (a relocated archive root can move
-    the container). ``prior_full_observations`` are ``(acquired_at_ms,
+    the container). ``prior_full_observations`` are ``(receipt_order,
     size)`` of the full observations at the same path, read only for a
-    legacy append row. Candidates are proofs only once the bytes read from
+    legacy append row. The order is the latest durable raw-payload receipt order, not their possibly inverted wall-clock timestamps.
+    Candidates are proofs only once the bytes read from
     them hash to the raw's recorded identity; the caller checks that.
     """
     if container_member:
@@ -221,10 +305,10 @@ def retained_blob_source_candidates(
             windows.append(SourceByteWindow(0, end))
         return tuple(RetainedBlobSource(RetainedBlobSourceKind.APPEND_WINDOW, window) for window in windows)
     if is_legacy_append_without_window(row):
-        acquired_at = _optional_int(row.get("acquired_at_ms"))
+        receipt_order = _optional_int(row.get("receipt_order"))
         predecessors = (
-            [(timestamp, full_size) for timestamp, full_size in prior_full_observations if timestamp < acquired_at]
-            if acquired_at is not None
+            [(order, full_size) for order, full_size in prior_full_observations if order < receipt_order]
+            if receipt_order is not None
             else []
         )
         if not predecessors:
@@ -317,8 +401,10 @@ __all__ = [
     "is_legacy_append_without_window",
     "is_recorded_container_member",
     "read_raw_source_evidence",
+    "read_prior_full_source_receipts",
     "source_window_holds_blob",
     "retained_blob_source_candidates",
+    "retained_source_location",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]

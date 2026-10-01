@@ -228,7 +228,7 @@ show_missing = true
 fail_under = 82
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true

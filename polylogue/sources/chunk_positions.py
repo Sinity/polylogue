@@ -25,6 +25,7 @@ class ChunkPositions:
         self._end = 0
         self._conn = conn
         self._positions: dict[tuple[int, int], int | None] = {}
+        self._unqualified_positions: dict[int, int | None] = {}
         if conn is not None:
             conn.execute(
                 "CREATE TEMP TABLE IF NOT EXISTS chunk_positions ("
@@ -44,6 +45,11 @@ class ChunkPositions:
                     self._positions[key] = (
                         placed if key not in self._positions or self._positions[key] == placed else None
                     )
+                    self._unqualified_positions[key[0]] = (
+                        placed
+                        if key[0] not in self._unqualified_positions or self._unqualified_positions[key[0]] == placed
+                        else None
+                    )
                 else:
                     conn.execute(
                         "INSERT INTO temp.chunk_positions VALUES (?, ?, ?) "
@@ -52,11 +58,21 @@ class ChunkPositions:
                         (*key, placed),
                     )
 
-    def position(self, position: int | None, variant: int = 0) -> int | None:
+    def position(self, position: int | None, variant: int | None = None) -> int | None:
         if position is None:
             return None
         if self._conn is None:
-            placed = self._positions.get((position, variant))
+            placed = (
+                self._unqualified_positions.get(position)
+                if variant is None
+                else self._positions.get((position, variant))
+            )
+        elif variant is None:
+            rows = self._conn.execute(
+                "SELECT DISTINCT placed FROM temp.chunk_positions WHERE position = ? LIMIT 2",
+                (position,),
+            ).fetchall()
+            placed = rows[0][0] if len(rows) == 1 else None
         else:
             row = self._conn.execute(
                 "SELECT placed FROM temp.chunk_positions WHERE position = ? AND variant = ?",
@@ -112,8 +128,15 @@ class ChunkPositions:
 
         return event.model_copy(
             update={
+                "owner_coordinate": self.owner(event.owner_coordinate),
                 "boundary_start_position": boundary(event.boundary_start_position),
                 "boundary_end_position": boundary(event.boundary_end_position),
-                "boundary_message_position": self.position(event.boundary_message_position),
+                # A next-message anchor at the end of this fragment has no
+                # message. Concatenation must not attach it to another input.
+                "boundary_message_position": (
+                    None
+                    if event.boundary_message_position == self._end
+                    else self.position(event.boundary_message_position)
+                ),
             }
         )

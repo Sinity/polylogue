@@ -70,7 +70,7 @@ def test_mutating_route_wait_is_bounded_by_the_request_deadline() -> None:
     the wait silently falls back to the 60s default instead of honouring the
     declared deadline.
     """
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.http import daemon_safe_handler
 
     release = threading.Event()

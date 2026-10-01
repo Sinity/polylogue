@@ -184,7 +184,7 @@ def _write_all(conn: sqlite3.Connection, sessions: list[ParsedSession], *, prepa
     for session in sessions:
         chash = str(session_content_hash(session))
         rows = prepare_session_rows(session) if prepared else None
-        write_fixture_index_session(conn, session, content_hash=chash, prepared=rows)
+        write_fixture_index_session(conn, session, content_hash=chash, prepared_rows=rows)
 
 
 def test_prepared_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
@@ -232,7 +232,7 @@ def test_valid_prepared_rows_are_used_verbatim_without_rebuilding(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
 
         stored_messages = conn.execute(
@@ -278,7 +278,7 @@ def test_writer_accepts_parse_bound_hash_without_recomputing(tmp_path: Path, mon
     monkeypatch.setattr(archive_tier_write, "_build_block_rows", _boom)
     conn = _connect(tmp_path / "bound.db")
     try:
-        session_id = write_fixture_index_session(conn, bound, prepared=prepared)
+        session_id = write_fixture_index_session(conn, bound, prepared_rows=prepared)
         assert conn.execute("SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0]
     finally:
         conn.close()
@@ -301,7 +301,7 @@ def test_valid_identity_carrier_is_reused_without_writer_recomputation(
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
     finally:
         conn.close()
@@ -322,7 +322,7 @@ def test_corrupt_identity_carrier_is_refused(tmp_path: Path) -> None:
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=corrupt,
+                prepared_rows=corrupt,
             )
     finally:
         conn.close()
@@ -379,7 +379,7 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepared,
+                prepared_rows=prepared,
             )
 
         observed = {
@@ -441,7 +441,7 @@ def test_new_session_skips_field_path_union(tmp_path: Path, monkeypatch: pytest.
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepared,
+            prepared_rows=prepared,
         )
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
     finally:
@@ -492,7 +492,7 @@ def test_stale_prepared_rows_fall_back_to_fresh_content(tmp_path: Path) -> None:
             conn,
             mutated,
             content_hash=str(session_content_hash(mutated)),
-            prepared=stale_prepared,
+            prepared_rows=stale_prepared,
         )
         stored_text = conn.execute(
             "SELECT user_context_text FROM messages WHERE session_id = ?",
@@ -522,7 +522,7 @@ def test_prepared_rows_are_ignored_when_no_content_hash_supplied(tmp_path: Path)
         # No AssertionError from a monkeypatched builder here -- this test
         # only proves the reuse guard degrades safely, not that the builder
         # was skipped (it correctly is NOT skipped in this case).
-        session_id = write_fixture_index_session(conn, session, prepared=prepared)
+        session_id = write_fixture_index_session(conn, session, prepared_rows=prepared)
         stored = conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -588,7 +588,6 @@ def test_prepared_write_preserves_prefix_sharing_context_without_writer_lowering
             child,
             content_hash=str(session_content_hash(child)),
             prepared_write=prepared,
-            prepared_required=True,
         )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
@@ -651,7 +650,6 @@ def test_disk_prepared_write_keeps_lineage_tail_and_rows_off_heap(
             publication,
             content_hash=publication.content_hash,
             prepared_write=prepared,
-            prepared_required=True,
         )
         assert [row[0] for row in conn.execute("SELECT native_id FROM messages WHERE session_id = ?", (child_id,))] == [
             "c"
@@ -707,7 +705,6 @@ def test_prepared_lineage_refuses_changed_earlier_parent_prefix(tmp_path: Path) 
                 child,
                 content_hash=str(session_content_hash(child)),
                 prepared_write=prepared,
-                prepared_required=True,
             )
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id = 'waiting-child'").fetchone()[0] == 0
     finally:
@@ -805,7 +802,6 @@ def test_prepared_cross_acquisition_union_matches_inline_and_skips_writer_merge(
             raw_id="newer",
             content_hash=publication.content_hash,
             prepared_write=prepared,
-            prepared_required=True,
         )
         for table in ("sessions", "messages", "blocks"):
             assert [tuple(row) for row in actual.execute(f"SELECT * FROM {table} ORDER BY rowid")] == [
@@ -863,7 +859,6 @@ def test_prepared_cross_acquisition_union_refuses_changed_predecessor(tmp_path: 
                 raw_id="second",
                 content_hash=str(session_content_hash(second)),
                 prepared_write=prepared,
-                prepared_required=True,
             )
         assert (
             conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()[0] == "competing"
@@ -914,7 +909,6 @@ def test_a_dropped_prepared_union_still_refreshes_replaced_attachments(tmp_path:
                 content_hash=str(session_content_hash(second)),
                 force_replace=True,
                 prepared_write=prepared,
-                prepared_required=prepared is not None,
             )
             snapshots.append(
                 {

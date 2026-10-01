@@ -25,7 +25,9 @@ current-producer failure and never deleted here.
 
 from __future__ import annotations
 
+import os
 import sqlite3
+import stat
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -39,7 +41,7 @@ from polylogue.archive.revision_authority import (
     raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.raw_coordinates import zip_member_coordinate
+from polylogue.core.raw_coordinates import zip_member_coordinate_candidates
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -60,6 +62,7 @@ ARTIFACT_IDENTITY_SUFFIXES: tuple[tuple[str, str], ...] = (
 
 _TERM_SOURCE_MISSING = "source_missing"
 _TERM_SOURCE_LOST = "source_lost"
+_TERM_SOURCE_UNAVAILABLE = "source_unavailable"
 _TERM_MATERIALIZED = "materialized"
 _TERM_REVISION_SUPERSEDED = "revision_superseded"
 _TERM_BYTE_DUPLICATE = "byte_duplicate_superseded"
@@ -103,6 +106,7 @@ _RULES: dict[str, str] = {
     _TERM_SOURCE_LOST: (
         "acquired source file no longer exists on disk and no raw payload blob is retained; the bytes are gone"
     ),
+    _TERM_SOURCE_UNAVAILABLE: "source file or member inventory is unreadable; retention is unmeasured and retryable",
     _TERM_MATERIALIZED: "index session carries this raw_id, or the agent work event's session is indexed",
     _TERM_REVISION_SUPERSEDED: "another revision of the same logical source is materialized",
     _TERM_BYTE_DUPLICATE: "content-bound byte-duplicate supersession receipt names a materialized twin",
@@ -163,6 +167,7 @@ _RULES: dict[str, str] = {
 _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
@@ -372,65 +377,85 @@ def fragment_identity_shape(native_id: str) -> str | None:
     return None
 
 
-_ARCHIVE_MEMBER_SEPARATOR = "!"
-
-# Keyed by (container, mtime_ns, size) so a rewritten archive is never answered
-# from a stale namelist.
-_MEMBER_NAMELIST_CACHE: dict[tuple[str, int, int, int, int], frozenset[str] | None] = {}
+def _inventory_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    return info.st_dev, info.st_ino, info.st_ctime_ns, info.st_mtime_ns, info.st_size
 
 
-def _member_names(container: Path) -> frozenset[str] | None:
-    """Return the archive's member names, or ``None`` when it is not a readable zip."""
+def _member_inventory(
+    container: Path,
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+) -> frozenset[str] | bool | None:
+    """Measure a container through one descriptor; cache only unchanged evidence."""
     try:
-        stat = container.stat()
+        descriptor = os.open(container, os.O_RDONLY | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return False
     except OSError:
         return None
-    key = (str(container), stat.st_dev, stat.st_ino, stat.st_ctime_ns, stat.st_mtime_ns)
-    if key not in _MEMBER_NAMELIST_CACHE:
+    with os.fdopen(descriptor, "rb") as stream:
         try:
-            with zipfile.ZipFile(container) as archive:
-                _MEMBER_NAMELIST_CACHE[key] = frozenset(archive.namelist())
-        except (OSError, zipfile.BadZipFile):
-            _MEMBER_NAMELIST_CACHE[key] = None
-    return _MEMBER_NAMELIST_CACHE[key]
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                return False
+            before = _inventory_identity(info)
+            cached = inventories.get(container)
+            if cached is not None and cached[0] == before:
+                names = cached[1]
+            else:
+                try:
+                    with zipfile.ZipFile(stream) as archive:
+                        names = frozenset(info.filename for info in archive.infolist() if not info.is_dir())
+                except zipfile.BadZipFile:
+                    names = False
+            if before != _inventory_identity(os.fstat(stream.fileno())):
+                return None
+            if before != _inventory_identity(container.stat()):
+                return None
+            inventories[container] = before, names
+            return names
+        except OSError:
+            # An admitted container that disappears during the measurement
+            # leaves a retryable observation, not a proof of permanent loss.
+            return None
 
 
-def _source_exists(archive_root: Path, source_path: str) -> bool:
-    """Does the acquired source still exist on disk?
+def _source_presence(
+    archive_root: Path,
+    source_path: str,
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+) -> bool | None:
+    """Present, proven absent, or unavailable source evidence for this audit.
 
-    A raw acquired from inside an export bundle records an ``archive!member``
-    coordinate (``sources/source_snapshot.py`` builds it) or, from the ZIP
-    readers, an ``archive:member`` coordinate.  Probing that string
-    as a filesystem path can never succeed, so the coordinate is resolved to its
-    container and the member is required to be present in it -- container
-    existence alone would conserve a member the archive no longer holds.  A container that is not a readable zip cannot be
-    inspected here; its existence is the strongest evidence this check owns.
+    A non-ZIP container proves no members remain. A permission or I/O fault
+    cannot prove loss. Inventories are scoped to one audit and bound to the
+    opened container's identity, never reused after a replacement or rewrite.
     """
-
-    def _resolve(candidate: str) -> Path:
-        path = Path(candidate)
-        return path if path.is_absolute() else archive_root / path
-
-    direct = _resolve(source_path)
-    if direct.exists():
-        return True
-    container_text, separator, member = source_path.partition(_ARCHIVE_MEMBER_SEPARATOR)
+    direct = Path(source_path)
+    if not direct.is_absolute():
+        direct = archive_root / direct
+    try:
+        info = direct.stat()
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError:
+        return None
+    else:
+        return stat.S_ISREG(info.st_mode)
+    container_text, separator, member = str(direct).partition("!")
     if separator and member:
-        container = _resolve(container_text)
-        if not container.is_file():
-            return False
-        names = _member_names(container)
-        return True if names is None else member in names
-    # ZIP acquisition records ``<container>:<member>`` (``decoder_zip`` and the
-    # import route), not the snapshot's ``!`` form. The shared parser tries each
-    # colon and accepts only a prefix that is a real ZIP, so a loose file whose
-    # name contains a colon is never mistaken for a member.
-    coordinate = zip_member_coordinate(str(direct))
-    if coordinate is None:
-        return False
-    container, member = coordinate
-    names = _member_names(container)
-    return True if names is None else member in names
+        names = _member_inventory(Path(container_text), inventories)
+        if names is None:
+            return None
+        return member in names if isinstance(names, frozenset) else False
+    # Acquisition permits arbitrary ZIP filenames. Probe the shared owner's
+    # candidates in order, without selecting a boundary from spelling alone.
+    for container, member in zip_member_coordinate_candidates(str(direct)):
+        names = _member_inventory(container, inventories)
+        if names is None:
+            return None
+        if isinstance(names, frozenset):
+            return member in names
+    return False
 
 
 def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
@@ -626,16 +651,15 @@ def audit_source_conservation(
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
-    missing_paths: dict[str, bool] = {}
+    inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]] = {}
     for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
         # A work event is authored by the archive itself; its retained raw is
         # the source, so there is no acquired file to probe.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
-            present = missing_paths.get(source_path)
+            present = _source_presence(archive_root, str(source_path), inventories)
             if present is None:
-                present = _source_exists(archive_root, str(source_path))
-                missing_paths[source_path] = present
-            if not present:
+                term = _TERM_SOURCE_UNAVAILABLE
+            elif not present:
                 retained = bool(bytes_retained)
                 # blob_hash comes from the census query itself: no per-row read.
                 if blob_hash is not None:
@@ -1049,6 +1073,7 @@ def audit_source_conservation(
     forward_order = (
         _TERM_SOURCE_MISSING,
         _TERM_SOURCE_LOST,
+        _TERM_SOURCE_UNAVAILABLE,
         _TERM_MATERIALIZED,
         _TERM_REVISION_SUPERSEDED,
         _TERM_BYTE_DUPLICATE,

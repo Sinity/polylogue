@@ -11,6 +11,8 @@ import sqlite3
 import stat
 import tempfile
 import threading
+from collections.abc import Iterator
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -31,15 +33,51 @@ from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_
 from polylogue.storage.sqlite.connection_profile import (
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
+    _connect_archive_writer,
     open_readonly_connection,
     retained_native_sql_owners_for_lifetime,
-    scratch_connection_context,
 )
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 # Kept locally so schema metadata can import the bootstrap module while the
 # migration runner is still importing the archive-tier package.
 DURABLE_MIGRATION_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeTierProbeAuthority:
+    """The schema/version of an authenticated post-apply train candidate."""
+
+    tier: ArchiveTier
+    version: int
+    schema_inventory_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.tier not in DURABLE_MIGRATION_TIERS
+            or type(self.version) is not int
+            or self.version < 1
+            or not isinstance(self.schema_inventory_sha256, str)
+            or len(self.schema_inventory_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.schema_inventory_sha256)
+        ):
+            raise ValueError("invalid runtime tier probe schema authority")
+
+
+_RUNTIME_PROBE_AUTHORITY: ContextVar[RuntimeTierProbeAuthority | None] = ContextVar(
+    "polylogue_runtime_probe_authority", default=None
+)
+
+
+@contextlib.contextmanager
+def runtime_tier_probe_authority(authority: RuntimeTierProbeAuthority) -> Iterator[None]:
+    """Carry one train's accepted schema through its existing consumer probes."""
+    token = _RUNTIME_PROBE_AUTHORITY.set(authority)
+    try:
+        yield
+    finally:
+        _RUNTIME_PROBE_AUTHORITY.reset(token)
+
 
 DurabilityClass = Literal["irreplaceable", "rebuildable", "expensive_rebuild", "human", "disposable"]
 
@@ -432,32 +470,48 @@ def initialize_runtime_tier_probe(
         raise RuntimeError("runtime tier probe requires an empty connection")
     if conn.execute("SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone() is not None:
         raise RuntimeError("runtime tier probe requires an empty connection")
-    if not main_path and tier in DURABLE_MIGRATION_TIERS:
-        # The numbered runner proves actual file custody. Build that proof on
-        # an owned isolated file, then copy its proved schema into the probe;
-        # an in-memory connection never supplies a fabricated archive identity.
-        with scratch_connection_context(prefix="polylogue-tier-probe-", filename=f"{tier.value}.db") as temporary:
-            from polylogue.storage.sqlite.migration_runner import (
-                _durable_literal_rows_digest,
-                capture_durable_schema_inventory,
-            )
+    if tier in DURABLE_MIGRATION_TIERS:
+        from polylogue.storage.sqlite.durable_change_train import (
+            _canonical_schema_inventory,
+            validate_durable_migration_sidecars,
+        )
+        from polylogue.storage.sqlite.migration_runner import (
+            _execute_proved_migration_sql,
+            _load_migrations,
+            capture_durable_schema_inventory,
+        )
 
-            path = Path(next(row[2] for row in temporary.execute("PRAGMA database_list") if row[1] == "main"))
-            initialize_runtime_tier_probe(temporary, tier, probe_path=path)
-            admitted_version = int(temporary.execute("PRAGMA user_version").fetchone()[0])
-            evidence = (capture_durable_schema_inventory(temporary).sha256, _durable_literal_rows_digest(temporary))
-            temporary.backup(conn)
-            if (capture_durable_schema_inventory(conn).sha256, _durable_literal_rows_digest(conn)) != evidence:
-                raise RuntimeError("runtime tier probe backup changed admitted schema or rows")
-        conn.execute("PRAGMA foreign_keys = ON")
-        if int(conn.execute("PRAGMA user_version").fetchone()[0]) != admitted_version:
-            raise RuntimeError("runtime tier probe backup did not retain its admitted version")
+        authority = _RUNTIME_PROBE_AUTHORITY.get()
+        target = (
+            authority.version if authority is not None and authority.tier is tier else ARCHIVE_VERSION_BY_TIER[tier]
+        )
+        expected = _canonical_schema_inventory(tier, target)
+        if authority is not None and authority.tier is tier and authority.schema_inventory_sha256 != expected.sha256:
+            raise RuntimeError("runtime tier probe authority differs from the installed numbered schema")
+        steps = _load_migrations(tier)
+        validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in steps))
+        initialize_archive_tier(conn, tier)
+        floor = ARCHIVE_BASELINE_VERSION_BY_TIER[tier]
+        pending = tuple(step for step in steps if floor < step.version <= target)
+        if tuple(step.version for step in pending) != tuple(range(floor + 1, target + 1)):
+            raise RuntimeError("runtime tier probe lacks its complete numbered schema chain")
+        for step in pending:
+            before = capture_durable_schema_inventory(conn)
+            if before.sha256 != _canonical_schema_inventory(tier, step.version - 1).sha256:
+                raise RuntimeError("runtime tier probe differs before its numbered schema step")
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                _execute_proved_migration_sql(conn, step)
+                if not conn.in_transaction:
+                    raise RuntimeError("runtime tier probe schema step escaped its owned transaction")
+                conn.execute(f"PRAGMA user_version = {step.version}")
+        if (
+            int(conn.execute("PRAGMA user_version").fetchone()[0]) != target
+            or capture_durable_schema_inventory(conn).sha256 != expected.sha256
+        ):
+            raise RuntimeError("runtime tier probe did not reproduce its accepted schema/version")
         return
     initialize_archive_tier(conn, tier)
-    if tier in DURABLE_MIGRATION_TIERS:
-        from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
-
-        migrate_archive_tier(conn, tier, backup_manifest=None)
 
 
 def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
@@ -657,7 +711,11 @@ def initialize_archive_database(
                 remedy="initialize the canonical archive root to construct its baseline and admit declared trains",
             )
         path.parent.mkdir(parents=True, exist_ok=True)
-        conn = connect_measured(path)
+        conn = (
+            _connect_archive_writer(path, archive_root=path.parent)
+            if tier is ArchiveTier.SOURCE
+            else connect_measured(path)
+        )
         owner = NativeSQLCustodyOwner(conn)
     else:
         if page_size is not None:
@@ -668,7 +726,11 @@ def initialize_archive_database(
             raise RuntimeError(f"durable tier is missing; refusing runtime initialization: {path}") from exc
         if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
-        conn = connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        conn = (
+            _connect_archive_writer(path, archive_root=path.parent, existing_only=True)
+            if tier is ArchiveTier.SOURCE
+            else connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        )
         owner = NativeSQLCustodyOwner(conn)
     primary: BaseException | None = None
     try:
@@ -929,19 +991,30 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                     claim = next(
                         (claim for claim in durable_migration_claims(tier) if claim.target_version == current + 1), None
                     )
-                    if claim is None or claim.requires_backup:
+                    if claim is None:
                         from polylogue.core.errors import SchemaSkew
 
                         raise SchemaSkew(
                             tier=tier.value,
                             expected=target,
                             found=current,
-                            remedy="daemon must admit the declared train with its required verified backup",
+                            remedy="the next numbered migration must have a declared train",
+                        )
+                    backup_manifest = None
+                    if claim.requires_backup:
+                        from polylogue.storage.backup_package import create_pre_migration_backup
+
+                        backup_manifest = create_pre_migration_backup(
+                            root,
+                            tier=tier.value,
+                            current_version=current,
+                            target_version=current + 1,
+                            archive_owner=owned,
                         )
                     execute_durable_change_train(
                         root,
                         tier,
-                        backup_manifest=None,
+                        backup_manifest=backup_manifest,
                         daemon_stopped_evidence_ref="proof:bootstrap-before-runtime-open",
                         single_writer_evidence_ref="proof:bootstrap-owned-archive",
                         release_archive_ownership=lambda: None,

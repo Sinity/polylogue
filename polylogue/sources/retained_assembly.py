@@ -24,11 +24,12 @@ Three rules from the decision record shape every lookup here:
   acquired from, or the export a ChatGPT shard is a member of. The same
   basename under two installs, and the same asset id in two exports, are
   different objects and never cross-bind.
-* **Currency follows durable receipt order** (R5). A rewritten index or map
-  re-mints its content-derived raw id when its bytes return to an earlier
-  value, so ``raw_sessions.acquired_at_ms`` is the first sighting, not the
-  newest. The newest ``raw_payload`` receipt decides, exactly as
-  ``sources/codex_state_projection.py`` orders one raw.
+* **Currency follows durable receipt order** (R5). Reobserving an earlier
+  byte revision renews its ``raw_payload`` receipt while preserving its raw
+  identity. The existing receipt-order owner decides currency; wall clocks
+  and raw-row insertion order do not. A ZIP artifact additionally requires
+  exact completed acquisition membership. Groups with conflicting complete
+  sets produce a typed gap, and custody remains intact.
 * **Absence is an outcome, never a guess** (R6/S6). A missing map resolves to
   an empty bundle and the parsed-content fallbacks apply; nothing is
   reconstructed from the recorded source path.
@@ -41,19 +42,24 @@ approximation.
 
 from __future__ import annotations
 
-import re
+import errno
 import sqlite3
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TypeVar, cast
 
+import ijson
+
 from polylogue.archive.artifact_taxonomy import ArtifactKind
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_coordinates import split_zip_member_text
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, read_captured_zip_coordinate_receipt
+from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.source_items import retained_completed_source_item_for_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
 
@@ -82,21 +88,13 @@ class RetainedArtifact:
     source_path: str
     blob_hash: str
     blob_size: int
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None
 
 
 def _like_prefix(prefix: str) -> str:
     """Escape a literal path prefix for a ``LIKE ... ESCAPE '\\'`` match."""
     escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
     return f"{escaped}%"
-
-
-_RECEIPT_ORDER = """
-    SELECT b.{column}
-    FROM blob_refs AS b
-    WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-    ORDER BY b.rowid DESC
-    LIMIT 1
-"""
 
 
 def _select_retained(
@@ -106,65 +104,66 @@ def _select_retained(
     artifact_kind: ArtifactKind,
     where: str,
     parameters: list[object],
-) -> dict[str, RetainedArtifact]:
-    """Return the current retained observation per exact ``source_path``.
+) -> Generator[tuple[str, RetainedArtifact], None, None]:
+    """Page current exact coordinates under durable receipt and group proof."""
+    receipt_order = raw_receipt_order_sql("r")
+    cursor = source_conn.execute(
+        f"""
+        WITH candidates AS (
+            SELECT r.raw_id, a.source_path, lower(hex(r.blob_hash)) AS blob_hash, r.blob_size,
+                   {receipt_order} AS receipt_order, c.entry_ordinal, c.captured_coordinate,
+                   ROW_NUMBER() OVER (PARTITION BY a.source_path ORDER BY {receipt_order} DESC, r.raw_id) AS rank
+            FROM raw_artifacts a JOIN raw_sessions r ON r.raw_id=a.raw_id
+            LEFT JOIN raw_container_coordinates c ON c.raw_id=r.raw_id
+            WHERE a.origin=? AND ({where}) AND a.artifact_kind=?
+              AND r.blob_hash IS NOT NULL
+        ) SELECT raw_id, source_path, blob_hash, blob_size, receipt_order, entry_ordinal, captured_coordinate
+          FROM candidates WHERE rank=1 ORDER BY source_path
+    """,
+        [origin.value, *parameters, artifact_kind.value],
+    )
+    try:
+        for raw_id, source_path, blob_hash, blob_size, receipt, ordinal, captured in cursor:
+            if receipt is None:
+                raise OSError(errno.ENODATA, "retained artifact currency has no source receipt")
+            if ordinal is not None:
+                generation, item = retained_completed_source_item_for_raw(source_conn, str(raw_id))
+                # The group's complete denominator proves duplicate membership.
+                # Live assembly chooses the first central entry at this path.
+                member = source_conn.execute(
+                    "SELECT r.raw_id, lower(hex(r.blob_hash)), r.blob_size, c.captured_coordinate FROM source_item_raw_members m "
+                    "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
+                    "JOIN raw_container_coordinates c ON c.raw_id=r.raw_id "
+                    "JOIN raw_artifacts a ON a.raw_id=r.raw_id "
+                    "WHERE m.source_generation_id=? AND m.source_item_id=? AND a.source_path=? "
+                    "AND a.origin=? AND a.artifact_kind=? "
+                    "ORDER BY c.entry_ordinal, c.split_index LIMIT 1",
+                    (generation, item, str(source_path), origin.value, artifact_kind.value),
+                ).fetchone()
+                if member is None:
+                    raise RetainedZipMembershipUnprovedError("completed ZIP group lacks its selected artifact")
+                raw_id, blob_hash, blob_size, captured = member
+                if captured is None:
+                    raise RetainedZipMembershipUnprovedError(
+                        "retained ZIP artifact lacks its captured namespace/member receipt"
+                    )
+            path = str(source_path)
+            coordinate = None if captured is None else read_captured_zip_coordinate_receipt(captured)
+            if coordinate is not None and coordinate.declared_member != path:
+                raise RetainedZipMembershipUnprovedError(
+                    "retained ZIP artifact coordinate differs from its captured member receipt"
+                )
+            yield path, RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size), coordinate)
+    finally:
+        cursor.close()
 
-    One row per coordinate: an older observation of the same coordinate is
-    still archived and readable, it is simply not the current value. The
-    newest durable receipt names the current acquisition. Within that
-    acquisition -- the observations its pass stamped with one acquisition
-    time -- a ZIP can hold several members at one path, and live assembly
-    binds the first in central-directory order, so the lowest member ordinal
-    wins there.
-    """
-    # The coordinate predicate is expressed on ``raw_artifacts`` so
-    # ``idx_raw_artifacts_source_identity`` (origin, source_path, source_index)
-    # serves both the exact-path and the export-prefix form; ``raw_sessions``
-    # is joined only for the retained bytes and the receipt order.
-    sql = f"""
-        SELECT
-            r.raw_id,
-            a.source_path,
-            lower(hex(r.blob_hash)),
-            r.blob_size,
-            COALESCE(({_RECEIPT_ORDER.format(column="acquired_at_ms")}), r.acquired_at_ms),
-            COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid),
-            c.entry_ordinal
-        FROM raw_artifacts AS a
-        JOIN raw_sessions AS r ON r.raw_id = a.raw_id
-        LEFT JOIN raw_container_coordinates AS c ON c.raw_id = r.raw_id
-        WHERE a.origin = ?
-          AND ({where})
-          AND a.artifact_kind = ?
-          AND r.blob_hash IS NOT NULL
-          AND r.parse_error IS NULL
-    """
-    # A read failure here is infrastructure state, not an answer: it
-    # propagates so the ingesting pass records a retryable outcome instead of
-    # resolving to "no evidence" and writing a session that silently lost its
-    # provider metadata.
-    rows = source_conn.execute(sql, [origin.value, *parameters, artifact_kind.value]).fetchall()
-    by_path: dict[str, list[tuple[int, int, int, str, RetainedArtifact]]] = {}
-    for raw_id, source_path, blob_hash, blob_size, observed, order, entry_ordinal in rows:
-        path = str(source_path)
-        by_path.setdefault(path, []).append(
-            (
-                int(order),
-                int(observed),
-                int(entry_ordinal or 0),
-                str(raw_id),
-                RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size)),
-            )
-        )
-    current: dict[str, RetainedArtifact] = {}
-    for path, observations in by_path.items():
-        # The newest durable receipt names the current acquisition; the clock
-        # only groups the observations that one pass stamped together, and
-        # among those the first member in central-directory order wins.
-        newest = max(observations, key=lambda item: (item[0], item[3]))
-        same_pass = [item for item in observations if item[1] == newest[1]]
-        current[path] = min(same_pass, key=lambda item: (item[2], -item[0]))[4]
-    return current
+
+def _first_retained_artifact(records: Generator[tuple[str, RetainedArtifact], None, None]) -> RetainedArtifact | None:
+    try:
+        first = next(records, None)
+        return None if first is None else first[1]
+    finally:
+        records.close()
 
 
 def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
@@ -265,7 +264,7 @@ def retained_claude_code_sidecars(
         where="a.source_path = ?",
         parameters=[index_path],
     )
-    artifact = indexes.get(index_path)
+    artifact = _first_retained_artifact(indexes)
     if artifact is not None:
         from .parsers.claude.index import parse_sessions_index_bytes
 
@@ -282,7 +281,7 @@ def retained_claude_code_sidecars(
         where="a.source_path = ?",
         parameters=[history_path],
     )
-    artifact = histories.get(history_path)
+    artifact = _first_retained_artifact(histories)
     if artifact is not None:
         from .parsers.claude.history import build_session_paste_index_bytes
 
@@ -342,7 +341,7 @@ def retained_codex_sidecars(
         where="a.source_path = ?",
         parameters=[index_path],
     )
-    artifact = indexes.get(index_path)
+    artifact = _first_retained_artifact(indexes)
     if artifact is not None:
         from .assembly_codex import parse_codex_session_index_bytes
 
@@ -357,7 +356,7 @@ def retained_codex_sidecars(
         where="a.source_path = ?",
         parameters=[history_path],
     )
-    artifact = histories.get(history_path)
+    artifact = _first_retained_artifact(histories)
     if artifact is not None:
         from .assembly_codex import parse_codex_history_bytes
 
@@ -372,35 +371,28 @@ def retained_codex_sidecars(
 # --------------------------------------------------------------------------
 
 
-_ZIP_MEMBER_SEPARATOR = re.compile(r"\.zip:", re.IGNORECASE)
-
-
-def chatgpt_export_scope(session_source_path: str) -> str | None:
-    """Return the coordinate prefix of the export a shard is a member of.
-
-    A ZIP member is recorded as ``<archive>:<member>``, so the export scope is
-    everything up to and including that separator. A directory export's shard
-    is scoped by its own containing directory -- the same anchor
-    ``ChatGPTAssemblySpec.discover_sidecars`` climbs to. Two exports are two
-    scopes in either acquisition order.
-    """
+def chatgpt_export_scope(
+    session_source_path: str,
+    *,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
+) -> str | None:
+    """Scope exact acquired ZIP members separately from ordinary literal paths."""
     if not session_source_path:
         return None
-    # The archive suffix is matched case-insensitively (``first.ZIP:``) on the
-    # original string, so the scope keeps the path's own spelling and offsets.
-    match = _ZIP_MEMBER_SEPARATOR.search(session_source_path)
-    if match is not None:
-        return session_source_path[: match.end()]
+    if captured_zip_coordinate is not None:
+        if session_source_path != captured_zip_coordinate.declared_member:
+            raise ValueError("session path differs from its captured ZIP coordinate")
+        return captured_zip_coordinate.declared_container + ":"
     parent = Path(session_source_path).parent
-    if str(parent) in {"", "."}:
-        return None
-    return f"{parent}/"
+    return None if str(parent) in {"", "."} else f"{parent}/"
 
 
-def _member_basename(source_path: str) -> str:
-    """The file name live discovery sees: a ZIP member's own name, not ``<zip>:<member>``."""
-    split = split_zip_member_text(source_path)
-    member = split[1] if split is not None else source_path
+def _member_basename(artifact: RetainedArtifact) -> str:
+    member = (
+        artifact.captured_zip_coordinate.member_name
+        if artifact.captured_zip_coordinate is not None
+        else artifact.source_path
+    )
     return PurePosixPath(member.replace("\\", "/")).name
 
 
@@ -409,16 +401,17 @@ def retained_chatgpt_sidecars(
     blob_store: BlobStore,
     *,
     session_source_path: str,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
 ) -> SidecarData:
     """Rebuild the ChatGPT asset index and asset-blob map from retained bytes."""
-    scope = chatgpt_export_scope(session_source_path)
+    scope = chatgpt_export_scope(session_source_path, captured_zip_coordinate=captured_zip_coordinate)
     if scope is None:
         return cast(SidecarData, {})
-    from .assembly_chatgpt import _member_asset_id, _record_asset_blob
+    from .assembly_chatgpt import _member_asset_id
     from .parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
-    library_payload: object | None = None
-    asset_names_payload: object | None = None
+    index = ChatGPTAssetIndex()
+    claimed: set[str] = set()
     indexes = _select_retained(
         source_conn,
         origin=Origin.CHATGPT_EXPORT,
@@ -426,54 +419,60 @@ def retained_chatgpt_sidecars(
         where="a.source_path LIKE ? ESCAPE '\\'",
         parameters=[_like_prefix(scope)],
     )
-    for path, artifact in sorted(indexes.items()):
-        payload = _read(blob_store, artifact)
-        if payload is None:
-            continue
-        from polylogue.core.json import JSONDecodeError
-        from polylogue.core.json import loads as json_loads
-
+    try:
         try:
-            document = json_loads(payload)
-        except (JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-            logger.debug("retained chatgpt asset index is not JSON (%s): %s", path, exc)
-            continue
-        name = _member_basename(path)
-        if name == "library_files.json" and library_payload is None:
-            library_payload = document
-        elif name == "conversation_asset_file_names.json" and asset_names_payload is None:
-            asset_names_payload = document
+            for path, artifact in indexes:
+                name = _member_basename(artifact)
+                if name not in {"library_files.json", "conversation_asset_file_names.json"} or name in claimed:
+                    continue
+                try:
+                    with blob_store.open(artifact.blob_hash) as source:
+                        if index.load_stream(source, library=name == "library_files.json"):
+                            claimed.add(name)
+                except (OSError, ValueError, ijson.JSONError) as exc:
+                    logger.debug("retained chatgpt asset index unavailable (%s): %s", path, exc)
+        finally:
+            indexes.close()
+    except BaseException:
+        index.close()
+        raise
 
-    asset_blobs: dict[str, tuple[str, int]] = {}
-    assets = _select_retained(
-        source_conn,
-        origin=Origin.CHATGPT_EXPORT,
-        artifact_kind=ArtifactKind.EXPORT_ASSET,
-        where="a.source_path LIKE ? ESCAPE '\\'",
-        parameters=[_like_prefix(scope)],
-    )
-    # Key members exactly as live discovery does: the bare asset id until a
-    # second member proves it ambiguous, then ``asset_id#member`` for every
-    # member, with the member named relative to its export scope.
-    member_by_asset: dict[str, str] = {}
-    for path, artifact in sorted(assets.items()):
-        asset_id = _member_asset_id(_member_basename(path))
-        if asset_id is None:
-            continue
-        member = path[len(scope) :] if path.startswith(scope) else _member_basename(path)
-        _record_asset_blob(asset_blobs, member_by_asset, asset_id, member, (artifact.blob_hash, artifact.blob_size))
-
-    if library_payload is None and asset_names_payload is None and not asset_blobs:
-        return cast(SidecarData, {})
-    resolved: SidecarData = {
-        "chatgpt_asset_index": ChatGPTAssetIndex.build(
-            library_files_payload=library_payload,
-            asset_file_names_payload=asset_names_payload,
+    try:
+        group = index.begin_asset_group()
+        assets = _select_retained(
+            source_conn,
+            origin=Origin.CHATGPT_EXPORT,
+            artifact_kind=ArtifactKind.EXPORT_ASSET,
+            where="a.source_path LIKE ? ESCAPE '\\'",
+            parameters=[_like_prefix(scope)],
         )
-    }
-    if asset_blobs:
-        resolved["chatgpt_asset_blobs"] = asset_blobs
-    return resolved
+        # Key members exactly as live discovery does: the bare asset id until a
+        # second member proves it ambiguous, then ``asset_id#member`` for every
+        # member, with the member named relative to its export scope.
+        try:
+            for path, artifact in assets:
+                asset_id = _member_asset_id(_member_basename(artifact))
+                if asset_id is None:
+                    continue
+                member = path[len(scope) :] if path.startswith(scope) else _member_basename(artifact)
+                index.record_asset(group, asset_id, member, (artifact.blob_hash, artifact.blob_size))
+
+        finally:
+            assets.close()
+
+        index.finish_asset_group(group)
+        index.seal()
+        asset_blobs = index.asset_blobs
+        if not claimed and not asset_blobs:
+            index.close()
+            return cast(SidecarData, {})
+        resolved: SidecarData = {"chatgpt_asset_index": index}
+        if asset_blobs:
+            resolved["chatgpt_asset_blobs"] = asset_blobs
+        return resolved
+    except BaseException:
+        index.close()
+        raise
 
 
 # --------------------------------------------------------------------------
@@ -488,6 +487,7 @@ def with_retained_assembly_evidence(
     source_conn: sqlite3.Connection,
     blob_store: BlobStore,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
 ) -> SidecarData:
     """Fill assembly inputs the caller does not already carry.
 
@@ -520,13 +520,22 @@ def with_retained_assembly_evidence(
             return sidecar_data
         retained = retained_codex_sidecars(source_conn, blob_store, session_source_path=source_path)
     else:
-        retained = retained_chatgpt_sidecars(source_conn, blob_store, session_source_path=source_path)
+        retained = retained_chatgpt_sidecars(
+            source_conn, blob_store, session_source_path=source_path, captured_zip_coordinate=captured_zip_coordinate
+        )
     if not retained:
         return sidecar_data
     merged: dict[str, object] = dict(sidecar_data)
     for key, value in retained.items():
         merged.setdefault(key, value)
-    return cast(SidecarData, merged)
+    result = cast(SidecarData, merged)
+    from .assembly import close_sidecar_data
+
+    # A supplement whose keys were all already authoritative must settle its
+    # private artifact. Any retained asset view kept in result carries that
+    # same owner through the last consumer instead.
+    close_sidecar_data(retained, borrowed=result)
+    return result
 
 
 def resolve_retained_assembly_evidence(
@@ -535,6 +544,7 @@ def resolve_retained_assembly_evidence(
     provider: Provider | None,
     archive_root: Path,
     source_path: str | None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None,
 ) -> SidecarData:
     """Fill missing assembly inputs from the archive at ``archive_root``.
 
@@ -556,6 +566,7 @@ def resolve_retained_assembly_evidence(
             source_conn=frame.connection,
             blob_store=BlobStore(archive_root / "blob"),
             source_path=source_path,
+            captured_zip_coordinate=captured_zip_coordinate,
         )
 
 

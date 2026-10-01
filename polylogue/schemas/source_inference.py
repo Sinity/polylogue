@@ -19,10 +19,10 @@ import time
 import zipfile
 from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import closing, suppress
 from dataclasses import dataclass, field, replace
-from datetime import timezone
+from datetime import UTC
 from functools import partial
 from itertools import chain, islice
 from pathlib import Path
@@ -30,6 +30,7 @@ from typing import BinaryIO, Literal, cast, overload
 from uuid import UUID
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.core.compute import BoundedComputeAdapter, CancellationHandle, DaemonBackpressureError, compute_adapter
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
@@ -51,7 +52,7 @@ from polylogue.schemas.source_recipe import (
     has_collapsed_names,
     relevant_normalization_paths,
 )
-from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
+from polylogue.sources.decoder_zip import ZipEntryValidator, open_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
 from polylogue.sources.origin_specs import (
     DatabaseMemberBinding,
@@ -982,7 +983,7 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
         if isinstance(value, (int, float)) or isinstance(value, str) and value:
             parsed = parse_timestamp(value)
             if parsed is not None:
-                return 1, parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+                return 1, parsed.astimezone(UTC).isoformat(timespec="microseconds")
             if isinstance(value, str):
                 return 0, value
     return None
@@ -1588,7 +1589,7 @@ def _collect_zip_candidate(
             members = validator.filter_entries(observable, allowed_suffixes=(".json", ".jsonl", ".ndjson"))
             for member_index, member in enumerate(sorted(members, key=lambda item: item.filename)):
                 member_path = Path(member.filename)
-                with open_bounded_zip_entry(archive, member) as member_handle:
+                with open_zip_entry(archive, member) as member_handle:
                     digest_builder = hashlib.sha256()
                     for chunk in iter(lambda: member_handle.read(1024 * 1024), b""):
                         digest_builder.update(chunk)
@@ -1607,7 +1608,7 @@ def _collect_zip_candidate(
                 )
                 try:
                     if member_path.suffix.lower() in {".jsonl", ".ndjson"}:
-                        with open_bounded_zip_entry(archive, member) as handle:
+                        with open_zip_entry(archive, member) as handle:
                             rows, member_records, versions, unrecognized = _collect_payload_evidence(
                                 member_candidate,
                                 member_revision,
@@ -1623,7 +1624,7 @@ def _collect_zip_candidate(
                             member_candidate,
                             member_revision,
                             _iter_document_payloads(
-                                partial(open_bounded_zip_entry, archive, member),
+                                partial(open_zip_entry, archive, member),
                                 member.filename,
                                 byte_count=member.file_size,
                             ),
@@ -1633,7 +1634,7 @@ def _collect_zip_candidate(
                             spool_path=spool_path,
                             spool_partition=str(member_index),
                         )
-                except (SourceInferenceError, ZipBombError, OSError) as exc:
+                except (SourceInferenceError, OSError) as exc:
                     return _CollectedCandidate(
                         candidate, revision, SourceTerminal("decode_failed", byte_count, reason=str(exc))
                     )
@@ -1642,7 +1643,7 @@ def _collect_zip_candidate(
                 record_count += member_records
                 producer_versions.update(versions)
                 producer_version_unrecognized = producer_version_unrecognized or unrecognized
-    except (OSError, ZipBombError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile):
         return _CollectedCandidate(candidate, revision, SourceTerminal("decode_failed", reason="invalid_zip"))
     if not contributions and (spool_path is None or not _spool_has_contributions(spool_path)):
         if non_applicable_members and not observable:
@@ -1661,8 +1662,16 @@ def _collect_zip_candidate(
     )
 
 
+def _candidate_compute_bytes(candidate: _SourceCandidate) -> int:
+    """Estimate admission without turning a changed path into a new outcome."""
+    try:
+        return candidate.path.stat().st_size
+    except OSError:
+        return 0
+
+
 def _bounded_collected_candidates(
-    executor: ProcessPoolExecutor,
+    executor: BoundedComputeAdapter,
     candidates: Iterable[_SourceCandidate],
     *,
     limit: int,
@@ -1673,40 +1682,67 @@ def _bounded_collected_candidates(
 ) -> Iterator[_CollectedCandidate]:
     """Drain completed source workers while keeping the submission window bounded."""
     iterator = iter(candidates)
-    pending = set()
+    pending: dict[Future[_CollectedCandidate], CancellationHandle] = {}
     submitted = 0
+    waiting_candidate: _SourceCandidate | None = None
+    exhausted = False
 
     def submit(candidate: _SourceCandidate) -> None:
         nonlocal submitted
         spool_path = None
         if spool_directory is not None:
             spool_path = spool_directory / f"{submitted:08d}-{hash_payload(candidate.logical_source_id)[:16]}.sqlite3"
-        submitted += 1
-        pending.add(
-            executor.submit(
+        operation = executor.submit(
+            partial(
                 _collect_candidate,
                 candidate,
                 dynamic_paths_by_element,
                 include_statistics=include_statistics,
                 spool_path=spool_path,
-            )
+            ),
+            admission_class="bulk-candidate",
+            estimated_bytes=_candidate_compute_bytes(candidate),
         )
+        submitted += 1
+        pending[operation.future] = operation.cancellation
 
-    for _ in range(limit):
-        try:
-            submit(next(iterator))
-        except StopIteration:
-            break
-    while pending:
-        ready, pending = wait(pending, timeout=2, return_when=FIRST_COMPLETED)
-        if not ready:
-            if on_wait is not None:
-                on_wait()
-            continue
-        for future in ready:
-            yield future.result()
-            with suppress(StopIteration):
-                submit(next(iterator))
+    limit = min(limit, executor.snapshot().by_class("bulk-candidate").ceiling_units)
+    try:
+        while pending or waiting_candidate is not None or not exhausted:
+            while len(pending) < limit and not exhausted:
+                if waiting_candidate is None:
+                    try:
+                        waiting_candidate = next(iterator)
+                    except StopIteration:
+                        exhausted = True
+                        break
+                try:
+                    submit(waiting_candidate)
+                except DaemonBackpressureError:
+                    if not pending:
+                        raise
+                    # Own accepted work can release the envelope. Keep this
+                    # exact candidate for the next admission attempt.
+                    break
+                waiting_candidate = None
+            if not pending:
+                break
+            ready, _ = wait(tuple(pending), timeout=2, return_when=FIRST_COMPLETED)
+            if not ready:
+                if on_wait is not None:
+                    on_wait()
+                continue
+            for future in ready:
+                result = future.result()
+                pending.pop(future)
+                yield result
+    finally:
+        for future, cancellation in pending.items():
+            if not future.done():
+                cancellation.cancel()
+        for future in pending:
+            with suppress(BaseException):
+                future.result()
 
 
 def _source_recipe_fingerprint() -> str:
@@ -2370,84 +2406,82 @@ def infer_sources(
         preliminary_started = time.monotonic_ns()
         with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
             spool_root = Path(spool_dir)
-            with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-                for item in _bounded_collected_candidates(
-                    executor,
-                    (candidate for candidate, _digest, _bytes in misses),
-                    limit=max(1, max_workers) * 2,
-                    dynamic_paths_by_element={},
-                    include_statistics=False,
-                    spool_directory=spool_root,
-                    on_wait=lambda: report(
-                        "preliminary",
-                        records=preliminary_records,
-                        input_bytes=sum(input_bytes_by_candidate.values()),
-                    ),
-                ):
-                    if item.terminal.outcome != "included" or item.revision is None:
-                        terminal_counts[item.terminal.outcome] += 1
-                        reason_code = _terminal_reason_code(item.terminal)
-                        if reason_code is not None:
-                            terminal_reason_counts[reason_code] += 1
-                        terminal_by_candidate[item.candidate] = item.terminal
-                        completed += 1
-                        report("collect", input_bytes=sum(input_bytes_by_candidate.values()))
-                        continue
-                    spooled_rows = (
-                        _spooled_contributions(item.spool_path)
-                        if item.spool_path is not None
-                        else iter(item.contributions)
-                    )
-                    spooled_descriptors: list[_ContributionDescriptor] = []
-                    for contribution in spooled_rows:
-                        _put_contribution(
-                            cache,
-                            item.candidate,
-                            contribution,
-                            dynamic_paths_by_element=None,
-                            recipe_fingerprint=structure_recipe,
-                            input_bytes=item.terminal.byte_count,
-                        )
-                        spooled_descriptors.append(
-                            _ContributionDescriptor(
-                                contribution.logical_source_id,
-                                contribution.revision_sha256,
-                                contribution.record_count,
-                                contribution.declared_updated_at,
-                            )
-                        )
-                    manifest = CachedContribution(
-                        cache_key=_cache_key(
-                            item.candidate,
-                            item.revision.revision_sha256,
-                            dynamic_paths_by_element=None,
-                            recipe_fingerprint=structure_recipe,
-                        ),
-                        evidence=_serialize_descriptors(spooled_descriptors),
+            executor = compute_adapter()
+            for item in _bounded_collected_candidates(
+                executor,
+                (candidate for candidate, _digest, _bytes in misses),
+                limit=max(1, max_workers) * 2,
+                dynamic_paths_by_element={},
+                include_statistics=False,
+                spool_directory=spool_root,
+                on_wait=lambda: report(
+                    "preliminary",
+                    records=preliminary_records,
+                    input_bytes=sum(input_bytes_by_candidate.values()),
+                ),
+            ):
+                if item.terminal.outcome != "included" or item.revision is None:
+                    terminal_counts[item.terminal.outcome] += 1
+                    reason_code = _terminal_reason_code(item.terminal)
+                    if reason_code is not None:
+                        terminal_reason_counts[reason_code] += 1
+                    terminal_by_candidate[item.candidate] = item.terminal
+                    completed += 1
+                    report("collect", input_bytes=sum(input_bytes_by_candidate.values()))
+                    continue
+                spooled_rows = (
+                    _spooled_contributions(item.spool_path) if item.spool_path is not None else iter(item.contributions)
+                )
+                spooled_descriptors: list[_ContributionDescriptor] = []
+                for contribution in spooled_rows:
+                    _put_contribution(
+                        cache,
+                        item.candidate,
+                        contribution,
+                        dynamic_paths_by_element=None,
+                        recipe_fingerprint=structure_recipe,
                         input_bytes=item.terminal.byte_count,
-                        record_count=item.terminal.record_count,
-                        metadata={
-                            "producer_versions": list(item.producer_versions),
-                            "producer_version_unrecognized": item.producer_version_unrecognized,
-                        },
                     )
-                    cache.put(manifest)
-                    if not add_preliminary_from_cache(
+                    spooled_descriptors.append(
+                        _ContributionDescriptor(
+                            contribution.logical_source_id,
+                            contribution.revision_sha256,
+                            contribution.record_count,
+                            contribution.declared_updated_at,
+                        )
+                    )
+                manifest = CachedContribution(
+                    cache_key=_cache_key(
                         item.candidate,
                         item.revision.revision_sha256,
-                        item.terminal.byte_count,
-                        manifest,
                         dynamic_paths_by_element=None,
-                    ):
-                        raise SourceInferenceError("new source evidence did not reach the private cache")
-                    cache_misses += 1
-                    phase_misses["structure"] += 1
-                    completed += 1
-                    report(
-                        "collect",
-                        records=preliminary_records,
-                        input_bytes=sum(input_bytes_by_candidate.values()),
-                    )
+                        recipe_fingerprint=structure_recipe,
+                    ),
+                    evidence=_serialize_descriptors(spooled_descriptors),
+                    input_bytes=item.terminal.byte_count,
+                    record_count=item.terminal.record_count,
+                    metadata={
+                        "producer_versions": list(item.producer_versions),
+                        "producer_version_unrecognized": item.producer_version_unrecognized,
+                    },
+                )
+                cache.put(manifest)
+                if not add_preliminary_from_cache(
+                    item.candidate,
+                    item.revision.revision_sha256,
+                    item.terminal.byte_count,
+                    manifest,
+                    dynamic_paths_by_element=None,
+                ):
+                    raise SourceInferenceError("new source evidence did not reach the private cache")
+                cache_misses += 1
+                phase_misses["structure"] += 1
+                completed += 1
+                report(
+                    "collect",
+                    records=preliminary_records,
+                    input_bytes=sum(input_bytes_by_candidate.values()),
+                )
 
         preliminary_ms = (time.monotonic_ns() - preliminary_started) / 1_000_000
 
@@ -2538,68 +2572,68 @@ def infer_sources(
             rejected_statistics = False
             with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
                 spool_root = Path(spool_dir)
-                with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-                    for item in _bounded_collected_candidates(
-                        executor,
-                        (descriptor.candidate for descriptor in final_misses),
-                        limit=max(1, max_workers) * 2,
-                        dynamic_paths_by_element=dynamic_paths_by_element,
-                        spool_directory=spool_root,
-                        on_wait=lambda: report(
-                            "statistics",
-                            records=preliminary_records,
-                            input_bytes=sum(input_bytes_by_candidate.values()),
-                        ),
+                executor = compute_adapter()
+                for item in _bounded_collected_candidates(
+                    executor,
+                    (descriptor.candidate for descriptor in final_misses),
+                    limit=max(1, max_workers) * 2,
+                    dynamic_paths_by_element=dynamic_paths_by_element,
+                    spool_directory=spool_root,
+                    on_wait=lambda: report(
+                        "statistics",
+                        records=preliminary_records,
+                        input_bytes=sum(input_bytes_by_candidate.values()),
+                    ),
+                ):
+                    expected = expected_by_candidate[item.candidate]
+                    if (
+                        item.terminal.outcome != "included"
+                        or item.revision is None
+                        or item.revision.revision_sha256 != expected.revision_sha256
                     ):
-                        expected = expected_by_candidate[item.candidate]
-                        if (
-                            item.terminal.outcome != "included"
-                            or item.revision is None
-                            or item.revision.revision_sha256 != expected.revision_sha256
-                        ):
-                            terminal = (
-                                item.terminal
-                                if item.terminal.outcome != "included"
-                                else SourceTerminal("changed_during_read", item.terminal.byte_count)
-                            )
-                            terminal_counts[terminal.outcome] += 1
-                            reason_code = _terminal_reason_code(terminal)
-                            if reason_code is not None:
-                                terminal_reason_counts[reason_code] += 1
-                            input_bytes_by_candidate[item.candidate] = terminal.byte_count
-                            terminal_by_candidate[item.candidate] = terminal
-                            rejected_statistics = True
-                            continue
-                        spooled_rows = (
-                            _spooled_contributions(item.spool_path)
-                            if item.spool_path is not None
-                            else iter(item.contributions)
+                        terminal = (
+                            item.terminal
+                            if item.terminal.outcome != "included"
+                            else SourceTerminal("changed_during_read", item.terminal.byte_count)
                         )
-                        final_contribution_descriptors: list[_ContributionDescriptor] = []
-                        for contribution in spooled_rows:
-                            _put_contribution(
-                                cache,
-                                item.candidate,
-                                contribution,
-                                dynamic_paths_by_element=dynamic_paths_by_element,
-                                recipe_fingerprint=statistics_recipe,
-                                input_bytes=item.terminal.byte_count,
+                        terminal_counts[terminal.outcome] += 1
+                        reason_code = _terminal_reason_code(terminal)
+                        if reason_code is not None:
+                            terminal_reason_counts[reason_code] += 1
+                        input_bytes_by_candidate[item.candidate] = terminal.byte_count
+                        terminal_by_candidate[item.candidate] = terminal
+                        rejected_statistics = True
+                        continue
+                    spooled_rows = (
+                        _spooled_contributions(item.spool_path)
+                        if item.spool_path is not None
+                        else iter(item.contributions)
+                    )
+                    final_contribution_descriptors: list[_ContributionDescriptor] = []
+                    for contribution in spooled_rows:
+                        _put_contribution(
+                            cache,
+                            item.candidate,
+                            contribution,
+                            dynamic_paths_by_element=dynamic_paths_by_element,
+                            recipe_fingerprint=statistics_recipe,
+                            input_bytes=item.terminal.byte_count,
+                        )
+                        final_contribution_descriptors.append(
+                            _ContributionDescriptor(
+                                contribution.logical_source_id,
+                                contribution.revision_sha256,
+                                contribution.record_count,
+                                contribution.declared_updated_at,
                             )
-                            final_contribution_descriptors.append(
-                                _ContributionDescriptor(
-                                    contribution.logical_source_id,
-                                    contribution.revision_sha256,
-                                    contribution.record_count,
-                                    contribution.declared_updated_at,
-                                )
-                            )
-                        if sorted(map(_descriptor_identity, final_contribution_descriptors)) != sorted(
-                            map(_descriptor_identity, expected.contributions)
-                        ):
-                            raise SourceInferenceError("final source identities changed after the structure pass")
-                        final.append(replace(expected, contributions=tuple(final_contribution_descriptors)))
-                        cache_misses += 1
-                        phase_misses["statistics"] += 1
+                        )
+                    if sorted(map(_descriptor_identity, final_contribution_descriptors)) != sorted(
+                        map(_descriptor_identity, expected.contributions)
+                    ):
+                        raise SourceInferenceError("final source identities changed after the structure pass")
+                    final.append(replace(expected, contributions=tuple(final_contribution_descriptors)))
+                    cache_misses += 1
+                    phase_misses["statistics"] += 1
             if not rejected_statistics:
                 break
             active_descriptors = final

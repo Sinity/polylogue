@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.daemon import cli as daemon_cli
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.intake import AdmissionOutcome, AdmissionResult, FairIntakeDispatcher, IntakeClassSpec
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback

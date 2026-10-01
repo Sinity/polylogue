@@ -1,17 +1,4 @@
-"""Bounded classification must not report a valid Drive export as undecodable.
-
-polylogue-1wjiw. Classification reads a 64 KB prefix, then re-reads the whole
-document when that prefix is not itself valid JSON. While the re-read ceiling
-sat below the size of real AI Studio exports, the prefix's mid-value decode
-error was re-raised and stored as ``decode_failed`` / ``ArtifactKind.UNKNOWN``,
-leaving 15 live conversations with no declared parser route.
-
-Anti-vacuity: restoring a ceiling below the document's size turns
-``test_large_valid_drive_export_classifies_as_a_session_document`` red.
-``test_applet_access_log_is_a_declared_non_session_document`` carries its own
-controlled mutation: with the AI Studio artifact rules stripped, the same
-payload falls through to ``ArtifactKind.UNKNOWN``.
-"""
+"""Complete candidacy preserves large Drive inputs without whole-document decoding."""
 
 from __future__ import annotations
 
@@ -24,7 +11,6 @@ import pytest
 
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.sources import origin_specs
-from polylogue.storage.artifacts import inspection
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
@@ -97,24 +83,31 @@ def test_large_valid_drive_export_classifies_as_a_session_document(
     observation = inspect_raw_artifact(_record(blob_store, export, source_path=f"/drive-cache/gemini/{export.name}"))
 
     assert observation.artifact_kind == "session_document"
-    assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
+    assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+    assert observation.parse_as_session
+    assert not observation.schema_eligible
     assert observation.decode_error is None
 
 
-def test_a_ceiling_below_the_document_reports_it_undecodable(
+def test_large_document_candidacy_never_reads_the_whole_blob_into_memory(
     blob_store: BlobStore,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The controlled mutation the fix removes: too low a ceiling loses the document."""
+    """The complete projected reader must reach EOF without an eager fallback."""
     export = tmp_path / "Synthetic_Conversation-fedcba9876543210.json"
     _chunked_prompt_export(export, min_bytes=_OVERSIZED_DOCUMENT_BYTES)
-    monkeypatch.setattr(inspection, "_FULL_JSON_INSPECTION_MAX_BYTES", 8 * 1024 * 1024)
+
+    def refuse_eager_read(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("whole-document allocation")
+
+    monkeypatch.setattr(blob_store, "read_all", refuse_eager_read)
 
     observation = inspect_raw_artifact(_record(blob_store, export, source_path=f"/drive-cache/gemini/{export.name}"))
 
-    assert observation.artifact_kind == "unknown"
-    assert observation.support_status is ArtifactSupportStatus.DECODE_FAILED
+    assert observation.artifact_kind == "session_document"
+    assert observation.parse_as_session
+    assert observation.decode_error is None
 
 
 def _applet_access_log(path: Path) -> None:

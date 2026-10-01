@@ -499,7 +499,7 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
     """`daemon_accepts_schedule` refuses to claim success on unreachable daemon.
 
     The source must be admissible. ``import`` runs the local
-    ``import_source_admissibility`` preflight *before* it submits the declared
+    ``prepare_import_source_admission`` preflight *before* it submits the declared
     ``ingest`` operation, so a placeholder ``{}`` is refused by that earlier
     guard and never reaches the daemon-acceptance guard under test here.
 
@@ -513,12 +513,12 @@ def test_import_contract_guard_requires_daemon_acceptance(tmp_path: Path, worksp
     """
     _assert_contract_declares_guard(("import",), "daemon_accepts_schedule")
 
-    from polylogue.operations.import_operations import import_source_admissibility
+    from polylogue.operations.import_operations import prepare_import_source_admission
     from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 
     source = tmp_path / "session.json"
     source.write_text(json.dumps(_supported_import_payload()), encoding="utf-8")
-    assert import_source_admissibility(source).admissible, "fixture must reach the daemon guard"
+    assert prepare_import_source_admission(source).preflight.admissible, "fixture must reach the daemon guard"
 
     result = CliRunner().invoke(cli, ["import", str(source)])
 

@@ -20,6 +20,7 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamps import iso_from_epoch_ms, to_epoch_ms
 from polylogue.sources import origin_specs
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
@@ -1135,3 +1136,49 @@ __all__ = [
     "resource_id_for",
     "scope_schema_url",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Fold eligible spans completely under each enclosing scope's schema URL."""
+    scalar = DetectorProjection()
+    attribute = DetectorProjection(fields={"key": scalar, "value": None})
+    attributes = DetectorProjection(
+        item=attribute,
+        array_fold="any",
+        array_predicate=lambda item: (
+            isinstance(item, dict)
+            and isinstance(item.get("key"), str)
+            and item["key"].startswith("gen_ai.")
+            and "value" in item
+        ),
+        mapping_key_predicate=lambda key: key.startswith("gen_ai."),
+        mapping_witness={"gen_ai.fold": None},
+    )
+    span = DetectorProjection(
+        fields={
+            **dict.fromkeys(("traceId", "trace_id", "spanId", "span_id"), scalar),
+            "attributes": attributes,
+        }
+    )
+    spans = DetectorProjection(
+        item=span,
+        array_fold="any",
+        array_predicate=lambda item: (
+            isinstance(item, dict)
+            and has_span_identity(item)
+            and any(key.startswith("gen_ai.") for key in _attributes(item.get("attributes")))
+        ),
+    )
+    scope = DetectorProjection(fields={"schemaUrl": scalar, "schema_url": scalar, "spans": spans})
+    scopes = DetectorProjection(
+        item=scope,
+        array_fold="any",
+        array_predicate=lambda item: looks_like({"resourceSpans": [{"scopeSpans": [item]}]}),
+    )
+    resource = DetectorProjection(fields={"scopeSpans": scopes, "instrumentationLibrarySpans": scopes})
+    resources = DetectorProjection(
+        item=resource,
+        array_fold="any",
+        array_predicate=lambda item: looks_like({"resourceSpans": [item]}),
+    )
+    return DetectorProjection(fields={"resourceSpans": resources, "resource_spans": resources})

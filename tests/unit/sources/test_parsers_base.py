@@ -998,75 +998,66 @@ def test_codex_role_normalization_model_to_assistant() -> None:
     assert result.messages[0].role == "assistant"
 
 
-def test_parse_payload_recursion_depth_limit() -> None:
-    """Test that deeply nested payloads don't cause stack overflow."""
+def test_parse_payload_preserves_message_beyond_the_former_wrapper_depth_limit() -> None:
     from polylogue.sources.dispatch import parse_payload
 
-    # Build a deeply nested payload with sessions key at depth > 10
-    # Start with depth 12 (exceeds MAX_PARSE_DEPTH=10)
-    # Construct the deeply nested structure step by step
-    payload = {
-        "sessions": [
-            {
-                "sessions": [
-                    {
-                        "sessions": [
-                            {
-                                "sessions": [
-                                    {
-                                        "sessions": [
-                                            {
-                                                "sessions": [
-                                                    {
-                                                        "sessions": [
-                                                            {
-                                                                "sessions": [
-                                                                    {
-                                                                        "sessions": [
-                                                                            {
-                                                                                "sessions": [
-                                                                                    {
-                                                                                        "sessions": [
-                                                                                            {
-                                                                                                "id": "nested",
-                                                                                                "mapping": {},
-                                                                                            }
-                                                                                        ]
-                                                                                    }
-                                                                                ]
-                                                                            }
-                                                                        ]
-                                                                    }
-                                                                ]
-                                                            }
-                                                        ]
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            }
-        ]
+    payload: dict[str, object] = {
+        "id": "nested",
+        "mapping": {
+            "message": {
+                "id": "message",
+                "message": {
+                    "id": "native-message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["retained deep message"]},
+                },
+                "children": [],
+            },
+        },
     }
+    for _ in range(1500):
+        payload = {"sessions": [payload]}
+    sessions = parse_payload("chatgpt", payload, "test-deep")
+    assert len(sessions) == 1
+    assert sessions[0].messages[0].text == "retained deep message"
 
-    # Should return a list (not crash on deep recursion)
-    # The recursion limit prevents infinite loops but still returns an empty session
-    result = parse_payload("chatgpt", payload, "test-deep")
-    assert isinstance(result, list)
-    # Deep nesting with empty mapping produces no sessions or empty sessions
-    assert all(len(c.messages) == 0 for c in result)
+
+def test_parse_payload_reused_sibling_mapping_is_not_an_active_cycle() -> None:
+    from polylogue.sources.dispatch import parse_payload
+
+    item = {
+        "mapping": {
+            "node": {
+                "id": "node",
+                "message": {
+                    "id": "message",
+                    "author": {"role": "user"},
+                    "content": {"content_type": "text", "parts": ["shared input"]},
+                },
+                "children": [],
+            }
+        }
+    }
+    sessions = parse_payload("chatgpt", {"sessions": [item, item]}, "fallback")
+    assert len(sessions) == 2
+    assert [session.messages[0].text for session in sessions] == ["shared input", "shared input"]
+    assert [session.provider_session_id for session in sessions] == ["fallback-0", "fallback-1"]
+
+
+def test_parse_payload_refuses_an_actual_wrapper_cycle() -> None:
+    from polylogue.sources.dispatch import parse_payload
+
+    children: list[object] = []
+    payload = {"sessions": children}
+    children.append(payload)
+    with pytest.raises(ValueError, match="cyclic payload"):
+        parse_payload("chatgpt", payload, "cyclic")
 
 
 def test_parse_payload_shallow_nesting_succeeds() -> None:
-    """Test that moderately nested payloads within depth limit are parsed."""
+    """Nested wrappers preserve their messages."""
     from polylogue.sources.dispatch import parse_payload
 
-    # Build a nested payload at depth 5 (within MAX_PARSE_DEPTH=10)
     payload = {
         "sessions": [
             {

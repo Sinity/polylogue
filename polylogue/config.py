@@ -1131,19 +1131,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Message threshold for grouped index commits; <=0 restores per-session commits.",
     ),
     ConfigInventoryEntry(
-        "ingest_parse_workers",
-        toml_path="pipeline.ingest.parse_workers",
-        env_var="POLYLOGUE_INGEST_PARSE_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description=(
-            "Worker count for CPU-bound source parsing. Read by "
-            "resolve_parse_worker_count from the environment only; the default "
-            "adapts to the interpreter (min(16, cpus-2) free-threaded, "
-            "min(8, cpus-1) under the GIL). Set it to override that."
-        ),
-    ),
-    ConfigInventoryEntry(
         "live_full_ingest_workers",
         toml_path="pipeline.live.full_ingest_workers",
         env_var="POLYLOGUE_LIVE_FULL_INGEST_WORKERS",

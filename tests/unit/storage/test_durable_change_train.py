@@ -584,7 +584,7 @@ def test_applied_train_release_requires_the_source_hook_event_writer_probe(
     with sqlite3.connect(db_path) as restarted:
         actual_parity = train.schema_replay_proof
         assert actual_parity is not None
-        runtime_results = _runtime_consumer_results(train, tmp_path)
+        runtime_results = _runtime_consumer_results(train, tmp_path, candidate=restarted)
         restart = capture_durable_restart_convergence(
             restarted,
             train,
@@ -1322,14 +1322,161 @@ def test_startup_checks_chain_when_manifest_directory_is_missing(
         durable_change_train_module._reconcile_durable_change_train_startup_locked(tmp_path)
 
 
-def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        RuntimeTierProbeAuthority,
+        initialize_active_archive_root,
+        initialize_runtime_tier_probe,
+        runtime_tier_probe_authority,
+    )
 
     initialize_active_archive_root(tmp_path)
-    receipt = tmp_path / ".maintenance-state/durable-change-trains/source-002.json"
-    assert receipt.is_file()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
+    receipt_root = tmp_path / ".maintenance-state/durable-change-trains"
+    receipts = tuple(receipt_root / f"source-{slot:03d}.json" for slot in (2, 3))
+    assert all(receipt.is_file() for receipt in receipts)
+    assert reconcile_durable_change_train_startup(tmp_path) == receipts
+
+    train = load_durable_change_train_manifest(receipts[1])
+    assert train.state is DurableChangeTrainState.RELEASED
+    assert train.proof is not None
+    assert {consumer.consumer_id for consumer in train.proof.runtime_consumers if consumer.passed} == {
+        "profile-receipt-write",
+        "profile-receipt-read",
+        "raw-failure-lifecycle",
+        "captured-input-publication",
+        "captured-input-replay",
+    }
+    authorization = train.backup_authorization
+    assert authorization is not None
+    assert authorization.live_user_version == 2
+    assert authorization.manifest_path is not None
+    assert authorization.receipt_path is not None
+    manifest_path = Path(authorization.manifest_path)
+    assert Path(authorization.receipt_path).is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["tier_source_fingerprints"]["source"]["user_version"] == 2
+    with closing(sqlite3.connect(manifest_path.parent / "source.db")) as backed_up:
+        previous_inventory = migration_runner.capture_durable_schema_inventory(backed_up)
+        assert backed_up.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert (
+            backed_up.execute("SELECT 1 FROM sqlite_schema WHERE name = 'raw_profile_identity_receipts'").fetchone()
+            is None
+        )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as current:
+        assert current.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert current.execute("SELECT count(*) FROM raw_profile_identity_receipts").fetchone()[0] == 0
+        for alteration in ("PRAGMA user_version = 2", "DROP INDEX idx_raw_artifacts_failure_identity"):
+            with closing(migration_runner._schema_only_replica(current)) as mismatched:
+                mismatched.execute(alteration)
+                with pytest.raises(DurableChangeTrainError):
+                    _runtime_consumer_results(train, tmp_path, candidate=mismatched)
+
+        def fail_consumer(_train: object, _root: Path) -> None:
+            raise RuntimeError("consumer interrupted")
+
+        with monkeypatch.context() as failure:
+            failure.setattr(durable_change_train_module, "_invoke_runtime_consumers", fail_consumer)
+            with runtime_tier_probe_authority(
+                RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 2, previous_inventory.sha256)
+            ):
+                with pytest.raises(RuntimeError, match="consumer interrupted"):
+                    _runtime_consumer_results(train, tmp_path, candidate=current)
+                with closing(sqlite3.connect(":memory:")) as restored_probe:
+                    initialize_runtime_tier_probe(restored_probe, ArchiveTier.SOURCE)
+                    assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 2
+            with closing(sqlite3.connect(":memory:")) as ordinary_probe:
+                initialize_runtime_tier_probe(ordinary_probe, ArchiveTier.SOURCE)
+                assert ordinary_probe.execute("PRAGMA user_version").fetchone()[0] == 3
     initialize_active_archive_root(tmp_path)
+    assert reconcile_durable_change_train_startup(tmp_path) == receipts
+
+
+def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+    from polylogue.sources.parsers.hermes_identity import profile_key
+    from polylogue.sources.revision_backfill import _parse_one
+    from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite import archive_tiers
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    profile = tmp_path / "profile"
+    external = tmp_path / "external"
+    profile.mkdir()
+    external.mkdir()
+    (profile / "sessions").symlink_to(external, target_is_directory=True)
+    physical = external / "session_shared.json"
+    payload = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same"}]}).encode()
+    physical.write_bytes(payload)
+    declared = profile / "sessions" / physical.name
+    root = tmp_path / "archive"
+    version2_ddl = dict(ARCHIVE_DDL_BY_TIER)
+    # Use the installed Source002 authority and immutable baseline, never a
+    # hand-built receipt table standing in for the real numbered train.
+    source2_claim = next(
+        claim for claim in migration_runner.durable_migration_claims(ArchiveTier.SOURCE) if claim.target_version == 2
+    )
+    migration2 = Path(migration_runner.__file__).parent / "migrations/source" / source2_claim.path
+    version2_ddl[ArchiveTier.SOURCE] = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE] + "\n" + migration2.read_text()
+    with monkeypatch.context() as pinned:
+        _pin_source_runtime_version(pinned, 2)
+        for owner in (archive_tiers, bootstrap, migration_runner):
+            pinned.setattr(owner, "ARCHIVE_DDL_BY_TIER", version2_ddl)
+        bootstrap.initialize_active_archive_root(root)
+        blob_hash, _ = BlobStore(root / "blob").write_from_bytes(payload)
+        old_digest = hashlib.sha256(b"polylogue:hermes-profile-raw:v2\0")
+        for term in (str(physical.parent), physical.name, "0"):
+            old_digest.update(term.encode())
+            old_digest.update(b"\0")
+        old_digest.update(bytes.fromhex(blob_hash))
+        old_id = old_digest.hexdigest()
+        with closing(sqlite3.connect(root / "source.db")) as connection:
+            write_source_raw_session(
+                connection,
+                origin=Origin.HERMES_SESSION,
+                capture_mode=Provider.HERMES,
+                source_path=str(declared),
+                canonical_source_path=str(physical),
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=1,
+                raw_id=old_id,
+            )
+            old_row = connection.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (old_id,)).fetchone()
+    bootstrap.invalidate_active_archive_bootstrap(root)
+    bootstrap.initialize_active_archive_root(root)
+    key = profile_key(external)
+    new_id = hermes_profile_raw_id(physical, 0, blob_hash, identity_path=physical, profile_identity=key)
+    assert new_id != old_id
+    with closing(sqlite3.connect(root / "source.db")) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        for _ in range(2):
+            write_source_raw_session(
+                connection,
+                origin=Origin.HERMES_SESSION,
+                capture_mode=Provider.HERMES,
+                source_path=str(physical),
+                canonical_source_path=str(physical),
+                captured_profile_key=key,
+                source_index=0,
+                payload=payload,
+                acquired_at_ms=2,
+                raw_id=new_id,
+            )
+        assert connection.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (old_id,)).fetchone() == old_row
+        assert connection.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 2
+        assert connection.execute("SELECT count(DISTINCT blob_hash) FROM raw_sessions").fetchone()[0] == 1
+        assert connection.execute("SELECT raw_id, profile_key FROM raw_profile_identity_receipts").fetchall() == [
+            (new_id, key)
+        ]
+    with pytest.raises(MissingProfileIdentityError):
+        _parse_one(Provider.HERMES, payload, str(declared), archive_root=root)
+    assert _parse_one(Provider.HERMES, payload, str(physical), profile_identity=key, archive_root=root)
+    bootstrap.initialize_active_archive_root(root)
 
 
 def test_runtime_bootstrap_refuses_an_established_archive_missing_audit(
@@ -1433,9 +1580,11 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
 
     receipt = marker_root / "source-002.json"
     assert receipt.is_file()
+    profile_receipt = marker_root / "source-003.json"
+    assert profile_receipt.is_file()
     assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt)
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(

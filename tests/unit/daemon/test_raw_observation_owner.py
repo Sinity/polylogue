@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
 from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,

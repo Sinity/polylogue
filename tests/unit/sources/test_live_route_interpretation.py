@@ -19,10 +19,13 @@ import pytest
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.operations.operation_context import open_operation_read
+from polylogue.sources.acquisition_boundary import capture_bound_path
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
+from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -45,11 +48,13 @@ def _codex_lines(native_id: str, messages: tuple[tuple[str, str], ...], *, meta:
     return b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows)
 
 
-def _ingest(archive_root: Path, source: Path, *, parse_stage: LiveParseStage | None = None) -> None:
+def _ingest(
+    archive_root: Path, source: Path, *, parse_stage: LiveParseStage | None = None, provider: Provider = Provider.CODEX
+) -> None:
     archive_root.mkdir(parents=True, exist_ok=True)
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
-        (WatchSource(name="codex", root=source.parent),),
+        (WatchSource(name=provider.value, root=source.parent),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=parse_stage,
@@ -63,6 +68,99 @@ def _ingest(archive_root: Path, source: Path, *, parse_stage: LiveParseStage | N
 def _titles(archive_root: Path) -> list[tuple[str, str | None]]:
     with sqlite3.connect(archive_root / "index.db") as conn:
         return [(str(row[0]), row[1]) for row in conn.execute("SELECT title, title_source FROM sessions")]
+
+
+@pytest.mark.parametrize("capture_before_retarget", [False, True], ids=["new-profile", "accepted-old-profile"])
+def test_live_preparation_matches_the_acquired_profile_after_equal_byte_alias_retarget(
+    tmp_path: Path, capture_before_retarget: bool
+) -> None:
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    document = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same input"}]})
+    for root in (first, second):
+        (root / "sessions").mkdir(parents=True)
+        (root / "sessions" / "session_shared.json").write_text(document)
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    path = alias / "sessions" / "session_shared.json"
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    store = BlobStore(tmp_path / "blobs")
+    try:
+        stage.warm_paths([(str(path), Provider.HERMES, False)])
+        assert stage.resolved_path_provider(str(path)) is Provider.HERMES
+        capture = capture_bound_path(store, path, Provider.HERMES) if capture_before_retarget else None
+        alias.unlink()
+        alias.symlink_to(second, target_is_directory=True)
+        if capture is None:
+            capture = capture_bound_path(store, path, Provider.HERMES)
+        prepared = stage.pop_path(str(path), blob_hash=capture.blob_hash, profile_identity=capture.captured_profile_key)
+        assert prepared is not None
+        if capture_before_retarget:
+            assert not prepared.deferred and prepared.error is None
+            assert [session.provider_session_id for session in prepared.iter_sessions()] == [
+                qualified_session_id("shared", profile_key(first))
+            ]
+        else:
+            assert prepared.deferred
+            assert prepared.sessions_path is None
+            assert capture.captured_profile_key == profile_key(second)
+        prepared.discard()
+    finally:
+        stage.shutdown()
+
+
+def test_live_hermes_profile_receipts_replay_without_mutable_alias_or_original_files(tmp_path: Path) -> None:
+    from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+    from polylogue.sources.revision_backfill import _parse_one
+
+    document = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same input"}]})
+    first = tmp_path / "profile-a"
+    second = tmp_path / "profile-b"
+    for root in (first, second):
+        (root / "sessions").mkdir(parents=True)
+        (root / "sessions" / "session_shared.json").write_text(document)
+    alias = tmp_path / "profile"
+    alias.symlink_to(first, target_is_directory=True)
+    source = alias / "sessions" / "session_shared.json"
+    archive_root = tmp_path / "archive"
+    _ingest(archive_root, source, provider=Provider.HERMES)
+    alias.unlink()
+    alias.symlink_to(second, target_is_directory=True)
+    _ingest(archive_root, source, provider=Provider.HERMES)
+    _ingest(archive_root, source, provider=Provider.HERMES)
+    with sqlite3.connect(archive_root / "source.db") as connection:
+        rows = connection.execute(
+            "SELECT r.raw_id, r.blob_hash, r.source_path, r.canonical_source_path, p.profile_key "
+            "FROM raw_sessions AS r JOIN raw_profile_identity_receipts AS p USING(raw_id) "
+            "ORDER BY p.profile_key"
+        ).fetchall()
+    assert len(rows) == 2
+    assert len({row[0] for row in rows}) == 2
+    assert len({row[1] for row in rows}) == 1
+    assert {row[4] for row in rows} == {profile_key(first), profile_key(second)}
+    assert {row[3] for row in rows} == {
+        str(first / "sessions" / "session_shared.json"),
+        str(second / "sessions" / "session_shared.json"),
+    }
+    alias.unlink()
+    for root in (first, second):
+        (root / "sessions" / "session_shared.json").unlink()
+    store = BlobStore(archive_root / "blob")
+    replayed = set()
+    for _raw_id, blob_hash, coordinate, _physical, key in rows:
+        payload = store.read_all(bytes(blob_hash).hex())
+        replayed.update(
+            session.provider_session_id
+            for session in _parse_one(
+                Provider.HERMES, payload, str(coordinate), profile_identity=str(key), archive_root=archive_root
+            )
+        )
+        with pytest.raises(MissingProfileIdentityError):
+            _parse_one(Provider.HERMES, payload, str(coordinate), archive_root=archive_root)
+    assert replayed == {
+        qualified_session_id("shared", profile_key(first)),
+        qualified_session_id("shared", profile_key(second)),
+    }
 
 
 def test_live_append_keeps_the_chain_title_winner(tmp_path: Path) -> None:
@@ -456,24 +554,14 @@ def test_live_append_keeps_the_chain_cost_across_a_model_switch(tmp_path: Path) 
     assert (header, models) == _session_usage(whole_root)
 
 
-def test_broken_pool_restart_after_shutdown_creates_no_new_pool(tmp_path: Path) -> None:
-    """A pool broken during shutdown is not replaced by a fresh one.
+def test_stage_shutdown_retains_shared_compute_owner(tmp_path: Path) -> None:
+    from polylogue.core.compute import compute_adapter
 
-    Anti-vacuity: drop the ``_closing`` guard in
-    ``_restart_broken_process_pool`` and a new executor replaces the stopped
-    one, able to seal carriers after cleanup.
-    """
-    from concurrent.futures import ProcessPoolExecutor
-
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
-    try:
-        executor = stage._executor
-        assert isinstance(executor, ProcessPoolExecutor)
-        stage._closing = True
-        stage._restart_broken_process_pool()
-        assert stage._executor is executor
-    finally:
-        stage.shutdown()
+    adapter = compute_adapter()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    assert stage._executor is adapter
+    stage.shutdown()
+    assert adapter.submit(lambda: "still-open").future.result(timeout=2) == "still-open"
 
 
 def test_live_append_keeps_origin_provenance_for_an_equal_heuristic_title(tmp_path: Path) -> None:
@@ -544,7 +632,9 @@ def test_writer_enrichment_resolves_an_unknown_acquisition_provider(monkeypatch:
     monkeypatch.setattr(revision_backfill, "RetainedSessionEnricher", RecordingEnricher)
     session = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="resolved", messages=[])
     archive = SimpleNamespace(archive_root=Path("/nonexistent"), index_connection=None, source_connection=None)
-    revision_backfill.enrich_sessions_from_archive(archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session])
+    revision_backfill.enrich_sessions_from_archive(
+        archive, Provider.UNKNOWN, "/nonexistent/x.jsonl", [session], captured_zip_coordinate=None
+    )
     assert seen == [Provider.CLAUDE_CODE]
 
 

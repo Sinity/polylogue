@@ -122,33 +122,6 @@ def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_id
     assert result.effect_receipts[-1].disposition == "skipped"
 
 
-def test_async_deferred_effect_is_enqueued_after_commit_and_not_run_inline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.archive import write_effects as module
-
-    events: list[str] = []
-
-    def scheduler(effect: WriteEffect, ctx: WriteEffectContext) -> None:
-        assert ctx.conn.in_transaction is False
-        events.append(f"enqueue:{effect.name}")
-
-    monkeypatch.setattr(
-        module,
-        "WRITE_EFFECT_REGISTRY",
-        (WriteEffect(name="deferred", phase="async-deferred", run=lambda _ctx: events.append("run")),),
-    )
-    with open_connection(tmp_path / "archive.db") as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        result = commit_archive_write_effects(
-            conn,
-            WriteOperation.INGEST,
-            {"changed_session_ids": ("s1",), "deferred_scheduler": scheduler},
-        )
-    assert events == ["enqueue:deferred"]
-    assert result.effect_receipts[0].disposition == "enqueued"
-
-
 def test_repair_message_fts_should_run_honors_explicit_opt_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

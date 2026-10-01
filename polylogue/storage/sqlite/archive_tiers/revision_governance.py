@@ -99,13 +99,15 @@ import itertools
 import json
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import Future
+from collections import ChainMap
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+
+from .source_items import SourceItemAdmission
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.base import ParsedSession
@@ -124,7 +126,6 @@ from polylogue.archive.revision_authority import (
     is_work_event_raw_id,
     parser_census_is_complete,
     raw_authority_parser_fingerprint,
-    revision_authority_for_census_detail,
 )
 from polylogue.archive.revision_replay import (
     ApplicationDecision,
@@ -136,9 +137,12 @@ from polylogue.archive.session_revision_membership import MembershipClassificati
 from polylogue.core.codex_append import strip_codex_legacy_append_header
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
+    MissingProfileIdentityError,
     RawFailureEvidenceKind,
+    RetainedZipMembershipUnprovedError,
     raw_failure_classification_reason,
 )
 from polylogue.core.sources import origin_from_provider, provider_from_origin
@@ -461,7 +465,7 @@ def _write_parsed_precedence_result(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
     bulk_build: bool = False,
@@ -569,8 +573,6 @@ def _write_parsed_precedence_result(
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
                 defer_fts_rebuild=defer_fts_rebuild,
-                prepared=prepared,
-                prepared_required=prepared_required,
                 prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
                 # Lineage, hook-parent and dispatch-sidecar evidence live in
@@ -760,6 +762,8 @@ def write_raw_and_parsed(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -776,6 +780,8 @@ def write_raw_and_parsed(
         session,
         payload=payload,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         acquired_at_ms=acquired_at_ms,
         file_mtime_ms=file_mtime_ms,
         source_index=source_index,
@@ -796,6 +802,12 @@ def write_raw_payload(
     capture_mode: Provider | None = None,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -841,6 +853,29 @@ def write_raw_payload(
         raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
+    if captured_zip_coordinate is not None:
+        if not post_parse or revision is not None:
+            raise ValueError("captured ZIP payload requires post-parse admission")
+        return write_raw_blob_ref(
+            store,
+            provider=provider,
+            capture_mode=capture_mode,
+            post_parse=True,
+            blob_hash_hex=hashlib.sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
     if post_parse:
         if revision is not None:
             raise ValueError("post-parse raw admission cannot receive a revision envelope")
@@ -853,6 +888,8 @@ def write_raw_payload(
             # explicitly.
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -876,6 +913,8 @@ def write_raw_payload(
             origin=origin_from_provider(provider),
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -894,6 +933,8 @@ def write_raw_payload(
         origin=origin_from_provider(provider),
         capture_mode=observed_capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -915,6 +956,12 @@ def write_raw_blob_ref(
     blob_hash_hex: str,
     blob_size: int,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -943,6 +990,12 @@ def write_raw_blob_ref(
             origin=origin_from_provider(provider),
             capture_mode=observed_capture_mode,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
             source_index=source_index,
             blob_hash=bytes.fromhex(blob_hash_hex),
             blob_size=blob_size,
@@ -955,11 +1008,15 @@ def write_raw_blob_ref(
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
         return admission.raw_id
+    if captured_zip_coordinate is not None:
+        raise ValueError("captured ZIP intake requires ordinary typed admission")
     return write_source_raw_session_blob_ref(
         store._ensure_source_conn(),
         origin=origin_from_provider(provider),
         capture_mode=observed_capture_mode,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
@@ -979,6 +1036,12 @@ def admit_raw_artifact_payload(
     provider: Provider,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
@@ -1005,12 +1068,34 @@ def admit_raw_artifact_payload(
         raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
         blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
     store._blob_publisher.flush()
+    if captured_zip_coordinate is not None:
+        return admit_raw_artifact_blob_ref(
+            store,
+            provider=provider,
+            classification=classification,
+            blob_hash_hex=hashlib.sha256(payload).hexdigest(),
+            blob_size=len(payload),
+            source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
+            captured_zip_coordinate=captured_zip_coordinate,
+            source_item=source_item,
+            addressing_mode=addressing_mode,
+            content_identity=content_identity,
+            acquired_at_ms=acquired_at_ms,
+            file_mtime_ms=file_mtime_ms,
+            source_index=source_index,
+            raw_id=raw_id,
+            blob_publication_receipt_id=blob_publication_receipt_id,
+        )
     origin = origin_from_provider(provider)
     result = admit_raw_observation(
         store._ensure_source_conn(),
         origin=origin,
         capture_mode=provider,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -1035,6 +1120,12 @@ def admit_raw_artifact_blob_ref(
     blob_hash_hex: str,
     blob_size: int,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
+    captured_zip_coordinate: CapturedZipMemberCoordinate | None = None,
+    source_item: SourceItemAdmission | None = None,
+    addressing_mode: str | None = None,
+    content_identity: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     classification: ArtifactClassification,
@@ -1051,6 +1142,12 @@ def admit_raw_artifact_blob_ref(
         origin=origin_from_provider(provider),
         capture_mode=provider,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
+        captured_zip_coordinate=captured_zip_coordinate,
+        source_item=source_item,
+        addressing_mode=addressing_mode,
+        content_identity=content_identity,
         source_index=source_index,
         blob_hash=bytes.fromhex(blob_hash_hex),
         blob_size=blob_size,
@@ -1132,7 +1229,7 @@ def write_parsed_for_retained_raw_result(
         store._blob_publisher,
         source_conn=store._ensure_source_conn(),
     )
-    write_source_blob_refs(store._ensure_source_conn(), raw_id, attachment_blob_refs)
+    write_source_blob_refs(store._ensure_source_conn(), raw_id, lambda refs=attachment_blob_refs: iter(refs))
     index_started = time.perf_counter()
     result = _index_parsed_for_retained_raw(
         store,
@@ -2406,7 +2503,7 @@ def replace_raw_membership_census(
     parser_fingerprint: str,
     censused_at_ms: int,
     detail: str = "",
-    revision_authority: RawRevisionAuthority | None = None,
+    revision_authority: RawRevisionAuthority | None,
     retire_full_revision_governance: bool = False,
     projections: Sequence[SessionRevisionProjection] | None = None,
     manage_transaction: bool = True,
@@ -2439,10 +2536,8 @@ def replace_raw_membership_census(
             ).fetchone()
             if dependent is not None:
                 raise ActiveByteRevisionChainError("an active byte-revision chain cannot move to membership governance")
-            # A typed authority is the protocol value; ``detail`` is display
-            # text.  Keep the detail-only bridge for older producers, but do
-            # not make explicitly typed writes depend on a prose spelling.
-            census_authority = revision_authority or revision_authority_for_census_detail(detail)
+            # Authority is supplied by the producer; detail is display text.
+            census_authority = revision_authority
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
                 # through its census authority: the retired raw loses its
@@ -2525,7 +2620,7 @@ def replace_raw_membership_census(
                 len(sessions or []),
                 censused_at_ms,
                 detail,
-                (revision_authority or revision_authority_for_census_detail(detail)),
+                revision_authority,
             ),
         )
         record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)
@@ -3362,10 +3457,10 @@ def apply_raw_revision_replay(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     skip_already_applied: bool = False,
-    prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+    prepared_by_raw_id: dict[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
-    preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
-    preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+    preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]] | None = None,
+    preacquired_attachment_refs_by_raw_id: Mapping[str, Callable[[], Iterable[ArchiveSourceBlobRef]]] | None = None,
     prepared_aggregate_session: ParsedSession | None = None,
     prepared_pending_session: ParsedSession | None = None,
     prepared_aggregate_rows: PreparedRows | None = None,
@@ -3374,22 +3469,10 @@ def apply_raw_revision_replay(
 ) -> tuple[str, tuple[str, ...]]:
     """Apply a proven chain and atomically receipt its exact index state.
 
-    ``prepared_by_raw_id`` (polylogue-fpid) optionally supplies rows already
-    built off the writer thread for one or more of ``plan.accepted_raw_ids``
-    -- keyed by ``raw_id``, value either tuples (``PreparedSessionRows``), a
-    binding into an attached shard (``PreparedSessionShardRows``,
-    polylogue-bp12n.6), or a ``Future`` resolved here right
-    before use (so a caller can ``submit()`` the CPU-bound build on a
-    background thread and let it run concurrently with this function's own
-    attachment-preacquisition/blob-flush/head-lookup preamble, then pay only
-    the (likely already-finished) ``Future.result()`` wait). Prepared rows
-    describe one chunk's own content and only a full replace accepts them,
-    so they are consulted only when that chunk is the entire composed write.
-    A missing key, ``None`` value, or a value that turns out
-    stale (session content hash mismatch, or lineage tail-slicing changed
-    ``messages`` after it was built) is always safe: ``write_parsed_session_
-    to_archive`` falls back to building rows inline, byte-identical to
-    ``prepared_by_raw_id=None``.
+    ``prepared_by_raw_id`` supplies physically completed rows for a single
+    accepted chunk. A composed chain uses its sealed aggregate rows and
+    attachment carrier. Publication neither submits nor waits for preparation;
+    changed preparation is a typed refusal.
 
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
@@ -3476,44 +3559,18 @@ def apply_raw_revision_replay(
     )
     if prepared_aggregate_content_hash is not None and len(prepared_aggregate_content_hash) != 32:
         raise PreparedSessionWriteRefusedError("prepared aggregate content hash is invalid")
-    attachments_by_raw_id: dict[str, dict[Any, tuple[bytes | None, int, str]]] = {}
-    attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
+    if preacquired_attachment_blobs_by_raw_id is None or preacquired_attachment_refs_by_raw_id is None:
+        raise PreparedSessionWriteRefusedError("revision replay requires sealed attachment preparation")
     for raw_id in plan.accepted_raw_ids:
-        if preacquired_attachment_blobs_by_raw_id is not None:
-            acquired = dict(preacquired_attachment_blobs_by_raw_id.get(raw_id, {}))
-            refs = tuple((preacquired_attachment_refs_by_raw_id or {}).get(raw_id, ()))
-        else:
-            _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, raw_id)
-            acquired, refs = store._preacquire_attachment_blobs(
-                parsed_by_raw_id[raw_id],
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-            )
-        attachments_by_raw_id[raw_id] = acquired
-        attachment_refs_by_raw_id[raw_id] = refs
-    if store._blob_publisher is not None:
-        if not manage_transaction and store._blob_publisher.has_pending:
-            # Batched replay holds one transaction across many cohorts; a
-            # non-empty flush opens a SEPARATE source.db connection at
-            # ``BEGIN IMMEDIATE`` which would wait out its busy timeout
-            # behind this batch's held source write lock. Commit the open
-            # batch first: everything committed is a complete prior-cohort
-            # boundary (this cohort has written nothing yet), so crash
-            # semantics are identical to a smaller batch.
-            store.commit()
-        store._blob_publisher.flush()
-        for raw_id in tuple(attachments_by_raw_id):
-            attachments_by_raw_id[raw_id], attachment_refs_by_raw_id[raw_id] = reconcile_refused_attachments(
-                attachments_by_raw_id[raw_id],
-                attachment_refs_by_raw_id[raw_id],
-                store._blob_publisher,
-                source_conn=store._ensure_source_conn(),
-            )
-    if not _is_frozen_candidate(store):
-        for raw_id, refs in attachment_refs_by_raw_id.items():
-            write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
+        if raw_id not in preacquired_attachment_blobs_by_raw_id or raw_id not in preacquired_attachment_refs_by_raw_id:
+            raise PreparedSessionWriteRefusedError(f"revision replay lacks prepared attachments for {raw_id}")
     session_ids: set[str] = set()
     with store.index_mutation_scope() if manage_transaction else nullcontext():
+        if not _is_frozen_candidate(store):
+            for raw_id in plan.accepted_raw_ids:
+                write_source_blob_refs(
+                    store._ensure_source_conn(), raw_id, preacquired_attachment_refs_by_raw_id[raw_id]
+                )
         existing_head = store._conn.execute(
             """SELECT session_id, accepted_raw_id, accepted_source_revision,
                       accepted_content_hash, accepted_frontier_kind, accepted_frontier
@@ -3622,9 +3679,9 @@ def apply_raw_revision_replay(
                     composed_session = composed_session.model_copy(update=chain_header)
             # Preacquired blobs use the attachment's acquisition key. A
             # prepared carrier preserves that key across separate row reads.
-            composed_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] = {}
-            for raw_id in pending_raw_ids:
-                composed_attachment_blobs.update(attachments_by_raw_id[raw_id])
+            composed_attachment_blobs = ChainMap(
+                *(preacquired_attachment_blobs_by_raw_id[raw_id] for raw_id in reversed(pending_raw_ids))
+            )
             # The chain's newest accepted raw carries the composed write:
             # ``sessions.raw_id`` and the reparse receipt then name the tip
             # the head row is about to advertise.
@@ -3637,11 +3694,7 @@ def apply_raw_revision_replay(
             if full_replace and prepared_aggregate_rows is not None:
                 resolved_prepared = prepared_aggregate_rows
             elif full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
-                prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
-                if isinstance(prepared_candidate, Future):
-                    resolved_prepared = prepared_candidate.result()
-                else:
-                    resolved_prepared = prepared_candidate
+                resolved_prepared = prepared_by_raw_id.get(tip_raw_id)
             index_started = time.perf_counter()
             result = _index_parsed_for_retained_raw(
                 store,
@@ -3893,8 +3946,8 @@ def apply_raw_membership_classification(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-    preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
     prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     prepared_write: PreparedSessionWrite | None = None,
@@ -3941,36 +3994,12 @@ def apply_raw_membership_classification(
         accepted_raw_id = classification.accepted_raw_ids[-1]
         accepted_session = parsed_by_raw_id[accepted_raw_id]
         _provider, _blob_hash, source_path, _kind, _blob_size = raw_revision_descriptor(store, accepted_raw_id)
-        if preacquired_attachment_blobs is None:
-            attachments, refs = store._preacquire_attachment_blobs(
-                accepted_session,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-            )
-            if store._blob_publisher is not None:
-                if not manage_transaction and store._blob_publisher.has_pending:
-                    # Same batched-replay deadlock avoidance as
-                    # ``apply_raw_revision_replay``: commit the open batch before
-                    # a non-empty flush takes its separate source.db write lock.
-                    store.commit()
-                store._blob_publisher.flush()
-        else:
-            # Shared compute staged attachment blobs without a source-tier
-            # reservation.  This admitted writer owns the first source write:
-            # reserve and publish the staged bytes before the durable refs
-            # below make them live, without reopening or hashing them.
-            attachments = preacquired_attachment_blobs
-            refs = preacquired_attachment_refs or ()
-            if store._blob_publisher is not None and store._blob_publisher.has_pending:
-                if not manage_transaction:
-                    store.commit()
-                store._blob_publisher.flush()
-        attachments, refs = reconcile_refused_attachments(
-            attachments, tuple(refs), store._blob_publisher, source_conn=store._ensure_source_conn()
-        )
-        if not _is_frozen_candidate(store):
-            write_source_blob_refs(conn, accepted_raw_id, refs)
+        if preacquired_attachment_blobs is None or preacquired_attachment_refs is None:
+            raise PreparedSessionWriteRefusedError("membership replay requires sealed attachment preparation")
+        attachments = preacquired_attachment_blobs
         with store.index_mutation_scope() if manage_transaction else nullcontext():
+            if not _is_frozen_candidate(store):
+                write_source_blob_refs(conn, accepted_raw_id, preacquired_attachment_refs)
             existing_head = store._conn.execute(
                 """
                 SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id,
@@ -4344,7 +4373,28 @@ def mark_raw_parse_failed(
     """Persist a bounded parse/index failure for retained raw evidence."""
     conn = store._ensure_source_conn()
     with conn:
-        if isinstance(error, RawCASFrontierError):
+        if isinstance(error, (MissingProfileIdentityError, RetainedZipMembershipUnprovedError)):
+            row = conn.execute(
+                "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+            if row is not None:
+                _retire_raw_failure_evidence(store, raw_id, manage_transaction=False)
+                record_raw_failure_evidence(
+                    store,
+                    raw_id,
+                    provider=provider,
+                    source_path=str(row[0] or raw_id),
+                    source_index=int(row[1] or 0),
+                    acquired_at_ms=int(row[2] or 0),
+                    kind=(
+                        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED
+                        if isinstance(error, RetainedZipMembershipUnprovedError)
+                        else RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY
+                    ),
+                    manage_transaction=False,
+                )
+        elif isinstance(error, RawCASFrontierError):
             row = conn.execute(
                 "SELECT source_path, source_index, acquired_at_ms FROM raw_sessions WHERE raw_id = ?",
                 (raw_id,),
@@ -4605,7 +4655,7 @@ def _index_parsed_for_retained_raw(
     stage_timings_s: dict[str, float] | None,
     stage_timing_prefix: str,
     manage_transaction: bool,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]],
     finalize_raw_parse: bool,
     revision_authoritative: bool = False,
     bulk_fts: bool = False,
@@ -4691,6 +4741,8 @@ def write_raw_and_parsed_result(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     file_mtime_ms: int | None = None,
     source_index: int = 0,
@@ -4741,6 +4793,8 @@ def write_raw_and_parsed_result(
         origin=origin_from_provider(session.source_name),
         capture_mode=session.source_name,
         source_path=source_path,
+        canonical_source_path=canonical_source_path,
+        captured_profile_key=captured_profile_key,
         source_index=source_index,
         payload=payload,
         acquired_at_ms=acquired_at_ms,
@@ -4849,6 +4903,8 @@ def admit_raw_and_parsed_result(
     *,
     payload: bytes,
     source_path: str,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     acquired_at_ms: int,
     logical_source_key: str,
     file_mtime_ms: int | None = None,
@@ -4924,6 +4980,8 @@ def admit_raw_and_parsed_result(
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,
@@ -4948,6 +5006,8 @@ def admit_raw_and_parsed_result(
             origin=origin_from_provider(session.source_name),
             capture_mode=session.source_name,
             source_path=source_path,
+            canonical_source_path=canonical_source_path,
+            captured_profile_key=captured_profile_key,
             source_index=source_index,
             payload=payload,
             acquired_at_ms=acquired_at_ms,

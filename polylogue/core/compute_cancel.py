@@ -20,8 +20,19 @@ compute_cancel: contextvars.ContextVar[threading.Event | None] = contextvars.Con
 
 def compute_cancel_requested() -> bool:
     """Whether the compute owner running this code has been cancelled."""
+    from polylogue.core.compute import current_cancellation
+
     cancelled = compute_cancel.get()
-    return cancelled is not None and cancelled.is_set()
+    operation = current_cancellation()
+    return (cancelled is not None and cancelled.is_set()) or (operation is not None and operation.cancelled)
 
 
-__all__ = ["compute_cancel", "compute_cancel_requested"]
+def check_compute_cancelled() -> None:
+    """Stop a pure unit at a cooperative boundary without abandoning cleanup."""
+    if compute_cancel_requested():
+        from polylogue.core.compute import DaemonOperationCancelled
+
+        raise DaemonOperationCancelled("compute operation cancelled")
+
+
+__all__ = ["check_compute_cancelled", "compute_cancel", "compute_cancel_requested"]

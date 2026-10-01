@@ -238,3 +238,31 @@ def test_a_row_re_recorded_after_the_run_started_survives_the_ledger(archive: Pa
     )
     assert retried == 1
     assert len(_rows(archive)) == 1
+
+
+@pytest.mark.parametrize("stage", ["lineage", "convergence"])
+def test_skipped_retry_preserves_unmeasured_debt(archive: Path, stage: str) -> None:
+    """Aggregate convergence cannot settle a stage which never evaluated its subject."""
+    from types import SimpleNamespace
+
+    cursor = CursorStore(archive / "index.db")
+    subject = "synthetic-session"
+    cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id=subject, error="owed")
+    [debt] = cursor.list_convergence_debt(limit=10)
+    state = SimpleNamespace(converged=True, stages={"lineage": "skipped"}, last_error=None)
+    daemon_cli._record_convergence_debt_retries(cursor, [debt], {(stage, "session_id", subject): state})
+    assert _rows(archive) == [("lineage", subject)]
+
+
+def test_generic_retry_preserves_each_unevaluated_stage(archive: Path) -> None:
+    from types import SimpleNamespace
+
+    cursor = CursorStore(archive / "index.db")
+    subject = "synthetic-session"
+    cursor.record_convergence_debt(stage="convergence", subject_type="session_id", subject_id=subject, error="owed")
+    [debt] = cursor.list_convergence_debt(limit=10)
+    state = SimpleNamespace(
+        converged=False, stages={"lineage": "skipped", "titles": "failed", "summary": "done"}, last_error="pending"
+    )
+    daemon_cli._record_convergence_debt_retries(cursor, [debt], {("convergence", "session_id", subject): state})
+    assert _rows(archive) == [("lineage", subject), ("titles", subject)]

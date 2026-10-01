@@ -10,12 +10,18 @@ with real source files under ``tmp_path``; no ambient data is read.
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import sqlite3
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
+import pytest
+
+from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
@@ -34,6 +40,8 @@ from polylogue.maintenance.source_manifest_continuity import (
     build_source_frontier,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.source_acquisition_components import ZipEntryReadContext, iter_zip_entry_raw_data
+from polylogue.sources.source_snapshot import observe_source_members
 from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1278,7 +1286,7 @@ def test_stale_sqlite_revision_is_not_conserved(tmp_path: Path) -> None:
 def test_archive_member_source_is_not_lost(tmp_path: Path) -> None:
     """A raw acquired from an archive member whose container is present is conserved.
 
-    Anti-vacuity: revert ``_source_exists`` to a bare ``Path(source_path).exists()``
+    Anti-vacuity: revert ``_source_presence`` to a bare ``Path(source_path).exists()``
     and the ``archive!member`` coordinate can never resolve, so the raw is typed
     ``source_lost`` (blocking) even though the bytes are sitting in the archive on
     disk. The blob ref is deleted on purpose so the ladder cannot fall back to the
@@ -1354,3 +1362,153 @@ def test_member_missing_from_container_is_lost(tmp_path: Path) -> None:
     check = _run(tmp_path)
     assert check.status is OutcomeStatus.ERROR, check.summary
     assert _count(check, "source_lost") == 1
+
+
+@pytest.mark.parametrize("separator", ["!", ":"])
+@pytest.mark.parametrize("retained", [False, True])
+@pytest.mark.parametrize("suffix", [".zip", ".data"])
+def test_non_zip_member_container_cannot_conserve_materialized_raw(
+    tmp_path: Path, separator: str, retained: bool, suffix: str
+) -> None:
+    """Mutation: unreadable ZIP namelist returning True hides a lost materialized member."""
+    session_source, _ = _seed(tmp_path)
+    bundle = tmp_path / f"export{suffix}"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", '{"id":"session","mapping":{}}')
+    if separator == "!":
+        declaration = SourceDeclaration("bundle", SourceRole.ARCHIVE_MEMBER, bundle)
+        item = observe_source_members(declaration)[0]
+        coordinate = str(bundle.parent / item.coordinate)
+    else:
+        with zipfile.ZipFile(bundle) as archive:
+            context = ZipEntryReadContext(
+                source=Source(name="chatgpt", path=tmp_path),
+                zip_path=bundle,
+                entry=archive.infolist()[0],
+                file_mtime=None,
+                provider_hint=Provider.CHATGPT,
+                blob_store=BlobStore(tmp_path / "blob"),
+            )
+            acquired = list(iter_zip_entry_raw_data(archive, context))
+        assert len(acquired) == 1
+        coordinate = acquired[0].source_path
+    bundle.write_bytes(b"demonstrably not a zip")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        if not retained:
+            conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+    session_source.unlink()
+    check = _run(tmp_path)
+    assert _count(check, "materialized") == 0
+    assert _count(check, "source_lost") == int(not retained)
+    assert _count(check, "source_missing") == int(retained)
+    assert _count(check, "source_unavailable") == 0
+    assert check.status is (OutcomeStatus.OK if retained else OutcomeStatus.ERROR)
+
+
+@pytest.mark.parametrize("separator", ["!", ":"])
+@pytest.mark.parametrize("suffix", [".zip", ".data"])
+def test_unreadable_member_inventory_is_retryable_and_not_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, separator: str, suffix: str
+) -> None:
+    """Mutation: treating a denied container as present or missing loses measurement truth."""
+    session_source, _ = _seed(tmp_path)
+    bundle = tmp_path / f"export{suffix}"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("conversations.json", session_source.read_bytes())
+    coordinate = f"{bundle}{separator}conversations.json"
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (coordinate,))
+        conn.execute("DELETE FROM blob_refs WHERE ref_id = 'raw-session'")
+    original = os.open
+
+    def denied(path: Path, *args: Any, **kwargs: Any) -> int:
+        if path == bundle:
+            raise PermissionError("synthetic denied inventory")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "open", denied)
+        check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    assert _count(check, "source_unavailable") == 1
+    assert _count(check, "source_lost") == 0
+    assert _count(check, "source_missing") == 0
+    assert _count(check, "materialized") == 0
+    # A new audit measures the recovered inventory rather than caching its denial.
+    recovered = _run(tmp_path)
+    assert _count(recovered, "source_unavailable") == 0
+    assert _count(recovered, "materialized") == 1
+
+
+def test_conservation_rechecks_cached_inventory_after_container_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: caching by pathname conserves a member removed between two raw probes."""
+    from polylogue.maintenance import source_conservation
+
+    _seed(tmp_path)
+    bundle = tmp_path / "export.zip"
+    replacement = tmp_path / "replacement.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("session.json", b"{}")
+        archive.writestr("sidecar.json", b"{}")
+    with zipfile.ZipFile(replacement, "w") as archive:
+        archive.writestr("unrelated.json", b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (f"{bundle}!session.json",)
+        )
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-sidecar'", (f"{bundle}!sidecar.json",)
+        )
+        conn.execute("DELETE FROM blob_refs")
+    original = source_conservation._source_presence
+    replaced = False
+
+    def replace_after_first_probe(
+        root: Path,
+        source_path: str,
+        inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+    ) -> bool | None:
+        nonlocal replaced
+        present = original(root, source_path, inventories)
+        if not replaced:
+            replaced = True
+            replacement.replace(bundle)
+        return present
+
+    monkeypatch.setattr(source_conservation, "_source_presence", replace_after_first_probe)
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    # Regardless of raw row order, both old names cannot be conserved.
+    assert _count(check, "source_lost") == 1
+
+
+def test_conservation_refuses_inventory_replaced_while_descriptor_is_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mutation: descriptor inventory without path identity check publishes an old ZIP under a new path."""
+    _seed(tmp_path)
+    bundle = tmp_path / "export.zip"
+    replacement = tmp_path / "replacement.zip"
+    for path in (bundle, replacement):
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("session.json", b"{}")
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_path = ? WHERE raw_id = 'raw-session'", (f"{bundle}!session.json",)
+        )
+    original = zipfile.ZipFile.infolist
+
+    def replace_after_namelist(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+        names = original(archive)
+        replacement.replace(bundle)
+        return names
+
+    monkeypatch.setattr(zipfile.ZipFile, "infolist", replace_after_namelist)
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR
+    assert _count(check, "source_unavailable") == 1
+    assert _count(check, "source_lost") == 0
+    assert _count(check, "materialized") == 0

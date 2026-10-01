@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from polylogue import Polylogue
+from tests.infra.index_writer import write_fixture_index_session
 
 if TYPE_CHECKING:
     from polylogue.api.runtime import RuntimeServices
@@ -69,7 +70,6 @@ async def test_attachment_library_pages_keep_session_and_transcript_order(
     from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from tests.infra.index_writer import write_fixture_index_session
 
     db_path = workspace_env["archive_root"] / "index.db"
     with sqlite3.connect(db_path) as conn:

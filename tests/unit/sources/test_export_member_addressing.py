@@ -19,17 +19,11 @@ from typing import IO
 
 import pytest
 
-from polylogue.archive.zip_admission import MAX_COMPRESSION_RATIO
 from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
-from polylogue.operations.zip_acquisition_replay import (
-    MemberCandidate,
-    resolve_member_candidate,
-    zip_reacquired_unit,
-)
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
@@ -37,6 +31,11 @@ from polylogue.sources.source_acquisition_components import (
     stream_preserved_zip_entry_raw_data,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.source_zip_replay import (
+    MemberCandidate,
+    resolve_member_candidate,
+    zip_reacquired_unit,
+)
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 
@@ -124,15 +123,8 @@ def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_pa
     assert unit is not None and unit.byte_identity == _sha(expected)
 
 
-def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: Path) -> None:
-    """Replay applies acquisition's ZIP admission before decompressing a member.
-
-    The same member bytes replay from an archive that stores them plainly.
-    Stored at a compression ratio above the admission limit, acquisition
-    refuses the member, so replay refuses it too and caches nothing.
-    Anti-vacuity: without the admission check the high-ratio archive yields
-    the recorded payload.
-    """
+def test_reacquisition_preserves_valid_member_across_compression_ratios(tmp_path: Path) -> None:
+    """Compression ratio cannot change exact retained member byte identity."""
     padded = {**_session("padded"), "pad": " " * 1_000_000}
     member_bytes = json.dumps([_META, padded, _session("other")], separators=(",", ":")).encode()
     expected = dumps_bytes(padded)
@@ -144,7 +136,7 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
         archive.writestr("conversations.json", member_bytes)
     with zipfile.ZipFile(high_ratio_zip) as archive:
         entry = archive.infolist()[0]
-    assert entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
+    assert entry.file_size / entry.compress_size > 1000
 
     stored_path = f"{stored_zip}:conversations.json"
     unit, error = zip_reacquired_unit(
@@ -157,12 +149,13 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
 
     high_ratio_path = f"{high_ratio_zip}:conversations.json"
     cache: dict[str, tuple[MemberCandidate, ...]] = {}
-    assert zip_reacquired_unit(
+    high_ratio_unit, high_ratio_error = zip_reacquired_unit(
         _row(high_ratio_path, payload=expected, source_index=0),
         source_path=high_ratio_path,
         zip_payload_cache=cache,
-    ) == (None, "container_member_rejected")
-    assert cache == {}
+    )
+    assert high_ratio_error is None
+    assert high_ratio_unit is not None and high_ratio_unit.byte_identity == _sha(expected)
 
 
 def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_path: Path) -> None:
@@ -271,7 +264,7 @@ def test_whole_member_document_is_acquired_as_a_whole_member(tmp_path: Path, rec
     assert [item.addressing_mode for item in replayed] == [MemberAddressingMode.WHOLE_MEMBER]
 
 
-def test_preserved_whole_member_drops_element_index_hint(tmp_path: Path) -> None:
+def test_preserved_whole_member_has_document_addressing(tmp_path: Path) -> None:
     """A transport coordinate must not become a positional member address."""
     zip_path = tmp_path / "preserved.zip"
     _write_member(zip_path, {"metadata": "document"})
@@ -291,7 +284,6 @@ def test_preserved_whole_member_drops_element_index_hint(tmp_path: Path) -> None
             archive,
             context,
             provider_hint=Provider.CHATGPT,
-            source_index=17,
         )
 
     assert record.addressing_mode is MemberAddressingMode.WHOLE_MEMBER
@@ -763,3 +755,29 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     _write_member(real_zip, [_session("one")])
     assert archive_debt._source_artifact_exists(f"{real_zip}:conversations.json") is True
     assert blob_integrity._source_path_availability(f"{real_zip}:conversations.json")[0] is True
+
+
+def test_zip_coordinate_candidates_preserve_every_colon_boundary() -> None:
+    """Lexical candidates must not guess a unique boundary for arbitrary removed containers."""
+    from polylogue.core.raw_coordinates import zip_member_coordinate_candidates
+
+    assert list(zip_member_coordinate_candidates("/imports/odd:name.data:a:b.json")) == [
+        (Path("/imports/odd"), "name.data:a:b.json"),
+        (Path("/imports/odd:name.data"), "a:b.json"),
+        (Path("/imports/odd:name.data:a"), "b.json"),
+    ]
+
+
+def test_zip_member_does_not_lock_provider_after_two_matching_records() -> None:
+    from io import BytesIO
+
+    from polylogue.sources.source_acquisition_components import iter_entry_payloads
+
+    fixtures = Path(__file__).parents[2] / "fixtures" / "origin-capability"
+    chatgpt = json.loads((fixtures / "chatgpt-export.json").read_bytes())
+    claude = json.loads((fixtures / "claude-ai-export.json").read_bytes())
+    chatgpt_record = chatgpt[0] if isinstance(chatgpt, list) else chatgpt
+    claude_record = claude[0] if isinstance(claude, list) else claude
+    source = BytesIO(b"\n".join(dumps_bytes(record) for record in (chatgpt_record, chatgpt_record, claude_record)))
+    observed = list(iter_entry_payloads(source, stream_name="mixed.jsonl", provider_hint=Provider.CHATGPT))
+    assert [item.provider for item in observed] == [Provider.CHATGPT, Provider.CHATGPT, Provider.CLAUDE_AI]

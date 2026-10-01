@@ -170,6 +170,7 @@ from typing import Literal, TypeAlias
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, BranchType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument, JSONValue, json_document, json_document_list
+from polylogue.sources.detection_projection import DetectorProjection
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -356,6 +357,7 @@ def parse_atof_stream(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Normalize a raw Hermes NeMo Relay ATOF JSONL stream by session id.
 
@@ -440,7 +442,11 @@ def parse_atof_stream(
 
     unpaired_events = {session_id: _unpaired_scope_events(phases) for session_id, phases in scope_phases.items()}
     session_ids = sorted(set(grouped) | set(unpaired_events))
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
 
     # Only a producer-positive, unambiguous (single-parent) child id with a
     # known profile qualifies for edge materialization -- fail closed on a
@@ -820,6 +826,7 @@ def parse_atif_document(
     fallback_id: str,
     *,
     profile_root: Path | None = None,
+    profile_identity: str | None = None,
 ) -> list[ParsedSession]:
     """Parse one Hermes ATIF trajectory document into a parent session plus
     any materialized subagent-delegation child sessions.
@@ -867,6 +874,7 @@ def parse_atif_document(
         (AtifSubagent.from_entry(entry) for entry in raw_subagents),
         fallback_id,
         profile_root=profile_root,
+        profile_identity=profile_identity,
     )
 
 
@@ -901,6 +909,7 @@ def parse_atif_stream(
     fallback_id: str,
     *,
     profile_root: Path | None,
+    profile_identity: str | None = None,
     new_events: Callable[[], MutableSequence[ParsedSessionEvent]],
 ) -> list[ParsedSession]:
     """Lower a proved ATIF document without retaining its step arrays.
@@ -910,7 +919,15 @@ def parse_atif_stream(
     from ``new_events``. Subagent entries arrive one at a time, each with its
     steps held apart from its fields.
     """
-    return _atif_sessions(envelope, steps, subagents, fallback_id, profile_root=profile_root, new_events=new_events)
+    return _atif_sessions(
+        envelope,
+        steps,
+        subagents,
+        fallback_id,
+        profile_root=profile_root,
+        profile_identity=profile_identity,
+        new_events=new_events,
+    )
 
 
 def _atif_sessions(
@@ -920,12 +937,17 @@ def _atif_sessions(
     fallback_id: str,
     *,
     profile_root: Path | None,
+    profile_identity: str | None = None,
     new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
 ) -> list[ParsedSession]:
     session_id = str(payload.get("session_id") or fallback_id)
     agent = json_document(payload.get("agent")) or {}
     model_name = _optional_str(agent.get("model_name"))
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    profile_key_value = (
+        profile_identity
+        if profile_identity is not None
+        else (_profile_key(profile_root) if profile_root is not None else None)
+    )
     provider_session_id = atif_session_provider_id(session_id, profile_key_value)
     parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
 
@@ -1715,3 +1737,22 @@ __all__ = [
     "parse_atif_stream",
     "parse_atof_stream",
 ]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep the ATIF/ATOF signatures without materializing trajectory steps."""
+    return DetectorProjection(
+        fields={
+            name: DetectorProjection()
+            for name in (
+                "schema_version",
+                "session_id",
+                "steps",
+                "atof_version",
+                "kind",
+                "uuid",
+                "timestamp",
+                "name",
+            )
+        }
+    )

@@ -30,7 +30,7 @@ from typing import Any
 import pytest
 
 MODULE_TARGETS: dict[str, str] = {
-    "polylogue.operations.archive_backup": "sqlite3",
+    "polylogue.storage.backup_package": "sqlite3",
     "polylogue.storage.sqlite.migration_runner": "sqlite3",
     "polylogue.cli.commands.paths": "sqlite3",
     "polylogue.storage.index_generation": "sqlite3",
@@ -78,9 +78,9 @@ def versioned_db(tmp_path: Path) -> Path:
 def test_daemon_backup_sqlite_user_version_closes_connection(
     monkeypatch: pytest.MonkeyPatch, versioned_db: Path
 ) -> None:
-    from polylogue.operations.archive_backup import _sqlite_user_version
+    from polylogue.storage.backup_package import _sqlite_user_version
 
-    captured = _capture_connections(monkeypatch, "polylogue.operations.archive_backup")
+    captured = _capture_connections(monkeypatch, "polylogue.storage.backup_package")
     assert _sqlite_user_version(versioned_db) == 7
     _assert_all_closed(captured)
 

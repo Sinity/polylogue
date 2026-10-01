@@ -16,6 +16,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.providers.gemini import GeminiMessage
 
 from .base import (
@@ -844,3 +845,13 @@ def looks_like(payload: object) -> bool:
         return True
     # Older exports expose ``chunks`` at the document top level.
     return _looks_like_chunks(record.get("chunks"))
+
+
+def detection_projection() -> DetectorProjection:
+    """Validate every chunk under both supported container placements."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(_CHUNK_CONTENT_KEYS)
+    fields.update(role=DetectorProjection(), author=DetectorProjection())
+    chunks = DetectorProjection(
+        item=DetectorProjection(fields=fields), array_fold="all", array_predicate=looks_like_chunk
+    )
+    return DetectorProjection(fields={"chunks": chunks, "chunkedPrompt": DetectorProjection(fields={"chunks": chunks})})

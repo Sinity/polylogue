@@ -11,9 +11,10 @@ import pytest
 from polylogue.config import Source
 from polylogue.core import content_identity
 from polylogue.core.enums import Provider
-from polylogue.sources.source_acquisition import iter_source_raw_data
+from polylogue.sources.source_acquisition import iter_source_acquisition_records
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from tests.infra.source_builders import acquired_payloads, live_zip_capture
 
 
 def test_a_refused_member_is_recorded_and_its_siblings_are_acquired(
@@ -32,10 +33,12 @@ def test_a_refused_member_is_recorded_and_its_siblings_are_acquired(
 
     cursor_state: CursorStatePayload = {}
     records = list(
-        iter_source_raw_data(
-            Source(name="chatgpt", path=source_root),
-            blob_store=BlobStore(tmp_path / "archive" / "blob"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="chatgpt", path=source_root),
+                blob_store=BlobStore(tmp_path / "archive" / "blob"),
+                cursor_state=cursor_state,
+            )
         )
     )
 
@@ -103,12 +106,16 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
     )
 
     def extract() -> set[str]:
-        records, _bytes = processor._extract_zip_member_records(
-            zip_path,
-            blob_store=BlobStore(tmp_path / "blob"),
-            fallback_provider=Provider.CHATGPT,
-            file_mtime="2026-09-28T00:00:00+00:00",
-        )
+        with live_zip_capture(tmp_path) as (publisher, zip_inputs):
+            extracted = processor._extract_zip_member_records(
+                zip_path,
+                blob_store=publisher,
+                zip_inputs=zip_inputs,
+                fallback_provider=Provider.CHATGPT,
+                file_mtime="2026-09-28T00:00:00+00:00",
+            )
+            assert extracted is not None
+            records, _bytes = extracted
         return {record.source_path for _raw_id, record in records}
 
     assert extract() == {f"{zip_path}:b.json"}
@@ -145,10 +152,12 @@ def test_a_refused_split_element_does_not_drop_the_elements_after_it(
 
     cursor_state: CursorStatePayload = {}
     records = list(
-        iter_source_raw_data(
-            Source(name="chatgpt", path=source_root),
-            blob_store=BlobStore(tmp_path / "archive" / "blob"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="chatgpt", path=source_root),
+                blob_store=BlobStore(tmp_path / "archive" / "blob"),
+                cursor_state=cursor_state,
+            )
         )
     )
 

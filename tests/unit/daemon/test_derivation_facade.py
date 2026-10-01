@@ -22,6 +22,7 @@ from typing import cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger, SessionProfileConvergenceOwner
 from polylogue.daemon.derivation import (
     BaseDerivation,
@@ -33,7 +34,6 @@ from polylogue.daemon.derivation import (
     PendingReason,
     Replacement,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
 FRAME = DerivationFrame(archive_root="/archive", source_revision="r1")
@@ -526,3 +526,105 @@ def test_stage_state_cannot_certify_a_derived_output() -> None:
     converger.converge_batch([], whole_archive=False)
 
     assert converger.converge_derivations(FRAME).done == 2
+
+
+@pytest.mark.asyncio
+async def test_publication_preserves_preparation_creator_and_entry_sql(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
+    class CreatorBoundDerivation(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+            self.creator: threading.Thread | None = None
+
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            self.creator = threading.current_thread()
+            self.prepared = open_scratch_connection(tmp_path / "prepared.sqlite")
+            self.prepared.require_connection().execute("CREATE TABLE evidence(value INTEGER)")
+            self.prepared.require_connection().execute("INSERT INTO evidence VALUES (7)")
+            return super().compute(frame, key)
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            assert threading.current_thread() is self.creator
+            assert self.prepared.require_connection().execute("SELECT value FROM evidence").fetchone()[0] == 7
+            return super().publish(frame, replacement)
+
+    adapter = CreatorBoundDerivation()
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[adapter]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        assert (await owner.converge(FRAME)).done == 1
+        assert adapter.prepared.connection is None
+        assert compute.snapshot().active_units == 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_publication_native_close_failure_retains_writer_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_scratch_connection
+
+    failed_close = threading.Event()
+    allow_close = threading.Event()
+
+    class RetainedPublication(StringStatusDerivation):
+        domain = "session_profile"
+
+        def __init__(self) -> None:
+            super().__init__(("a",))
+
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            native = open_scratch_connection(tmp_path / "publication.sqlite")
+            native.require_connection().execute("CREATE TABLE publication(value INTEGER)")
+            close = native.close
+            creator = threading.current_thread()
+
+            def controlled_close() -> None:
+                assert threading.current_thread() is creator
+                if not allow_close.is_set():
+                    failed_close.set()
+                    raise OSError("synthetic native close failure")
+                close()
+
+            monkeypatch.setattr(native, "close", controlled_close)
+            return super().publish(frame, replacement)
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    owner = SessionProfileConvergenceOwner(
+        DaemonConverger([], derivations=[RetainedPublication()]),
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    task = asyncio.create_task(owner.converge(FRAME))
+    try:
+        assert await asyncio.to_thread(failed_close.wait, 1.0)
+        while not compute.retained_sql_settlements():
+            assert not task.done()
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert coordinator.snapshot().active_actor == "derivation.session_profile"
+        assert compute.snapshot().active_units == 1
+        allow_close.set()
+        compute.retry_sql_settlement()
+        report = await task
+        assert report.failed == 1
+        assert coordinator.snapshot().active_actor is None
+        assert compute.snapshot().active_units == 0
+    finally:
+        allow_close.set()
+        compute.retry_sql_settlement()
+        if not task.done():
+            await task
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

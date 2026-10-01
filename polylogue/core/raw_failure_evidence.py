@@ -14,6 +14,18 @@ from enum import StrEnum
 from polylogue.core.enums import ArtifactSupportStatus
 
 
+class MissingProfileIdentityError(ValueError):
+    """Retained Hermes bytes have no acquisition-bound profile qualifier."""
+
+    outcome_code = "missing_profile_identity"
+
+
+class RetainedZipMembershipUnprovedError(ValueError):
+    """Retained ZIP bytes lack a proved acquired namespace and complete member set."""
+
+    outcome_code = "retained_zip_membership_unproved"
+
+
 class RawFailureEvidenceKind(StrEnum):
     """Durable lifecycle evidence attached to a retained raw artifact."""
 
@@ -26,11 +38,15 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
     TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
+    TERMINAL_MISSING_PROFILE_IDENTITY = "terminal_missing_profile_identity"
+    TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED = "terminal_retained_zip_membership_unproved"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
         if self in {
             RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY,
+            RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED,
             RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
         }:
             return ArtifactSupportStatus.UNKNOWN
@@ -81,6 +97,17 @@ RAW_FAILURE_VALIDATION_FAILURE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
     }
 )
+
+
+class RetainedRawDecodeRefusalError(ValueError):
+    """Current durable decode evidence refuses this retained input permanently."""
+
+    def __init__(self, raw_id: str, kind: RawFailureEvidenceKind, diagnostic: str) -> None:
+        if kind.value not in RAW_FAILURE_VALIDATION_FAILURE_KINDS:
+            raise ValueError("retained decode refusal requires terminal decode evidence")
+        self.raw_id = raw_id
+        self.kind = kind
+        super().__init__(diagnostic)
 
 
 def raw_failure_classification_reason(
@@ -202,6 +229,8 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
         RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
+        RawFailureEvidenceKind.TERMINAL_MISSING_PROFILE_IDENTITY.value,
+        RawFailureEvidenceKind.TERMINAL_RETAINED_ZIP_MEMBERSHIP_UNPROVED.value,
     }
 )
 RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
@@ -253,6 +282,7 @@ __all__ = [
     "RAW_FAILURE_TRUSTED_PROVENANCE",
     "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
     "RawFailureEvidenceKind",
+    "RetainedRawDecodeRefusalError",
     "has_trusted_raw_failure_provenance",
     "terminal_carrier_overwrite_predicate",
     "raw_failure_classification_reason",

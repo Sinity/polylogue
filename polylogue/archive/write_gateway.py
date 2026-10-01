@@ -21,9 +21,8 @@ from polylogue.storage.sqlite.connection_profile import open_connection as _open
 @dataclass(frozen=True, slots=True)
 class WriteEffectReceipt:
     name: str
-    phase: Literal["in-transaction", "post-commit", "async-deferred"]
-    disposition: Literal["applied", "enqueued", "skipped", "failed"]
-    retryable: bool = False
+    phase: Literal["in-transaction", "post-commit"]
+    disposition: Literal["applied", "skipped", "failed"]
     error: str | None = None
 
 

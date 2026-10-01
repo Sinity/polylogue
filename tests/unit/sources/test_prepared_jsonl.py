@@ -168,6 +168,30 @@ def test_prepared_artifact_preserves_private_linkage_and_refuses_changed_seal(tm
         list(artifact.iter_sessions())
 
 
+def test_composed_attachment_retains_original_sealed_publication_coordinate(tmp_path: Path) -> None:
+    artifact, coordinate = _prepared_artifact(tmp_path)
+    original = artifact.session_sequence()[0]
+    original_key = original.attachments[0].acquisition_key
+    composed_path = tmp_path / "composed.db"
+    store = SqliteMessageStore(composed_path)
+    try:
+        _write_artifact(
+            store,
+            "e" * 64,
+            [original],
+            enrichment_digest="c" * 64,
+            enrichment_index_path="/index.db",
+        )
+    finally:
+        store.close()
+    attachments = SqliteAttachmentSink(composed_path, 0, count=1)
+    restored = attachments[0]
+    assert restored.acquisition_key == original_key
+    assert restored.owner_coordinate == coordinate
+    assert restored.inline_bytes == original.attachments[0].inline_bytes
+    assert restored.precomputed_blob == original.attachments[0].precomputed_blob
+
+
 def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tmp_path: Path) -> None:
     artifact, _coordinate = _prepared_artifact(tmp_path)
     assert artifact.sessions_path is not None

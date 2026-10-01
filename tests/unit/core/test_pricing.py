@@ -16,6 +16,7 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_session_reported_cost_metadata_is_not_read() -> None:
@@ -524,7 +525,6 @@ def test_disjoint_input_cache_lanes_survive_parse_write_and_pricing(
     from polylogue.sources.parsers.codex import parse
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from tests.infra.index_writer import write_fixture_index_session
 
     codex_like = ModelPricing(
         source_name="test",

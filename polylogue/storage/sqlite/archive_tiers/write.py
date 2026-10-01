@@ -82,6 +82,7 @@ from polylogue.pipeline.ids import (
     bound_session_content_hash,
     disk_message_content_identities,
     disk_message_owner_resolution,
+    event_message_owner_key,
     message_content_identities,
     message_content_identity,
     message_owner_resolution,
@@ -724,32 +725,12 @@ def _retain_stale_session_observations(
 
 @dataclass(frozen=True, slots=True)
 class PreparedSessionRows:
-    """Pure, off-writer-thread-computable row tuples for one session's
-    full-replace write (polylogue-623q).
+    """Sealed row and identity evidence produced before writer admission.
 
-    Row PREPARATION -- converting a ``ParsedSession`` tree into the SQL row
-    tuples ``_replace_full_session_messages_and_blocks`` inserts -- was
-    measured happening entirely inside the writer hold (34-40s per 2,000
-    normal raws, 165-287s on whale pages) while parse-side warm workers sat
-    idle. ``prepare_session_rows`` builds this dataclass from nothing but a
-    ``ParsedSession`` (no DB connection, no archive state), so it can run on
-    a parse-prefetch worker thread; the writer then only needs to run
-    ``executemany`` against already-built tuples.
-
-    ``session_content_hash`` is ``pipeline.ids.session_content_hash(session)``
-    hex-decoded -- computed from the ORIGINAL (pre-lineage-slice) session, the
-    same value ordinary callers already pass as ``write_parsed_session_to_
-    archive(content_hash=...)``. The writer compares this against its own
-    ``content_hash`` argument before ever using the prepared rows: a session
-    whose content changed (or whose caller didn't supply a content_hash --
-    identity-only hashes never match) always falls back to preparing inline,
-    which reproduces the exact unmodified write path. A session that turns
-    out to need lineage tail-slicing (prefix-sharing composition against an
-    already-archived parent -- resolved by ``_extract_prefix_tail``, which
-    requires a live DB read the prefetch worker never had) is a SEPARATE
-    rejection condition the writer checks independently, because slicing
-    changes which messages are written without changing the session's own
-    content hash.
+    The content hash covers the full normalized input. Canonical preparation
+    resolves lineage and append offsets against its own read snapshot, then
+    captures exact owner resolution alongside the published row range. The
+    writer validates the carrier and predecessor; it never lowers inline.
     """
 
     session_id: str
@@ -760,6 +741,7 @@ class PreparedSessionRows:
     #: The writer may consume these only after validating that they still
     #: match the carried row tuples and the input content hash.
     content_identities: Sequence[MessageContentIdentity]
+    owner_resolution: MessageOwnerResolution
     position_offset: int = 0
     #: Per-digest content-occurrence counts already stored for this session,
     #: the append-side analogue of ``position_offset``. Empty for a
@@ -1555,10 +1537,11 @@ class PreparedSessionWrite:
     merge_append: bool
     context: PreparedMessageContext
     rows: PreparedSessionRows
+    predecessor: tuple[object, ...] | None
     cross_acquisition_union: _PreparedCrossAcquisitionUnion | None = None
 
     def close(self) -> None:
-        """Release artifacts only after all physical native owners settle."""
+        """Close every carrier before retiring its actual scratch directory."""
         failures: list[BaseException] = []
         if self.cross_acquisition_union is not None:
             scratch = self.cross_acquisition_union.carry_forward.scratch
@@ -1567,22 +1550,25 @@ class PreparedSessionWrite:
                     scratch.close()
                 except BaseException as failure:
                     failures.append(failure)
-        if self.rows.scratch is not None:
-            try:
-                pending = retained_native_sql_owners_for_lifetime(self.rows.scratch)
-                if pending:
-                    raise NativeConnectionSettlementError(
-                        pending[0], RuntimeError("prepared row artifact remains owned")
-                    )
-                self.rows.scratch.cleanup()
-            except BaseException as failure:
-                failures.append(failure)
         try:
             self.context.close()
         except BaseException as failure:
             failures.append(failure)
         if failures:
             raise PreparedSessionSettlementError(failures)
+        if self.rows.scratch is not None:
+            _cleanup_prepared_scratch(self.rows.scratch)
+
+
+def _cleanup_prepared_scratch(scratch: tempfile.TemporaryDirectory[str]) -> None:
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    pending = retained_native_sql_owners_for_lifetime(scratch)
+    if pending:
+        raise NativeConnectionSettlementError(
+            pending[0], RuntimeError("prepared write scratch retains physical SQL custody")
+        )
+    scratch.cleanup()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1623,46 +1609,20 @@ class PreparedSessionShardRows:
 PreparedRows = PreparedSessionRows | PreparedSessionShardRows
 
 
-#: How each session write resolved the prepared-rows question, counted by
-#: reason (polylogue-i07pw AC1). A parse worker that builds rows and a shard
-#: only removes writer work on the writes that actually consume them; profiles
-#: of real ingest showed the writer rebuilding rows, but nothing recorded WHY,
-#: so "parallel preparation removes writer-side work" could be neither
-#: confirmed nor refuted from a run. These counters make it falsifiable:
-#: AC1 is proven by the declined reasons reading zero on a stratified run,
-#: and a non-zero reason names the gate to fix.
-#:
-#: Diagnostic only -- no code branches on it. Incremented once per session
-#: write under the single-writer contract; the lock is for a reader on
-#: another thread, not for concurrent writers.
+#: Publication counts accepted canonical preparations. Refused carriers fail
+#: before mutation; no writer-side lowering fallback exists. The counter is
+#: diagnostic and does not decide admission.
 _PREPARED_DISPOSITIONS: Counter[str] = Counter()
 _PREPARED_DISPOSITIONS_LOCK = threading.Lock()
 
 #: Reasons that mean the writer used the prepared work. Everything else is a
 #: decline, and the split is what a measurement reads.
-PREPARED_ACCEPTED_DISPOSITIONS = frozenset({"prepared_write", "prepared_rows", "append_prepared_rows"})
+PREPARED_ACCEPTED_DISPOSITIONS = frozenset({"prepared_write"})
 
 
 def _record_prepared_disposition(reason: str) -> None:
     with _PREPARED_DISPOSITIONS_LOCK:
         _PREPARED_DISPOSITIONS[reason] += 1
-
-
-def _declined_prepared_reason(
-    prepared: PreparedRows | None,
-    *,
-    merge_append: bool,
-    lineage_inheritance: str | None,
-    session_content_hash: bytes,
-) -> str:
-    """Name the gate that made the writer rebuild rows for one session."""
-    if prepared is None:
-        return "absent"
-    if prepared.session_content_hash != session_content_hash:
-        return "content_hash_mismatch"
-    if not merge_append and lineage_inheritance == "prefix-sharing":
-        return "prefix_sharing"
-    return "declined"
 
 
 def prepared_row_dispositions() -> dict[str, int]:
@@ -1926,6 +1886,10 @@ def prepare_session_write(
     scratch: tempfile.TemporaryDirectory[str] | None = None
     prepared_union: _PreparedCrossAcquisitionUnion | None = None
     try:
+        predecessor_row = conn.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        predecessor = tuple(predecessor_row) if predecessor_row is not None else None
         position_offset = _next_message_position(conn, session_id) if merge_append else 0
         content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
         if (
@@ -1951,14 +1915,22 @@ def prepare_session_write(
                 builder = SessionShardBuilder(Path(scratch.name) / "rows.db")
                 try:
                     with (
-                        nullcontext(context.content_identities)
-                        if context.content_identities is not None
-                        else disk_message_content_identities(
-                            context.messages, occurrence_offsets=content_occurrence_offsets
-                        )
-                    ) as identities:
+                        (
+                            nullcontext(context.content_identities)
+                            if context.content_identities is not None
+                            else disk_message_content_identities(
+                                context.messages, occurrence_offsets=content_occurrence_offsets
+                            )
+                        ) as identities,
+                        disk_message_owner_resolution(
+                            context.messages.messages
+                            if isinstance(context.messages, _MessageTail)
+                            else context.messages
+                        ) as owners,
+                    ):
                         builder.add_streamed(
                             session_id=session_id,
+                            owner_resolution=owners,
                             session_content_hash=_prepared_session_content_hash(normalized),
                             message_rows=_iter_message_rows(
                                 session_id,
@@ -1991,6 +1963,7 @@ def prepare_session_write(
                 ),
                 block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
                 content_identities=entry.content_identities,
+                owner_resolution=entry.owner_resolution,
                 position_offset=position_offset,
                 content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
                 scratch=scratch,
@@ -2023,6 +1996,9 @@ def prepare_session_write(
                     )
                 ),
                 content_identities=tuple(content_identities),
+                owner_resolution=message_owner_resolution(
+                    list(context.messages.messages if isinstance(context.messages, _MessageTail) else context.messages)
+                ),
                 position_offset=position_offset,
                 content_occurrence_offsets=tuple(sorted(content_occurrence_offsets.items())),
             )
@@ -2044,6 +2020,7 @@ def prepare_session_write(
             context=context,
             rows=rows,
             cross_acquisition_union=prepared_union,
+            predecessor=predecessor,
         )
     except BaseException as primary:
         failures: list[BaseException] = []
@@ -2084,6 +2061,7 @@ def prepared_session_rows_from_shard(shard_path: Path, session_id: str) -> Prepa
         message_rows=_ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi),
         block_rows=_ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi),
         content_identities=entry.content_identities,
+        owner_resolution=entry.owner_resolution,
     )
 
 
@@ -2136,6 +2114,7 @@ def prepare_session_rows(
                 message_rows=tuple(message_rows),
                 block_rows=tuple(block_rows),
                 content_identities=tuple(content_identities),
+                owner_resolution=message_owner_resolution(list(messages)),
                 position_offset=position_offset,
                 content_occurrence_offsets=tuple(sorted((content_occurrence_offsets or {}).items())),
             )
@@ -2193,10 +2172,11 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
     session_id = archive_session_id(origin.value, session.provider_session_id)
     duplicates = _duplicate_message_native_ids(messages)
     try:
-        with disk_message_content_identities(messages) as identities:
+        with disk_message_content_identities(messages) as identities, disk_message_owner_resolution(messages) as owners:
             builder.add_streamed(
                 session_id=session_id,
                 session_content_hash=_prepared_session_content_hash(session),
+                owner_resolution=owners,
                 message_rows=_iter_message_rows(
                     session_id,
                     messages,
@@ -2285,7 +2265,7 @@ def write_parsed_session_to_archive(
     stage_timings_s: dict[str, float] | None = None,
     stage_timing_prefix: str = "append",
     signature_cache: _SignatureCacheLike | None = None,
-    preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
@@ -2293,9 +2273,7 @@ def write_parsed_session_to_archive(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
-    prepared_required: bool = False,
-    prepared_write: PreparedSessionWrite | None = None,
+    prepared_write: PreparedSessionWrite,
     source_conn: sqlite3.Connection | None = None,
     child_source_path: str | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
@@ -2314,21 +2292,9 @@ def write_parsed_session_to_archive(
     whose projected spawn parent it reads; ``None`` leaves the root unknown.
     A ``prepared_write`` carries the path it was prepared with instead.
 
-    ``prepared`` (polylogue-623q, default ``None``) is an optional row set
-    computed off this thread (typically by the daemon parse-prefetch worker):
-    either a ``PreparedSessionRows`` of tuples from ``prepare_session_rows``,
-    or a ``PreparedSessionShardRows`` addressing rows in an attached shard
-    (polylogue-bp12n.6). It is used ONLY when ALL of the following hold,
-    checked right before the full-replace write:
-    not ``merge_append`` (prepared rows are built for a full replace's
-    ``position_offset=0``, never an append's positive offset); lineage
-    resolution did not slice ``messages`` (a prefix-sharing composition
-    against an already-archived parent changes which messages get written,
-    and the prefetch worker never had DB access to know about that parent);
-    and ``prepared.session_content_hash`` matches this call's own
-    ``content_hash``. Any other case silently falls back to preparing rows
-    inline -- identical to ``prepared=None`` -- so passing a stale/irrelevant
-    ``prepared`` is always safe, never incorrect.
+    ``prepared_write`` carries the canonical off-writer lowering. Publication
+    validates its captured predecessor, lineage and append frontier before
+    changing rows; changed evidence requires new preparation.
 
     ``pending_input_content_hash`` (polylogue-3hfl7, default ``None``) names
     the digest of the rows THIS CALL publishes, for the callers where that is
@@ -2342,9 +2308,11 @@ def write_parsed_session_to_archive(
     failure, not a slow path. Default ``None`` means "the two coincide" and
     leaves every non-append caller exactly as before.
 
-    An explicit active archive root owns a sealed transaction for this write.
-    A batch passes its matching mutation scope and owns the surrounding commit
-    and rollback, reusing one durable-reference proof for that commit window.
+    By default the whole write runs in its own transaction (``with conn:``)
+    committed on success. A bulk caller that wants many sessions in one
+    transaction — to amortize the per-commit fsync and WAL page churn that
+    dominate re-ingest I/O — passes ``manage_transaction=False`` and owns the
+    surrounding commit and any rollback-on-error itself.
 
     ``bulk_fts`` (polylogue-crd8, default ``False`` so ordinary daemon ingest
     is byte-for-byte unchanged) enables the guard-gated bulk FTS mode for the
@@ -2388,294 +2356,210 @@ def write_parsed_session_to_archive(
         raise ReferenceSealError("Index writes require their matching transaction scope or active archive root")
     elif not manage_transaction or conn.in_transaction:
         raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
-    stored_header = (
-        _stored_session_header(
-            conn,
-            archive_session_id(
-                origin_from_provider(session.source_name).value,
-                _stored_session_native_id(session.provider_session_id),
-            ),
-        )
-        if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
-        else None
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+
+    dependencies = (
+        () if prepared_write is None or prepared_write.rows.scratch is None else (prepared_write.rows.scratch,)
     )
-    event_only = stored_header is not None
-    if event_only:
-        # The session already exists in this generation, so even a cold build
-        # appends to it rather than asserting a fresh, absent session.
-        merge_append = True
-        force_replace = False
-        fresh_build = False
-    if fresh_build and (merge_append or force_replace):
-        raise ValueError("fresh_build is only valid for an untouched full-replace session")
-    t0 = time.perf_counter()
-
-    admission = unit_accounting or session.unit_accounting
-    if admission is not None:
-        try:
-            admission.assert_conserved()
-        except ValueError as exc:
-            raise ValueError(f"parse admission conservation refused: {exc}") from exc
-
-    def add_timing(name: str, started_at: float) -> None:
-        _add_stage_timing(
-            stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            name=name,
-            started_at=started_at,
-        )
-
-    conn.execute("PRAGMA foreign_keys = ON")
-    origin = origin_from_provider(session.source_name)
-    native_id = _stored_session_native_id(session.provider_session_id)
-    session_id = archive_session_id(origin.value, native_id)
-    # Durable non-resurrection, checked once for every write route.
-    # An identity-preserving reset keeps the raw evidence in source.db and
-    # records the operator's deletion as a suppression assertion in user.db,
-    # so a later replay/rebuild of that retained raw row would otherwise
-    # recreate the session the operator deleted. This is the shared choke
-    # point for live ingest and full replay/reindex, so the refusal lives
-    # here rather than in each replay caller. It is counted and logged --
-    # never a silent drop (see ``session_suppression``).
-    if session_write_is_suppressed(conn, session_id):
-        record_suppression_refusal(session_id, route="write_parsed_session_to_archive")
-        if write_outcome is not None:
-            write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
-        return session_id
-    parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
-    lowering_semantic_fingerprint = lowering_fingerprint()
-    # This session's own rows are about to be rewritten; drop any stale memoized
-    # own-signatures so the batch cache never serves pre-write rows for it.
-    if signature_cache is not None:
-        signature_cache.pop(session_id, None)
-    # polylogue-m3p9: providers that carry no session-level created_at/updated_at
-    # (Codex, many Claude Code sessions, ...) previously left
-    # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
-    # archive, silently excluding those sessions from `since:` filters, recency
-    # ordering, and --by year/month histograms. Fall back to message evidence
-    # (min/max message ``occurred_at_ms``) computed over THIS write's full
-    # parsed message set, i.e. before any prefix-tail slicing below: a
-    # prefix-sharing child's derived created_at_ms should reflect the whole
-    # conversation's start, not just its divergent tail. The derived max is
-    # correct either way -- the newest message always survives slicing into
-    # the tail. Provider-supplied session timestamps always win; this is
-    # fallback only, applied identically on merge-append (where ``messages``
-    # is just the newly appended tail, so the derived max naturally advances
-    # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
-    # the already-set created_at_ms untouched).
-    # Keep the writer's effective freshness identical to ingest/replay
-    # normalization: producer fields, then authored messages, then semantic
-    # session events, then explicitly supplied acquisition evidence. Never use
-    # the ingest wall clock as a substitute for missing source evidence.
-    session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(
-        session,
-        fallback_timestamp=fallback_timestamp,
-    )
-    producer_created, producer_updated = producer_timestamp_flags(session)
-    # incoming_freshness_ms now reflects the same fallback: previously a
-    # provider that omitted both session timestamps produced
-    # incoming_freshness_ms=None, which unconditionally bypassed the
-    # skip-stale-replace check below (freshness "unknown"). With derivation,
-    # these sessions get a real freshness signal from their own message
-    # evidence, so a genuinely older/stale replay of such a session is now
-    # correctly skipped instead of always winning.
-    incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
-    if not fresh_build and not force_replace and not merge_append and incoming_freshness_ms is not None:
-        row = conn.execute(
-            "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
-        if should_skip_stale_replace(
-            incoming_freshness_ms=incoming_freshness_ms,
-            existing_updated_at_ms=existing_updated_at_ms,
-        ):
-            with _index_write_scope(
+    with retain_native_sql_lifetimes(*dependencies):
+        stored_header = (
+            _stored_session_header(
                 conn,
-                archive_root=archive_root,
-                mutation_scope=mutation_scope,
-                manage_transaction=manage_transaction,
-            ) as scope:
-                scope.note_lineage_change(session_id)
-                _retain_stale_session_observations(conn, session_id, session)
-            add_timing("index.skip_stale_replace", t0)
+                archive_session_id(
+                    origin_from_provider(session.source_name).value,
+                    _stored_session_native_id(session.provider_session_id),
+                ),
+            )
+            if is_work_event_raw_id(raw_id) and not session.messages and not session.attachments
+            else None
+        )
+        event_only = stored_header is not None
+        if event_only:
+            # The session already exists in this generation, so even a cold build
+            # appends to it rather than asserting a fresh, absent session.
+            merge_append = True
+            force_replace = False
+            fresh_build = False
+        if fresh_build and (merge_append or force_replace):
+            raise ValueError("fresh_build is only valid for an untouched full-replace session")
+        t0 = time.perf_counter()
+
+        admission = unit_accounting or session.unit_accounting
+        if admission is not None:
+            try:
+                admission.assert_conserved()
+            except ValueError as exc:
+                raise ValueError(f"parse admission conservation refused: {exc}") from exc
+
+        def add_timing(name: str, started_at: float) -> None:
+            _add_stage_timing(
+                stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                name=name,
+                started_at=started_at,
+            )
+
+        conn.execute("PRAGMA foreign_keys = ON")
+        origin = origin_from_provider(session.source_name)
+        native_id = _stored_session_native_id(session.provider_session_id)
+        session_id = archive_session_id(origin.value, native_id)
+        # Durable non-resurrection, checked once for every write route.
+        # An identity-preserving reset keeps the raw evidence in source.db and
+        # records the operator's deletion as a suppression assertion in user.db,
+        # so a later replay/rebuild of that retained raw row would otherwise
+        # recreate the session the operator deleted. This is the shared choke
+        # point for live ingest and full replay/reindex, so the refusal lives
+        # here rather than in each replay caller. It is counted and logged --
+        # never a silent drop (see ``session_suppression``).
+        if session_write_is_suppressed(conn, session_id):
+            record_suppression_refusal(session_id, route="write_parsed_session_to_archive")
             if write_outcome is not None:
-                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
+                write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, suppression_skipped=True))
             return session_id
-    bound_hash = bound_session_content_hash(session)
-    input_content_hash = (
-        bytes.fromhex(content_hash)
-        if content_hash is not None
-        else (bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id))
-    )
-    # polylogue-3hfl7: ``input_content_hash`` is the digest STORED on
-    # ``sessions.content_hash`` -- for an append that is the merged session,
-    # not the delta in ``session``. ``pending_content_hash`` is the digest of
-    # the rows this call actually publishes, and it is the only one a
-    # ``prepared`` carrier may be admitted against. They coincide for every
-    # caller that does not pass ``pending_input_content_hash``.
-    pending_content_hash = (
-        bytes.fromhex(pending_input_content_hash) if pending_input_content_hash is not None else input_content_hash
-    )
-    if prepared_write is not None:
+        parser_semantic_fingerprint = parser_fingerprint_for_origin(origin)
+        lowering_semantic_fingerprint = lowering_fingerprint()
+        # This session's own rows are about to be rewritten; drop any stale memoized
+        # own-signatures so the batch cache never serves pre-write rows for it.
+        if signature_cache is not None:
+            signature_cache.pop(session_id, None)
+        # polylogue-m3p9: providers that carry no session-level created_at/updated_at
+        # (Codex, many Claude Code sessions, ...) previously left
+        # sessions.created_at_ms/updated_at_ms permanently NULL for 79% of the live
+        # archive, silently excluding those sessions from `since:` filters, recency
+        # ordering, and --by year/month histograms. Fall back to message evidence
+        # (min/max message ``occurred_at_ms``) computed over THIS write's full
+        # parsed message set, i.e. before any prefix-tail slicing below: a
+        # prefix-sharing child's derived created_at_ms should reflect the whole
+        # conversation's start, not just its divergent tail. The derived max is
+        # correct either way -- the newest message always survives slicing into
+        # the tail. Provider-supplied session timestamps always win; this is
+        # fallback only, applied identically on merge-append (where ``messages``
+        # is just the newly appended tail, so the derived max naturally advances
+        # updated_at_ms with each append and the ON CONFLICT COALESCE below keeps
+        # the already-set created_at_ms untouched).
+        # Keep the writer's effective freshness identical to ingest/replay
+        # normalization: producer fields, then authored messages, then semantic
+        # session events, then explicitly supplied acquisition evidence. Never use
+        # the ingest wall clock as a substitute for missing source evidence.
+        session_created_at_ms, session_updated_at_ms = session_evidence_timestamps(
+            session,
+            fallback_timestamp=fallback_timestamp,
+        )
+        producer_created, producer_updated = producer_timestamp_flags(session)
+        # incoming_freshness_ms now reflects the same fallback: previously a
+        # provider that omitted both session timestamps produced
+        # incoming_freshness_ms=None, which unconditionally bypassed the
+        # skip-stale-replace check below (freshness "unknown"). With derivation,
+        # these sessions get a real freshness signal from their own message
+        # evidence, so a genuinely older/stale replay of such a session is now
+        # correctly skipped instead of always winning.
+        incoming_freshness_ms = session_updated_at_ms or session_created_at_ms
+        if not fresh_build and not force_replace and not merge_append and incoming_freshness_ms is not None:
+            row = conn.execute(
+                "SELECT updated_at_ms FROM sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_updated_at_ms = int(row[0]) if row is not None and row[0] is not None else None
+            if should_skip_stale_replace(
+                incoming_freshness_ms=incoming_freshness_ms,
+                existing_updated_at_ms=existing_updated_at_ms,
+            ):
+                # The stale path returns before the normal write transaction below;
+                # own a short transaction here so direct callers cannot lose repairs.
+                with _index_write_scope(
+                    conn,
+                    archive_root=archive_root,
+                    mutation_scope=mutation_scope,
+                    manage_transaction=manage_transaction,
+                ) as scope:
+                    scope.note_lineage_change(session_id)
+                    _retain_stale_session_observations(conn, session_id, session)
+                add_timing("index.skip_stale_replace", t0)
+                if write_outcome is not None:
+                    write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
+                return session_id
+        bound_hash = bound_session_content_hash(session)
+        input_content_hash = (
+            bytes.fromhex(content_hash)
+            if content_hash is not None
+            else (
+                bytes.fromhex(bound_hash) if bound_hash is not None else _hash_bytes("session", origin.value, native_id)
+            )
+        )
+        # polylogue-3hfl7: ``input_content_hash`` is the digest STORED on
+        # ``sessions.content_hash`` -- for an append that is the merged session,
+        # not the delta in ``session``. ``pending_content_hash`` is the digest of
+        # the rows this call actually publishes, and it is the only one a
+        # ``prepared`` carrier may be admitted against. They coincide for every
+        # caller that does not pass ``pending_input_content_hash``.
+        pending_content_hash = (
+            bytes.fromhex(pending_input_content_hash) if pending_input_content_hash is not None else input_content_hash
+        )
+        if prepared_write is None:
+            raise PreparedSessionWriteRefusedError("session publication requires its canonical off-writer preparation")
         if (
             prepared_write.session_id != session_id
             or prepared_write.input_content_hash != pending_content_hash
             or prepared_write.merge_append != merge_append
             or prepared_write.rows.session_content_hash != pending_content_hash
         ):
-            raise PreparedSessionWriteRefusedError("prepared replay write is stale or has a different pending input")
+            raise PreparedSessionWriteRefusedError("prepared write is stale or has a different pending input")
+        predecessor_row = conn.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
+        ).fetchone()
+        predecessor = tuple(predecessor_row) if predecessor_row is not None else None
+        if predecessor != prepared_write.predecessor:
+            raise PreparedSessionWriteRefusedError("session predecessor changed after off-writer preparation")
         context = prepared_write.context
-    else:
-        context = _prepared_message_context(
-            conn,
-            session,
-            origin=origin,
-            session_id=session_id,
-            native_id=native_id,
-            merge_append=merge_append,
-            signature_cache=signature_cache,
-            source_conn=source_conn,
-            child_source_path=child_source_path,
-        )
-    input_session = session
-    session = context.effective_session
-    messages = context.messages
-    event_duplicate_message_native_ids = context.event_duplicate_native_ids
-    duplicate_message_native_ids = context.duplicate_native_ids
-    effective_session_kind = context.effective_session_kind
-    branch_point_message_id = context.branch_point_message_id
-    branch_point_content_address = context.branch_point_content_address
-    lineage_inheritance = context.lineage_inheritance
-    inherited_source_message_ids = context.inherited_source_message_ids
-    # The value published to ``sessions.content_hash``. A later re-ingest
-    # compares its own FULL-session digest against this row, so an append
-    # must store the merged digest even though it writes only the delta
-    # (polylogue-3hfl7) -- carrier admission uses ``pending_content_hash``.
-    session_content_hash = input_content_hash
-    # polylogue-623q: only reuse rows prepared off this thread when NONE of
-    # the conditions that would make them wrong hold -- see ``prepared``'s
-    # docstring above. ``lineage_inheritance == "prefix-sharing"`` is the
-    # single signal that ``_extract_prefix_tail`` sliced ``messages`` away
-    # from what ``prepare_session_rows`` saw (it returns ``messages``
-    # unchanged in every other case, including "spawned-fresh" and no-parent).
-    prepared_rows_to_use: PreparedRows | None = None
-    prepared_identity_carrier: PreparedRows | None = None
-    if prepared_write is not None:
+        input_session = session
+        session = context.effective_session
+        messages = context.messages
+        event_duplicate_message_native_ids = context.event_duplicate_native_ids
+        duplicate_message_native_ids = context.duplicate_native_ids
+        effective_session_kind = context.effective_session_kind
+        branch_point_message_id = context.branch_point_message_id
+        branch_point_content_address = context.branch_point_content_address
+        lineage_inheritance = context.lineage_inheritance
+        inherited_source_message_ids = context.inherited_source_message_ids
+        # The value published to ``sessions.content_hash``. A later re-ingest
+        # compares its own FULL-session digest against this row, so an append
+        # must store the merged digest even though it writes only the delta
+        # (polylogue-3hfl7) -- carrier admission uses ``pending_content_hash``.
+        session_content_hash = input_content_hash
         prepared_rows_to_use = prepared_write.rows
-        prepared_identity_carrier = prepared_write.rows
         _record_prepared_disposition("prepared_write")
-    elif (
-        prepared is not None
-        and not merge_append
-        and lineage_inheritance != "prefix-sharing"
-        and context.content_identities is None
-        and prepared.session_content_hash == pending_content_hash
-    ):
-        prepared_rows_to_use = prepared
-        prepared_identity_carrier = prepared
-        _record_prepared_disposition("prepared_rows")
-    elif prepared is not None and merge_append:
-        if prepared.session_content_hash == pending_content_hash:
-            # Append-frontier validation happens inside the write transaction.
-            # Use the carrier provisionally so a valid append avoids hashing;
-            # if the pinned frontier is stale, the branch below replaces it
-            # with a fresh identity tuple before any rows are published.
-            prepared_identity_carrier = prepared
-            # No disposition here: this carrier is provisional, and the
-            # terminal answer for an append is decided against the live
-            # frontier inside the transaction below.
-        elif prepared.session_content_hash == input_content_hash:
-            # polylogue-3hfl7: the carrier describes the MERGED session while
-            # this call publishes the delta. Covering a different row set, it
-            # would reach ``_validated_prepared_content_identities`` and refuse
-            # there on a length mismatch -- a confusing failure whose cause is
-            # two digests that were never compared. Refuse here, naming it.
-            raise PreparedSessionWriteRefusedError(
-                "prepared rows describe the merged session, not the append delta this write publishes"
-            )
-        else:
-            _record_prepared_disposition(
-                _declined_prepared_reason(
-                    prepared,
-                    merge_append=merge_append,
-                    lineage_inheritance=lineage_inheritance,
-                    session_content_hash=pending_content_hash,
-                )
-            )
-    else:
-        # polylogue-i07pw AC1: the writer rebuilt rows this session. Name the
-        # gate that declined rather than leaving a fallback that only a
-        # profile can see. "Parallel preparation removes writer-side work"
-        # is exactly the claim these counters make falsifiable, and the
-        # 2026-09-16 design note asks for it by name.
-        _record_prepared_disposition(
-            _declined_prepared_reason(
-                prepared,
-                merge_append=merge_append,
-                lineage_inheritance=lineage_inheritance,
-                session_content_hash=pending_content_hash,
-            )
-        )
-    identity_scope = None
-    content_identities: Sequence[MessageContentIdentity]
-    if context.content_identities is not None and prepared_write is None:
-        content_identities = context.content_identities
-    elif prepared_identity_carrier is not None:
-        content_identities = _validated_prepared_content_identities(prepared_identity_carrier, messages)
-    elif isinstance(messages, SqliteMessageSink) or (
-        isinstance(messages, _MessageTail) and isinstance(messages.messages, SqliteMessageSink)
-    ):
-        identity_scope = disk_message_content_identities(
+        content_identities = _validated_prepared_content_identities(prepared_rows_to_use, messages)
+        active_leaf_message_id = _active_leaf_message_id(
+            session_id,
             messages,
-            occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
+            session.active_leaf_message_provider_id,
+            duplicate_native_ids=duplicate_message_native_ids,
+            content_identities=content_identities,
         )
-        content_identities = identity_scope.__enter__()
-    else:
-        content_identities = message_content_identities(
-            messages,
-            occurrence_offsets=_stored_content_occurrences(conn, session_id) if merge_append else None,
-        )
-    active_leaf_message_id = _active_leaf_message_id(
-        session_id,
-        messages,
-        session.active_leaf_message_provider_id,
-        duplicate_native_ids=duplicate_message_native_ids,
-        content_identities=content_identities,
-    )
-    if prepared_required and (
-        prepared_write is None and (prepared is None or (not merge_append and prepared_rows_to_use is None))
-    ):
-        if identity_scope is not None:
-            identity_scope.__exit__(None, None, None)
-        if prepared_write is None:
-            context.close()
-        raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
-    add_timing("index.prepare", t0)
-    # An owned scope, not ``with conn``, decides the actual outer commit after
-    # checking that every formerly resolved typed anchor still resolves.
-    invalidated_identity_children: set[str] = set()
-    prefix_guard: _InheritedPrefixGuard | None = None
-    try:
-        with ExitStack() as mutation_stack:
-            for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
-                if isinstance(duplicates, _DiskDuplicateNativeIds):
-                    mutation_stack.enter_context(duplicates.reader())
-            if isinstance(context.inherited_source_message_ids, _DiskSourceMessageIds):
-                mutation_stack.enter_context(context.inherited_source_message_ids.reader())
-            if isinstance(context.inherited_prefix_message_ids, _PrefixMessageIds):
-                composed = context.inherited_prefix_message_ids._composed
-                if isinstance(composed, _DiskSignatureSequence):
-                    mutation_stack.enter_context(composed.reader())
-            mutation_stack.enter_context(
-                _index_write_scope(
-                    conn,
-                    archive_root=archive_root,
-                    mutation_scope=mutation_scope,
-                    manage_transaction=manage_transaction,
+        add_timing("index.prepare", t0)
+        # When the caller owns the transaction (bulk batching) we must not commit
+        # per session; nullcontext leaves BEGIN/COMMIT to the caller.
+        invalidated_identity_children: set[str] = set()
+        prefix_guard: _InheritedPrefixGuard | None = None
+        try:
+            with ExitStack() as mutation_stack:
+                for duplicates in (context.event_duplicate_native_ids, context.duplicate_native_ids):
+                    if isinstance(duplicates, _DiskDuplicateNativeIds):
+                        mutation_stack.enter_context(duplicates.reader())
+                if isinstance(context.inherited_source_message_ids, _DiskSourceMessageIds):
+                    mutation_stack.enter_context(context.inherited_source_message_ids.reader())
+                if isinstance(context.inherited_prefix_message_ids, _PrefixMessageIds):
+                    composed = context.inherited_prefix_message_ids._composed
+                    if isinstance(composed, _DiskSignatureSequence):
+                        mutation_stack.enter_context(composed.reader())
+                mutation_stack.enter_context(
+                    _index_write_scope(
+                        conn,
+                        archive_root=archive_root,
+                        mutation_scope=mutation_scope,
+                        manage_transaction=manage_transaction,
+                    )
                 )
-            )
-            if prepared_write is not None:
                 prepared_union = prepared_write.cross_acquisition_union
                 if prepared_union is not None:
                     if prepared_union.carry_forward.scratch is not None:
@@ -2741,166 +2625,168 @@ def write_parsed_session_to_archive(
                         < inherited_count
                     ):
                         raise PreparedSessionWriteRefusedError("prepared replay lineage prefix attachments changed")
-            conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-            if bulk_build:
-                # polylogue-v6i3: gate the messages_fts trigger
-                # BODIES for this session's *entire* write (block inserts in the
-                # ordinary merge/full-replace paths, not just the prefix-tail
-                # reextract cascade -- see _bulk_fts_session_guard, which detects
-                # this outer guard and becomes a no-op rather than double-managing
-                # the same row). Cleared alongside the 'session-write' guard below.
+                conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
+                if bulk_build:
+                    # polylogue-v6i3: gate the messages_fts trigger
+                    # BODIES for this session's *entire* write (block inserts in the
+                    # ordinary merge/full-replace paths, not just the prefix-tail
+                    # reextract cascade -- see _bulk_fts_session_guard, which detects
+                    # this outer guard and becomes a no-op rather than double-managing
+                    # the same row). Cleared alongside the 'session-write' guard below.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
+                    )
+                # polylogue-geop: capture whichever raw acquisition is CURRENTLY
+                # stored before the upsert below overwrites sessions.raw_id with
+                # this write's own value -- _union_with_existing_rows needs the
+                # PRIOR raw_id to tell "same acquisition re-parsed" (replace)
+                # from "different acquisition" (union) apart. Reading it after
+                # the upsert would always see this write's own raw_id and could
+                # never observe a difference.
+                existing_session_raw_id: str | None = None
+                # A session row can exist with a NULL ``raw_id`` (ambiguous with
+                # "no row at all" for the union-precedence check), but existence
+                # of the row itself is unambiguous from ``fetchone()``.  A damaged
+                # derived index can instead have the inverse shape: its session
+                # row was lost while its message membership remains.  Capture both
+                # facts before the upsert, so the full replacement clears only this
+                # session's retained membership rather than colliding with it.
+                session_row_existed = False
+                session_membership_existed = False
+                if not merge_append and not fresh_build:
+                    existing_raw_id_row = conn.execute(
+                        "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
+                    ).fetchone()
+                    if existing_raw_id_row is not None:
+                        session_row_existed = True
+                        existing_session_raw_id = existing_raw_id_row[0]
+                    session_membership_existed = session_row_existed or (
+                        conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
+                        is not None
+                    )
+                elif fresh_build and not merge_append:
+                    # Fresh mode is a correctness contract, not a hint.  Keep the
+                    # absence check even when the caller batches transactions so a
+                    # duplicate session can never silently replace rows.
+                    if (
+                        conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+                        is not None
+                    ):
+                        raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
+                    if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
+                        "SELECT 1 FROM sessions LIMIT 1"
+                    ).fetchone() is not None:
+                        raise AssertionError("fresh_build requires an empty archive generation")
+                    if fresh_build_batch is not None:
+                        fresh_build_batch.add(session_id)
+                # Whether any row this save replaces can already exist. Every
+                # session-owned projection cascades from ``sessions`` or
+                # ``messages``, so a session with neither (every session of a
+                # from-empty build) has nothing for a replace prelude to delete.
+                prior_session_rows = merge_append or session_membership_existed
+                t0 = time.perf_counter()
+                session_row_values = {
+                    "native_id": native_id,
+                    "origin": origin.value,
+                    "raw_id": raw_id,
+                    "parser_fingerprint": parser_semantic_fingerprint,
+                    "lowering_fingerprint": lowering_semantic_fingerprint,
+                    "branch_type": _enum_value(session.branch_type),
+                    "active_leaf_message_id": active_leaf_message_id,
+                    "title": _sqlite_text(session.title),
+                    "session_kind": admitted_session_kind(
+                        effective_session_kind,
+                        branch_type=session.branch_type,
+                    ).value,
+                    "title_source": _enum_value(session.title_source),
+                    "title_ref": _sqlite_text(session.title_ref),
+                    "display_name": _sqlite_text(session.display_name),
+                    "pending_drafts_json": _json_dumps(session.pending_drafts) if session.pending_drafts else None,
+                    "git_branch": _sqlite_text(session.git_branch),
+                    "git_repository_url": _sqlite_text(session.git_repository_url),
+                    "commit_hash": _sqlite_text(session.git_commit_hash),
+                    "instructions_text": _sqlite_text(session.instructions_text),
+                    "reported_duration_ms": session.reported_duration_ms,
+                    "reported_cost_usd": session.reported_cost_usd,
+                    "provider_project_ref": _sqlite_text(session.provider_project_ref),
+                    "content_hash": session_content_hash,
+                    "created_at_ms": session_created_at_ms,
+                    "updated_at_ms": session_updated_at_ms,
+                    # Messages are inserted later in this transaction.  The one
+                    # authoritative replacement immediately after that insert
+                    # publishes the declared counter projection; fresh rows begin
+                    # at the schema's zero value rather than carrying a second
+                    # parser-side tally.
+                    **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
+                }
+                if stored_header is not None:
+                    session_row_values.update(stored_header)
+                sessions_spec = archive_tiers_specs.SESSIONS_SPEC
+                note_current_session_namespace_change(conn)
+                note_current_lineage_change(conn, session_id)
                 conn.execute(
-                    "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
-            # polylogue-geop: capture whichever raw acquisition is CURRENTLY
-            # stored before the upsert below overwrites sessions.raw_id with
-            # this write's own value -- _union_with_existing_rows needs the
-            # PRIOR raw_id to tell "same acquisition re-parsed" (replace)
-            # from "different acquisition" (union) apart. Reading it after
-            # the upsert would always see this write's own raw_id and could
-            # never observe a difference.
-            existing_session_raw_id: str | None = None
-            # A session row can exist with a NULL ``raw_id`` (ambiguous with
-            # "no row at all" for the union-precedence check), but existence
-            # of the row itself is unambiguous from ``fetchone()``.  A damaged
-            # derived index can instead have the inverse shape: its session
-            # row was lost while its message membership remains.  Capture both
-            # facts before the upsert, so the full replacement clears only this
-            # session's retained membership rather than colliding with it.
-            session_row_existed = False
-            session_membership_existed = False
-            if not merge_append and not fresh_build:
-                existing_raw_id_row = conn.execute(
-                    "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
-                ).fetchone()
-                if existing_raw_id_row is not None:
-                    session_row_existed = True
-                    existing_session_raw_id = existing_raw_id_row[0]
-                session_membership_existed = session_row_existed or (
-                    conn.execute("SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (session_id,)).fetchone()
-                    is not None
-                )
-            elif fresh_build and not merge_append:
-                # Fresh mode is a correctness contract, not a hint.  Keep the
-                # absence check even when the caller batches transactions so a
-                # duplicate session can never silently replace rows.
-                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None:
-                    raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
-                if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
-                    "SELECT 1 FROM sessions LIMIT 1"
-                ).fetchone() is not None:
-                    raise AssertionError("fresh_build requires an empty archive generation")
-                if fresh_build_batch is not None:
-                    fresh_build_batch.add(session_id)
-            # Whether any row this save replaces can already exist. Every
-            # session-owned projection cascades from ``sessions`` or
-            # ``messages``, so a session with neither (every session of a
-            # from-empty build) has nothing for a replace prelude to delete.
-            prior_session_rows = merge_append or session_membership_existed
-            t0 = time.perf_counter()
-            session_row_values = {
-                "native_id": native_id,
-                "origin": origin.value,
-                "raw_id": raw_id,
-                "parser_fingerprint": parser_semantic_fingerprint,
-                "lowering_fingerprint": lowering_semantic_fingerprint,
-                "branch_type": _enum_value(session.branch_type),
-                "active_leaf_message_id": active_leaf_message_id,
-                "title": _sqlite_text(session.title),
-                "session_kind": admitted_session_kind(
-                    effective_session_kind,
-                    branch_type=session.branch_type,
-                ).value,
-                "title_source": _enum_value(session.title_source),
-                "title_ref": _sqlite_text(session.title_ref),
-                "display_name": _sqlite_text(session.display_name),
-                "pending_drafts_json": _json_dumps(session.pending_drafts) if session.pending_drafts else None,
-                "git_branch": _sqlite_text(session.git_branch),
-                "git_repository_url": _sqlite_text(session.git_repository_url),
-                "commit_hash": _sqlite_text(session.git_commit_hash),
-                "instructions_text": _sqlite_text(session.instructions_text),
-                "reported_duration_ms": session.reported_duration_ms,
-                "reported_cost_usd": session.reported_cost_usd,
-                "provider_project_ref": _sqlite_text(session.provider_project_ref),
-                "content_hash": session_content_hash,
-                "created_at_ms": session_created_at_ms,
-                "updated_at_ms": session_updated_at_ms,
-                # Messages are inserted later in this transaction.  The one
-                # authoritative replacement immediately after that insert
-                # publishes the declared counter projection; fresh rows begin
-                # at the schema's zero value rather than carrying a second
-                # parser-side tally.
-                **{measure.column: 0 for measure in SESSION_SUMMARY_MEASURES},
-            }
-            if stored_header is not None:
-                session_row_values.update(stored_header)
-            sessions_spec = archive_tiers_specs.SESSIONS_SPEC
-            note_current_session_namespace_change(conn)
-            note_current_lineage_change(conn, session_id)
-            conn.execute(
-                f"""
-                INSERT INTO sessions (
-                    {sessions_spec.insert_column_names}
-                ) VALUES ({sessions_spec.insert_placeholder_string})
-                ON CONFLICT(origin, native_id) DO UPDATE SET
-                    {sessions_spec.conflict_update_sql(" " * 20)}
-                """,
-                (
-                    *sessions_spec.extract_tuple(session_row_values),
-                    *sessions_spec.conflict_update_tuple(
-                        {
-                            "producer_created": producer_created,
-                            "producer_updated": producer_updated,
-                            "force_replace": force_replace,
-                            "producer_updated_or_merge_append": producer_updated or merge_append,
-                        }
+                    f"""
+                    INSERT INTO sessions (
+                        {sessions_spec.insert_column_names}
+                    ) VALUES ({sessions_spec.insert_placeholder_string})
+                    ON CONFLICT(origin, native_id) DO UPDATE SET
+                        {sessions_spec.conflict_update_sql(" " * 20)}
+                    """,
+                    (
+                        *sessions_spec.extract_tuple(session_row_values),
+                        *sessions_spec.conflict_update_tuple(
+                            {
+                                "producer_created": producer_created,
+                                "producer_updated": producer_updated,
+                                "force_replace": force_replace,
+                                "producer_updated_or_merge_append": producer_updated or merge_append,
+                            }
+                        ),
                     ),
-                ),
-            )
-            add_timing("index.session_upsert", t0)
-            if not event_only:
-                invalidated_identity_children = _write_session_identity_claims(
-                    conn, session_id, origin.value, session, prior_claims=prior_session_rows
                 )
-            position_offset = 0
-            stale_attachment_ids: set[str] = set()
-            projection_carry_forward: _ProjectionCarryForward | None = None
-            t0 = time.perf_counter()
-            if merge_append:
-                position_offset = _next_message_position(conn, session_id)
-                _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
+                add_timing("index.session_upsert", t0)
                 if not event_only:
-                    # An append without messages cannot move the active leaf.
-                    conn.execute(
-                        """
-                        UPDATE messages
-                        SET is_active_leaf = 0
-                        WHERE session_id = ?
-                          AND is_active_path = 1
-                          AND is_active_leaf = 1
-                        """,
-                        (session_id,),
+                    invalidated_identity_children = _write_session_identity_claims(
+                        conn, session_id, origin.value, session, prior_claims=prior_session_rows
                     )
-                    active_leaf_message_id = _active_leaf_message_id(
-                        session_id,
-                        messages,
-                        session.active_leaf_message_provider_id,
-                        content_identities=content_identities,
-                        duplicate_native_ids=duplicate_message_native_ids,
-                    )
-                    conn.execute(
-                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                        (active_leaf_message_id, session_id),
-                    )
-                add_timing("index.merge_prepare", t0)
-                # The append frontier has two coordinates now: the next
-                # position, and the per-digest occurrence counts the stored
-                # rows already consumed. Prepared rows pinned against either
-                # stale value would generate ids that collide with, or skip
-                # past, what is stored (polylogue-eqsri).
-                stored_content_occurrences = tuple(sorted(_stored_content_occurrences(conn, session_id).items()))
-                if prepared_write is not None:
+                position_offset = 0
+                stale_attachment_ids: set[str] = set()
+                projection_carry_forward: _ProjectionCarryForward | None = None
+                t0 = time.perf_counter()
+                if merge_append:
+                    position_offset = _next_message_position(conn, session_id)
+                    _assert_unique_message_coordinates(session_id, messages, position_offset=position_offset)
+                    if not event_only:
+                        # An append without messages cannot move the active leaf.
+                        conn.execute(
+                            """
+                            UPDATE messages
+                            SET is_active_leaf = 0
+                            WHERE session_id = ?
+                              AND is_active_path = 1
+                              AND is_active_leaf = 1
+                            """,
+                            (session_id,),
+                        )
+                        active_leaf_message_id = _active_leaf_message_id(
+                            session_id,
+                            messages,
+                            session.active_leaf_message_provider_id,
+                            content_identities=content_identities,
+                            duplicate_native_ids=duplicate_message_native_ids,
+                        )
+                        conn.execute(
+                            "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
+                            (active_leaf_message_id, session_id),
+                        )
+                    add_timing("index.merge_prepare", t0)
+                    # The append frontier has two coordinates now: the next
+                    # position, and the per-digest occurrence counts the stored
+                    # rows already consumed. Prepared rows pinned against either
+                    # stale value would generate ids that collide with, or skip
+                    # past, what is stored (polylogue-eqsri).
+                    stored_content_occurrences = tuple(sorted(_stored_content_occurrences(conn, session_id).items()))
                     if (
                         prepared_write.rows.position_offset != position_offset
                         or prepared_write.rows.content_occurrence_offsets != stored_content_occurrences
@@ -2908,377 +2794,336 @@ def write_parsed_session_to_archive(
                         raise PreparedSessionWriteRefusedError(
                             "prepared replay append lowering no longer matches its pinned frontier"
                         )
-                    prepared_rows_to_use = prepared_write.rows
-                elif (
-                    isinstance(prepared, PreparedSessionRows)
-                    and prepared.session_content_hash == pending_content_hash
-                    and prepared.position_offset == position_offset
-                    and prepared.content_occurrence_offsets == stored_content_occurrences
-                ):
-                    prepared_rows_to_use = prepared
-                    _record_prepared_disposition("append_prepared_rows")
-                elif prepared_required:
-                    raise PreparedSessionWriteRefusedError(
-                        "prepared replay append lowering no longer matches its pinned frontier"
+                else:
+                    # The preparer sealed a cross-acquisition union from its own
+                    # read, but this writer's precedence decision (force replace,
+                    # same acquisition, or no prior membership) is authoritative.
+                    # When it says the incoming rows replace wholesale, the union
+                    # is dropped here, before the attachment bookkeeping, so the
+                    # replaced messages' attachments are refreshed like any other
+                    # replacement. Refusing instead deferred the path and the next
+                    # pass re-prepared the same union: a livelock that left an
+                    # interrupted append's tail unmaterialized (b8of0).
+                    applicable_union = (
+                        prepared_write.cross_acquisition_union
+                        if _cross_acquisition_union_applies(
+                            session_membership_existed=session_membership_existed,
+                            force_replace=force_replace,
+                            raw_id=raw_id,
+                            existing_raw_id=existing_session_raw_id,
+                        )
+                        else None
                     )
-                elif prepared_identity_carrier is not None:
-                    # The provisional carrier was pinned to a different
-                    # append frontier. Recompute only this rejected path so
-                    # the fallback rows and active leaf use the live offsets.
-                    _record_prepared_disposition(
-                        "append_frontier_stale"
-                        if isinstance(prepared, PreparedSessionRows)
-                        else "append_carrier_not_row_tuples"
+                    stale_attachment_ids = (
+                        set() if applicable_union is not None else session_attachment_ids(conn, session_id)
                     )
-                    content_identities = message_content_identities(
+                    prefix_guard = _capture_inherited_prefixes(conn, session_id) if session_membership_existed else None
+                    projection_carry_forward = _replace_full_session_messages_and_blocks(
+                        conn,
+                        session,
                         messages,
-                        occurrence_offsets=dict(stored_content_occurrences),
-                    )
-                    active_leaf_message_id = _active_leaf_message_id(
-                        session_id,
-                        messages,
-                        session.active_leaf_message_provider_id,
-                        content_identities=content_identities,
                         duplicate_native_ids=duplicate_message_native_ids,
-                    )
-                    conn.execute(
-                        "UPDATE sessions SET active_leaf_message_id = ? WHERE session_id = ?",
-                        (active_leaf_message_id, session_id),
-                    )
-            else:
-                # The preparer sealed a cross-acquisition union from its own
-                # read, but this writer's precedence decision (force replace,
-                # same acquisition, or no prior membership) is authoritative.
-                # When it says the incoming rows replace wholesale, the union
-                # is dropped here, before the attachment bookkeeping, so the
-                # replaced messages' attachments are refreshed like any other
-                # replacement. Refusing instead deferred the path and the next
-                # pass re-prepared the same union: a livelock that left an
-                # interrupted append's tail unmaterialized (b8of0).
-                applicable_union = (
-                    prepared_write.cross_acquisition_union
-                    if prepared_write is not None
-                    and _cross_acquisition_union_applies(
-                        session_membership_existed=session_membership_existed,
-                        force_replace=force_replace,
                         raw_id=raw_id,
                         existing_raw_id=existing_session_raw_id,
+                        session_membership_existed=session_membership_existed,
+                        force_replace=force_replace,
+                        stage_timings_s=stage_timings_s,
+                        stage_timing_prefix=stage_timing_prefix,
+                        bulk_build=bulk_build,
+                        defer_fts_rebuild=defer_fts_rebuild,
+                        prepared=prepared_rows_to_use,
+                        prepared_union=applicable_union,
+                        content_identities=content_identities,
                     )
-                    else None
+                    _refresh_stable_branch_point_witnesses(conn, session_id)
+                    add_timing("index.full_replace", t0)
+                if merge_append:
+                    t0 = time.perf_counter()
+                    _write_messages(
+                        conn,
+                        session_id,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        rows=(
+                            prepared_rows_to_use.message_rows
+                            if isinstance(prepared_rows_to_use, PreparedSessionRows)
+                            else None
+                        ),
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.messages", t0)
+                    t0 = time.perf_counter()
+                    _write_blocks(
+                        conn,
+                        session_id,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        rows=(
+                            prepared_rows_to_use.block_rows
+                            if isinstance(prepared_rows_to_use, PreparedSessionRows)
+                            else None
+                        ),
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.blocks", t0)
+                    t0 = time.perf_counter()
+                    _reconcile_tool_use_outcomes(conn, session_id)
+                    add_timing("index.tool_outcomes", t0)
+                    t0 = time.perf_counter()
+                    _write_file_edits(
+                        conn,
+                        session_id,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.file_edits", t0)
+                    t0 = time.perf_counter()
+                    if not bulk_build:
+                        refresh_action_pairs(conn, session_id)
+                    add_timing("index.action_pairs", t0)
+                    t0 = time.perf_counter()
+                    _write_web_constructs(
+                        conn,
+                        session,
+                        messages,
+                        position_offset=position_offset,
+                        duplicate_native_ids=duplicate_message_native_ids,
+                        replace_session=False,
+                        content_identities=content_identities,
+                    )
+                    add_timing("index.web_constructs", t0)
+                t0 = time.perf_counter()
+                # polylogue-geop: an attachment_id that projection carry-forward
+                # is about to restore an attachment_refs row for must NOT be
+                # swept here just because it looks unreferenced right now --
+                # its old attachment_refs row was already cascade-deleted by the
+                # full-replace's message DELETE and the replacement hasn't been
+                # (re)inserted yet (_restore_captured_projection_rows runs after
+                # this call). Passing it through refresh_attachment_ids would
+                # zero its ref_count and delete the attachments row outright,
+                # so the later restore's FK to attachments(attachment_id) fails.
+                carried_forward_attachment_ids = (
+                    {
+                        cast(str, row[0])
+                        for row in projection_carry_forward.captured.attachment_refs
+                        if row[2] in projection_carry_forward.live_message_ids
+                    }
+                    if projection_carry_forward is not None and projection_carry_forward.scratch is None
+                    else set()
                 )
-                stale_attachment_ids = (
-                    set() if applicable_union is not None else session_attachment_ids(conn, session_id)
-                )
-                prefix_guard = _capture_inherited_prefixes(conn, session_id) if session_membership_existed else None
-                projection_carry_forward = _replace_full_session_messages_and_blocks(
+                refresh_attachment_ids: Iterable[str] = stale_attachment_ids - carried_forward_attachment_ids
+                if projection_carry_forward is not None and projection_carry_forward.scratch is not None:
+                    refresh_attachment_ids = _UnionSet(
+                        projection_carry_forward.scratch, "refresh_attachment", "attachment_id"
+                    )
+                unresolved_attachment_owners = _write_attachments(
                     conn,
+                    session_id,
+                    messages,
+                    session.attachments,
+                    supplying_raw_id=raw_id,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    refresh_attachment_ids=refresh_attachment_ids,
+                    preacquired_blobs=preacquired_attachment_blobs,
+                    content_identities=content_identities,
+                    inherited_prefix_message_ids=context.inherited_prefix_message_ids,
+                    owner_resolution=prepared_write.rows.owner_resolution,
+                    replace_owner_gaps=not merge_append,
+                )
+                add_timing("index.attachments", t0)
+                t0 = time.perf_counter()
+                _write_paste_spans(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    content_identities=content_identities,
+                )
+                add_timing("index.paste_spans", t0)
+                if projection_carry_forward is not None:
+                    # polylogue-geop: all four evidence-dependent projection
+                    # tables (attachment_refs/paste_spans just above, file_edits/
+                    # web_content_constructs inside _replace_full_session_
+                    # messages_and_blocks) have now been rebuilt from the
+                    # incoming ParsedSession alone -- restore any pre-delete row
+                    # a reinjected/reconciled message or block owned that the
+                    # rebuild didn't recreate.
+                    t0 = time.perf_counter()
+                    _restore_captured_projection_rows(conn, projection_carry_forward)
+                    # The exemption above assumed every carried-forward attachment
+                    # would get its attachment_refs row back. The restore is
+                    # slot-gated, and the two identities disagree about what a slot
+                    # is: _attachment_position derives it from provider_attachment_id
+                    # alone, while _attachment_id also folds path, name, MIME type
+                    # and size. A second acquisition that keeps the provider id but
+                    # changes the metadata therefore takes the slot under a new
+                    # attachment_id, and the old row is never restored -- and was
+                    # excluded from the sweep, so it kept ref_count=1 with no refs.
+                    # Blob GC treats an attachments row bearing the hash as a live
+                    # reference, so the old bytes were pinned forever. Now that the
+                    # restore has run, the exempted ids are settled: the ones that
+                    # really were restored recount to their live refs, and the ones
+                    # the slot moved away from recount to zero and are swept.
+                    post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
+                    if projection_carry_forward.scratch is not None:
+                        post_restore_attachment_ids = _UnionSet(
+                            projection_carry_forward.scratch, "carried_attachment", "attachment_id"
+                        )
+                    refresh_and_sweep_attachment_rows(conn, post_restore_attachment_ids)
+                    add_timing("index.restore_projections", t0)
+                t0 = time.perf_counter()
+                _write_parent_links(
+                    conn,
+                    session_id,
+                    messages,
+                    position_offset=position_offset,
+                    duplicate_native_ids=duplicate_message_native_ids,
+                    content_identities=content_identities,
+                    inherited_message_ids=inherited_source_message_ids,
+                )
+                add_timing("index.parent_links", t0)
+                t0 = time.perf_counter()
+                _write_session_link(
+                    conn,
+                    session_id,
                     session,
-                    messages,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    raw_id=raw_id,
-                    existing_raw_id=existing_session_raw_id,
-                    session_membership_existed=session_membership_existed,
-                    force_replace=force_replace,
-                    stage_timings_s=stage_timings_s,
-                    stage_timing_prefix=stage_timing_prefix,
-                    bulk_build=bulk_build,
-                    defer_fts_rebuild=defer_fts_rebuild,
-                    prepared=prepared_rows_to_use,
-                    prepared_union=applicable_union,
-                    content_identities=content_identities,
+                    branch_point_message_id=branch_point_message_id,
+                    branch_point_content_address=branch_point_content_address,
+                    inheritance=lineage_inheritance,
+                    source_conn=source_conn,
+                    prior_links=prior_session_rows,
+                    child_source_path=context.child_source_path,
                 )
-                _refresh_stable_branch_point_witnesses(conn, session_id)
-                add_timing("index.full_replace", t0)
-            if merge_append:
+                add_timing("index.session_link", t0)
                 t0 = time.perf_counter()
-                _write_messages(
+                event_position_offset = _next_session_event_position(conn, session_id)
+                session_event_result = _write_session_events(
                     conn,
                     session_id,
                     messages,
+                    session.session_events,
                     position_offset=position_offset,
+                    event_position_offset=event_position_offset,
                     duplicate_native_ids=duplicate_message_native_ids,
-                    rows=(
-                        prepared_rows_to_use.message_rows
-                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                        else None
-                    ),
+                    inherited_source_message_ids=inherited_source_message_ids,
+                    ambiguous_source_provider_ids=event_duplicate_message_native_ids,
                     content_identities=content_identities,
+                    sidecar_blob_locators=sidecar_blob_locators,
+                    owner_resolution=prepared_write.rows.owner_resolution,
                 )
-                add_timing("index.messages", t0)
+                add_timing("index.session_events", t0)
+                if projection_carry_forward is not None:
+                    t0 = time.perf_counter()
+                    _restore_captured_provider_usage_rows(conn, projection_carry_forward)
+                    add_timing("index.restore_provider_usage", t0)
+                if not event_only:
+                    t0 = time.perf_counter()
+                    _write_working_dirs(conn, session_id, session.working_directories)
+                    add_timing("index.working_dirs", t0)
+                    t0 = time.perf_counter()
+                    _write_session_refs(conn, session_id, session)
+                    add_timing("index.session_refs", t0)
+                    t0 = time.perf_counter()
+                    _write_repo_edges(conn, session_id, session)
+                    add_timing("index.repo_edges", t0)
                 t0 = time.perf_counter()
-                _write_blocks(
+                _seed_session_model_usage_rows(
                     conn,
                     session_id,
-                    messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    rows=(
-                        prepared_rows_to_use.block_rows
-                        if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                        else None
-                    ),
-                    content_identities=content_identities,
+                    session,
+                    replace_existing_model_rows=not merge_append,
+                    aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
                 )
-                add_timing("index.blocks", t0)
+                add_timing("index.model_usage_seed", t0)
+                if merge_append and session_event_result.wrote_provider_usage_events:
+                    t0 = time.perf_counter()
+                    _aggregate_appended_provider_usage_into_model_usage(
+                        conn,
+                        session_id,
+                        start_position=event_position_offset,
+                    )
+                    add_timing("index.provider_usage_rollup", t0)
+                elif not merge_append:
+                    t0 = time.perf_counter()
+                    _aggregate_provider_usage_into_model_usage(conn, session_id)
+                    add_timing("index.provider_usage_rollup", t0)
                 t0 = time.perf_counter()
-                _reconcile_tool_use_outcomes(conn, session_id)
-                add_timing("index.tool_outcomes", t0)
+                # The summary is one authoritative projection of stored messages.
+                # Append has no typed disjoint-insert proof, so it takes the same
+                # replacement path as full writes and lineage re-extraction.
+                refresh_session_summary(conn, session_id)
+                add_timing("index.session_counts", t0)
                 t0 = time.perf_counter()
-                _write_file_edits(
-                    conn,
-                    session_id,
-                    messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    content_identities=content_identities,
-                )
-                add_timing("index.file_edits", t0)
+                graph_kwargs: dict[str, Any] = {
+                    "cache": signature_cache,
+                    "add_timing": add_timing,
+                    "bulk_fts": bulk_fts,
+                    "bulk_build": bulk_build,
+                }
+                if invalidated_identity_children:
+                    graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
+                if source_conn is not None:
+                    graph_kwargs["source_conn"] = source_conn
+                graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
+                add_timing("index.graph_resolve", t0)
+                materialized_ids: set[str] = set()
+                if prefix_guard is not None:
+                    t0 = time.perf_counter()
+                    materialized_ids = _settle_inherited_prefixes(
+                        conn, prefix_guard, cache=signature_cache, bulk_fts=bulk_fts, bulk_build=bulk_build
+                    )
+                    add_timing("index.inherited_prefix_guard", t0)
                 t0 = time.perf_counter()
                 if not bulk_build:
-                    refresh_action_pairs(conn, session_id)
-                add_timing("index.action_pairs", t0)
-                t0 = time.perf_counter()
-                _write_web_constructs(
-                    conn,
-                    session,
-                    messages,
-                    position_offset=position_offset,
-                    duplicate_native_ids=duplicate_message_native_ids,
-                    replace_session=False,
-                    content_identities=content_identities,
-                )
-                add_timing("index.web_constructs", t0)
-            t0 = time.perf_counter()
-            # polylogue-geop: an attachment_id that projection carry-forward
-            # is about to restore an attachment_refs row for must NOT be
-            # swept here just because it looks unreferenced right now --
-            # its old attachment_refs row was already cascade-deleted by the
-            # full-replace's message DELETE and the replacement hasn't been
-            # (re)inserted yet (_restore_captured_projection_rows runs after
-            # this call). Passing it through refresh_attachment_ids would
-            # zero its ref_count and delete the attachments row outright,
-            # so the later restore's FK to attachments(attachment_id) fails.
-            carried_forward_attachment_ids = (
-                {
-                    cast(str, row[0])
-                    for row in projection_carry_forward.captured.attachment_refs
-                    if row[2] in projection_carry_forward.live_message_ids
-                }
-                if projection_carry_forward is not None and projection_carry_forward.scratch is None
-                else set()
-            )
-            refresh_attachment_ids: Iterable[str] = stale_attachment_ids - carried_forward_attachment_ids
-            if projection_carry_forward is not None and projection_carry_forward.scratch is not None:
-                refresh_attachment_ids = _UnionSet(
-                    projection_carry_forward.scratch, "refresh_attachment", "attachment_id"
-                )
-            unresolved_attachment_owners = _write_attachments(
-                conn,
-                session_id,
-                messages,
-                session.attachments,
-                supplying_raw_id=raw_id,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                refresh_attachment_ids=refresh_attachment_ids,
-                preacquired_blobs=preacquired_attachment_blobs,
-                content_identities=content_identities,
-                inherited_prefix_message_ids=context.inherited_prefix_message_ids,
-                replace_owner_gaps=not merge_append,
-            )
-            add_timing("index.attachments", t0)
-            t0 = time.perf_counter()
-            _write_paste_spans(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                content_identities=content_identities,
-            )
-            add_timing("index.paste_spans", t0)
-            if projection_carry_forward is not None:
-                # polylogue-geop: all four evidence-dependent projection
-                # tables (attachment_refs/paste_spans just above, file_edits/
-                # web_content_constructs inside _replace_full_session_
-                # messages_and_blocks) have now been rebuilt from the
-                # incoming ParsedSession alone -- restore any pre-delete row
-                # a reinjected/reconciled message or block owned that the
-                # rebuild didn't recreate.
-                t0 = time.perf_counter()
-                _restore_captured_projection_rows(conn, projection_carry_forward)
-                # The exemption above assumed every carried-forward attachment
-                # would get its attachment_refs row back. The restore is
-                # slot-gated, and the two identities disagree about what a slot
-                # is: _attachment_position derives it from provider_attachment_id
-                # alone, while _attachment_id also folds path, name, MIME type
-                # and size. A second acquisition that keeps the provider id but
-                # changes the metadata therefore takes the slot under a new
-                # attachment_id, and the old row is never restored -- and was
-                # excluded from the sweep, so it kept ref_count=1 with no refs.
-                # Blob GC treats an attachments row bearing the hash as a live
-                # reference, so the old bytes were pinned forever. Now that the
-                # restore has run, the exempted ids are settled: the ones that
-                # really were restored recount to their live refs, and the ones
-                # the slot moved away from recount to zero and are swept.
-                post_restore_attachment_ids: Iterable[str] = carried_forward_attachment_ids
-                if projection_carry_forward.scratch is not None:
-                    post_restore_attachment_ids = _UnionSet(
-                        projection_carry_forward.scratch, "carried_attachment", "attachment_id"
+                    # The session-write guard suppresses the block and link
+                    # triggers that would refresh these cohorts, and graph
+                    # resolution and prefix settlement change other sessions' rows
+                    # and edges: a late parent deletes each child's inherited
+                    # prefix, a replace copies one into a child.
+                    refresh_delegation_facts_for_sessions(conn, {session_id, *graph_changed_ids, *materialized_ids})
+                add_timing("index.delegation_facts", t0)
+                conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
+                if bulk_build:
+                    conn.execute(
+                        "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
+                        (FTS_BULK_SESSION_WRITE_GUARD,),
                     )
-                refresh_and_sweep_attachment_rows(conn, post_restore_attachment_ids)
-                add_timing("index.restore_projections", t0)
-            t0 = time.perf_counter()
-            _write_parent_links(
-                conn,
-                session_id,
-                messages,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                content_identities=content_identities,
-                inherited_message_ids=inherited_source_message_ids,
-            )
-            add_timing("index.parent_links", t0)
-            t0 = time.perf_counter()
-            _write_session_link(
-                conn,
-                session_id,
-                session,
-                branch_point_message_id=branch_point_message_id,
-                branch_point_content_address=branch_point_content_address,
-                inheritance=lineage_inheritance,
-                source_conn=source_conn,
-                prior_links=prior_session_rows,
-                child_source_path=context.child_source_path,
-            )
-            add_timing("index.session_link", t0)
-            t0 = time.perf_counter()
-            event_position_offset = _next_session_event_position(conn, session_id)
-            session_event_result = _write_session_events(
-                conn,
-                session_id,
-                messages,
-                session.session_events,
-                position_offset=position_offset,
-                event_position_offset=event_position_offset,
-                duplicate_native_ids=duplicate_message_native_ids,
-                inherited_source_message_ids=inherited_source_message_ids,
-                ambiguous_source_provider_ids=event_duplicate_message_native_ids,
-                content_identities=content_identities,
-                sidecar_blob_locators=sidecar_blob_locators,
-            )
-            add_timing("index.session_events", t0)
-            if projection_carry_forward is not None:
-                t0 = time.perf_counter()
-                _restore_captured_provider_usage_rows(conn, projection_carry_forward)
-                add_timing("index.restore_provider_usage", t0)
-            if not event_only:
-                t0 = time.perf_counter()
-                _write_working_dirs(conn, session_id, session.working_directories)
-                add_timing("index.working_dirs", t0)
-                t0 = time.perf_counter()
-                _write_session_refs(conn, session_id, session)
-                add_timing("index.session_refs", t0)
-                t0 = time.perf_counter()
-                _write_repo_edges(conn, session_id, session)
-                add_timing("index.repo_edges", t0)
-            t0 = time.perf_counter()
-            _seed_session_model_usage_rows(
-                conn,
-                session_id,
-                session,
-                replace_existing_model_rows=not merge_append,
-                aggregate_message_tokens=not merge_append or _messages_have_token_counts(messages),
-            )
-            add_timing("index.model_usage_seed", t0)
-            if merge_append and session_event_result.wrote_provider_usage_events:
-                t0 = time.perf_counter()
-                _aggregate_appended_provider_usage_into_model_usage(
-                    conn,
-                    session_id,
-                    start_position=event_position_offset,
-                )
-                add_timing("index.provider_usage_rollup", t0)
-            elif not merge_append:
-                t0 = time.perf_counter()
-                _aggregate_provider_usage_into_model_usage(conn, session_id)
-                add_timing("index.provider_usage_rollup", t0)
-            t0 = time.perf_counter()
-            # The summary is one authoritative projection of stored messages.
-            # Append has no typed disjoint-insert proof, so it takes the same
-            # replacement path as full writes and lineage re-extraction.
-            refresh_session_summary(conn, session_id)
-            add_timing("index.session_counts", t0)
-            t0 = time.perf_counter()
-            graph_kwargs: dict[str, Any] = {
-                "cache": signature_cache,
-                "add_timing": add_timing,
-                "bulk_fts": bulk_fts,
-                "bulk_build": bulk_build,
-            }
-            if invalidated_identity_children:
-                graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
-            if source_conn is not None:
-                graph_kwargs["source_conn"] = source_conn
-            graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
-            add_timing("index.graph_resolve", t0)
-            materialized_ids: set[str] = set()
-            if prefix_guard is not None:
-                t0 = time.perf_counter()
-                materialized_ids = _settle_inherited_prefixes(
-                    conn, prefix_guard, cache=signature_cache, bulk_fts=bulk_fts, bulk_build=bulk_build
-                )
-                add_timing("index.inherited_prefix_guard", t0)
-            t0 = time.perf_counter()
-            if not bulk_build:
-                # The session-write guard suppresses the block and link
-                # triggers that would refresh these cohorts, and graph
-                # resolution and prefix settlement change other sessions' rows
-                # and edges: a late parent deletes each child's inherited
-                # prefix, a replace copies one into a child.
-                refresh_delegation_facts_for_sessions(conn, {session_id, *graph_changed_ids, *materialized_ids})
-            add_timing("index.delegation_facts", t0)
-            conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-            if bulk_build:
-                conn.execute(
-                    "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-                    (FTS_BULK_SESSION_WRITE_GUARD,),
-                )
-            if merge_append and session.ingest_flags:
-                t0 = time.perf_counter()
-                _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                add_timing("index.ingest_flags", t0)
-            elif not merge_append:
-                t0 = time.perf_counter()
-                if prior_session_rows:
-                    _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                else:
+                if merge_append and session.ingest_flags:
+                    t0 = time.perf_counter()
                     _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
-                add_timing("index.ingest_flags", t0)
-    except sqlite3.IntegrityError as exc:
-        raise sqlite3.IntegrityError(
-            f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
-            f"origin={origin.value!r} native_id={native_id!r}: {exc}"
-        ) from exc
-    finally:
-        if identity_scope is not None:
-            identity_scope.__exit__(None, None, None)
-        if prepared_write is None:
-            context.close()
-    # The lineage columns of every child invalidated above are now NULL, so the
-    # child reads as a complete root while its recomposed prefix is gone. The
-    # loss is named as ordinary retryable convergence debt (ops tier) rather
-    # than left silent until someone orders a full rebuild (polylogue-e0xan).
-    _record_identity_invalidation_debt(conn, invalidated_identity_children)
-    if write_outcome is not None:
-        write_outcome.append(
-            ArchiveWriteOutcome(
-                session_id=session_id,
-                wrote=True,
-                unresolved_attachment_owners=unresolved_attachment_owners,
+                    add_timing("index.ingest_flags", t0)
+                elif not merge_append:
+                    t0 = time.perf_counter()
+                    if prior_session_rows:
+                        _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                    else:
+                        _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                    add_timing("index.ingest_flags", t0)
+        except sqlite3.IntegrityError as exc:
+            raise sqlite3.IntegrityError(
+                f"FOREIGN KEY constraint failed writing session_id={session_id!r} "
+                f"origin={origin.value!r} native_id={native_id!r}: {exc}"
+            ) from exc
+        # The lineage columns of every child invalidated above are now NULL, so the
+        # child reads as a complete root while its recomposed prefix is gone. The
+        # loss is named as ordinary retryable convergence debt (ops tier) rather
+        # than left silent until someone orders a full rebuild (polylogue-e0xan).
+        _record_identity_invalidation_debt(conn, invalidated_identity_children)
+        if write_outcome is not None:
+            write_outcome.append(
+                ArchiveWriteOutcome(
+                    session_id=session_id,
+                    wrote=True,
+                    unresolved_attachment_owners=unresolved_attachment_owners,
+                )
             )
-        )
-    return session_id
+        return session_id
 
 
 def _add_stage_timing(
@@ -6666,6 +6511,7 @@ def _prepare_cross_acquisition_union(
             builder.add_streamed(
                 session_id=session_id,
                 session_content_hash=incoming.session_content_hash,
+                owner_resolution=incoming.owner_resolution,
                 message_rows=iter(scratch.rows("merged_message")),
                 block_rows=iter(scratch.rows("merged_block")),
             )
@@ -6684,6 +6530,7 @@ def _prepare_cross_acquisition_union(
             _ShardRowSequence(shard.path, "messages", entry.message_lo, entry.message_hi, lifetime=scratch),
             _ShardRowSequence(shard.path, "blocks", entry.block_lo, entry.block_hi, lifetime=scratch),
             entry.content_identities,
+            entry.owner_resolution,
         )
         scratch.finish()
         return _PreparedCrossAcquisitionUnion(predecessor, parent_guard, rows, carry)
@@ -7070,7 +6917,7 @@ def _attachment_message_id_maps(
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] | None = None,
-    owner_resolution: MessageOwnerResolution | None = None,
+    owner_resolution: MessageOwnerResolution,
     wanted_owner_keys: set[str] | None = None,
 ) -> tuple[MessageOwnerResolution, dict[str, str], dict[str, ParsedMessage]]:
     """Build the authoritative attachment-owner lookup maps.
@@ -7085,16 +6932,14 @@ def _attachment_message_id_maps(
     the production write.
     """
     duplicates = duplicate_native_ids if duplicate_native_ids is not None else _duplicate_message_native_ids(messages)
-    # Disk-backed callers enter disk_message_owner_resolution in
-    # _write_attachments and pass the live context here.
-    resolution = (
-        owner_resolution
-        if owner_resolution is not None
-        else message_owner_resolution(cast(list[ParsedMessage], messages))
-    )
+    resolution = owner_resolution
     by_owner_key: dict[str, str] = {}
     by_message_id: dict[str, ParsedMessage] = {}
-    for fallback_position, (message, owner_key) in enumerate(zip(messages, resolution.keys, strict=True)):
+    keys = iter(resolution.keys)
+    if isinstance(messages, _MessageTail):
+        for _ordinal in range(messages.start):
+            next(keys)
+    for fallback_position, (message, owner_key) in enumerate(zip(messages, keys, strict=True)):
         if owner_key in resolution.ambiguous_keys or (
             wanted_owner_keys is not None and owner_key not in wanted_owner_keys
         ):
@@ -7151,8 +6996,8 @@ def _write_attachments(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     refresh_attachment_ids: Iterable[str] | None = None,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-    owner_resolution: MessageOwnerResolution | None = None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+    owner_resolution: MessageOwnerResolution,
     inherited_prefix_message_ids: Sequence[str] = (),
     replace_owner_gaps: bool = True,
 ) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
@@ -7176,24 +7021,6 @@ def _write_attachments(
         if replace_owner_gaps:
             _record_attachment_owner_gaps(conn, session_id, (), replace_session=True)
         return ()
-    source = messages.messages if isinstance(messages, _MessageTail) else messages
-    if isinstance(source, SqliteMessageSink) and owner_resolution is None:
-        with disk_message_owner_resolution(messages) as resolution:
-            return _write_attachments(
-                conn,
-                session_id,
-                messages,
-                attachments,
-                supplying_raw_id=supplying_raw_id,
-                content_identities=content_identities,
-                position_offset=position_offset,
-                duplicate_native_ids=duplicate_native_ids,
-                refresh_attachment_ids=refresh_attachment_ids,
-                preacquired_blobs=preacquired_blobs,
-                owner_resolution=resolution,
-                inherited_prefix_message_ids=inherited_prefix_message_ids,
-                replace_owner_gaps=replace_owner_gaps,
-            )
     wanted_owner_keys: set[str] | None = None
     if owner_resolution is not None:
         wanted_owner_keys = set()
@@ -7438,7 +7265,7 @@ def _write_attachment_row(
     conn: sqlite3.Connection,
     attachment_id: str,
     attachment: ParsedAttachment,
-    preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None,
+    preacquired_blobs: Mapping[object, tuple[bytes | None, int, str]] | None,
 ) -> None:
     """Upsert the attachment's identity and bytes, leaving refs to the caller."""
     acquired_blob = (preacquired_blobs or {}).get(attachment.acquisition_key)
@@ -9537,6 +9364,7 @@ def _write_session_events(
     messages: Sequence[ParsedMessage],
     events: Iterable[ParsedSessionEvent],
     *,
+    owner_resolution: MessageOwnerResolution,
     content_identities: Sequence[MessageContentIdentity],
     position_offset: int = 0,
     event_position_offset: int = 0,
@@ -9549,7 +9377,18 @@ def _write_session_events(
     disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
     try:
         by_native_id: dict[str, str] | _DiskMessageEventIndex = disk_index if disk_index is not None else {}
-        for fallback_position, message in enumerate(messages):
+        by_owner_key: dict[str, str | None] = {}
+        owner_keys = iter(owner_resolution.keys)
+        if isinstance(messages, _MessageTail):
+            for _ordinal in range(messages.start):
+                owner_key = next(owner_keys)
+                if owner_key in owner_resolution.ambiguous_keys:
+                    continue
+                if disk_index is not None:
+                    disk_index.add_occurrence(owner_key, None)
+                else:
+                    by_owner_key[owner_key] = None
+        for fallback_position, (message, owner_key) in enumerate(zip(messages, owner_keys, strict=True)):
             message_id = _message_id(
                 session_id,
                 message,
@@ -9557,6 +9396,11 @@ def _write_session_events(
                 content_identities=content_identities,
                 duplicate_native_ids=duplicate_native_ids,
             )
+            if owner_key not in owner_resolution.ambiguous_keys:
+                if disk_index is not None:
+                    disk_index.add_occurrence(owner_key, message_id)
+                else:
+                    by_owner_key[owner_key] = message_id
             if disk_index is not None:
                 effective_position = message.position if message.position is not None else fallback_position
                 disk_index.add_boundary(effective_position, message_id)
@@ -9605,12 +9449,39 @@ def _write_session_events(
         for event in events:
             source_message_provider_id = event.source_message_provider_id
             if (
-                inherited_source_message_ids is not None
+                event.owner_coordinate is None
+                and inherited_source_message_ids is not None
                 and source_message_provider_id is not None
                 and source_message_provider_id in inherited_source_message_ids
             ):
                 continue
-            source_message_id = by_native_id.get(source_message_provider_id or "")
+            if event.owner_coordinate is not None:
+                owner_key = event_message_owner_key(event, owner_resolution)
+                source_message_id = (
+                    disk_index.occurrence_message_id(owner_key)
+                    if disk_index is not None and owner_key is not None
+                    else by_owner_key.get(owner_key or "")
+                )
+                if source_message_id is None:
+                    inherited = (
+                        disk_index.has_occurrence(owner_key)
+                        if disk_index is not None and owner_key is not None
+                        else owner_key in by_owner_key
+                    )
+                    if inherited:
+                        continue
+                    raise MessageOwnerAmbiguityError("event occurrence was not published")
+            else:
+                source_message_id = by_native_id.get(source_message_provider_id or "")
+                if (
+                    source_message_id is None
+                    and source_message_provider_id
+                    and (
+                        source_message_provider_id.strip() in duplicate_native_ids
+                        or source_message_provider_id.strip() in ambiguous_source_provider_ids
+                    )
+                ):
+                    raise MessageOwnerAmbiguityError("event native message ID requires exact occurrence evidence")
             if source_message_id is None and inherited_source_message_ids is not None:
                 source_message_id = inherited_source_message_ids.get(source_message_provider_id or "")
             if event.event_type not in _SESSION_EVENTS_REDUNDANT_TYPES:
@@ -9708,6 +9579,7 @@ def _write_session_events(
                 _flush_rows()
         _flush_rows()
         return SessionEventWriteResult(wrote_provider_usage_events=wrote_provider_usage_events)
+
     finally:
         if disk_index is not None:
             disk_index.close()
@@ -9729,6 +9601,7 @@ class _DiskMessageEventIndex(Mapping[str, str]):
                 "CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID"
             )
             self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
+            self._conn.execute("CREATE TABLE occurrence (owner_key TEXT PRIMARY KEY, message_id TEXT) WITHOUT ROWID")
         except BaseException as primary:
             _close_failed_native_construction(self._sql_owner, primary)
             self.close()
@@ -9781,6 +9654,16 @@ class _DiskMessageEventIndex(Mapping[str, str]):
     def __del__(self) -> None:
         if getattr(self, "_sql_owner", None) is not None:
             self.close()
+
+    def add_occurrence(self, owner_key: str, message_id: str | None) -> None:
+        self._conn.execute("INSERT INTO occurrence VALUES (?, ?)", (owner_key, message_id))
+
+    def has_occurrence(self, owner_key: str) -> bool:
+        return self._conn.execute("SELECT 1 FROM occurrence WHERE owner_key = ?", (owner_key,)).fetchone() is not None
+
+    def occurrence_message_id(self, owner_key: str) -> str | None:
+        row = self._conn.execute("SELECT message_id FROM occurrence WHERE owner_key = ?", (owner_key,)).fetchone()
+        return str(row[0]) if row is not None and row[0] is not None else None
 
 
 _PROVIDER_USAGE_EVENT_INSERT_SQL = """

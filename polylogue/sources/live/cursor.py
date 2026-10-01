@@ -82,6 +82,8 @@ class CursorRecord:
     last_complete_newline: int
     record_count: int
     updated_at: str
+    canonical_source_path: str | None = None
+    captured_profile_key: str | None = None
     last_record_ts: str | None = None
     parser_fingerprint: str | None = None
     content_fingerprint: str | None = None
@@ -169,12 +171,12 @@ class LiveConvergenceDebt:
 
 
 @dataclass(frozen=True, slots=True)
-class ConvergenceDebtClear:
-    """Clear stale debt for one subject while preserving named stages."""
+class ConvergenceDebtSettlement:
+    """Settle exactly one evaluated stage and subject."""
 
     subject_type: str
     subject_id: str
-    preserved_stages: tuple[str, ...]
+    stage: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +195,7 @@ class ConvergenceDebtWrite:
 class ConvergenceDebtBatchEntry:
     """Ordered clear/write operations that previously formed one path outcome."""
 
-    clears: tuple[ConvergenceDebtClear, ...] = ()
+    clears: tuple[ConvergenceDebtSettlement, ...] = ()
     writes: tuple[ConvergenceDebtWrite, ...] = ()
 
 
@@ -303,6 +305,8 @@ def _cursor_record_from_ops_row(row: sqlite3.Row | tuple[object, ...]) -> Cursor
         next_retry_at=_optional_str(row[13]),
         excluded=bool(row[16]) if row[16] is not None else False,
         deferred_end_offset=_optional_int(row[17]),
+        canonical_source_path=_optional_str(row[18]),
+        captured_profile_key=_optional_str(row[19]),
     )
 
 
@@ -698,6 +702,8 @@ class CursorStore:
         upsert_archive_ingest_cursor(
             conn,
             source_path=record.source_path,
+            canonical_source_path=record.canonical_source_path,
+            captured_profile_key=record.captured_profile_key,
             updated_at_ms=_required_epoch_ms(record.updated_at),
             origin=origin,
             stat_size=record.byte_size,
@@ -899,21 +905,10 @@ class CursorStore:
                 _begin_ops_write(conn)
                 for entry in batch:
                     for clear in entry.clears:
-                        if clear.preserved_stages:
-                            placeholders = ",".join("?" for _ in clear.preserved_stages)
-                            conn.execute(
-                                f"""
-                                DELETE FROM convergence_debt
-                                WHERE target_type = ? AND target_id = ?
-                                  AND stage NOT IN ({placeholders})
-                                """,
-                                (clear.subject_type, clear.subject_id, *clear.preserved_stages),
-                            )
-                        else:
-                            conn.execute(
-                                "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                                (clear.subject_type, clear.subject_id),
-                            )
+                        conn.execute(
+                            "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ? AND stage = ?",
+                            (clear.subject_type, clear.subject_id, clear.stage),
+                        )
                     for debt_write in entry.writes:
                         self._sync_convergence_debt_on_conn(
                             conn,
@@ -954,37 +949,6 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops convergence debt clear", write)
-
-    def _clear_convergence_debt_except_from_ops(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        preserved = tuple(stages)
-
-        def write() -> None:
-            with self._connect_ops() as conn:
-                if preserved:
-                    placeholders = ",".join("?" for _ in preserved)
-                    conn.execute(
-                        f"""
-                        DELETE FROM convergence_debt
-                        WHERE target_type = ?
-                          AND target_id = ?
-                          AND stage NOT IN ({placeholders})
-                        """,
-                        (subject_type, subject_id, *preserved),
-                    )
-                else:
-                    conn.execute(
-                        "DELETE FROM convergence_debt WHERE target_type = ? AND target_id = ?",
-                        (subject_type, subject_id),
-                    )
-                conn.commit()
-
-        best_effort_cursor_write("archive ops convergence debt clear-except", write)
 
     def begin_ingest_attempt(
         self,
@@ -1476,7 +1440,8 @@ class CursorStore:
                 origin,
                 updated_at_ms,
                 excluded,
-                deferred_end_offset
+                deferred_end_offset,
+                canonical_source_path, captured_profile_key
             FROM ingest_cursor
             WHERE source_path = ?
             """,
@@ -1516,7 +1481,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                         excluded,
-                        deferred_end_offset
+                        deferred_end_offset,
+                        canonical_source_path, captured_profile_key
                     FROM ingest_cursor
                     WHERE source_path IN ({placeholders})
                     """,
@@ -1547,6 +1513,8 @@ class CursorStore:
         failure_count: int | None = None,
         next_retry_at: str | None = None,
         excluded: bool | None = None,
+        canonical_source_path: str | None = None,
+        captured_profile_key: str | None = None,
         allow_backward: bool = False,
         deferred_end_offset: int | None = None,
     ) -> bool:
@@ -1566,6 +1534,8 @@ class CursorStore:
         return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
+                canonical_source_path=canonical_source_path,
+                captured_profile_key=captured_profile_key,
                 byte_size=byte_size,
                 byte_offset=offset,
                 last_complete_newline=newline_offset,
@@ -1958,7 +1928,8 @@ class CursorStore:
                         origin,
                         updated_at_ms,
                     excluded,
-                    deferred_end_offset
+                    deferred_end_offset,
+                    canonical_source_path, captured_profile_key
                 FROM ingest_cursor
                 WHERE excluded = 0
                   AND (
@@ -1999,21 +1970,6 @@ class CursorStore:
             materializer_version=materializer_version,
             now=now,
             deferred=deferred,
-        )
-
-    def clear_convergence_debt_except(
-        self,
-        *,
-        subject_type: str,
-        subject_id: str,
-        stages: Iterable[str],
-    ) -> None:
-        """Clear convergence debt for a subject except currently failed stages."""
-        preserved_stages = tuple(stages)
-        self._clear_convergence_debt_except_from_ops(
-            subject_type=subject_type,
-            subject_id=subject_id,
-            stages=preserved_stages,
         )
 
     def clear_convergence_debt_under_prefix(

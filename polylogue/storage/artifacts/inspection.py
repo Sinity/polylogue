@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
+from contextlib import suppress
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import ijson
+
 from polylogue.archive.artifact_taxonomy import (
     ArtifactKind,
+    classify_artifact,
     classify_artifact_path,
-    strong_path_classification,
+    classify_record_candidacy,
 )
 from polylogue.archive.raw_payload import (
     JSONValue,
@@ -190,36 +196,60 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
     # durable observation describes the exact acquired bytes.
     if _is_hermes_state_db_candidate(record):
         return _build_payload_envelope(blob_path, record, sqlite_immutable=True)
+    from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
+    from polylogue.sources.detection_projection import iter_projected_document_records
+    from polylogue.sources.dispatch import detect_provider_from_raw_stream_evidence
+
+    provider = Provider.from_string(_normalize_payload_provider_hint(record) or record.source_name or "")
+    scan: JSONLSessionArtifactScan | None = None
+    with blob_path.open("rb") as handle:
+        provider, _detail = detect_provider_from_raw_stream_evidence(handle, record.source_path, provider)
+        handle.seek(0)
+        encoding = json.detect_encoding(handle.read(4))
+        handle.seek(0)
+        try:
+            artifact = classify_record_candidacy(
+                iter_projected_document_records(handle, record_candidacy_projection(), encoding=encoding),
+                provider=provider,
+                source_path=record.source_path,
+            )
+            wire_format = "json"
+        except (ijson.JSONError, UnicodeError):
+            handle.seek(0)
+            scan = scan_jsonl_session_artifact(handle, provider=provider, source_path=record.source_path)
+            if scan.artifact is None and scan.malformed_records:
+                raise ValueError("retained artifact has no complete decodable session evidence") from None
+            artifact = scan.artifact
+            wire_format = "jsonl"
     prefix = _inspection_prefix(record, blob_store=blob_store)
-    try:
-        envelope = _build_payload_envelope(prefix, record)
-    except Exception:
-        if not _full_json_inspection_allowed(record):
-            raise
-        return _build_payload_envelope(blob_store.read_all(blob_ref), record)
+    # A fully contained payload can supply genuine schema material. A prefix
+    # of a larger artifact is only a diagnostic sample, never a support proof.
+    if blob_path.stat().st_size <= len(prefix) and (
+        wire_format == "json" or (scan is not None and scan.valid_records <= 64 and not scan.malformed_records)
+    ):
+        return _build_payload_envelope(prefix, record)
+    if artifact is None:
+        artifact = classify_artifact_path(record.source_path, provider=provider) or classify_artifact(
+            [],
+            provider=provider,
+            source_path=record.source_path,
+        )
+    diagnostic_payload: JSONValue = []
+    if wire_format == "jsonl":
+        from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
 
-    if _should_retry_full_json_inspection(record, wire_format=envelope.wire_format):
-        return _build_payload_envelope(blob_store.read_all(blob_ref), record)
-    return envelope
-
-
-def _complete_stream_session_artifact(
-    record: RawSessionRecord,
-    *,
-    provider: Provider,
-    blob_store: BlobStore,
-) -> JSONLSessionArtifactScan | None:
-    """Recover positive stream evidence hidden by bounded inspection."""
-    if not _prefers_json_stream(record.source_path) or provider not in {Provider.CLAUDE_CODE, Provider.CODEX}:
-        return None
-    path_artifact = strong_path_classification(record.source_path, provider=provider)
-    if path_artifact is not None and not path_artifact.parse_as_session:
-        return None
-    return scan_jsonl_session_artifact(
-        blob_store.blob_path(_record_blob_ref(record)),
+        with suppress(ValueError):
+            diagnostic_payload, _failures, _detail = _sample_jsonl_payload_with_detail(
+                blob_path,
+                max_samples=64,
+                max_record_bytes=_INSPECTION_PREFIX_BYTES,
+            )
+    return RawPayloadEnvelope(
+        payload=diagnostic_payload,
         provider=provider,
-        source_path=record.source_path,
-        max_record_bytes=_INSPECTION_PREFIX_BYTES,
+        wire_format=wire_format,
+        artifact=replace(artifact, schema_eligible=False),
+        malformed_jsonl_lines=scan.malformed_records if scan is not None else 0,
     )
 
 
@@ -265,26 +295,9 @@ def _support_status(
 
 _INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
 
-#: Ceiling on the full-document re-read used when the 64 KB prefix is not
-#: itself valid JSON. A prefix that stops mid-value is evidence about the
-#: bound, not about the document: refusing the re-read records a valid
-#: single-JSON export as ``decode_failed`` / ``ArtifactKind.UNKNOWN``, which
-#: leaves it with no declared parser route at all.
-#:
-#: Single-document exports reach a few hundred megabytes -- an AI Studio
-#: conversation carrying inline media is 203 MB across 58 turns -- and
-#: classifying one costs less than the parse that must follow it anyway
-#: (measured on that document: 438 MB peak RSS to decode and classify,
-#: 638 MB to parse). A ceiling that stops classification short of what
-#: parsing the same bytes costs only discards the document earlier. The
-#: 64 KB prefix bound above still keeps the *first* pass off multi-GB
-#: payloads, so this ceiling is paid only by a document whose prefix was
-#: not self-contained.
-_FULL_JSON_INSPECTION_MAX_BYTES = 256 * 1024 * 1024
-
 
 def _inspection_prefix(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> bytes:
-    """Extract a small prefix of raw content sufficient for classification.
+    """Extract diagnostic schema material; complete candidacy is measured separately.
 
     Reads only the first 64 KB from the blob store — multi-GB files are
     never loaded into memory.
@@ -305,48 +318,16 @@ def _prefers_json_stream(source_path: str | None) -> bool:
     return normalized.endswith((".jsonl", ".jsonl.txt", ".ndjson"))
 
 
-def _full_json_inspection_allowed(record: RawSessionRecord) -> bool:
-    if _prefers_json_stream(record.source_path):
-        return False
-    return record.blob_size <= _FULL_JSON_INSPECTION_MAX_BYTES
-
-
-def _should_retry_full_json_inspection(record: RawSessionRecord, *, wire_format: str | None) -> bool:
-    return _full_json_inspection_allowed(record) and wire_format == "jsonl"
-
-
 def _full_scan_malformed_jsonl(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> tuple[int, bool]:
-    """Stream the entire blob to count malformed JSONL lines.
-
-    The prefix-based classification only inspects the first 64 KB, so malformed
-    content past the prefix never marks the artifact failed (#1745). This scan
-    streams the whole blob line-by-line (never materializing it) so the
-    malformed-line count and decode status reflect the full artifact. Records
-    larger than the inspection bound are discarded in chunks but are not
-    counted as malformed: bounded inspection is not evidence of decode loss.
-
-    Returns ``(malformed_lines, had_valid_records)``. ``had_valid_records`` is
-    ``True`` when at least one line decoded successfully; the sampling helper
-    raises ``ValueError`` only when no valid record exists, which is the
-    no-valid-records signal.
-    """
-    from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
-
+    """Count complete decode-loss evidence without a record-size exclusion."""
     blob_store = blob_store or get_blob_store()
-    blob_path = blob_store.blob_path(record.blob_hash or record.raw_id)
-    try:
-        _samples, malformed_lines, _detail = _sample_jsonl_payload_with_detail(
-            blob_path,
-            max_samples=1,
-            jsonl_dict_only=False,
-            scan_full=True,
-            max_record_bytes=_INSPECTION_PREFIX_BYTES,
-        )
-    except ValueError:
-        # No valid JSONL records at all — leave the decision to the prefix-based
-        # classification (which will have surfaced a decode error already).
-        return 0, False
-    return malformed_lines, True
+    provider = Provider.from_string(_normalize_payload_provider_hint(record) or record.source_name or "")
+    scan = scan_jsonl_session_artifact(
+        blob_store.blob_path(_record_blob_ref(record)),
+        provider=provider,
+        source_path=record.source_path,
+    )
+    return scan.malformed_records, bool(scan.valid_records)
 
 
 def _stream_loss_accounting(
@@ -384,9 +365,8 @@ def _stream_loss_accounting(
 def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> ArtifactObservationRecord:
     """Inspect one raw record into a durable artifact observation.
 
-    Classification starts from a small prefix. If that prefix would refuse a
-    Claude or Codex JSONL stream, a memory-bounded rolling scan must confirm
-    that no later record supplies positive session evidence.
+    Complete projected records decide candidacy and decode loss. Diagnostic
+    samples describe schema shape; only complete material proves support.
     """
     resolved_blob_store = blob_store or get_blob_store()
     provider_hint = _normalize_payload_provider_hint(record)
@@ -402,43 +382,9 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
     registry = _SCHEMA_REGISTRY
 
     try:
-        try:
-            envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
-        except Exception:
-            stream_provider = Provider.from_string(provider_token)
-            recovered_scan = _complete_stream_session_artifact(
-                record,
-                provider=stream_provider,
-                blob_store=resolved_blob_store,
-            )
-            if recovered_scan is None or recovered_scan.artifact is None:
-                raise
-            envelope = RawPayloadEnvelope(
-                payload=list(recovered_scan.sample),
-                provider=stream_provider,
-                wire_format="jsonl",
-                artifact=recovered_scan.artifact,
-                malformed_jsonl_lines=0,
-                malformed_jsonl_detail=None,
-            )
+        envelope = _inspect_payload_envelope(record, blob_store=resolved_blob_store)
         payload_provider = envelope.provider
         artifact = envelope.artifact
-        if not artifact.parse_as_session:
-            recovered_scan = _complete_stream_session_artifact(
-                record,
-                provider=payload_provider,
-                blob_store=resolved_blob_store,
-            )
-            if recovered_scan is not None and recovered_scan.artifact is not None:
-                envelope = RawPayloadEnvelope(
-                    payload=list(recovered_scan.sample),
-                    provider=payload_provider,
-                    wire_format="jsonl",
-                    artifact=recovered_scan.artifact,
-                    malformed_jsonl_lines=envelope.malformed_jsonl_lines,
-                    malformed_jsonl_detail=envelope.malformed_jsonl_detail,
-                )
-                artifact = envelope.artifact
         resolution: SchemaResolution | None = None
         has_supported_resolution = False
 

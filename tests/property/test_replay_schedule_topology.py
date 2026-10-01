@@ -71,7 +71,7 @@ def _census(root: Path) -> None:
     """Run the census stage a rebuild runs before it schedules anything."""
     with (
         ArchiveStore.open_existing(root, read_only=False) as archive,
-        _ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill,
+        _ParsedSessionSpill(root) as spill,
     ):
         revision_backfill._census_historical_revision_evidence(
             archive,
@@ -86,7 +86,7 @@ def _schedule_of(root: Path) -> tuple[ReplaySchedule, frozenset[str]]:
     """Compute a censused archive's replay schedule the way replay does."""
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         _expanded, logical_keys = archive.expand_raw_membership_selection(None)
-        with _ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
+        with _ParsedSessionSpill(root) as spill:
             return _lineage_aware_replay_schedule(set(logical_keys), archive, spill, root), frozenset(logical_keys)
 
 
@@ -106,7 +106,7 @@ def _seeded_schedule(root: Path, graph: LineageGraph) -> tuple[ReplaySchedule, f
     initialize_active_archive_root(root)
     with (
         ArchiveStore.open_existing(root, read_only=False) as archive,
-        _ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill,
+        _ParsedSessionSpill(root) as spill,
     ):
         write_lineage_graph(archive, graph)
         revision_backfill._census_historical_revision_evidence(

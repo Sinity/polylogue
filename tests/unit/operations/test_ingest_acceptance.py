@@ -24,6 +24,7 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
     FrozenSourceManifest,
+    SealedSourceManifestRef,
     append_prepared_source_inputs,
     begin_prepared_source_manifest,
     seal_prepared_source_manifest,
@@ -31,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.source_builders import prepared_ingest_manifest
 
 
 def test_bulk_session_cleanup_deletes_compound_message_owner_rows() -> None:
@@ -66,6 +68,48 @@ def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: Mutation
     )
 
 
+def test_new_acceptance_streams_manifest_beyond_former_input_cap(tmp_path: Path) -> None:
+    bootstrap_archive_root(tmp_path)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    blob_hash, _ = publisher.write_from_bytes(b"synthetic shared input")
+    publisher.flush()
+    receipt = publisher.receipt_id(blob_hash)
+    assert receipt is not None
+    manifest = prepared_ingest_manifest(
+        tmp_path,
+        "large-acceptance",
+        "d" * 64,
+        (FrozenSourceInput(f"input:{n:05d}", f"/synthetic/{n}", blob_hash, receipt) for n in range(10_241)),
+        publisher_id=publisher.publisher_id,
+    )
+    principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
+    binding = MachineRequestBinding("archive:test", "request:large", principal.actor_ref, "f" * 64, "ingest")
+    audit = AuditRepository.for_archive_root(tmp_path)
+    with audit.bind_machine_request(binding, transition="accept_ingest", deadline_unix_ms=1000):
+        audit.accept_ingest(manifest, principal)
+    assert audit.machine_request(binding) is not None
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone() == (10_241,)
+        assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (10_241,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+
+
+def test_new_plan_refuses_inline_manifest_without_rewriting_historical_evidence() -> None:
+    historical = FrozenSourceManifest(
+        "historical",
+        "d" * 64,
+        (FrozenSourceInput("input", "/synthetic/input", "a" * 64, "receipt"),),
+    )
+    with pytest.raises(TypeError, match="staged source manifest"):
+        ingest_plan(
+            historical,
+            archive_instance_id="archive",
+            archive_identity_digest="b" * 64,
+            now_ms=1,
+            expires_at_ms=1000,
+        )  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("phase", ["after_source_prepare", "after_audit_commit", "after_source_promotion"])
 def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, phase: str) -> None:
     bootstrap_archive_root(tmp_path)
@@ -74,10 +118,12 @@ def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, ph
     publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = prepared_ingest_manifest(
+        tmp_path,
         "source-generation:test",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")
@@ -206,11 +252,7 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
 
 def test_ingest_principal_is_checked_before_source_prepare(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    manifest = FrozenSourceManifest(
-        "generation:test",
-        "d" * 64,
-        (FrozenSourceInput("input.json", "/synthetic/input.json", "a" * 64, "not-published"),),
-    )
+    manifest = SealedSourceManifestRef("generation:test", "d" * 64, "a" * 64, "b" * 64, 1)
     audit = AuditRepository.for_archive_root(tmp_path)
     principal = MutationPrincipal("actor:test", frozenset({"read"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:test", principal.actor_ref, "f" * 64, "ingest")
@@ -231,7 +273,13 @@ def test_malformed_runtime_authority_never_prepares_source_manifest(tmp_path: Pa
     publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest("generation:bad", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),))
+    manifest = prepared_ingest_manifest(
+        tmp_path,
+        "generation:bad",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        publisher_id=publisher.publisher_id,
+    )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
     plan = ingest_plan(
@@ -265,8 +313,13 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest(
-        "generation:good", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),), "codex"
+    manifest = prepared_ingest_manifest(
+        tmp_path,
+        "generation:good",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        "codex",
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
@@ -332,7 +385,12 @@ def test_source_name_changes_accepted_manifest_and_preview_identity(frozen_clock
             now_ms=int(frozen_clock.time() * 1000),
             expires_at_ms=int(frozen_clock.time() * 1000) + 300_000,
         )
-        for manifest in (unnamed, named, another)
+        for manifest in (
+            SealedSourceManifestRef(
+                m.source_generation_id, m.enumeration_fingerprint, m.manifest_digest, "b" * 64, 1, m.source_name
+            )
+            for m in (unnamed, named, another)
+        )
     ]
     assert len({plan.plan_hash for plan in plans}) == 3
 
@@ -346,8 +404,12 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
     publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = FrozenSourceManifest(
-        "generation:normal", "d" * 64, (FrozenSourceInput("in", "/in", blob_hash, receipt),)
+    manifest = prepared_ingest_manifest(
+        tmp_path,
+        "generation:normal",
+        "d" * 64,
+        (FrozenSourceInput("in", "/in", blob_hash, receipt),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     now_ms = int(frozen_clock.time() * 1000)
@@ -403,10 +465,12 @@ def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp
     publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = FrozenSourceManifest(
+    manifest = prepared_ingest_manifest(
+        tmp_path,
         "source-generation:wedge",
         "d" * 64,
         (FrozenSourceInput("input.json", "/synthetic/input.json", blob_hash, publication_id),),
+        publisher_id=publisher.publisher_id,
     )
     principal = MutationPrincipal("actor:test", frozenset({"archive.ingest"}), "cli", "user")
     binding = MachineRequestBinding("archive:test", "request:wedge", principal.actor_ref, "f" * 64, "ingest")

@@ -10,6 +10,7 @@ from typing import Any, NoReturn, cast
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon import embedding_backlog, embedding_owner
 from polylogue.daemon.derivation import (
     BaseDerivation,
@@ -22,7 +23,6 @@ from polylogue.daemon.derivation import (
     WorkCounters,
     converge,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 

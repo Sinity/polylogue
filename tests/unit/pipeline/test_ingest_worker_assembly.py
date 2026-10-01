@@ -777,22 +777,39 @@ def _resolved_library_names(archive_root: Path, zip_path: Path) -> tuple[str | N
     """The asset name live assembly and retained replay each resolve."""
     import sqlite3
 
+    from polylogue.archive.revision_authority import raw_receipt_order_sql
     from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
     from polylogue.sources.retained_assembly import retained_chatgpt_sidecars
+    from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_captured_zip_coordinate
 
     live_index = ChatGPTAssemblySpec().discover_sidecars([zip_path])["chatgpt_asset_index"]
     conn = sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
     try:
+        row = conn.execute(
+            "SELECT r.raw_id FROM raw_sessions r WHERE r.source_path=? ORDER BY "
+            + raw_receipt_order_sql("r")
+            + " DESC LIMIT 1",
+            (f"{zip_path}:conversations.json",),
+        ).fetchone()
+        assert row is not None
+        coordinate = read_raw_captured_zip_coordinate(conn, str(row[0]))
+        assert coordinate is not None
         retained = retained_chatgpt_sidecars(
             conn,
             BlobStore(archive_root / "blob"),
             session_source_path=f"{zip_path}:conversations.json",
+            captured_zip_coordinate=coordinate,
         )
     finally:
         conn.close()
-    live = live_index.resolve_dat(_CHATGPT_ASSET_ID)
-    replayed = retained["chatgpt_asset_index"].resolve_dat(_CHATGPT_ASSET_ID)
-    return (live.name if live else None, replayed.name if replayed else None)
+    retained_index = retained["chatgpt_asset_index"]
+    try:
+        live = live_index.resolve_dat(_CHATGPT_ASSET_ID)
+        replayed = retained_index.resolve_dat(_CHATGPT_ASSET_ID)
+        return (live.name if live else None, replayed.name if replayed else None)
+    finally:
+        retained_index.close()
+        live_index.close()
 
 
 @pytest.mark.asyncio
@@ -826,9 +843,8 @@ async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_st
 async def test_source_walk_stamps_one_acquisition_time_per_zip_pass(tmp_path: Path) -> None:
     """Every member of one ZIP pass carries the pass's acquisition time.
 
-    Retained replay ranks a path's observations by acquisition time and binds
-    the lowest member ordinal within one time, so duplicate members of one
-    export must not be ordered by the moment each happened to be read.
+    The timestamp describes acquisition only. Exact completed Source item
+    membership establishes duplicate-member grouping independently of clocks.
 
     Anti-vacuity: stamp each record with its own clock in
     ``iter_raw_record_stream`` and the two ``library_files.json`` members get

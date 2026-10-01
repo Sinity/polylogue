@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class MessageOwnerCoordinate:
-    """Private linkage between a parsed attachment and its message.
+    """Private linkage between an attachment or event and its message.
 
     ``stable_key`` carries reorder-stable provider evidence when the parser
     has it. ``position`` and ``variant_index`` are the complete transport
@@ -36,7 +36,7 @@ class MessageOwnerCoordinate:
 
 
 class MessageOwnerAmbiguityError(ValueError):
-    """Raised when an attachment owner cannot be resolved without guessing."""
+    """Raised when a message occurrence cannot be resolved without guessing."""
 
 
 __all__ = ["MessageOwnerAmbiguityError", "MessageOwnerCoordinate"]

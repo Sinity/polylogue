@@ -29,6 +29,7 @@ import pytest
 # before any test can patch the class it binds.
 import polylogue.operations.raw_observation_derivation as _raw_observation_derivation  # noqa: F401
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.derivation import DerivationFrame
 from polylogue.daemon.intake import (
     UNMEASURABLE_INTAKE_COST_BYTES,
@@ -1511,6 +1512,9 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
     calls: list[tuple[str | None, int]] = []
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -1561,6 +1565,9 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
         )
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -1640,6 +1647,9 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
     materialized: set[str] = set()
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -1691,6 +1701,9 @@ def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
     materialized: set[str] = set()
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         # ``raw_observation_derivation`` binds this at import time.
         recipe_version = "recipe-v1"
 
@@ -1775,6 +1788,9 @@ def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
     calls: list[tuple[str | None, int]] = []
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 
@@ -2354,6 +2370,9 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
     cursors: list[str | None] = []
 
     class FakeRawObservationDerivation:
+        def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:
+            return {}
+
         def __init__(self, *_args: object, **_kwargs: object) -> None:
             pass
 

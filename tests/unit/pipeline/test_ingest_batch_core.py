@@ -31,7 +31,7 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.index_writer import write_fixture_ingest_payload
 
@@ -178,18 +178,19 @@ def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: 
                 acquired_at_ms=1_767_000_000_500,
             )
 
-    prepared = ingest_batch_core._prepare_ingest_unit_sync(
-        second_raw_id,
-        db_path=root / "index.db",
-        archive_root=root,
-        validation_mode="strict",
-        publication_mode=PublicationMode.OFF,
-        measure_ingest_result_size=False,
-    )
-    assert prepared is not None
-    assert second_raw_id in {str(row[-1]) for row in prepared.drive_revision_updates}
-
     with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+        prepared = ingest_batch_core._prepare_ingest_unit_sync(
+            second_raw_id,
+            db_path=root / "index.db",
+            archive_root=root,
+            validation_mode="strict",
+            publication_mode=PublicationMode.OFF,
+            measure_ingest_result_size=False,
+            reference_seal=seal,
+        )
+        assert prepared is not None
+        assert second_raw_id in {str(row[-1]) for row in prepared.drive_revision_updates}
+
         original_version = seal.observer_version("source")
         with write_lease("test.drive-prepared-publication", archive_root=root):
             ingest_batch_core._publish_prepared_drive_revision_updates(prepared, root, seal)
@@ -198,6 +199,48 @@ def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: 
                 with seal.mutation_scope(conn):
                     pass
         assert seal.observer_version("source") != original_version
+
+
+@pytest.mark.parametrize("during_parse", [False, True])
+def test_ingest_preparation_rejects_changes_since_its_original_seal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, during_parse: bool
+) -> None:
+    """A Source commit before or during compute cannot become a fresh baseline."""
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+
+    def acquire(revision: int) -> str:
+        with write_lease("test.sealed-ingest-acquire", archive_root=root):
+            with ArchiveStore.open_existing(root, read_only=False) as archive:
+                return archive.write_raw_payload(
+                    provider=Provider.GEMINI,
+                    payload=json.dumps(_drive_revision_payload(revision)).encode(),
+                    source_path="Google AI Studio/chat.json",
+                    acquired_at_ms=1_767_000_000_000 + revision,
+                )
+
+    raw_id = acquire(0)
+    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
+        if during_parse:
+            original = ingest_batch_core._iter_ingest_results_sync
+
+            def parse_then_change(*args, **kwargs):
+                yield from original(*args, **kwargs)
+                acquire(1)
+
+            monkeypatch.setattr(ingest_batch_core, "_iter_ingest_results_sync", parse_then_change)
+        else:
+            acquire(1)
+        with pytest.raises(ReferenceSealStaleError):
+            ingest_batch_core._prepare_ingest_unit_sync(
+                raw_id,
+                db_path=root / "index.db",
+                archive_root=root,
+                validation_mode="strict",
+                publication_mode=PublicationMode.OFF,
+                measure_ingest_result_size=False,
+                reference_seal=seal,
+            )
 
 
 def test_drive_cohort_blob_cache_leaves_lineage_bit_identical(tmp_path: Path) -> None:

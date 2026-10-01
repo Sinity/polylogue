@@ -342,7 +342,7 @@ Every request the daemon executes carries an admission class:
 `interactive-read` for reads, `control` for routes holding the writer lease,
 `incremental-background` and `bulk-candidate` for work behind the interactive
 surface. One bounded scheduler admits them all
-(`polylogue/daemon/execution.py`).
+(`polylogue/core/compute.py`).
 
 Each class holds a reserve of work units and worker slots that no other class
 may take, so bulk work cannot consume the capacity an interactive read or a
@@ -858,30 +858,28 @@ See `polylogue/config.py` (`judgment_automation_enabled`/`_interval_s`/
 `_batch_limit`/`_policy`) and [configuration.md](configuration.md) for the
 full key reference.
 
-### Free-Threaded (3.14t) Parse Parallelism
+### Shared pure compute
 
-Retained-raw census parse (`stream_retained_raws` in
-`polylogue/sources/revision_backfill.py`) dispatches `census_parse_worker`
-onto a bounded `ThreadPoolExecutor` only when the caller asks for more than
-one worker and `parallel_threads_effective()`
-(`polylogue/pipeline/services/process_pool.py`) reports a genuinely
-free-threaded interpreter (`sys._is_gil_enabled()` is false). On a standard
-GIL build it parses sequentially — polylogue-7mtf's control run measured
-GIL-build parse threads at 0.93x-0.96x (no win, pure lock overhead) while
-inflating a *concurrent* SQLite writer thread's commit latency ~5000x, so
-threads must never engage under the GIL. `polylogued.service` runs on the
-free-threaded `polylogue-freethreaded` (`python3.14t`) package build in
-production.
+CPython 3.14t is the production runtime. Pure parsing, source evidence
+collection, validation, retained preparation and insight calculation use the
+process-wide `BoundedComputeAdapter` in `polylogue/core/compute.py`. Every
+submitted unit declares its admission class and estimated bytes; the same
+scheduler reserves capacity for control, interactive reads and background
+work. Caller window settings narrow outstanding units without creating
+another executor. Nested pure units run synchronously under their parent's
+reservation, including on a one-worker adapter.
 
-**Measured evidence** (`tests/benchmarks/test_parse_stage_thread_scaling.py`,
-run against a synthetic 240-raw/~80KB-avg Codex corpus on this host's
-free-threaded `python3.14t` build): sequential parse 0.19s vs
-thread-parallel parse (16 workers) 0.031s — **6.13x** wall-clock speedup,
-consistent with polylogue-7mtf's own 3.9x-9.6x (w=4..16) control-run range.
-Re-run with `pytest tests/benchmarks/test_parse_stage_thread_scaling.py
---benchmark-enable -p no:xdist -v -s` against
-`POLYLOGUE_ARCHIVE_ROOT` pointed at a scratch directory (never the live
-archive) to reproduce.
+Cancellation is cooperative at record and byte-chunk boundaries. An accepted
+unit keeps its physical future and reservation until its work and native SQL
+cleanup settle on the creating worker. A failed native close remains visible
+in the adapter's settlement inventory; explicit retry or shutdown requests
+cleanup on that worker. Caller scratch remains owned until this drain ends.
+Elapsed stall reports do not turn slow valid work into a parse failure.
+
+The separate archive read adapter owns already-admitted SQLite I/O and its
+native handles. Observation, transport and control workers retain their
+specific I/O duties. Runtime capacity measurements are tracked separately
+from these ownership and admission contracts.
 
 ### SQLite memory budget
 

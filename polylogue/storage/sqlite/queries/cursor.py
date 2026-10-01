@@ -9,7 +9,6 @@ cursor fields (byte offsets, fingerprints, record counts) the daemon manages.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,7 +24,9 @@ async def get_known_source_cursors(
 ) -> dict[str, dict[str, object]]:
     """Return {source_path: {st_dev, st_ino, st_size, mtime_ns}} for cursor tracking."""
     result: dict[str, dict[str, object]] = {}
-    cursor = await conn.execute("SELECT source_path, st_dev, st_ino, stat_size, mtime_ns FROM ingest_cursor")
+    cursor = await conn.execute(
+        "SELECT source_path, st_dev, st_ino, stat_size, mtime_ns, origin, captured_profile_key FROM ingest_cursor"
+    )
     while True:
         rows = list(await cursor.fetchmany(1000))
         if not rows:
@@ -37,6 +38,8 @@ async def get_known_source_cursors(
                 ("st_ino", "st_ino"),
                 ("st_size", "stat_size"),
                 ("mtime_ns", "mtime_ns"),
+                ("origin", "origin"),
+                ("captured_profile_key", "captured_profile_key"),
             ):
                 val = row[db_col]
                 if val is not None:
@@ -50,6 +53,8 @@ async def upsert_source_file_cursor(
     conn: aiosqlite.Connection,
     source_path: str,
     *,
+    canonical_source_path: str | None = None,
+    captured_profile_key: str | None = None,
     st_dev: int | None = None,
     st_ino: int | None = None,
     st_size: int | None = None,
@@ -59,17 +64,18 @@ async def upsert_source_file_cursor(
     """Upsert the stat columns of one ``ingest_cursor`` row."""
     await conn.execute(
         """
-        INSERT INTO ingest_cursor (source_path, canonical_source_path, st_dev, st_ino, stat_size, mtime_ns, updated_at_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO ingest_cursor (source_path, canonical_source_path, captured_profile_key, st_dev, st_ino, stat_size, mtime_ns, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
             canonical_source_path = EXCLUDED.canonical_source_path,
+            captured_profile_key = EXCLUDED.captured_profile_key,
             st_dev = COALESCE(EXCLUDED.st_dev, ingest_cursor.st_dev),
             st_ino = COALESCE(EXCLUDED.st_ino, ingest_cursor.st_ino),
             stat_size = COALESCE(EXCLUDED.stat_size, ingest_cursor.stat_size),
             mtime_ns = COALESCE(EXCLUDED.mtime_ns, ingest_cursor.mtime_ns),
             updated_at_ms = EXCLUDED.updated_at_ms
         """,
-        (source_path, str(Path(source_path).resolve()), st_dev, st_ino, st_size, mtime_ns, _now_ms()),
+        (source_path, canonical_source_path, captured_profile_key, st_dev, st_ino, st_size, mtime_ns, _now_ms()),
     )
     if transaction_depth == 0:
         await conn.commit()

@@ -101,7 +101,7 @@ def _run_spill_load_pass(
 
         with (
             ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-            _ParsedSessionSpill(archive_root, max_cached_payload_bytes=_SPILL_CACHE_BYTES) as spill,
+            _ParsedSessionSpill(archive_root) as spill,
         ):
             return _census_then_reload(archive, spill, small_raw_ids, whale_raw_id)
     finally:
@@ -222,7 +222,7 @@ def test_whale_exceeding_whale_ceiling_falls_back_to_spill(tmp_path: Path, monke
 
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        _ParsedSessionSpill(archive_root, max_cached_payload_bytes=_SPILL_CACHE_BYTES) as spill,
+        _ParsedSessionSpill(archive_root) as spill,
     ):
         sessions, payload_bytes, _kind = _parse_retained_raw(archive, whale_raw_id)
         spill.add(whale_raw_id, sessions, payload_bytes=payload_bytes)

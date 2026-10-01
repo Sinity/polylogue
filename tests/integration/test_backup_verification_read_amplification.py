@@ -5,8 +5,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.operations import archive_backup as backup_mod
 from polylogue.operations.archive_backup import backup_archive
+from polylogue.storage import backup_package as backup_mod
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.backup_read_counter import backup_verification_read_counter
 from tests.infra.storage_records import db_setup

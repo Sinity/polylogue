@@ -20,6 +20,7 @@ from polylogue.sources.acquisition_boundary import refuse_foreign_path
 from polylogue.sources.dispatch import ForeignOriginContentError, detect_provider
 from polylogue.sources.live.batch_support import _jsonl_provider_and_session_artifact
 from polylogue.sources.source_parsing import parse_one_source_path
+from tests.infra.source_builders import acquired_payloads
 
 _CODEX_ROLLOUT: JSONDocumentList = [
     {
@@ -212,7 +213,7 @@ def test_one_shot_acquisition_refuses_grouped_foreign_zip_members(tmp_path: Path
     import zipfile
 
     from polylogue.config import Source
-    from polylogue.sources.source_acquisition import iter_source_raw_data
+    from polylogue.sources.source_acquisition import iter_source_acquisition_records
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -223,10 +224,12 @@ def test_one_shot_acquisition_refuses_grouped_foreign_zip_members(tmp_path: Path
 
     cursor_state: CursorStatePayload = {"failed_count": 0, "failed_files": []}
     items = list(
-        iter_source_raw_data(
-            Source(name="claude-code", path=archive),
-            blob_store=BlobStore(tmp_path / "blobs"),
-            cursor_state=cursor_state,
+        acquired_payloads(
+            iter_source_acquisition_records(
+                Source(name="claude-code", path=archive),
+                blob_store=BlobStore(tmp_path / "blobs"),
+                cursor_state=cursor_state,
+            )
         )
     )
     assert [item.source_path for item in items] == [f"{archive}:b-claude.jsonl"]

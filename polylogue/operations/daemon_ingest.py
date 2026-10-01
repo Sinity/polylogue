@@ -10,7 +10,7 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from contextlib import closing
 from dataclasses import asdict, dataclass, field, replace
 from functools import partial
@@ -70,6 +70,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import (
@@ -128,13 +129,11 @@ class _ExcisedRecords:
     central-directory ordinal accounted as a refused disposition.
     """
 
-    coordinates: set[str] = field(default_factory=set)
-    members: dict[int, str] = field(default_factory=dict)
+    members: PickleSpool[tuple[int, str]] = field(default_factory=PickleSpool)
 
     def add(self, prepared: PreparedSourceRecord) -> None:
-        self.coordinates.add(prepared.member.record_coordinate)
         if prepared.member.entry_ordinal is not None:
-            self.members[prepared.member.entry_ordinal] = str(prepared.record.source_path)
+            self.members.append((prepared.member.entry_ordinal, str(prepared.record.source_path)))
 
     def record_member_dispositions(
         self, connection: sqlite3.Connection, *, source_generation_id: str, source_item_id: str, observed_at_ms: int
@@ -144,7 +143,7 @@ class _ExcisedRecords:
             record_source_item_member_disposition,
         )
 
-        for ordinal, member_name in sorted(self.members.items()):
+        for ordinal, member_name in self.members:
             admitted = connection.execute(
                 "SELECT 1 FROM source_item_raw_members m JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
                 "WHERE m.source_generation_id=? AND m.source_item_id=? AND c.entry_ordinal=?",
@@ -162,6 +161,9 @@ class _ExcisedRecords:
                     observed_at_ms=observed_at_ms,
                 )
 
+    def close(self) -> None:
+        self.members.close()
+
 
 def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
     """Parse one retained raw and apply its provider's session assembly.
@@ -173,7 +175,9 @@ def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[Pa
     """
     sessions = parse_retained_raw_sessions(archive, raw_id)
     provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-    return enrich_sessions_from_archive(archive, provider, source_path, sessions)
+    return enrich_sessions_from_archive(
+        archive, provider, source_path, sessions, captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id)
+    )
 
 
 class IngestStoppedError(RuntimeError):
@@ -773,7 +777,7 @@ class IngestExecution:
 
     async def enumerate_item(
         self, generation: RetainedSourceGeneration, item: RetainedSourceInput
-    ) -> tuple[tuple[int, ...], int] | None:
+    ) -> tuple[range, int] | None:
         if item.enumeration_complete:
             return None
         assert self.record is not None
@@ -781,39 +785,34 @@ class IngestExecution:
         source_name = self.accepted_source_name()
         iterator = enumerate_ingest_input(
             item,
+            enumeration_fingerprint=generation.enumeration_fingerprint,
             source_generation_id=generation.source_generation_id,
             publisher=self.publisher,
             acquired_at_ms=acquired_at_ms,
             check_stop=self.check_stop,
             source_name=source_name,
         )
-        coordinates: list[str] = []
-        member_ordinals: set[int] = set()
+        coordinates: PickleSpool[str] = PickleSpool()
         member_count: int | None = None
         published_terminal = False
-        excised = _ExcisedRecords()
+        excised: _ExcisedRecords | None = None
         try:
+            excised = _ExcisedRecords()
             current = await self.runtime.compute_phase(lambda: next(iterator, None))
             while current is not None:
                 self.check_stop()
                 following = await self.runtime.compute_phase(lambda: next(iterator, None))
-                if isinstance(current, PreparedSourceMemberDisposition):
-                    member_ordinals.add(current.entry_ordinal)
-                    member_count = current.member_count
-                else:
-                    coordinates.append(current.member.record_coordinate)
-                    if current.member.entry_ordinal is not None:
-                        member_ordinals.add(current.member.entry_ordinal)
-                    member_count = current.member_count
+                member_count = current.member_count
                 await self._publish_record(
                     generation,
                     item,
                     current,
-                    tuple(coordinates) if following is None else None,
+                    coordinates if following is None else None,
                     acquired_at_ms,
-                    tuple(sorted(member_ordinals)) if following is None else None,
+                    range(member_count) if following is None and member_count is not None else None,
                     member_count if following is None else None,
                     excised=excised,
+                    admitted_coordinates=coordinates,
                 )
                 published_terminal = following is None
                 current = following
@@ -821,9 +820,15 @@ class IngestExecution:
                 # The caller completes empty inputs in one writer transaction
                 # for the whole accepted input page. This keeps a large set of
                 # no-record files from paying a source connection per file.
-                return tuple(sorted(member_ordinals)), member_count if member_count is not None else 0
+                count = member_count if member_count is not None else 0
+                return range(count), count
         finally:
-            await self.runtime.compute_phase(iterator.close)
+            try:
+                await self.runtime.compute_phase(iterator.close)
+            finally:
+                if excised is not None:
+                    excised.close()
+                coordinates.close()
         return None
 
     async def _publish_record(
@@ -831,12 +836,13 @@ class IngestExecution:
         generation: RetainedSourceGeneration,
         item: RetainedSourceInput,
         prepared: PreparedSourceRecord | PreparedSourceMemberDisposition | None,
-        completed_coordinates: tuple[str, ...] | None,
+        completed_coordinates: Iterable[str] | None,
         observed_at_ms: int,
-        completed_member_ordinals: tuple[int, ...] | None = None,
+        completed_member_ordinals: Iterable[int] | None = None,
         member_count: int | None = None,
         *,
         excised: _ExcisedRecords,
+        admitted_coordinates: PickleSpool[str],
     ) -> None:
         def publish(connection: sqlite3.Connection) -> None:
             if isinstance(prepared, PreparedSourceMemberDisposition):
@@ -858,6 +864,7 @@ class IngestExecution:
             elif prepared is not None:
                 try:
                     execute_source_item_admission(connection, prepared.admission, prepared.member)
+                    admitted_coordinates.append(prepared.member.record_coordinate)
                 except ContentExcisedError:
                     # The archive forgets on purpose: durably excised bytes are
                     # a skip, not a failed ingest. The admission savepoint left
@@ -879,10 +886,11 @@ class IngestExecution:
                     source_generation_id=generation.source_generation_id,
                     source_item_id=item.source_item_id,
                     enumeration_fingerprint=generation.enumeration_fingerprint,
-                    record_coordinates=tuple(c for c in completed_coordinates if c not in excised.coordinates),
+                    record_coordinates=completed_coordinates,
                     enumerated_at_ms=observed_at_ms,
                     member_ordinals=completed_member_ordinals,
                     member_count=member_count,
+                    check_stop=self.check_stop,
                 )
 
         await self.source_write(publish)
@@ -1578,7 +1586,7 @@ async def redrive_accepted_ingests(
     be driven at all terminalizes as failed. An owner shutdown leaves the run
     for the next owner. ``stop_requested`` receives the request id.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.operations.audit import AuditRepository
 
     # Claims are durable rows; the execution (its scratch state file and blob
@@ -1734,7 +1742,7 @@ async def drive_accepted_generation(
     cursor: tuple[str, str] | None = None
     seen = 0
     while page := await execution.input_page(generation, cursor):
-        empty: list[tuple[RetainedSourceInput, tuple[int, ...], int]] = []
+        empty: list[tuple[RetainedSourceInput, range, int]] = []
         for item in page:
             execution.check_stop()
             completion = await execution.enumerate_item(generation, item)
@@ -1747,7 +1755,7 @@ async def drive_accepted_generation(
             def complete_empty_page(
                 conn: sqlite3.Connection,
                 *,
-                batch: tuple[tuple[RetainedSourceInput, tuple[int, ...], int], ...] = tuple(empty),
+                batch: tuple[tuple[RetainedSourceInput, range, int], ...] = tuple(empty),
                 observed_at_ms: int = accepted_at_ms,
             ) -> None:
                 for item, ordinals, member_count in batch:
@@ -1760,6 +1768,7 @@ async def drive_accepted_generation(
                         enumerated_at_ms=observed_at_ms,
                         member_ordinals=ordinals,
                         member_count=member_count,
+                        check_stop=execution.check_stop,
                     )
 
             await execution.source_write(complete_empty_page)
@@ -1784,7 +1793,7 @@ async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
     """Accept immutable input before any raw admission, then settle each phase."""
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     started = monotonic()
     request = validate_execution_request(request, context)

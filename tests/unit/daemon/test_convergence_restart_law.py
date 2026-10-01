@@ -11,12 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
 from polylogue.daemon.derivation import Budget
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,

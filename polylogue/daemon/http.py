@@ -32,6 +32,12 @@ from polylogue.archive.query.transaction import (
     archive_read_context,
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
+from polylogue.core.compute import (
+    BoundedComputeAdapter,
+    DaemonBackpressureError,
+    DaemonOperationCancelled,
+    current_cancellation,
+)
 from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
@@ -40,12 +46,6 @@ from polylogue.daemon import workspace_routes
 from polylogue.daemon.events import (
     emit_daemon_event,
     get_latest_event_id,
-)
-from polylogue.daemon.execution import (
-    BoundedComputeAdapter,
-    DaemonBackpressureError,
-    DaemonOperationCancelled,
-    current_cancellation,
 )
 from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.route_contracts import (
@@ -1823,7 +1823,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
         kernel = getattr(self.server, "execution_kernel", None)
         if isinstance(kernel, BoundedComputeAdapter):
-            from polylogue.daemon.execution import CancellationHandle
+            from polylogue.core.compute import CancellationHandle
 
             cancellation = CancellationHandle()
             with log_span(
@@ -5455,9 +5455,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         assert source is not None
 
-        from polylogue.sources.import_preflight import preflight_import_source
+        from polylogue.operations.import_operations import prepare_import_source_admission
 
-        preflight = preflight_import_source(source)
+        try:
+            admission = prepare_import_source_admission(source)
+        except (OSError, ValueError) as exc:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_source_proof", str(exc))
+            return
+        preflight = admission.preflight
         if not preflight.admissible:
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, preflight.error_code, preflight.summary())
             return
@@ -5469,11 +5474,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.operations.daemon_protocol import DaemonOperationRequest
         from polylogue.operations.import_operations import ImportRequest
 
+        if (
+            body.get("source_path", admission.request.source_path) != admission.request.source_path
+            or body.get("source_name", admission.request.source_name) != admission.request.source_name
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_source_declaration")
+            return
         try:
             request = ImportRequest.model_validate(
                 {
-                    "source_path": body.get("source_path", body.get("path")),
-                    "source_name": source.name,
+                    "source_path": admission.request.source_path,
+                    "source_name": admission.request.source_name,
                     "staged_path": str(source),
                     "idempotency_key": body.get("idempotency_key"),
                 }
@@ -5490,6 +5501,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 payload={
                     "path": str(source),
                     "source_path": request.source_path,
+                    "source_name": request.source_name,
                     "idempotency_key": request.idempotency_key,
                 },
             ).to_dict()

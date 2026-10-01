@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from polylogue.sources.detection_projection import DetectorProjection
+
 #: Type tokens specific enough to Claude Code's own record vocabulary that
 #: their bare presence is sufficient evidence on its own.
 _CODE_ONLY_TYPES = frozenset(
@@ -57,3 +59,12 @@ def looks_like_code(payload: Sequence[object]) -> bool:
 
 
 __all__ = ["looks_like_code"]
+
+
+def detection_projection() -> DetectorProjection:
+    """Keep envelope markers exactly; consume every other field and record."""
+    fields: dict[str, DetectorProjection | None] = dict.fromkeys(
+        (*_STRONG_SESSION_KEYS, *_AMBIGUOUS_TYPE_ENVELOPE_MARKERS)
+    )
+    fields["type"] = DetectorProjection()
+    return DetectorProjection(fields=fields)

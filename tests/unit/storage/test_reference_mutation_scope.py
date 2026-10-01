@@ -687,6 +687,56 @@ def test_seal_construction_failure_retains_primary_and_unsettled_native_child(
                 seal.close()
 
 
+@pytest.mark.parametrize("route", ["custom_cursor", "executemany", "executescript", "native_context"])
+def test_known_source_permit_rejects_inherited_child_using_preexisting_handle(tmp_path: Path, route: str) -> None:
+    import asyncio
+
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+
+    with write_lease("test.source-bootstrap", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        connection = open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)
+        connection.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+        connection.execute("INSERT INTO authority_control VALUES ('retained', 'original')")
+        connection.commit()
+
+    async def scenario() -> None:
+        async with async_write_lease("test.source-permit", archive_root=tmp_path):
+            with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+                permit = seal.prepare_known_source_mutation("authority_control", ("value",), (), key_column="key")
+                with permit.hold_authority():
+
+                    async def child() -> None:
+                        if route == "custom_cursor":
+                            with closing(connection.cursor(factory=sqlite3.Cursor)) as cursor:
+                                cursor.execute("UPDATE authority_control SET value = 'wrong'")
+                        elif route == "executemany":
+                            connection.executemany("UPDATE authority_control SET value = ?", [("wrong",)])
+                        elif route == "executescript":
+                            connection.executescript("UPDATE authority_control SET value = 'wrong'; COMMIT;")
+                        else:
+                            with connection:
+                                connection.execute("UPDATE authority_control SET value = 'wrong'")
+
+                    with pytest.raises(sqlite3.DatabaseError):
+                        await asyncio.create_task(child())
+                    connection.rollback()
+                    assert connection.execute("SELECT value FROM authority_control").fetchone()[0] == "original"
+
+    try:
+        asyncio.run(scenario())
+        # The same persistent handle can belong to a later legitimate owner;
+        # its constructor's retired lease is not permanent SQL authority.
+        with write_lease("test.source-successor", archive_root=tmp_path):
+            connection.execute("UPDATE authority_control SET value = 'successor'")
+            connection.commit()
+            assert connection.execute("SELECT value FROM authority_control").fetchone()[0] == "successor"
+    finally:
+        connection.close()
+
+
 @pytest.mark.parametrize("persistent", [False, True])
 def test_inactive_scope_reader_settles_once_through_its_actual_store_census(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, persistent: bool
@@ -1029,3 +1079,97 @@ async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
         assert observations == [frozenset()]
     finally:
         assert await coordinator.shutdown()
+
+
+@pytest.mark.parametrize("commit_route", ["explicit", "native_context"])
+def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: Path, commit_route: str) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-receipt", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.execute("INSERT INTO authority_control VALUES ('selected', 'original')")
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_source_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            )
+            with permit.hold_authority(), permit.source_connection() as source:
+                if commit_route == "native_context":
+                    with source:
+                        source.execute("BEGIN IMMEDIATE")
+                        source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
+                        permit.allow_commit(source)
+                else:
+                    source.execute("BEGIN IMMEDIATE")
+                    source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
+                    permit.allow_commit(source)
+                    source.commit()
+                seal.accept_known_source_commit(permit.committed())
+            seal.validate_observers_current()
+            assert seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "accepted"
+
+
+def test_known_source_rollback_cannot_become_a_successful_receipt(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-rollback", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.execute("INSERT INTO authority_control VALUES ('selected', 'original')")
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_source_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            )
+            with permit.hold_authority(), permit.source_connection() as source:
+                source.execute("BEGIN IMMEDIATE")
+                source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
+                permit.allow_commit(source)
+                source.rollback()
+                with pytest.raises(ReferenceSealError):
+                    permit.committed()
+                assert source.execute("SELECT value FROM authority_control").fetchone()[0] == "original"
+
+
+@pytest.mark.parametrize("route", ["connection", "custom_cursor", "executemany"])
+def test_known_source_exact_row_guard_survives_factory_profile_setup(tmp_path: Path, route: str) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-exact-row", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")
+            setup.executemany(
+                "INSERT INTO authority_control VALUES (?, ?)", [("selected", "original"), ("other", "retained")]
+            )
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_source_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            )
+            with permit.hold_authority():
+                with pytest.raises(ReferenceSealError):
+                    with permit.source_connection() as source:
+                        with pytest.raises(sqlite3.DatabaseError):
+                            source.execute("PRAGMA temp_store=DEFAULT")
+                        source.execute("BEGIN IMMEDIATE")
+                        sql = "UPDATE authority_control SET value = ? WHERE key = ?"
+                        if route == "custom_cursor":
+                            with closing(source.cursor(factory=sqlite3.Cursor)) as cursor:
+                                cursor.execute(sql, ("accepted", "other"))
+                        elif route == "executemany":
+                            source.executemany(sql, [("accepted", "other")])
+                        else:
+                            source.execute(sql, ("accepted", "other"))
+                assert (
+                    seal.observer("source")
+                    .execute("SELECT value FROM authority_control WHERE key='other'")
+                    .fetchone()[0]
+                    == "retained"
+                )

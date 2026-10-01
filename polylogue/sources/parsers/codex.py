@@ -30,6 +30,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
+from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.providers.codex import CodexRecord
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -5128,3 +5129,17 @@ def parse_stream(
     event_sink: MutableSequence[ParsedSessionEvent] | None = None,
 ) -> ParsedSession:
     return _parse_records(records, fallback_id, message_sink=message_sink, event_sink=event_sink)
+
+
+def detection_projection() -> DetectorProjection:
+    """Preserve typed record admission without retaining payload or block bodies."""
+    scalar = DetectorProjection()
+    content = DetectorProjection(item=scalar, array_fold="all", array_predicate=lambda item: isinstance(item, dict))
+    return DetectorProjection(
+        fields={
+            **dict.fromkeys(("type", "record_type", "role", "id", "instructions", "payload", "timestamp"), scalar),
+            "content": content,
+            "git": DetectorProjection(fields=dict.fromkeys(("commit_hash", "branch", "repository_url"), scalar)),
+            "message": None,
+        }
+    )

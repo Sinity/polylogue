@@ -20,6 +20,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -202,7 +203,6 @@ def test_a_second_write_of_one_session_under_fresh_mode_is_refused(tmp_path: Pat
 
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedSession
-    from tests.infra.index_writer import write_fixture_index_session
 
     session = ParsedSession(
         source_name=Provider.CODEX,

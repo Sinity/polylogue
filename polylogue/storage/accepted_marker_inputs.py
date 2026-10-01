@@ -454,22 +454,43 @@ async def finalize_pending_accepted_marker_input(conn: _Connection, batch: Prepa
     return sequence
 
 
+_ACCEPTED_MARKER_PAGE_SQL = (
+    "SELECT s.stream_id, i.sequence, i.raw_id, i.identity, i.payload, i.payload_sha256 "
+    "FROM accepted_marker_inputs i CROSS JOIN accepted_marker_stream s "
+    "WHERE s.singleton = 1 AND i.sequence > ? ORDER BY i.sequence LIMIT ?"
+)
+
+
+def _marker_page_parameters(after_sequence: int, limit: int) -> tuple[int, int]:
+    if after_sequence < 0 or not 1 <= limit <= 1000:
+        raise ValueError("marker stream requires a nonnegative position and a limit from 1 to 1000")
+    return after_sequence, limit
+
+
+def _decode_marker_page(rows: Iterable[object]) -> tuple[AcceptedMarkerInput, ...]:
+    result = []
+    for row in rows:
+        stream_id, sequence, raw_id, identity, payload, digest = cast(tuple[str, int, str, str, object, str], row)
+        batch = PreparedAcceptedMarkerInput(raw_id, identity, _stored_payload(payload), digest)
+        _validate(batch)
+        result.append(AcceptedMarkerInput(stream_id, sequence, batch))
+    return tuple(result)
+
+
+def read_accepted_marker_inputs_sync(
+    conn: sqlite3.Connection, *, after_sequence: int = 0, limit: int = 100
+) -> tuple[AcceptedMarkerInput, ...]:
+    """Read on the native connection's owning thread, including inside an event loop."""
+    cursor = conn.execute(_ACCEPTED_MARKER_PAGE_SQL, _marker_page_parameters(after_sequence, limit))
+    try:
+        return _decode_marker_page(cursor.fetchall())
+    finally:
+        cursor.close()
+
+
 async def read_accepted_marker_inputs(
     conn: _Connection, *, after_sequence: int = 0, limit: int = 100
 ) -> tuple[AcceptedMarkerInput, ...]:
     """Read a bounded, validated page without changing source or delivery state."""
-    if after_sequence < 0 or not 1 <= limit <= 1000:
-        raise ValueError("marker stream requires a nonnegative position and a limit from 1 to 1000")
-    cursor = await conn.execute(
-        "SELECT s.stream_id, i.sequence, i.raw_id, i.identity, i.payload, i.payload_sha256 "
-        "FROM accepted_marker_inputs i CROSS JOIN accepted_marker_stream s "
-        "WHERE s.singleton = 1 AND i.sequence > ? ORDER BY i.sequence LIMIT ?",
-        (after_sequence, limit),
-    )
-    result = []
-    for row in await cursor.fetchall():
-        stream_id, sequence, raw_id, identity, payload, digest = cast(tuple[str, int, str, str, bytes, str], row)
-        batch = PreparedAcceptedMarkerInput(raw_id, identity, payload, digest)
-        _validate(batch)
-        result.append(AcceptedMarkerInput(stream_id, sequence, batch))
-    return tuple(result)
+    cursor = await conn.execute(_ACCEPTED_MARKER_PAGE_SQL, _marker_page_parameters(after_sequence, limit))
+    return _decode_marker_page(await cursor.fetchall())

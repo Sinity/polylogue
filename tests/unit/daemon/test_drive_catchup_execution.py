@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import json
 import sqlite3
@@ -10,7 +11,7 @@ import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from types import SimpleNamespace
-from typing import IO
+from typing import IO, Any
 
 import pytest
 
@@ -82,6 +83,59 @@ def make_parser(
         repository, root, config, ingest_workers=1, execution=DriveCatchupExecution(coordinator) if phased else None
     )
     return parser, source, coordinator
+
+
+@pytest.mark.parametrize("worker_fails", [False, True])
+async def test_drive_prepare_cancellation_retains_its_one_worker_until_physical_drain(
+    tmp_path: Path, worker_fails: bool
+) -> None:
+    from polylogue.core.compute import BoundedComputeAdapter, current_cancellation
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    adapter = BoundedComputeAdapter(max_workers=1)
+    execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)
+    started = threading.Event()
+    cancellation_received = threading.Event()
+    release = threading.Event()
+
+    def prepare() -> str:
+        assert current_write_lease() is None
+        cancellation = current_cancellation()
+        assert cancellation is not None
+        cancellation.add_listener(cancellation_received.set)
+        started.set()
+        assert release.wait(15)
+        if worker_fails:
+            raise RuntimeError("synthetic failure after physical drain")
+        return "physically drained"
+
+    task = asyncio.create_task(execution.prepare(prepare))
+    try:
+        assert await asyncio.to_thread(started.wait, 15)
+        task.cancel()
+        assert await asyncio.to_thread(cancellation_received.wait, 15)
+        assert not task.done()
+        assert adapter.snapshot().active_units == 1
+        release.set()
+        if worker_fails:
+            with pytest.raises(builtins.BaseExceptionGroup) as raised:
+                await task
+            assert len(raised.value.exceptions) == 2
+            assert isinstance(raised.value.exceptions[0], asyncio.CancelledError)
+            assert isinstance(raised.value.exceptions[1], RuntimeError)
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert adapter.snapshot().active_units == 0
+        assert await execution.prepare(lambda: "successor") == "successor"
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        assert await coordinator.shutdown(timeout=30.0)
+        assert adapter.close(join_timeout_s=30.0) == ()
 
 
 @pytest.mark.parametrize("blocked_phase", ["download", "parser"])
@@ -434,27 +488,53 @@ async def test_prepared_publication_retains_failed_sql_on_its_original_compute_w
     Returning the compute slot or losing a seal during its constructor would
     make successor admission unable to settle the original SQLite handles.
     """
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriterSettlementError
+    from polylogue.storage import io_phase_metrics
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    class DriveSettlementConnection(ControlledConnection):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.owner = self.creator
+            self.allow_cleanup = threading.Event()
+            self.allow_cleanup.set()
+            self.calls: list[tuple[str, threading.Thread]] = []
+
+        def rollback(self) -> None:
+            self.calls.append(("rollback", threading.current_thread()))
+            assert threading.current_thread() is self.owner
+            if not self.allow_cleanup.is_set():
+                raise OSError("synthetic native rollback remains unsettled")
+            super().rollback()
+
+        def close(self) -> None:
+            self.calls.append(("close", threading.current_thread()))
+            assert threading.current_thread() is self.owner
+            if not self.allow_cleanup.is_set():
+                raise OSError("synthetic native close remains unsettled")
+            super().close()
 
     bootstrap_archive_root(tmp_path)
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     adapter = BoundedComputeAdapter(max_workers=1)
     execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)
-    handles: list[SettlementHandle] = []
+    handles: list[DriveSettlementConnection] = []
     original_threads: list[threading.Thread] = []
     read_references = PreparedIndexMutation._read_resolved_references
+    # Keep the actual factory, admission/profile hooks and Native registration.
+    monkeypatch.setattr(io_phase_metrics, "_MeasuredConnection", DriveSettlementConnection)
 
     def read_and_fail(seal: PreparedIndexMutation) -> None:
         read_references(seal)
-        handle = SettlementHandle(seal._observers["index"])
+        handle = seal._observers["index"]
+        assert isinstance(handle, DriveSettlementConnection)
+        handle.allow_cleanup.clear()
         handles.append(handle)
         original_threads.append(threading.current_thread())
-        seal._observers["index"] = handle  # type: ignore[assignment]
         if failure_phase == "prepare":
             raise RuntimeError("synthetic failure after observer acquisition")
 
@@ -468,9 +548,10 @@ async def test_prepared_publication_retains_failed_sql_on_its_original_compute_w
         store._enter_mutation_lease()
         store._conn.execute("BEGIN IMMEDIATE")
         store._conn.execute("SELECT COUNT(*) FROM sessions")
-        handle = SettlementHandle(store._conn)
+        handle = store._conn
+        assert isinstance(handle, DriveSettlementConnection)
+        handle.allow_cleanup.clear()
         handles.append(handle)
-        store._conn = handle  # type: ignore[assignment]
         store.close()
 
     try:
@@ -501,8 +582,8 @@ async def test_prepared_publication_cancellation_reaches_and_settles_the_referen
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Cancelling the owner stops its off-gate proof and closes every observer."""
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.compute_cancel import compute_cancel
-    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, _check_reference_cancellation
 
     bootstrap_archive_root(tmp_path)

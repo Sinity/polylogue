@@ -19,7 +19,12 @@ from typing import IO
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text, zip_member_coordinate
+from polylogue.core.raw_coordinates import (
+    MemberAddressingMode,
+    read_captured_zip_coordinate_receipt,
+    split_zip_member_text,
+    zip_member_coordinate,
+)
 from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.source_acquisition_components import (
@@ -191,14 +196,27 @@ def zip_reacquired_unit(
     coordinate = _zip_coordinate(row)
     hint_index = coordinate[1] if coordinate is not None else None
     hint_mode = _recorded_addressing_mode(row)
-    if split_zip_member_text(source_path) is None:
-        return None, "container_coordinate_missing"
-    # Only a prefix that is a real ZIP here is the container; a missing
-    # container or a non-ZIP prefix leaves the member unrecoverable.
-    located = zip_member_coordinate(source_path)
-    if located is None:
-        return None, "source_missing"
-    zip_path, member = located
+    receipt = row.get("captured_coordinate")
+    if receipt is not None:
+        if not isinstance(receipt, str):
+            raise ValueError("captured ZIP coordinate receipt must be text")
+        captured = read_captured_zip_coordinate_receipt(receipt)
+        if coordinate != (captured.entry_ordinal, captured.split_index):
+            return None, "container_coordinate_mismatch"
+        # Restoration relocates only the physical container and preserves this
+        # exact recorded suffix. Colons in either component are not separators
+        # to rediscover from the current filesystem.
+        suffix = ":" + captured.member_name
+        if not source_path.endswith(suffix):
+            return None, "container_coordinate_mismatch"
+        zip_path, member = Path(source_path[: -len(suffix)]), captured.member_name
+    else:
+        if split_zip_member_text(source_path) is None:
+            return None, "container_coordinate_missing"
+        located = zip_member_coordinate(source_path)
+        if located is None:
+            return None, "source_missing"
+        zip_path, member = located
     try:
         with zipfile.ZipFile(zip_path) as archive:
             central_directory = archive.infolist()

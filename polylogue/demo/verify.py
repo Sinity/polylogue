@@ -6,10 +6,10 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.query.transaction import run_archive_read_sync
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.scenarios import DEMO_CLAUDE_CODE_SESSION_ID, DEMO_HERMES_SESSION_ID, DEMO_SESSION_IDS
 from polylogue.sources.parsers.hermes_identity import (
     profile_key,
-    profile_root_for_artifact,
     qualified_session_id,
 )
 

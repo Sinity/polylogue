@@ -8,12 +8,12 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
 from polylogue.daemon.derivation import Budget, DerivationReport, DomainCursor, Outcome, PassCursor, WorkCounters
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
