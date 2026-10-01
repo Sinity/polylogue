@@ -265,7 +265,6 @@ def process_zip(
         _captured_zip_record,
         zip_acquisition_fingerprint,
         zip_member_admission,
-        zip_member_profile_identity,
     )
     from .source_staging import bind_source_input
 
@@ -293,7 +292,7 @@ def process_zip(
                 decoder_fingerprint=zip_acquisition_fingerprint(provider_hint),
                 entry_ordinal=entry_ordinal,
             )
-            namespace = zip_member_profile_identity(binding.captured_identity, name)
+            namespace = binding.captured_identity.member_profile_identity(name)
             profile = (
                 None
                 if namespace is None

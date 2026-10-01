@@ -40,7 +40,6 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_acquisition_components import (
     sniff_zip_provider,
     zip_member_admission,
-    zip_member_profile_identity,
 )
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.source_walk import _resolve_source_paths
@@ -595,7 +594,7 @@ def _explain_zip(
 
             for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path):
                 entry_provider = admission.entry_provider_hint(archive, info)
-                profile = zip_member_profile_identity(captured.captured_identity, info.filename)
+                profile = captured.captured_identity.member_profile_identity(info.filename)
                 profile_identity = None if profile is None else captured_hermes_profile_key(profile[0])
                 path_classification = classify_artifact_path(info.filename, provider=entry_provider)
                 decoded_session_artifact: ArtifactClassification | None = None
