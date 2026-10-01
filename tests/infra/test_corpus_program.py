@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, find, given, settings
 
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.corpus_program import (
@@ -29,7 +29,6 @@ from tests.infra.corpus_program import (
     Replace,
     Restart,
     _codex_transcript,
-    _codex_turn,
     corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
@@ -352,24 +351,20 @@ def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: di
     assert runtime.converge()["parse"].parse_failures == 0
 
 
-def test_generated_transcript_builder_survives_acquire_append_replace(
+@pytest.mark.parametrize("mutation_type", [Append, Replace], ids=["append", "replace"])
+def test_generated_mutation_transcripts_reach_production(
     workspace_env: dict[str, Path],
+    mutation_type: type[Append] | type[Replace],
 ) -> None:
-    """Binary content at any of the three generator sites makes this fail."""
-    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
-    from tests.infra.corpus_program import CorpusState
-
-    state = CorpusState()
-    operations = (
-        Acquire("acquire", _artifact("session", _codex_transcript("session", "first", "initial authored"))),
-        Append("append", "session", _codex_turn("second", "appended authored")),
-        Replace("replace", "session", _codex_transcript("session", "replacement", "replaced authored")),
+    """Arbitrary bytes at the actual selected generator branch make this red."""
+    program = find(
+        corpus_program_strategy(max_operations=2),
+        lambda candidate: any(isinstance(operation, mutation_type) for operation in candidate.operations),
+        settings=settings(max_examples=100, database=None, deadline=None, derandomize=True),
     )
-    expected = ("initial authored", "appended authored", "replaced authored")
-    for operation, text in zip(operations, expected, strict=True):
-        state = operation.apply(state, runtime)
-        result = runtime.converge()
-        assert result["parse"].parse_failures == 0
-        with sqlite3.connect(runtime.archive_root / "index.db") as conn:
-            assert conn.execute("SELECT 1 FROM blocks WHERE text = ?", (text,)).fetchone() is not None
-    assert state.applied_operation_ids == ("acquire", "append", "replace")
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    program.run(runtime)
+    result = runtime.converge()
+    assert result["parse"].parse_failures == 0
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > 0

@@ -17,11 +17,12 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
 
 if TYPE_CHECKING:
+    from polylogue.daemon.convergence import FileState
     from polylogue.pipeline.services.parsing_models import ParseResult
     from polylogue.pipeline.stage_models import AcquireResult
 
@@ -875,6 +876,11 @@ def corpus_program_schedule_strategy(operation_ids: Sequence[str]) -> Any:
     return st.permutations(ids)
 
 
+class CorpusConvergenceResult(TypedDict):
+    parse: ParseResult
+    convergence: dict[Path, FileState]
+
+
 class ProductionCorpusRuntime:
     """Adapter from corpus operations to the live archive production seams."""
 
@@ -891,7 +897,7 @@ class ProductionCorpusRuntime:
         if self._crashed:
             raise CorpusRuntimeCrashedError("runtime is crashed; apply Restart before the next effect")
 
-    def acquire(self, artifact: RawArtifact) -> object:
+    def acquire(self, artifact: RawArtifact) -> AcquireResult:
         self._ensure_running()
         from polylogue.config import Source
         from polylogue.pipeline.services.acquisition import AcquisitionService
@@ -905,7 +911,7 @@ class ProductionCorpusRuntime:
         path.write_bytes(wire_payload)
         source_name = "browser-capture" if artifact.attachments else artifact.source_name
 
-        async def run() -> object:
+        async def run() -> AcquireResult:
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
                 result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
@@ -967,7 +973,7 @@ class ProductionCorpusRuntime:
         self._crashed = False
         return None
 
-    def converge(self) -> object:
+    def converge(self) -> CorpusConvergenceResult:
         self._ensure_running()
         from polylogue.config import Config
         from polylogue.daemon.convergence import DaemonConverger
@@ -1004,7 +1010,7 @@ class ProductionCorpusRuntime:
             raise CorpusProgramError(f"convergence rejected: parse_failures={parse_result.parse_failures}")
         converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
         states = {path: converger.converge_file(path) for path in paths}
-        result = {"parse": parse_result, "convergence": states}
+        result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
         return result
 
@@ -1030,6 +1036,8 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     if len(sessions) != 1:
         raise CorpusProgramError("Attach requires exactly one parsed session")
     parsed = sessions[0]
+    if not parsed.messages:
+        raise CorpusProgramError("Attach requires authored turns")
     session_id = parsed.provider_session_id
     turns = [
         {
