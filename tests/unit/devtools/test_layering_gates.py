@@ -1031,13 +1031,13 @@ def test_production_writer_inventory_resolves_nested_and_class_method_names_in_t
     writer.write_text(
         writer.read_text(encoding="utf-8")
         + """
-class CollisionWriter:
+class _CollisionWriter:
     def add(self, conn):
         self.flush(conn)
     def flush(self, conn):
         conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
 
-class CollisionReader:
+class _CollisionReader:
     def flush(self):
         return "neutral"
 
@@ -1048,17 +1048,83 @@ def read_collision():
         return 1
     def flush():
         return depth()
-    reader = CollisionReader()
+    reader = _CollisionReader()
     reader.flush()
     return flush()
 
 def nested_collision_writer(conn):
     def flush():
-        CollisionWriter().add(conn)
+        _CollisionWriter().add(conn)
     flush()
 
-def typed_collision_writer(conn, writer: CollisionWriter):
+def typed_collision_writer(conn, writer: _CollisionWriter):
     writer.add(conn)
+
+def captured_collision_writer(conn):
+    writer = _CollisionWriter()
+    def flush():
+        writer.add(conn)
+    flush()
+
+def _send_collision(writer, conn):
+    writer.add(conn)
+
+def argument_collision_writer(conn):
+    _send_collision(_CollisionWriter(), conn)
+
+class _FieldWriter:
+    def __init__(self, /):
+        self.writer = _CollisionWriter()
+    def flush(self, conn, /):
+        self.writer.add(conn)
+
+def field_collision_writer(conn):
+    _FieldWriter().flush(conn)
+
+def _writer_factory() -> _CollisionWriter:
+    return _CollisionWriter()
+
+def factory_collision_writer(conn):
+    _writer_factory().add(conn)
+
+class _ConstructorWriter:
+    def __init__(self, conn, /):
+        conn.execute("INSERT INTO sessions(session_id) VALUES ('neutral')")
+
+def constructor_collision_writer(conn):
+    _ConstructorWriter(conn)
+
+def sql_scope_writer(conn):
+    sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+    def reader():
+        sql = "SELECT session_id FROM sessions"
+        return conn.execute(sql)
+    conn.execute(sql)
+    reader()
+
+_CAPTURED_SQL = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+
+def inherited_sql_writer(conn):
+    def flush():
+        conn.execute(_CAPTURED_SQL)
+    flush()
+
+class _ClassSqlReader:
+    sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+    @staticmethod
+    def read(conn):
+        sql = "SELECT session_id FROM sessions"
+        return conn.execute(sql)
+
+def class_sql_reader(conn):
+    return _ClassSqlReader.read(conn)
+
+def sql_scope_reader(conn):
+    sql = "SELECT session_id FROM sessions"
+    def unused_writer():
+        sql = "INSERT INTO sessions(session_id) VALUES ('neutral')"
+        conn.execute(sql)
+    return conn.execute(sql)
 """,
         encoding="utf-8",
     )
@@ -1073,6 +1139,18 @@ def typed_collision_writer(conn, writer: CollisionWriter):
     expected_names = mismatch["expected"]
     assert isinstance(observed_names, list) and isinstance(expected_names, list)
     observed = set(observed_names)
-    assert observed == set(expected_names) | {"nested_collision_writer", "typed_collision_writer"}
+    assert observed == set(expected_names) | {
+        "nested_collision_writer",
+        "typed_collision_writer",
+        "captured_collision_writer",
+        "argument_collision_writer",
+        "field_collision_writer",
+        "factory_collision_writer",
+        "constructor_collision_writer",
+        "sql_scope_writer",
+        "inherited_sql_writer",
+    }
     assert "read_collision" not in observed
+    assert "sql_scope_reader" not in observed
+    assert "class_sql_reader" not in observed
     assert not any("." in name for name in observed)

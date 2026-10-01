@@ -669,10 +669,19 @@ def _string_fragments(expression: ast.expr, values: dict[str, tuple[str, ...]] |
     return ()
 
 
-def _string_assignments(tree: ast.AST) -> dict[str, tuple[str, ...]]:
-    values: dict[str, tuple[str, ...]] = {}
+def _string_assignments(
+    tree: ast.AST, inherited: dict[str, tuple[str, ...]] | None = None
+) -> dict[str, tuple[str, ...]]:
+    values = dict(inherited or {})
+    for node in _function_scope_nodes(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    values.pop(target.id, None)
+        elif isinstance(node, ast.arg):
+            values.pop(node.arg, None)
     for _ in range(3):
-        for node in walk_module(tree):
+        for node in _function_scope_nodes(tree):
             if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
                 continue
             fragments = _string_fragments(node.value, values)
@@ -704,32 +713,77 @@ def _archive_table_tiers() -> dict[str, str]:
     return table_tiers
 
 
+def _scoped_mutation_calls(
+    tree: ast.AST, inherited: dict[str, tuple[str, ...]] | None = None
+) -> Iterator[tuple[ast.Call, str]]:
+    values = _string_assignments(tree, inherited)
+    for node in _function_scope_nodes(tree):
+        if isinstance(node, ast.Call) and (sql := _mutation_sql(node, values=values)) is not None:
+            yield node, sql
+
+    def children(node: ast.AST) -> Iterator[ast.AST]:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                yield child
+            else:
+                yield from children(child)
+
+    for child in children(tree):
+        yield from _scoped_mutation_calls(child, inherited if isinstance(tree, ast.ClassDef) else values)
+
+
 def _mutation_calls(tree: ast.AST) -> tuple[ast.Call, ...]:
-    values = _string_assignments(tree)
-    return tuple(
-        node
-        for node in walk_module(tree)
-        if isinstance(node, ast.Call) and _mutation_sql(node, values=values) is not None
-    )
+    return tuple(node for node, _ in _scoped_mutation_calls(tree))
 
 
 def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
-    values = _string_assignments(tree)
     table_tiers = _archive_table_tiers()
-    tiers: set[str] = set()
-    nodes = (
-        _function_scope_nodes(tree) if isinstance(tree, ast.FunctionDef | ast.AsyncFunctionDef) else walk_module(tree)
+    if isinstance(tree, ast.FunctionDef | ast.AsyncFunctionDef):
+        values = _string_assignments(tree)
+        sql_statements = (
+            sql
+            for node in _function_scope_nodes(tree)
+            if isinstance(node, ast.Call) and (sql := _mutation_sql(node, values=values)) is not None
+        )
+    else:
+        sql_statements = (sql for _, sql in _scoped_mutation_calls(tree))
+    return frozenset(
+        tier
+        for sql in sql_statements
+        if (table := _mutation_table(sql)) is not None and (tier := table_tiers.get(table)) is not None
     )
-    for node in nodes:
-        if not isinstance(node, ast.Call):
-            continue
-        sql = _mutation_sql(node, values=values)
-        if sql is None:
-            continue
-        table = _mutation_table(sql)
-        if table is not None and (tier := table_tiers.get(table)) is not None:
-            tiers.add(tier)
-    return frozenset(tiers)
+
+
+def _function_mutation_tiers(tree: ast.Module) -> dict[str, frozenset[str]]:
+    """Keep inherited SQL constants with their actual lexical body."""
+    table_tiers = _archive_table_tiers()
+    result: dict[str, frozenset[str]] = {}
+
+    def visit(node: ast.AST, scope: tuple[str, ...], inherited: dict[str, tuple[str, ...]]) -> None:
+        values = _string_assignments(node, inherited)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            tiers: set[str] = set()
+            for expression in _function_scope_nodes(node):
+                if (
+                    isinstance(expression, ast.Call)
+                    and (sql := _mutation_sql(expression, values=values)) is not None
+                    and (table := _mutation_table(sql)) is not None
+                    and (tier := table_tiers.get(table)) is not None
+                ):
+                    tiers.add(tier)
+            result[".".join(scope)] = frozenset(tiers)
+
+        def children(body: ast.AST) -> None:
+            for child in ast.iter_child_nodes(body):
+                if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                    visit(child, (*scope, child.name), inherited if isinstance(node, ast.ClassDef) else values)
+                else:
+                    children(child)
+
+        children(node)
+
+    visit(tree, (), {})
+    return result
 
 
 def _parse_writer_module_declaration(tree: ast.Module, *, file: str, marker: str) -> WriterModuleDeclaration | None:
@@ -850,34 +904,25 @@ def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
     )
 
 
-def _called_function_names(
+def _receiver_calls(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     qualified: str,
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
     classes: set[str],
-) -> set[str]:
-    """Resolve lexical helpers and methods only on their declared receiver type.
+    incoming: dict[str, dict[str, set[str]]],
+) -> dict[str, dict[str, set[str]]]:
+    """Carry evidenced receiver types through lexical capture and actual arguments."""
 
-    A set's ``add`` cannot authorize the unrelated ``Writer.add``. Constructor
-    assignments, annotated receivers, and ``self`` retain actual class methods
-    in the graph, while nested helpers resolve in their enclosing function.
-    """
-    lexical = [qualified]
-    parent = qualified.rpartition(".")[0]
-    while parent:
-        if parent in functions:
-            lexical.append(parent)
-        parent = parent.rpartition(".")[0]
-
-    def resolve(name: str) -> str:
-        for scope in lexical:
+    def resolve(name: str, scope: str) -> str:
+        while scope:
             candidate = f"{scope}.{name}"
             if candidate in functions or candidate in classes:
                 return candidate
+            scope = scope.rpartition(".")[0]
         return name
 
-    def annotation_types(annotation: ast.AST | None) -> set[str]:
+    def annotation_types(annotation: ast.AST | None, scope: str) -> set[str]:
         if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
             try:
                 annotation = ast.parse(annotation.value, mode="eval").body
@@ -887,57 +932,117 @@ def _called_function_names(
             {
                 resolved
                 for node in ast.walk(annotation)
-                if isinstance(node, ast.Name) and (resolved := resolve(node.id)) in classes
+                if isinstance(node, ast.Name) and (resolved := resolve(node.id, scope)) in classes
             }
             if annotation is not None
             else set()
         )
 
-    bindings: dict[str, set[str]] = {}
-    for argument in (*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs):
-        bindings[argument.arg] = annotation_types(argument.annotation)
-    enclosing = qualified.rpartition(".")[0]
-    if enclosing in classes and function.args.args:
-        bindings[function.args.args[0].arg] = {enclosing}
+    def bindings_for(name: str, visiting: set[str]) -> dict[str, set[str]]:
+        if name in visiting:
+            return {}
+        visiting = visiting | {name}
+        body = functions[name]
+        parent = name.rpartition(".")[0]
+        bindings = bindings_for(parent, visiting) if parent in functions else {}
+        arguments = (*body.args.posonlyargs, *body.args.args, *body.args.kwonlyargs)
+        for argument in arguments:
+            bindings[argument.arg] = annotation_types(argument.annotation, name) | incoming.get(name, {}).get(
+                argument.arg, set()
+            )
+        is_static = any(
+            isinstance(decorator, ast.Name) and decorator.id == "staticmethod" for decorator in body.decorator_list
+        )
+        if parent in classes and arguments and not is_static:
+            receiver = arguments[0].arg
+            bindings[receiver] = {parent}
+            initializer = f"{parent}.__init__"
+            if initializer in functions and initializer not in visiting and name != initializer:
+                initial = bindings_for(initializer, visiting)
+                initial_args = (*functions[initializer].args.posonlyargs, *functions[initializer].args.args)
+                if initial_args:
+                    prefix = initial_args[0].arg + "."
+                    for field, types in initial.items():
+                        if field.startswith(prefix):
+                            bindings[receiver + field[len(prefix) - 1 :]] = types
+        nodes = tuple(_function_scope_nodes(body))
+        # Local assignment shadows captured names even when its type is unknown.
+        for node in nodes:
+            targets = (
+                node.targets
+                if isinstance(node, ast.Assign)
+                else [node.target]
+                if isinstance(node, ast.AnnAssign)
+                else []
+            )
+            for target in targets:
+                bindings[ast.unparse(target)] = set()
+        for node in nodes:
+            if isinstance(node, ast.Assign):
+                types = value_types(node.value, name, bindings)
+                for target in node.targets:
+                    bindings[ast.unparse(target)].update(types)
+            elif isinstance(node, ast.AnnAssign):
+                types = annotation_types(node.annotation, name)
+                if node.value is not None:
+                    types.update(value_types(node.value, name, bindings))
+                bindings[ast.unparse(node.target)].update(types)
+        return bindings
 
-    def value_types(value: ast.AST) -> set[str]:
-        if isinstance(value, ast.Name) and (named_class := resolve(value.id)) in classes:
+    def value_types(value: ast.AST, scope: str, bindings: dict[str, set[str]]) -> set[str]:
+        if isinstance(value, ast.Name) and (named_class := resolve(value.id, scope)) in classes:
             return {named_class}
         if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
-            target = resolve(value.func.id)
-            if target in classes:
-                return {target}
-            called = functions.get(target)
+            called_name = resolve(value.func.id, scope)
+            if called_name in classes:
+                return {called_name}
+            called = functions.get(called_name)
             if called is not None:
-                return annotation_types(called.returns)
+                return annotation_types(called.returns, called_name)
         return bindings.get(ast.unparse(value), set())
 
-    nodes = tuple(_function_scope_nodes(function))
-    # Flow-insensitive union is conservative when separate branches construct
-    # different owned writers; an unrelated receiver never borrows a method.
-    for node in nodes:
-        if isinstance(node, ast.Assign):
-            types = value_types(node.value)
-            for target in node.targets:
-                bindings.setdefault(ast.unparse(target), set()).update(types)
-        elif isinstance(node, ast.AnnAssign):
-            types = annotation_types(node.annotation)
-            if node.value is not None:
-                types.update(value_types(node.value))
-            bindings.setdefault(ast.unparse(node.target), set()).update(types)
-
-    names: set[str] = set()
-    for node in nodes:
+    bindings = bindings_for(qualified, set())
+    calls: dict[str, dict[str, set[str]]] = {}
+    for node in _function_scope_nodes(function):
         if not isinstance(node, ast.Call):
             continue
+        targets: list[tuple[str, set[str] | None]] = []
         if isinstance(node.func, ast.Name):
-            names.add(resolve(node.func.id))
+            called_name = resolve(node.func.id, qualified)
+            targets.append((called_name, None))
+            if called_name in classes:
+                targets.extend((f"{called_name}.{method}", {called_name}) for method in ("__init__", "__new__"))
         elif isinstance(node.func, ast.Attribute):
-            for receiver in value_types(node.func.value):
-                target = f"{receiver}.{node.func.attr}"
-                if target in functions:
-                    names.add(target)
-    return names
+            targets.extend(
+                (f"{receiver}.{node.func.attr}", {receiver})
+                for receiver in value_types(node.func.value, qualified, bindings)
+            )
+        for called_name, receiver_types in targets:
+            supplied = calls.setdefault(called_name, {})
+            called = functions.get(called_name)
+            if called is None:
+                continue
+            positional = (*called.args.posonlyargs, *called.args.args)
+            offset = 0
+            if receiver_types is not None and positional:
+                supplied.setdefault(positional[0].arg, set()).update(receiver_types)
+                offset = 1
+            for argument, value in zip(positional[offset:], node.args, strict=False):
+                supplied.setdefault(argument.arg, set()).update(value_types(value, qualified, bindings))
+            for keyword in node.keywords:
+                if keyword.arg is not None:
+                    supplied.setdefault(keyword.arg, set()).update(value_types(keyword.value, qualified, bindings))
+    return calls
+
+
+def _called_function_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    qualified: str,
+    functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+    classes: set[str],
+) -> set[str]:
+    return set(_receiver_calls(function, qualified=qualified, functions=functions, classes=classes, incoming={}))
 
 
 def _entrypoint_tiers(
@@ -952,28 +1057,37 @@ def _entrypoint_tiers(
 ) -> frozenset[str]:
     functions = functions or _function_definitions(tree)
     imported_modules = imported_modules or _imported_writer_modules(tree)
-    direct_tiers = direct_tiers or {name: _mutation_tiers(function) for name, function in functions.items()}
+    direct_tiers = direct_tiers or _function_mutation_tiers(tree)
     classes = {
         name.rpartition(".")[0] for name in functions if "." in name and name.rpartition(".")[0] not in functions
     }
-    pending = [entrypoint]
-    visited: set[str] = set()
+    incoming: dict[str, dict[str, set[str]]] = {}
+    reached = {entrypoint}
     tiers: set[str] = set()
-    while pending:
-        name = pending.pop()
-        if name in visited:
-            continue
-        visited.add(name)
-        function = functions.get(name)
-        if function is None:
-            spec = specs.get(imported_modules.get(name, "")) if follow_imports else None
-            if spec is not None:
-                tiers.update(surface.tier for surface in spec.surfaces)
-            continue
-        tiers.update(direct_tiers[name])
-        for called_name in _called_function_names(function, qualified=name, functions=functions, classes=classes):
-            if called_name in functions or called_name in imported_modules:
-                pending.append(called_name)
+    # Facts grow only over this module's finite function/parameter/class sets.
+    changed = True
+    while changed:
+        changed = False
+        for name in tuple(reached):
+            function = functions.get(name)
+            if function is None:
+                spec = specs.get(imported_modules.get(name, "")) if follow_imports else None
+                if spec is not None:
+                    tiers.update(surface.tier for surface in spec.surfaces)
+                continue
+            tiers.update(direct_tiers[name])
+            calls = _receiver_calls(function, qualified=name, functions=functions, classes=classes, incoming=incoming)
+            for called_name, arguments in calls.items():
+                if called_name not in functions and called_name not in imported_modules:
+                    continue
+                if called_name not in reached:
+                    reached.add(called_name)
+                    changed = True
+                for argument, types in arguments.items():
+                    known = incoming.setdefault(called_name, {}).setdefault(argument, set())
+                    if not types.issubset(known):
+                        known.update(types)
+                        changed = True
     return frozenset(tiers)
 
 
@@ -1208,7 +1322,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
         functions = _function_definitions(tree)
         imported_modules = _imported_writer_modules(tree)
-        direct_tiers = {name: _mutation_tiers(function) for name, function in functions.items()}
+        direct_tiers = _function_mutation_tiers(tree)
 
         if len(declaration.tiers) > 1:
             if not _contract_is_audited(declaration, spec, policy):
@@ -1257,8 +1371,11 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
         observed_entrypoints = {
             name
             for name in functions
-            if "." not in name
-            and not name.startswith("_")
+            if all(not part.startswith("_") for part in name.split("."))
+            and not any(
+                parent in functions
+                for parent in (".".join(name.split(".")[:index]) for index in range(1, len(name.split("."))))
+            )
             and _entrypoint_tiers(
                 tree,
                 name,

@@ -49,7 +49,7 @@ writer_modules:
         - tier: index
           durability: rebuildable
           interruption: replayable
-      entrypoints: [delete_sessions]
+      entrypoints: [ArchiveStore.delete_sessions]
     - path: polylogue/storage/sqlite/archive_tiers/revision_governance.py
       surfaces:
         - tier: index
