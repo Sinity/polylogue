@@ -209,13 +209,8 @@ jobs:
           set -euo pipefail
           docker buildx imagetools inspect "${IMAGE}"
           docker pull --platform linux/amd64 "${IMAGE}"
-          if [[ "${{ matrix.target }}" == "runtime" ]]; then
-            version="$(docker run --rm --entrypoint polylogue "${IMAGE}" --version)"
-            revision="$(docker run --rm --entrypoint python "${IMAGE}" -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)')"
-          else
-            version="$(docker run --rm --entrypoint /usr/local/bin/polylogue "${IMAGE}" --version)"
-            revision="$(docker run --rm --entrypoint /usr/local/bin/python "${IMAGE}" -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)')"
-          fi
+          version="$(docker run --rm --entrypoint /opt/venv/bin/polylogue "${IMAGE}" --version)"
+          revision="$(docker run --rm --entrypoint /opt/venv/bin/python "${IMAGE}" -I -c 'from polylogue.version import VERSION_INFO; print(VERSION_INFO.commit)')"
           printf '%s\n' "${version}"
           grep -F -- "${EXPECTED_REVISION:0:8}" <<<"${version}"
           test "${revision}" = "${EXPECTED_REVISION}"
@@ -227,10 +222,4 @@ jobs:
           # Pick the first tag from the metadata-action output (sha-based).
           tag=$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | head -n1)
           echo "Smoking ${tag}"
-          if [[ "${{ matrix.target }}" == "runtime" ]]; then
-            docker run --rm --entrypoint polylogue "${tag}" --version
-            docker run --rm --entrypoint polylogued "${tag}" --help > /dev/null
-          else
-            # Distroless has no shell; entrypoint is polylogued itself.
-            docker run --rm --entrypoint /usr/local/bin/polylogue "${tag}" --version
-          fi
+          docker run --rm --entrypoint /opt/venv/bin/polylogue "${tag}" --version

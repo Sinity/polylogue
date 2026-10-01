@@ -21,7 +21,7 @@ services:
 
     # The default CMD already starts the daemon with HTTP API enabled on
     # 0.0.0.0:8766. Override it here if you need extra flags (e.g. embeddings).
-    # command: ["polylogued", "run", "--enable-api", "--api-host", "0.0.0.0",
+    # command: ["polylogued", "run", "--insecure-allow-remote", "--api-host", "0.0.0.0",
     #           "--api-port", "8766"]
 
     environment:

@@ -50,10 +50,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.workflow_sha }}
+      - name: Stage workflow-owned release tools
+        run: |
+          mkdir release-toolchain
+          cp packaging/*.txt packaging/smoke-installed.py devtools/verify_distribution_surface.py release-toolchain/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-tool-requirements
-          path: packaging/*.txt
+          path: release-toolchain/*
           if-no-files-found: error
 
   build:
@@ -123,7 +127,7 @@ jobs:
       - name: Install dev dependencies (frozen lockfile)
         run: uv sync --extra dev --group audit --frozen
       - name: Build wheel + sdist and smoke installed entrypoints
-        run: uv run devtools gate distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+        run: uv run python "${RUNNER_TEMP}/release-tools/verify_distribution_surface.py" --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir --installed-smoke-script "${RUNNER_TEMP}/release-tools/smoke-installed.py"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           UV_BUILD_CONSTRAINT: ${{ runner.temp }}/release-tools/hatchling.txt
@@ -246,26 +250,17 @@ jobs:
           wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           echo "Installing ${wheel}"
           python -m pip install "${wheel}"
-      - name: Smoke installed entrypoints against an empty XDG archive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-requirements
+          path: release-tools/
+      - name: Smoke installed entrypoints through the installed daemon
         shell: bash
-        env:
-          POLYLOGUE_FORCE_PLAIN: "1"
         run: |
-          # shellcheck disable=SC1091
-          source .venv-smoke/bin/activate
-          archive_root="${RUNNER_TEMP}/polylogue-archive"
-          mkdir -p "${archive_root}"
-          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
-          polylogue --version
-          polylogue --help > /dev/null
-          polylogued --help > /dev/null
-          polylogue-mcp --help > /dev/null
-          # `analyze` against an empty XDG archive must not crash on first-run
-          # (covers schema bootstrap on a fresh database).
-          polylogue --plain analyze
-          # `--plain analyze --count` is the smoke parity with gate distribution.
-          polylogue --plain analyze --count
-          python -m polylogue --version
+          .venv-smoke/bin/python -I release-tools/smoke-installed.py \
+            --python "${GITHUB_WORKSPACE}/.venv-smoke/bin/python" \
+            --bin-dir "${GITHUB_WORKSPACE}/.venv-smoke/bin" \
+            --work-dir "${RUNNER_TEMP}/installed-smoke"
 
   installed-smoke-hooks:
     # polylogue-hooks has no runtime dependencies, so this smoke installs the
@@ -355,13 +350,10 @@ jobs:
           python -m pip install --user --require-hashes -r release-tools/pipx.txt
           wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pipx install --suffix=-smoke "${wheel}"
-          archive_root="${RUNNER_TEMP}/polylogue-pipx-archive"
-          mkdir -p "${archive_root}"
-          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
-          "${PIPX_BIN_DIR}/polylogue-smoke" --version
-          "${PIPX_BIN_DIR}/polylogue-smoke" --plain analyze --count
-          "${PIPX_BIN_DIR}/polylogued-smoke" --help > /dev/null
-          "${PIPX_BIN_DIR}/polylogue-mcp-smoke" --help > /dev/null
+          python -I release-tools/smoke-installed.py \
+            --python "${PIPX_HOME}/venvs/polylogue-smoke/bin/python" \
+            --bin-dir "${PIPX_BIN_DIR}" --suffix=-smoke \
+            --work-dir "${RUNNER_TEMP}/pipx-smoke"
 
   installed-smoke-mcp:
     # polylogue-mcp is a thin wrapper that pins the matching polylogue release.

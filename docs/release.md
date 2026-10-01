@@ -258,6 +258,8 @@ by release-please or by hand — it triggers on any annotated `vX.Y.Z` tag.
 
 Update each exact root version in `packaging/<tool>.in`, then run
 `uv pip compile --universal --python-version 3.14 --generate-hashes packaging/<tool>.in --output-file packaging/<tool>.txt`.
+`packaging/smoke-installed.py` starts the installed daemon with watching and source catch-up disabled, uses an ephemeral API port and fresh archive/configuration, waits for its archive-scoped socket, and stops it on every exit. Both installed-wheel builds and the pipx smoke exercise daemon-backed queries through this harness. Workflow-owned verification scripts and locks stay separate from the immutable product source during recovery.
+
 The metadata checker, pipx smoke, SBOM generator, and isolated wheel builders
 consume these hashes. The SBOM tool runs separately from the runtime environment
 so its own dependencies are excluded.

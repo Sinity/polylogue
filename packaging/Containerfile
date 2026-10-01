@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# syntax=docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # Polylogue OCI image. Daemon-first multi-stage build.
 #
@@ -22,7 +22,7 @@
 # See docs/installation.md and docs/docker-compose.yaml for example invocations.
 
 # ---- builder ------------------------------------------------------------
-FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS builder
+FROM docker.io/library/python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -64,7 +64,7 @@ RUN uv build --no-build-isolation --python /opt/venv/bin/python --wheel --out-di
  && uv pip install --python /opt/venv/bin/python --no-deps /dist/*.whl
 
 # ---- runtime (default) --------------------------------------------------
-FROM python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS runtime
+FROM docker.io/library/python:3.14-slim-bookworm@sha256:82bc3c539b8813ada9d68c63b40158fa002f7f33de9bf3312a3dfdc0620dff56 AS runtime
 
 ARG POLYLOGUE_UID=10001
 ARG POLYLOGUE_GID=10001
@@ -113,19 +113,19 @@ VOLUME ["/data/archive", "/etc/polylogue"]
 EXPOSE 8766
 
 # Healthcheck hits the daemon HTTP API. The daemon must be started with
-# --enable-api (the default container CMD does this) for this to succeed.
+# keep the default API enabled for this to succeed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl --fail --silent --show-error \
       "http://127.0.0.1:${POLYLOGUE_DAEMON_API_PORT}/api/health" \
       > /dev/null || exit 1
 
 # tini reaps zombies and forwards signals; the daemon binary is PID 2.
-# --enable-api turns on the HTTP surface used by HEALTHCHECK.
+# The API is enabled by default and serves HEALTHCHECK.
 # --api-host 0.0.0.0 lets the host reach the API across the container boundary;
 # operators that want loopback-only should override the CMD.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["polylogued", "run", \
-     "--enable-api", \
+     "--insecure-allow-remote", \
      "--api-host", "0.0.0.0", \
      "--api-port", "8766"]
 
@@ -187,4 +187,4 @@ LABEL org.opencontainers.image.title="polylogue (distroless)" \
       org.opencontainers.image.vendor="Sinity"
 
 ENTRYPOINT ["/opt/venv/bin/polylogued"]
-CMD ["run", "--enable-api", "--api-host", "0.0.0.0", "--api-port", "8766"]
+CMD ["run", "--insecure-allow-remote", "--api-host", "0.0.0.0", "--api-port", "8766"]
