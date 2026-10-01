@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -2546,7 +2547,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         conn.commit()
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
-        readiness = status_module._fts_readiness_info()
+        readiness = completed_fts_readiness(archive_db, status_module._fts_readiness_info)
 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True, readiness
@@ -2575,7 +2576,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
-        readiness = status_module._fts_readiness_info()
+        readiness = completed_fts_readiness(archive_db, status_module._fts_readiness_info)
 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True, readiness
@@ -2617,8 +2618,8 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
-    structural = fts_readiness_info(db_path)
-    exact = fts_readiness_info(db_path, exact=True)
+    structural = completed_fts_readiness(db_path, lambda: fts_readiness_info(db_path))
+    exact = completed_fts_readiness(db_path, lambda: fts_readiness_info(db_path, exact=True))
 
     assert structural["messages_ready"] is False
     assert exact["messages_ready"] is False

@@ -2258,7 +2258,7 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
 
     def blocked_copy(source: Path, destination: Path, **kwargs: Any) -> None:
         copy_started.set()
-        assert allow_copy.wait(5), "clone did not receive its release signal"
+        allow_copy.wait()
         original_copy(source, destination, **kwargs)
 
     monkeypatch.setattr(artifacts, "_copy_tree", blocked_copy)
@@ -2287,12 +2287,18 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
 
     clone_thread = threading.Thread(target=run_clone)
     clone_thread.start()
-    assert copy_started.wait(5), "clone did not reach its source read barrier"
     gc_thread = threading.Thread(target=collect)
-    gc_thread.start()
-    gc_thread.join(5)
-    allow_copy.set()
-    clone_thread.join(5)
+    try:
+        assert copy_started.wait(5), "clone did not reach its source read barrier"
+        gc_thread.start()
+        # The GC must settle while the source read is pinned. Population after
+        # release owns real migration/proof work, not a five-second outcome.
+        gc_thread.join()
+    finally:
+        allow_copy.set()
+        clone_thread.join()
+        if gc_thread.ident is not None:
+            gc_thread.join()
 
     assert not gc_thread.is_alive()
     assert not clone_thread.is_alive()

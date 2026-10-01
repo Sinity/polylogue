@@ -1682,6 +1682,7 @@ def test_expired_await_reads_the_actual_accepted_receipt_and_preserves_refusals(
         request = DaemonOperationRequest(
             "operation.await",
             {"request_id": "expired-poll-receipt", "timeout_ms": 1},
+            request_id="expired-control-poll",
             deadline_ms=1,
         )
         # Model a poll whose budget was spent before its handler ran; the
@@ -2284,7 +2285,24 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 assert request_id not in stack.runtime._exchanges
                 assert stack.runtime._terminal_scratch is not None
                 scratch = Path(stack.runtime._terminal_scratch.name)
-                assert len(tuple(scratch.iterdir())) == 1
+                # The earlier backup also owns a terminal result. Assert this
+                # restore's exact custody packet, not whole-runtime cardinality.
+                packet_path = stack.runtime._terminal_path(request_id)
+                assert packet_path is not None and packet_path.is_file()
+                packet = json.loads(packet_path.read_text())
+                assert packet["request_id"] == request_id
+                from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+                intent = DaemonOperationRequest(
+                    "maintenance.restore_verified_backup",
+                    {"backup_dir": backup["result"]["result"]["output_path"], "destination": str(destination)},
+                    archive_root=str(stack.archive_root),
+                    request_id=request_id,
+                )
+                assert packet["fingerprint"] == intent.fingerprint
+                assert packet["archive_identity"] == response["archive"]["archive_identity"]
+                assert packet["envelope"]["request_id"] == request_id
+                assert packet["envelope"]["result"]["result"] == terminal["result"]["result"]
             from polylogue.operations.daemon_protocol import DaemonOperationRequest
             from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -2295,7 +2313,9 @@ def test_accepted_restore_outlives_implicit_deadline_and_control_returns_termina
                 archive_identity = held.snapshot.identity.authority_identity_digest
             else:
                 assert scratch is not None
-                with next(scratch.iterdir()).open(encoding="utf-8") as stream:
+                packet_path = stack.runtime._terminal_path(request_id)
+                assert packet_path is not None
+                with packet_path.open(encoding="utf-8") as stream:
                     packet = json.load(stream)
                 declared = packet["principal"]
                 principal = MutationPrincipal(

@@ -1362,8 +1362,6 @@ def test_pinned_materialization_readiness_degrades_like_its_path_twin(tmp_path: 
     conn = _pinned_index_over(tmp_path)
     try:
         # Drop a column the projection selects: readable tier, unreadable query.
-        conn.execute("DROP TRIGGER raw_existence_session_insert")
-        conn.execute("DROP TRIGGER raw_existence_session_update")
         conn.execute("DROP INDEX IF EXISTS idx_sessions_raw_id")
         # Remove the fixture's dependent triggers so SQLite can create the
         # deliberately unreadable projection, rather than refusing its setup.
