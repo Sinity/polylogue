@@ -15,10 +15,12 @@ from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationRe
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
 from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.fts.sql import insert_all_message_identity_rows_sql
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import rebuild_archive_messages_fts
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 from tests.infra.growth_budgets import GrowthObservation
 from tests.infra.sqlite_work_counter import sqlite_work_counter
 
@@ -136,11 +138,12 @@ def _run_component_measurement(
 
 
 def _assert_component_shape(observations: list[GrowthObservation]) -> None:
+    assert observations
     measured = "\n".join(f"  {observation.tier}: {dict(observation.metrics)}" for observation in observations)
     assert all(observation.metric("archive_wide_derived_statements") == 0 for observation in observations), (
         f"incremental component route emitted archive-wide derived writes; measured counters:\n{measured}"
     )
-    assert any(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
+    assert all(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
         f"production route reported no derived work; measured counters:\n{measured}"
     )
 
@@ -162,7 +165,20 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
     _assert_component_shape(observations)
 
 
-@pytest.mark.parametrize("mutation", ["delete", "update", "action-pairs-rebuild", "fts-rebuild"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "delete",
+        "update",
+        "delete-tautology",
+        "update-tautology",
+        "action-pairs-rebuild",
+        "fts-rebuild",
+        "fts-identity-rebuild",
+        "delegation-copy",
+        "delegation-rebuild",
+    ],
+)
 def test_incremental_law_rejects_once_per_pass_archive_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -186,11 +202,49 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
                 assert archive._conn.execute("DELETE FROM action_pairs").rowcount == count
             elif mutation == "update":
                 assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name").rowcount == count
+            elif mutation == "delete-tautology":
+                assert archive._conn.execute("DELETE FROM action_pairs WHERE 1").rowcount == count
+            elif mutation == "update-tautology":
+                assert archive._conn.execute("UPDATE action_pairs SET tool_name = tool_name WHERE 1").rowcount == count
             elif mutation == "action-pairs-rebuild":
                 rebuild_all_action_pairs_sync(archive._conn)
                 assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
-            else:
+            elif mutation == "fts-rebuild":
                 assert rebuild_archive_messages_fts(archive._conn) > 0
+            elif mutation == "fts-identity-rebuild":
+                assert archive._conn.execute(insert_all_message_identity_rows_sql()).rowcount > 0
+            else:
+                # Build canonical dispatch/link evidence; normal triggers
+                # derive the populated facts the mutant rewrites.
+                parent = archive._conn.execute(
+                    "SELECT session_id FROM sessions WHERE native_id = 'existing-0'"
+                ).fetchone()[0]
+                child = archive._conn.execute(
+                    "SELECT session_id FROM sessions WHERE native_id = 'existing-1'"
+                ).fetchone()[0]
+                archive._conn.execute(
+                    "UPDATE blocks SET semantic_type = 'subagent' WHERE session_id = ? AND block_type = 'tool_use'",
+                    (parent,),
+                )
+                block_id = archive._conn.execute(
+                    "SELECT block_id FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (parent,)
+                ).fetchone()[0]
+                archive._conn.execute(
+                    "INSERT INTO session_links(src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id, parent_tool_use_block_id, observed_at_ms) VALUES (?, 'codex-session', 'existing-0', 'subagent', ?, ?, 1)",
+                    (child, parent, block_id),
+                )
+                facts = archive._conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0]
+                assert facts > 0
+                if mutation == "delegation-copy":
+                    assert (
+                        archive._conn.execute(
+                            "INSERT OR REPLACE INTO delegation_facts SELECT * FROM delegation_facts WHERE 1"
+                        ).rowcount
+                        == facts
+                    )
+                else:
+                    rebuild_all_delegation_facts_sync(archive._conn)
+                    assert archive._conn.execute("SELECT COUNT(*) FROM delegation_facts").fetchone()[0] == facts
             archive.commit()
         return result
 

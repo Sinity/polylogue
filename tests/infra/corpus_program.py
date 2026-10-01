@@ -881,6 +881,23 @@ class CorpusConvergenceResult(TypedDict):
     convergence: dict[Path, FileState]
 
 
+class CorpusConvergenceRejectedError(CorpusProgramError):
+    """Parsing or daemon stages did not establish convergence."""
+
+    def __init__(self, result: ParseResult | CorpusConvergenceResult) -> None:
+        self.result = result
+        diagnostic: object
+        if isinstance(result, dict):
+            diagnostic = [
+                (path.name, state.error_count, state.pending_stages)
+                for path, state in result["convergence"].items()
+                if state.error_count or not state.converged
+            ]
+        else:
+            diagnostic = result.parse_failures
+        super().__init__(f"convergence rejected: {diagnostic}")
+
+
 class ProductionCorpusRuntime:
     """Adapter from corpus operations to the live archive production seams."""
 
@@ -1007,11 +1024,13 @@ class ProductionCorpusRuntime:
         parse_result = asyncio.run(parse())
         if parse_result.parse_failures:
             self.last_results.append(parse_result)
-            raise CorpusProgramError(f"convergence rejected: parse_failures={parse_result.parse_failures}")
+            raise CorpusConvergenceRejectedError(parse_result)
         converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
         states = {path: converger.converge_file(path) for path in paths}
         result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
+        if any(state.error_count or not state.converged for state in states.values()):
+            raise CorpusConvergenceRejectedError(result)
         return result
 
 
@@ -1117,6 +1136,7 @@ __all__ = [
     "CorpusProgramError",
     "CorpusAcquisitionRejectedError",
     "CorpusConvergenceResult",
+    "CorpusConvergenceRejectedError",
     "CorpusRun",
     "CorpusRuntimeCrashed",
     "CorpusRuntimeCrashedError",

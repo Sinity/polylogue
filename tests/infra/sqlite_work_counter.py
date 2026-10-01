@@ -20,7 +20,29 @@ _DERIVED_SURFACES = (
     "delegation_refresh_scope",
 )
 _SQL_SPACE = re.compile(r"\s+")
-_WRITE_TARGET = re.compile(r"^(delete from|update|insert(?: or replace)? into|replace into) (\w+)\b")
+_WRITE_TARGET = re.compile(r"\b(delete from|update|insert(?: or replace)? into|replace into) (\w+)\b")
+_BOUND_VALUE = r"(?:'(?:[^']|'')*'|\?|\d+|(?:new|old)\.\w+)"
+_BOUND_VALUES = rf"{_BOUND_VALUE}(?:\s*,\s*{_BOUND_VALUE})*"
+_SESSION_BOUND = re.compile(rf"\b(?:\w+\.)?(?:session_id|parent_session_id|child_session_id) = {_BOUND_VALUE}(?!\w)")
+
+
+def _scoped_content_mutation(sql: str, table: str) -> bool:
+    """Recognize the concrete DELETE/UPDATE scopes used by the SQL owners."""
+    where = sql.partition(" where ")[2].rstrip(";")
+    if table in {"action_pairs", "delegation_facts"}:
+        column = "session_id" if table == "action_pairs" else "(?:parent_session_id|child_session_id)"
+        predicate = rf"{column} (?:= {_BOUND_VALUE}|in \(\s*{_BOUND_VALUES}\s*\))"
+        return re.fullmatch(rf"{predicate}(?: or {predicate})?", where) is not None
+    if re.fullmatch(r"rowid (?:= (?:\d+|(?:new|old)\.rowid)|in \(\s*\d+(?:\s*,\s*\d+)*\s*\))", where):
+        return True
+    return (
+        re.fullmatch(
+            rf"rowid in \( select blocks.rowid from blocks where blocks.session_id in \(\s*{_BOUND_VALUES}\s*\) \)"
+            r"(?: and rowid in \(select id from messages_fts_docsize\))?",
+            where,
+        )
+        is not None
+    )
 
 
 def _database_name(database: object) -> str:
@@ -49,26 +71,43 @@ def _mentions_derived_surface(sql: str) -> bool:
 
 def _is_archive_wide_derived_statement(sql: str) -> bool:
     """Recognize global writes to derived content, excluding scoped work."""
-    target = _WRITE_TARGET.match(sql)
+    if not sql.startswith(("delete ", "update ", "insert ", "replace ", "with ")):
+        return False
+    target = _WRITE_TARGET.search(sql)
     if target is None or target[2] not in _DERIVED_SURFACES:
         return False
     operation, table = target.groups()
     if table == "delegation_refresh_scope":
         # Clearing the working allow-list does not rewrite archive content.
         # Populating it with every session does initiate a global refresh.
-        return operation in {"insert into", "insert or replace into"} and "select session_id from sessions" in sql
+        if operation == "delete from":
+            return False
+        if re.match(r"\s*\([^)]*\) values\b", sql[target.end() :]):
+            return False
+        return not (
+            "where child_session_id = new.session_id" in sql
+            or "select old.resolved_dst_session_id as parent_session_id union select new.resolved_dst_session_id" in sql
+        )
     if operation in {"delete from", "update"}:
-        return " where " not in sql
-    if " values " in sql:
+        return not _scoped_content_mutation(sql, table)
+    if re.match(r"\s*(?:\([^)]*\))?\s*values\b", sql[target.end() :]):
         return False
     if table in {"messages_fts", "messages_fts_identity"}:
-        return not any(
-            scope in sql for scope in ("b.session_id =", "target.session_id = b.session_id", "select new.rowid")
+        return not (
+            _SESSION_BOUND.search(sql)
+            or ("raw_target_sessions(session_id) as ( values" in sql and "target.session_id = b.session_id" in sql)
+            or "select new.rowid" in sql
+            or re.search(rf"b.rowid > {_BOUND_VALUE} and b.rowid <= {_BOUND_VALUE}", sql)
         )
     if table == "action_pairs":
         # Both tool-use branches and the result branch must be session-bound.
-        return sql.count("u.session_id =") < 2 or "r.session_id =" not in sql
-    return False
+        return len(re.findall(rf"u.session_id = {_BOUND_VALUE}", sql)) < 2 or not re.search(
+            rf"r.session_id = {_BOUND_VALUE}", sql
+        )
+    # The declared view reads only the current delegation_refresh_scope. Its
+    # archive-wide population is counted above. Other INSERT/SELECT shapes
+    # cannot claim this scope implicitly.
+    return not sql.endswith("from delegation_facts_source")
 
 
 @dataclass(slots=True)

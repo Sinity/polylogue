@@ -20,6 +20,7 @@ from tests.infra.corpus_program import (
     AttachmentArtifact,
     Converge,
     CorpusAcquisitionRejectedError,
+    CorpusConvergenceRejectedError,
     CorpusProgram,
     CorpusProgramError,
     Crash,
@@ -319,6 +320,7 @@ def test_generated_programs_acquire_and_parse_on_production_route(
     runtime.restart()
     result = runtime.converge()
     assert result["parse"].parse_failures == 0
+    assert all(state.converged and state.error_count == 0 for state in result["convergence"].values())
     with sqlite3.connect(root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] > 0
     assert run.state.applied_operation_ids == program.schedule
@@ -330,13 +332,14 @@ def test_rejected_acquisition_does_not_advance_reference_state(
 ) -> None:
     """Ignoring the production error AcquireResult permits the rejected append."""
     from polylogue.pipeline.services import acquisition
+    from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
     initial = _artifact("session", _codex_transcript("session", "first", "authored"))
     from tests.infra.corpus_program import CorpusState
 
     state = Acquire("acquire", initial).apply(CorpusState(), runtime)
-    original_stream = acquisition.iter_raw_record_stream
+    original_stream = iter_raw_record_stream
 
     async def unreadable_stream(*args: Any, **kwargs: Any) -> AsyncIterator[Any]:
         async for record in original_stream(*args, **kwargs):
@@ -359,11 +362,51 @@ def test_retained_parser_invalid_input_reports_convergence_failure(workspace_env
     runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
     result = runtime.acquire(_artifact("invalid", b"\xff\x00"))
     assert result.acquired > 0
-    with pytest.raises(CorpusProgramError):
+    with pytest.raises(CorpusConvergenceRejectedError):
         runtime.converge()
     parsed = runtime.last_results[-1]
     assert isinstance(parsed, ParseResult)
     assert parsed.parse_failures > 0
+
+
+@pytest.mark.parametrize("pending", [False, True], ids=["failed", "pending"])
+def test_unfinished_daemon_stages_do_not_advance_converge_operation(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, pending: bool
+) -> None:
+    """Ignoring the real daemon FileState lets failed/pending work look applied."""
+    from polylogue.daemon import convergence_stages
+    from polylogue.daemon.convergence import ConvergenceStage, StageState
+    from tests.infra.corpus_program import CorpusState
+
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    state = Acquire("acquire", _artifact("session", _codex_transcript("session", "first", "authored"))).apply(
+        CorpusState(), runtime
+    )
+    original_stages = convergence_stages.make_default_convergence_stages
+
+    def stages_with_unfinished_work(*args: Any, **kwargs: Any) -> tuple[ConvergenceStage, ...]:
+        return (
+            *original_stages(*args, **kwargs),
+            ConvergenceStage(
+                name="synthetic-unfinished",
+                description="Synthetic unfinished derivation",
+                check=lambda path: True,
+                execute=lambda path: False,
+                false_means_pending=pending,
+            ),
+        )
+
+    monkeypatch.setattr(convergence_stages, "make_default_convergence_stages", stages_with_unfinished_work)
+    with pytest.raises(CorpusConvergenceRejectedError) as refused:
+        Converge("converge").apply(state, runtime)
+    result = refused.value.result
+    assert isinstance(result, dict)
+    assert result["parse"].parse_failures == 0
+    assert len(result["convergence"]) == 1
+    actual = next(iter(result["convergence"].values()))
+    assert actual.stages["synthetic-unfinished"] == (StageState.PENDING if pending else StageState.FAILED)
+    assert not actual.converged
+    assert state.applied_operation_ids == ("acquire",)
 
 
 def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: dict[str, Path]) -> None:
