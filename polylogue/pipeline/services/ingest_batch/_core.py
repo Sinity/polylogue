@@ -7,6 +7,7 @@ without retaining the whole parsed batch in memory.
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import dataclasses
 import hashlib
@@ -3094,6 +3095,7 @@ def _prepare_ingest_unit_sync(
     validation_mode: str,
     publication_mode: PublicationMode,
     measure_ingest_result_size: bool,
+    reference_seal: PreparedIndexMutation,
 ) -> _PreparedIngestUnit | None:
     """Finish one parser result and Drive comparison with all readers closed."""
     from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
@@ -3101,6 +3103,7 @@ def _prepare_ingest_unit_sync(
 
     if current_write_lease() is not None:
         raise RuntimeError("ingest preparation requires a lease-free caller")
+    reference_seal.validate_observers_current()
     index_binding = _ingest_index_binding(db_path)
     policy_binding = _ingest_policy_binding(archive_root)
     with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
@@ -3121,128 +3124,138 @@ def _prepare_ingest_unit_sync(
     if len(results) != 1:
         raise RuntimeError("one raw input must produce exactly one completed ingest result")
     result = results[0]
-    keys = tuple(sorted({payload.session_id for payload in result.sessions}))
-    marks = ",".join("?" for _ in keys) or "NULL"
-    with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
-        source.execute("BEGIN")
-        raw = _source_snapshot(source, "raw_sessions", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys))
-        members = _source_snapshot(
-            source, "raw_session_memberships", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys)
-        )
-        cohort_ids = tuple(sorted({raw_id, *(str(row[members.columns.index("raw_id")]) for row in members.rows)}))
-        cohort_marks = ",".join("?" for _ in cohort_ids)
-        census = _source_snapshot(source, "raw_membership_census", f"raw_id IN ({cohort_marks})", cohort_ids)
-        # Membership classification queries source-generation ownership
-        # (#5630), so the scratch needs the relation's shape. The Drive route
-        # classifies without a source generation (``raw_membership_raw_ids``
-        # in ``_bind_drive_revision_lineage``), so no ownership row can match
-        # and none is copied.
-        generation_members = _source_snapshot(source, "source_item_raw_members", "0", ())
-        artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
-    snapshots = (raw, members, census, generation_members, artifacts)
-    raw_id_position = raw.columns.index("raw_id")
-    stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
-    plans: dict[str, RevisionReplayPlan | None] = {}
-    updates: tuple[tuple[object, ...], ...] = ()
-    if not stale:
-        # This private scratch relation lets the existing Drive
-        # governance code calculate its exact updates without an archive writer.
-        # Only the revision column delta survives; no SQL or connection escapes.
-        with closing(sqlite3.connect(":memory:")) as scratch:
-            for snapshot in snapshots:
-                columns = ",".join(_quote_identifier(column) for column in snapshot.columns)
-                scratch.execute(f"CREATE TABLE {snapshot.table} ({columns})")
-                values = ",".join("?" for _ in snapshot.columns)
-                scratch.executemany(f"INSERT INTO {snapshot.table} VALUES ({values})", snapshot.rows)
-            scratch.commit()
-            publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-            # polylogue-ojjet: every payload here classifies the same cohort
-            # snapshot, so one cache spans the whole prepared unit.
-            prepare_cohort_cache = DriveRevisionCohortCache()
-            for payload in result.sessions:
-                plans[payload.session_id] = _bind_drive_revision_lineage(
-                    payload.parsed_session,
-                    raw_id=raw_id,
-                    source_conn=scratch,
-                    blob_publisher=publisher,
-                    cohort_cache=prepare_cohort_cache,
-                )
-            revision_positions = tuple(raw.columns.index(column) for column in _DRIVE_REVISION_COLUMNS)
-            before = {row[raw_id_position]: tuple(row[pos] for pos in revision_positions) for row in raw.rows}
-            revision_columns = ",".join(_DRIVE_REVISION_COLUMNS)
-            updates = tuple(
-                tuple(row)
-                for row in scratch.execute(f"SELECT {revision_columns}, raw_id FROM raw_sessions")
-                if tuple(row[:-1]) != before[row[-1]]
-            )
-    if not stale:
-        with (
-            closing(open_readonly_connection(db_path, validate_schema=False)) as index,
-            closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source,
-        ):
-            index.row_factory = sqlite3.Row
-            index.execute("BEGIN")
+    try:
+        keys = tuple(sorted({payload.session_id for payload in result.sessions}))
+        marks = ",".join("?" for _ in keys) or "NULL"
+        with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source:
             source.execute("BEGIN")
-            try:
+            raw = _source_snapshot(
+                source, "raw_sessions", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys)
+            )
+            members = _source_snapshot(
+                source, "raw_session_memberships", f"raw_id=? OR logical_source_key IN ({marks})", (raw_id, *keys)
+            )
+            cohort_ids = tuple(sorted({raw_id, *(str(row[members.columns.index("raw_id")]) for row in members.rows)}))
+            cohort_marks = ",".join("?" for _ in cohort_ids)
+            census = _source_snapshot(source, "raw_membership_census", f"raw_id IN ({cohort_marks})", cohort_ids)
+            # Membership classification queries source-generation ownership
+            # (#5630), so the scratch needs the relation's shape. The Drive route
+            # classifies without a source generation (``raw_membership_raw_ids``
+            # in ``_bind_drive_revision_lineage``), so no ownership row can match
+            # and none is copied.
+            generation_members = _source_snapshot(source, "source_item_raw_members", "0", ())
+            artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
+        snapshots = (raw, members, census, generation_members, artifacts)
+        raw_id_position = raw.columns.index("raw_id")
+        stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
+        plans: dict[str, RevisionReplayPlan | None] = {}
+        updates: tuple[tuple[object, ...], ...] = ()
+        if not stale:
+            # This private scratch relation lets the existing Drive
+            # governance code calculate its exact updates without an archive writer.
+            # Only the revision column delta survives; no SQL or connection escapes.
+            with closing(sqlite3.connect(":memory:")) as scratch:
+                for snapshot in snapshots:
+                    columns = ",".join(_quote_identifier(column) for column in snapshot.columns)
+                    scratch.execute(f"CREATE TABLE {snapshot.table} ({columns})")
+                    values = ",".join("?" for _ in snapshot.columns)
+                    scratch.executemany(f"INSERT INTO {snapshot.table} VALUES ({values})", snapshot.rows)
+                scratch.commit()
+                publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+                # polylogue-ojjet: every payload here classifies the same cohort
+                # snapshot, so one cache spans the whole prepared unit.
+                prepare_cohort_cache = DriveRevisionCohortCache()
                 for payload in result.sessions:
-                    pending = payload.parsed_session
-                    merge_append = False
-                    existing = index.execute(
-                        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?",
-                        (payload.session_id,),
-                    ).fetchone()
-                    payload.prepared_predecessor = tuple(existing) if existing is not None else None
-                    payload.prepared_distinct_messages = (
-                        _incoming_write_carries_distinct_messages(index, payload, pending)
-                        if existing is not None
-                        else True
+                    plans[payload.session_id] = _bind_drive_revision_lineage(
+                        payload.parsed_session,
+                        raw_id=raw_id,
+                        source_conn=scratch,
+                        blob_publisher=publisher,
+                        cohort_cache=prepare_cohort_cache,
                     )
-                    if payload.append_only and existing is not None:
-                        created, updated = session_evidence_timestamps(
-                            pending, fallback_timestamp=payload.fallback_timestamp
+                revision_positions = tuple(raw.columns.index(column) for column in _DRIVE_REVISION_COLUMNS)
+                before = {row[raw_id_position]: tuple(row[pos] for pos in revision_positions) for row in raw.rows}
+                revision_columns = ",".join(_DRIVE_REVISION_COLUMNS)
+                updates = tuple(
+                    tuple(row)
+                    for row in scratch.execute(f"SELECT {revision_columns}, raw_id FROM raw_sessions")
+                    if tuple(row[:-1]) != before[row[-1]]
+                )
+        if not stale:
+            with (
+                closing(open_readonly_connection(db_path, validate_schema=False)) as index,
+                closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as source,
+            ):
+                index.row_factory = sqlite3.Row
+                index.execute("BEGIN")
+                source.execute("BEGIN")
+                try:
+                    for payload in result.sessions:
+                        pending = payload.parsed_session
+                        merge_append = False
+                        existing = index.execute(
+                            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?",
+                            (payload.session_id,),
+                        ).fetchone()
+                        payload.prepared_predecessor = tuple(existing) if existing is not None else None
+                        payload.prepared_distinct_messages = (
+                            _incoming_write_carries_distinct_messages(index, payload, pending)
+                            if existing is not None
+                            else True
                         )
-                        incoming = updated or created
-                        newer = incoming is not None and existing[2] is not None and incoming > int(existing[2])
-                        replaces = newer and _append_payload_changes_existing_message(index, payload)
-                        if not replaces:
-                            delta, skipped = _append_delta_payload(index, payload)
-                            payload.prepared_append_skipped_messages = skipped
-                            if delta is None:
-                                payload.prepared_append_noop = True
-                                continue
-                            pending, merge_append = delta, True
-                    payload.prepared_write = prepare_session_write(
-                        index,
-                        pending,
-                        merge_append=merge_append,
-                        fallback_timestamp=payload.fallback_timestamp,
-                        source_conn=source,
-                        raw_id=payload.raw_id,
-                        prepared_rows=payload.prepared_rows,
-                    )
-            except BaseException as primary:
-                for payload in result.sessions:
-                    if payload.prepared_write is not None:
-                        try:
-                            payload.prepared_write.close()
-                        except BaseException as cleanup:
-                            primary.add_note(f"prepared ingest cleanup failed: {cleanup!r}")
-                        else:
-                            payload.prepared_write = None
-                raise
-    return _PreparedIngestUnit(
-        result,
-        snapshots,
-        index_binding,
-        policy_binding,
-        _ingest_revision_heads(db_path, keys),
-        keys,
-        plans,
-        updates,
-        validation_mode,
-        publication_mode.value,
-        stale,
-    )
+                        if payload.append_only and existing is not None:
+                            created, updated = session_evidence_timestamps(
+                                pending, fallback_timestamp=payload.fallback_timestamp
+                            )
+                            incoming = updated or created
+                            newer = incoming is not None and existing[2] is not None and incoming > int(existing[2])
+                            replaces = newer and _append_payload_changes_existing_message(index, payload)
+                            if not replaces:
+                                delta, skipped = _append_delta_payload(index, payload)
+                                payload.prepared_append_skipped_messages = skipped
+                                if delta is None:
+                                    payload.prepared_append_noop = True
+                                    continue
+                                pending, merge_append = delta, True
+                        payload.prepared_write = prepare_session_write(
+                            index,
+                            pending,
+                            merge_append=merge_append,
+                            fallback_timestamp=payload.fallback_timestamp,
+                            source_conn=source,
+                            raw_id=payload.raw_id,
+                            prepared_rows=payload.prepared_rows,
+                        )
+                except BaseException as primary:
+                    for payload in result.sessions:
+                        if payload.prepared_write is not None:
+                            try:
+                                payload.prepared_write.close()
+                            except BaseException as cleanup:
+                                primary.add_note(f"prepared ingest cleanup failed: {cleanup!r}")
+                            else:
+                                payload.prepared_write = None
+                    raise
+        reference_seal.validate_observers_current()
+        return _PreparedIngestUnit(
+            result,
+            snapshots,
+            index_binding,
+            policy_binding,
+            _ingest_revision_heads(db_path, keys),
+            keys,
+            plans,
+            updates,
+            validation_mode,
+            publication_mode.value,
+            stale,
+        )
+    except BaseException as primary:
+        try:
+            discard_ingest_result_payload(result)
+        except BaseException as cleanup:
+            raise builtins.BaseExceptionGroup("ingest compute and cleanup failed", [primary, cleanup]) from None
+        raise
 
 
 def _publish_drive_revision_updates(
@@ -3626,7 +3639,6 @@ async def process_ingest_batch(
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
     fresh_build: bool = False,
-    prepared_unit: _PreparedIngestUnit | None = None,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
@@ -3636,39 +3648,18 @@ async def process_ingest_batch(
 
     if service.execution is None:
         raise PermissionError("ingest publication requires its declared execution owner")
-    if prepared_unit is None:
-        from polylogue.config import load_polylogue_config
-
-        settings = load_polylogue_config()
+    if len(batch_ids) > 1:
         last_observation = None
         for raw_id in batch_ids:
-            unit = await service.execution.prepare(
-                partial(
-                    _prepare_ingest_unit_sync,
-                    raw_id,
-                    db_path=backend.db_path,
-                    archive_root=service.archive_root,
-                    validation_mode=settings.schema_validation,
-                    publication_mode=PublicationMode.from_string(settings.sinex_mode),
-                    measure_ingest_result_size=service.measure_ingest_result_size,
-                )
+            last_observation = await process_ingest_batch(
+                service,
+                backend,
+                [raw_id],
+                result,
+                progress_callback,
+                force_write=force_write,
+                fresh_build=fresh_build,
             )
-            if unit is None:
-                continue
-
-            try:
-                last_observation = await process_ingest_batch(
-                    service,
-                    backend,
-                    [raw_id],
-                    result,
-                    progress_callback,
-                    force_write=force_write,
-                    fresh_build=fresh_build,
-                    prepared_unit=unit,
-                )
-            finally:
-                discard_ingest_result_payload(unit.result)
         return last_observation
 
     raw_artifacts = await service.repository.get_raw_sessions_batch(batch_ids)
@@ -3713,40 +3704,72 @@ async def process_ingest_batch(
         sync_kwargs["marker_acceptance_enabled"] = True
     if fresh_build:
         sync_kwargs["fresh_build"] = True
-    if prepared_unit is not None:
-        sync_kwargs["prepared_unit"] = prepared_unit
 
-    def prepare_reference_seal() -> PreparedIndexMutation:
+    class PreparedPublication:
+        # These existing owners remain on the same physical worker; the
+        # reference seal is created before any parent/attachment computation.
+        def __init__(self, seal: PreparedIndexMutation, unit: _PreparedIngestUnit) -> None:
+            self.seal = seal
+            self.unit = unit
+
+        def close(self) -> None:
+            failures: list[BaseException] = []
+            for close in (partial(discard_ingest_result_payload, self.unit.result), self.seal.close):
+                try:
+                    close()
+                except BaseException as failure:
+                    failures.append(failure)
+            if failures:
+                raise builtins.BaseExceptionGroup("ingest preparation cleanup failed", failures)
+
+    def prepare_publication() -> PreparedPublication:
         seal = PreparedIndexMutation(backend.db_path, archive_root=service.archive_root)
-        if prepared_unit is not None and not _prepared_ingest_is_current(
-            prepared_unit,
-            db_path=backend.db_path,
-            archive_root=service.archive_root,
-            validation_mode=validation_mode,
-            publication_mode=publication_mode,
-            reference_seal=seal,
-        ):
-            seal.close()
-            raise _StaleDrivePreparationError("Drive preparation became stale before index publication")
-        return seal
+        unit = None
+        try:
+            unit = _prepare_ingest_unit_sync(
+                batch_ids[0],
+                db_path=backend.db_path,
+                archive_root=service.archive_root,
+                validation_mode=validation_mode,
+                publication_mode=publication_mode,
+                measure_ingest_result_size=service.measure_ingest_result_size,
+                reference_seal=seal,
+            )
+            if unit is None or not _prepared_ingest_is_current(
+                unit,
+                db_path=backend.db_path,
+                archive_root=service.archive_root,
+                validation_mode=validation_mode,
+                publication_mode=publication_mode,
+                reference_seal=seal,
+            ):
+                raise _StaleDrivePreparationError("ingest input changed during sealed preparation")
+            return PreparedPublication(seal, unit)
+        except BaseException as primary:
+            try:
+                if unit is not None:
+                    PreparedPublication(seal, unit).close()
+                else:
+                    seal.close()
+            except BaseException as cleanup:
+                raise builtins.BaseExceptionGroup("ingest preparation and cleanup failed", [primary, cleanup]) from None
+            raise
 
-    def publish_with_seal(seal: PreparedIndexMutation) -> _IngestBatchSummary:
+    def publish_prepared(prepared: PreparedPublication) -> _IngestBatchSummary:
+        seal, unit = prepared.seal, prepared.unit
         seal.validate_observers_current()
-        if prepared_unit is not None and prepared_unit.drive_revision_updates:
-            _publish_prepared_drive_revision_updates(prepared_unit, service.archive_root, seal)
+        if unit.drive_revision_updates:
+            _publish_prepared_drive_revision_updates(unit, service.archive_root, seal)
         return cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(
             raw_artifacts,
             reference_seal=seal,
+            prepared_unit=unit,
             **sync_kwargs,
         )
 
     try:
-        batch_summary = await service.execution.publish_prepared_sync(
-            "index", prepare_reference_seal, publish_with_seal
-        )
+        batch_summary = await service.execution.publish_prepared_sync("index", prepare_publication, publish_prepared)
     except _StaleDrivePreparationError:
-        if prepared_unit is not None:
-            discard_ingest_result_payload(prepared_unit.result)
         emit("ingest.drive.preparation_stale")
         return None
     heavy_batch = (
