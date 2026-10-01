@@ -16,8 +16,7 @@ from pydantic import BaseModel, Field, StrictInt, ValidationInfo, field_validato
 
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig, receiver_status_payload
 from polylogue.config import Config
-from polylogue.core.errors import SchemaRefusalError
-from polylogue.core.evidence import Measured, Unavailable
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
@@ -71,6 +70,7 @@ from polylogue.operations.quick_check import (
     unmeasured_quick_check,
 )
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
+from polylogue.operations.user_overlay_reads import readable_required_tier
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import (
@@ -97,7 +97,6 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection as open_readonly_connection,
 )
-from polylogue.storage.tier_access import capture_sqlite_read
 
 
 def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str | None:
@@ -1217,65 +1216,54 @@ def _live_cursor_summary_info() -> LiveCursorSummary:
 
 
 def _archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
-    evidence = capture_sqlite_read(lambda: _read_archive_live_cursor_summary_info(ops_db))
-    if isinstance(evidence, Unavailable):
-        return LiveCursorSummary(available=False, unavailable_reason=evidence.detail or evidence.reason)
-    assert isinstance(evidence, Measured)
-    return evidence.value
+    try:
+        return _read_archive_live_cursor_summary_info(ops_db)
+    except ArchiveTierUnavailableError as exc:
+        return LiveCursorSummary(available=False, unavailable_reason=exc.public_message)
 
 
 def _read_archive_live_cursor_summary_info(ops_db: Path) -> LiveCursorSummary | None:
     """Return cursor backlog/failure state from archive OPS when populated."""
     if not ops_db.exists():
         return None
-    try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
-            ).fetchone()
-            if has_table is None:
-                return None
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_cursor)")}
-            if not {"failure_count", "next_retry_at", "excluded"}.issubset(columns):
-                return None
-            tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
-            failed_file_count = int(
-                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0").fetchone()[0]
-            )
-            excluded_file_count = int(
-                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone()[0]
-            )
-            attention_file_count = int(
-                conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 OR excluded = 1").fetchone()[0]
-            )
-            rows = conn.execute(
-                """
-                SELECT source_path, failure_count, next_retry_at, excluded, updated_at_ms
-                FROM ingest_cursor
-                WHERE failure_count > 0 OR excluded = 1
-                ORDER BY source_path
-                LIMIT ?
-                """,
-                (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
-            ).fetchall()
-            # Excluded rows never retry on a schedule (revival requires the
-            # file's identity to change, not time to pass -- polylogue-ix5r),
-            # so they are deliberately excluded from the retry-due backlog.
-            retry_rows = conn.execute(
-                """
-                SELECT next_retry_at
-                FROM ingest_cursor
-                WHERE failure_count > 0 AND excluded = 0
-                """
-            ).fetchall()
-            oldest_excluded_row = conn.execute(
-                "SELECT MIN(updated_at_ms) FROM ingest_cursor WHERE excluded = 1"
-            ).fetchone()
-        finally:
-            conn.close()
-    except (OSError, SchemaRefusalError) as exc:
-        raise sqlite3.OperationalError(str(exc)) from exc
+    with readable_required_tier(ops_db, ArchiveTier.OPS) as conn:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_cursor'"
+        ).fetchone()
+        if has_table is None:
+            return None
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_cursor)")}
+        if not {"failure_count", "next_retry_at", "excluded"}.issubset(columns):
+            return None
+        tracked_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
+        failed_file_count = int(
+            conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0").fetchone()[0]
+        )
+        excluded_file_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone()[0])
+        attention_file_count = int(
+            conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE failure_count > 0 OR excluded = 1").fetchone()[0]
+        )
+        rows = conn.execute(
+            """
+            SELECT source_path, failure_count, next_retry_at, excluded, updated_at_ms
+            FROM ingest_cursor
+            WHERE failure_count > 0 OR excluded = 1
+            ORDER BY source_path
+            LIMIT ?
+            """,
+            (_LIVE_CURSOR_FAILURE_SAMPLE_LIMIT,),
+        ).fetchall()
+        # Excluded rows never retry on a schedule (revival requires the
+        # file's identity to change, not time to pass -- polylogue-ix5r),
+        # so they are deliberately excluded from the retry-due backlog.
+        retry_rows = conn.execute(
+            """
+            SELECT next_retry_at
+            FROM ingest_cursor
+            WHERE failure_count > 0 AND excluded = 0
+            """
+        ).fetchall()
+        oldest_excluded_row = conn.execute("SELECT MIN(updated_at_ms) FROM ingest_cursor WHERE excluded = 1").fetchone()
 
     now = datetime.now(UTC)
     retry_due_file_count = sum(1 for row in retry_rows if _retry_due(_optional_str(row[0]), now=now))
@@ -1321,57 +1309,50 @@ def _live_ingest_attempt_summary_info() -> LiveIngestAttemptSummary:
 
 
 def _archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttemptSummary | None:
-    evidence = capture_sqlite_read(lambda: _read_archive_live_ingest_attempt_summary_info(ops_db))
-    if isinstance(evidence, Unavailable):
-        return LiveIngestAttemptSummary(available=False, unavailable_reason=evidence.detail or evidence.reason)
-    assert isinstance(evidence, Measured)
-    return evidence.value
+    try:
+        return _read_archive_live_ingest_attempt_summary_info(ops_db)
+    except ArchiveTierUnavailableError as exc:
+        return LiveIngestAttemptSummary(available=False, unavailable_reason=exc.public_message)
 
 
 def _read_archive_live_ingest_attempt_summary_info(ops_db: Path) -> LiveIngestAttemptSummary | None:
     """Return live ingest-attempt status from archive OPS when populated."""
     if not ops_db.exists():
         return None
-    try:
-        conn = open_readonly_connection(ops_db)
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_attempts'"
-            ).fetchone()
-            if has_table is None:
-                return None
-            rows = conn.execute(
-                """
-                SELECT
-                    attempt_id,
-                    source_path,
-                    origin,
-                    status,
-                    phase,
-                    started_at_ms,
-                    heartbeat_at_ms,
-                    finished_at_ms,
-                    parsed_raw_count,
-                    materialized_count,
-                    error_message
-                FROM ingest_attempts
-                ORDER BY COALESCE(heartbeat_at_ms, finished_at_ms, started_at_ms) DESC, started_at_ms DESC
-                LIMIT 5
-                """
-            ).fetchall()
-            stage_payloads = _archive_latest_stage_payloads(conn, [_required_str(row[0]) for row in rows])
-            running_rows = conn.execute(
-                """
-                SELECT started_at_ms, heartbeat_at_ms, finished_at_ms
-                FROM ingest_attempts
-                WHERE status = 'running'
-                """
-            ).fetchall()
-            slow_threshold_s = compute_slow_threshold_s(conn)
-        finally:
-            conn.close()
-    except (OSError, SchemaRefusalError) as exc:
-        raise sqlite3.OperationalError(str(exc)) from exc
+    with readable_required_tier(ops_db, ArchiveTier.OPS) as conn:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ingest_attempts'"
+        ).fetchone()
+        if has_table is None:
+            return None
+        rows = conn.execute(
+            """
+            SELECT
+                attempt_id,
+                source_path,
+                origin,
+                status,
+                phase,
+                started_at_ms,
+                heartbeat_at_ms,
+                finished_at_ms,
+                parsed_raw_count,
+                materialized_count,
+                error_message
+            FROM ingest_attempts
+            ORDER BY COALESCE(heartbeat_at_ms, finished_at_ms, started_at_ms) DESC, started_at_ms DESC
+            LIMIT 5
+            """
+        ).fetchall()
+        stage_payloads = _archive_latest_stage_payloads(conn, [_required_str(row[0]) for row in rows])
+        running_rows = conn.execute(
+            """
+            SELECT started_at_ms, heartbeat_at_ms, finished_at_ms
+            FROM ingest_attempts
+            WHERE status = 'running'
+            """
+        ).fetchall()
+        slow_threshold_s = compute_slow_threshold_s(conn)
 
     now = datetime.now(UTC)
     recent_attempts = [

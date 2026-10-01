@@ -199,7 +199,7 @@ def _delivery_from_stored_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveC
         caveats=tuple(map(str, _json_list(row[11]))),
         metadata={str(key): str(value) for key, value in _json_dict(row[12]).items()},
         delivered_by_ref=str(row[13]),
-        delivered_at_ms=int(row[14]),
+        delivered_at_ms=int(str(row[14])),
     )
 
 
