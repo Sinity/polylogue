@@ -399,6 +399,7 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                     if not size:
                         handle.write(b"")
                     while size:
+                        check_compute_cancelled()
                         chunk = _read_exact(process.stdout, min(size, _STREAM_CHUNK))
                         handle.write(chunk)
                         size -= len(chunk)
