@@ -378,7 +378,7 @@ class RawObservationDerivation:
             WHERE raw_id = ? AND decision IN ('ambiguous', 'deferred')""",
             (key, key),
         ).fetchall()
-        return any(row[0] == "deferred" or not classifier_superseded for row in unresolved)
+        return bool(unresolved) and not classifier_superseded
 
     def _inspect(self, conn: sqlite3.Connection, key: str) -> str:
         from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -389,9 +389,12 @@ class RawObservationDerivation:
         ).fetchone()
         if raw is None:
             return "missing"
-        # These are durable refusals, not missing parser work. Preserve their
-        # existing authority contract without re-arbitrating rejected bytes.
+        # Semantic refusals belong to the classifier that produced them. A
+        # changed classifier must recensus retained bytes before accepting
+        # either its ambiguity or its deferral as current evidence.
         census = conn.execute("SELECT * FROM raw_authority_parser_census WHERE raw_id = ?", (key,)).fetchone()
+        if census is not None and census["parser_fingerprint"] != self.recipe_version:
+            return "stale"
         if self._terminal_revision_refusal(conn, key, census["parser_fingerprint"] if census else None) or (
             raw["validation_status"] == "failed"
             and (

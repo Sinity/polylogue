@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 _COHORT_SIZE = 12
 _LINEAGE_COLUMNS = (
@@ -98,7 +99,7 @@ def _ingest_drive_cohort(
         ):
             for revision, raw_id in enumerate(raw_ids):
                 session = parse_payload("gemini", _drive_revision_payload(revision, filler=filler), "fallback-id")[0]
-                ingest_batch_core._write_session(
+                write_fixture_ingest_payload(
                     conn,
                     SessionWritePayload(
                         session_id=str(make_session_id(session.source_name, session.provider_session_id)),

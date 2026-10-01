@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, TypeVar, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 import aiosqlite
 
@@ -2006,9 +2006,15 @@ def rebuild_session_insights_sync(
     )
 
 
-def _resolve_archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str] | None) -> tuple[str, ...]:
-    if session_ids is None:
-        return tuple(summary.session_id for summary in archive.list_summaries(limit=1_000_000))
+class _ArchiveInsightWriter(Protocol):
+    def resolve_session_id(self, token: str) -> str: ...
+
+    def rebuild_session_insights(
+        self, *, session_ids: Sequence[str] | None = None, progress_callback: ProgressCallback | None = None
+    ) -> SessionInsightCounts: ...
+
+
+def _resolve_archive_rebuild_session_ids(archive: _ArchiveInsightWriter, session_ids: Sequence[str]) -> tuple[str, ...]:
     resolved: list[str] = []
     for session_id in session_ids:
         with suppress(KeyError):
@@ -2017,7 +2023,7 @@ def _resolve_archive_rebuild_session_ids(archive: Any, session_ids: Sequence[str
 
 
 def rebuild_archive_session_insights(
-    archive: Any,
+    archive: _ArchiveInsightWriter,
     *,
     session_ids: Sequence[str] | None = None,
     progress_callback: ProgressCallback | None = None,

@@ -47,8 +47,8 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     PendingPreParseRawAdmissionRequest,
     RawAdmissionExecution,
 )
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.live_ingest import write_session_counts_sync
 
 if TYPE_CHECKING:
@@ -350,7 +350,7 @@ def store_records(
         ).fetchone()
         new_hash = _writer_hash(session.content_hash)
         parsed = _record_to_parsed_session(session, messages, attachments)
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             db_conn,
             parsed,
             content_hash=new_hash,
@@ -756,7 +756,7 @@ class SessionBuilder:
     def save(self) -> SessionRecord:
         parsed = _record_to_parsed_session(self.conv, self.messages, self.attachments)
         with _WRITE_LOCK, open_connection(self.db_path) as conn:
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn,
                 parsed,
                 content_hash=_writer_hash(self.conv.content_hash),

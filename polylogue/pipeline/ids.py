@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence, Set
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -23,7 +23,7 @@ from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
-from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.core.sql_settlement import NativeSQLCustodyOwner
 from polylogue.core.text_identity import nfc
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
@@ -404,12 +404,36 @@ class SessionRevisionProjection:
     anchor_free_event_identities: Set[tuple[bytes, bytes]] = frozenset()
 
 
+def _retain_projection_sql_connection(connection: sqlite3.Connection, *, lifetime: object) -> NativeSQLCustodyOwner:
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+    )
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeSQLCustodyOwner as NativeOwner,
+    )
+
+    try:
+        return NativeOwner(connection)
+    except NativeConnectionSettlementError as failure:
+        failure.owner.retain_lifetime(lifetime)
+        raise
+
+
 class _DiskRevisionStore:
     """Disposable owner for one prepared revision's projected evidence."""
 
     def __init__(self, parent: Path | None) -> None:
+        self._closed = False
+        self._native_owner: NativeSQLCustodyOwner | None = None
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-revision-", dir=parent)
         self.conn = sqlite3.connect(Path(self._scratch.name) / "projection.db")
+        try:
+            self._native_owner = _retain_projection_sql_connection(self.conn, lifetime=self)
+        except BaseException:
+            # Construction custody owns either the closed or retained handle.
+            # Never transport a second raw cleanup handle in this artifact.
+            del self.conn
+            raise
         self.conn.execute("CREATE TABLE message_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
         self.conn.execute("CREATE TABLE event_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
         self.conn.execute(
@@ -425,14 +449,58 @@ class _DiskRevisionStore:
                 f"PRIMARY KEY(identity, {second})) WITHOUT ROWID"
             )
 
+    def finish(self) -> None:
+        """Publish only immutable files; no SQLite handle crosses threads."""
+        self.conn.commit()
+        if self._native_owner is None:
+            raise RuntimeError("revision projection writer has no native owner")
+        try:
+            self._native_owner.close()
+        except BaseException:
+            self._native_owner.retain_lifetime(self)
+            raise
+        self._native_owner = None
+        del self.conn
+
+    @contextmanager
+    def reader(self) -> Iterator[sqlite3.Connection]:
+        path = Path(self._scratch.name) / "projection.db"
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        owner = _retain_projection_sql_connection(conn, lifetime=self)
+        try:
+            yield conn
+        except BaseException as primary:
+            try:
+                owner.close()
+            except BaseException as close_error:
+                owner.retain_lifetime(self)
+                primary.add_note(f"revision projection reader cleanup also failed: {close_error}")
+            raise
+        else:
+            try:
+                owner.close()
+            except BaseException:
+                owner.retain_lifetime(self)
+                raise
+
     def close(self) -> None:
         if getattr(self, "_closed", False):
             return
-        self._closed = True
-        if hasattr(self, "conn"):
+        owner = getattr(self, "_native_owner", None)
+        if owner is not None:
+            try:
+                owner.close()
+            except BaseException:
+                owner.retain_lifetime(self)
+                raise
+            self._native_owner = None
+            del self.conn
+        elif hasattr(self, "conn"):
             self.conn.close()
+            del self.conn
         if hasattr(self, "_scratch"):
             self._scratch.cleanup()
+        self._closed = True
 
     def __del__(self) -> None:
         self.close()
@@ -459,14 +527,23 @@ class _DiskRevisionHashes(Sequence[bytes]):
         ordinal = index + self._count if index < 0 else index
         if ordinal < 0 or ordinal >= self._count:
             raise IndexError(index)
-        row = self._store.conn.execute(f"SELECT digest FROM {self._table} WHERE ordinal = ?", (ordinal,)).fetchone()
+        with self._store.reader() as conn:
+            row = conn.execute(f"SELECT digest FROM {self._table} WHERE ordinal = ?", (ordinal,)).fetchone()
         if row is None:
             raise ValueError("prepared revision hash row disappeared")
         return bytes(row[0])
 
     def __iter__(self) -> Iterator[bytes]:
-        for (digest,) in self._store.conn.execute(f"SELECT digest FROM {self._table} ORDER BY ordinal"):
-            yield bytes(digest)
+        after = -1
+        while True:
+            with self._store.reader() as conn:
+                rows = conn.execute(
+                    f"SELECT ordinal, digest FROM {self._table} WHERE ordinal > ? ORDER BY ordinal LIMIT 512", (after,)
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            yield from (bytes(row[1]) for row in rows)
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Sequence) or len(self) != len(other):
@@ -494,16 +571,16 @@ class _DiskRevisionSet(Set[_T]):
         return Path(self._store._scratch.name).parent
 
     def __len__(self) -> int:
-        return int(self._store.conn.execute(f"SELECT COUNT(*) FROM {self._table}").fetchone()[0])
+        with self._store.reader() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM {self._table}").fetchone()[0])
 
     def __contains__(self, value: object) -> bool:
         parts = value if isinstance(value, tuple) else (value,)
         if len(parts) != len(self._columns):
             return False
         where = " AND ".join(f"{column} = ?" for column in self._columns)
-        return (
-            self._store.conn.execute(f"SELECT 1 FROM {self._table} WHERE {where} LIMIT 1", parts).fetchone() is not None
-        )
+        with self._store.reader() as conn:
+            return conn.execute(f"SELECT 1 FROM {self._table} WHERE {where} LIMIT 1", parts).fetchone() is not None
 
     def __iter__(self) -> Iterator[_T]:
         yield from self.iter_sorted()
@@ -511,17 +588,31 @@ class _DiskRevisionSet(Set[_T]):
     def iter_sorted(self) -> Iterator[_T]:
         columns = ", ".join(self._columns)
         order = ", ".join(self._columns)
-        for row in self._store.conn.execute(f"SELECT {columns} FROM {self._table} ORDER BY {order}"):
-            values = tuple(int(item) if isinstance(item, int) else bytes(item) for item in row)
-            yield cast(_T, values[0] if len(values) == 1 else values)
+        after: tuple[object, ...] | None = None
+        while True:
+            where = "" if after is None else f"WHERE ({columns}) > ({', '.join('?' for _ in self._columns)})"
+            # A one-column key needs scalar syntax rather than a row value.
+            if after is not None and len(self._columns) == 1:
+                where = f"WHERE {columns} > ?"
+            with self._store.reader() as conn:
+                rows = conn.execute(
+                    f"SELECT {columns} FROM {self._table} {where} ORDER BY {order} LIMIT 512", after or ()
+                ).fetchall()
+            if not rows:
+                return
+            after = tuple(rows[-1])
+            for row in rows:
+                values = tuple(int(item) if isinstance(item, int) else bytes(item) for item in row)
+                yield cast(_T, values[0] if len(values) == 1 else values)
 
     def lookup_second(self, identity: bytes) -> bytes | None:
         if self._table != "anchor_free_event":
             raise TypeError("second-value lookup is only defined for anchor-free events")
-        row = self._store.conn.execute(
-            "SELECT anchor_free FROM anchor_free_event WHERE identity = ? ORDER BY anchor_free LIMIT 1",
-            (identity,),
-        ).fetchone()
+        with self._store.reader() as conn:
+            row = conn.execute(
+                "SELECT anchor_free FROM anchor_free_event WHERE identity = ? ORDER BY anchor_free LIMIT 1",
+                (identity,),
+            ).fetchone()
         return bytes(row[0]) if row is not None else None
 
 
@@ -1030,7 +1121,7 @@ def _identity_normalize_value(
     )
 
 
-def _typed_identity_value(value: object, *, prose: bool = False) -> object:
+def _typed_identity_value(value: object, *, prose: bool = False) -> JSONValue:
     """Return an injective tagged form of an ID field's admitted value.
 
     This sidecar is emitted only when the legacy preimage contains a
@@ -1088,11 +1179,11 @@ def _typed_identity_value(value: object, *, prose: bool = False) -> object:
         return ["time", value.isoformat()]
     cls = type(value)
     if cls is bool:
-        return ["bool", value]
+        return ["bool", cast(bool, value)]
     if cls is int:
-        return ["int", value]
+        return ["int", cast(int, value)]
     if cls is float:
-        return ["float", value]
+        return ["float", cast(float, value)]
     if isinstance(value, int | float):
         return ["number", value]
     raise UnhashablePayloadValueError(f"{type(value).__name__} is outside the declared message identity vocabulary")
@@ -1138,9 +1229,9 @@ def _message_identity_payload(
 
 def _typed_message_identity_payload(
     message: ParsedMessage, fields: frozenset[str] = _HASHED_FIELDS["ParsedMessage"]
-) -> dict[str, object]:
+) -> dict[str, JSONValue]:
     """Project the same ID fields with explicit tags for lossy legacy values."""
-    typed_payload: dict[str, object] = {}
+    typed_payload: dict[str, JSONValue] = {}
     prose_fields = _NFC_TEXT_FIELDS["ParsedMessage"]
     for field in _sorted_hash_fields(_message_scalar_fields(fields)):
         value = getattr(message, field)
@@ -1149,9 +1240,9 @@ def _typed_message_identity_payload(
             prose=field in prose_fields and isinstance(value, str),
         )
     if "blocks" in fields and message.blocks and not _is_redundant_text_only_block(message):
-        typed_blocks: list[dict[str, object]] = []
+        typed_blocks: list[JSONValue] = []
         for block in message.blocks:
-            typed_block: dict[str, object] = {}
+            typed_block: dict[str, JSONValue] = {}
             for field in _sorted_hash_fields(_HASHED_FIELDS["ParsedContentBlock"]):
                 value = getattr(block, field)
                 typed_block[field] = _typed_identity_value(
@@ -1260,10 +1351,9 @@ def disk_message_content_identities(
     """
     parent = getattr(messages, "path", None)
     directory = Path(parent).parent if parent is not None else None
-    with (
-        tempfile.TemporaryDirectory(prefix="polylogue-ids-", dir=directory) as scratch,
-        closing(connect_scratch_database(Path(scratch) / "identities.db")) as conn,
-    ):
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    with scratch_connection_context(prefix="polylogue-ids-", filename="identities.db", directory=directory) as conn:
         conn.execute("CREATE TABLE count (digest TEXT PRIMARY KEY, value INTEGER NOT NULL) WITHOUT ROWID")
         conn.execute(
             "CREATE TABLE identity (ordinal INTEGER PRIMARY KEY, digest TEXT NOT NULL, occurrence INTEGER NOT NULL)"
@@ -1436,10 +1526,9 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
     """Resolve attachment anchors with disk-backed counts and lookup maps."""
     parent = getattr(messages, "path", None)
     directory = Path(parent).parent if parent is not None else None
-    with (
-        tempfile.TemporaryDirectory(prefix="polylogue-owners-", dir=directory) as scratch,
-        closing(sqlite3.connect(Path(scratch) / "owners.db")) as conn,
-    ):
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    with scratch_connection_context(prefix="polylogue-owners-", filename="owners.db", directory=directory) as conn:
         conn.execute(
             "CREATE TABLE owner_count (kind TEXT NOT NULL, key TEXT NOT NULL, count INTEGER NOT NULL, "
             "PRIMARY KEY (kind, key)) WITHOUT ROWID"
@@ -2057,10 +2146,11 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     if convo.attachments:
         if hasattr(convo.attachments, "path"):
             directory = Path(convo.attachments.path).parent
-            with (
-                tempfile.TemporaryDirectory(prefix="polylogue-attachment-hash-", dir=directory) as scratch,
-                closing(sqlite3.connect(Path(scratch) / "sort.db")) as conn,
-            ):
+            from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+            with scratch_connection_context(
+                prefix="polylogue-attachment-hash-", filename="sort.db", directory=directory
+            ) as conn:
                 conn.execute(
                     "CREATE TABLE attachment_hash (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, "
                     "native_id TEXT NOT NULL, name TEXT NOT NULL, canonical TEXT NOT NULL, payload TEXT NOT NULL)"
@@ -2217,6 +2307,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
             if _anchor_is_remeasured(event):
                 anchor_free = event_anchor_free_identity_hash(content_payload)
                 conn.execute("INSERT OR IGNORE INTO anchor_free_event VALUES (?, ?)", (canonical_identity, anchor_free))
+        store.finish()
         return SessionRevisionProjection(
             session_hash=bytes.fromhex(session_hash_hex),
             message_hashes=_DiskRevisionHashes(store, "message_hash", message_count),
@@ -2228,8 +2319,11 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
             anchor_free_event_identities=_DiskRevisionSet[tuple[bytes, bytes]](store, "anchor_free_event"),
             mutable_message_identities=_DiskRevisionSet[bytes](store, "mutable_message"),
         )
-    except BaseException:
-        store.close()
+    except BaseException as primary:
+        try:
+            store.close()
+        except BaseException as close_error:
+            primary.add_note(f"revision projection cleanup also failed: {close_error}")
         raise
 
 

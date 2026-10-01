@@ -40,7 +40,8 @@ from polylogue.sources.parsers.base_models import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import ArchiveWriteOutcome
+from tests.infra.index_writer import write_fixture_index_session
 
 _NULL_LITERAL = "__POLYLOGUE_NULL__"
 _EMPTY_LITERAL = "__POLYLOGUE_EMPTY__"
@@ -535,7 +536,7 @@ def _write(db_path: Path, session: ParsedSession) -> dict[str, object]:
     outcomes: list[ArchiveWriteOutcome] = []
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn, session, content_hash=session_content_hash(session), write_outcome=outcomes
         )
         conn.commit()

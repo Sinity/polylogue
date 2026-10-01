@@ -1817,12 +1817,12 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
             owner.close()
     finally:
         if fd >= 0:
-            primary = sys.exception()
+            settlement_primary = sys.exception()
             try:
                 os.close(fd)
             except OSError as cleanup:
-                if primary is not None:
-                    primary.add_note(f"source descriptor cleanup also failed: {type(cleanup).__name__}")
+                if settlement_primary is not None:
+                    settlement_primary.add_note(f"source descriptor cleanup also failed: {type(cleanup).__name__}")
                 else:
                     raise
 
@@ -2004,7 +2004,7 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
         else:
             owner.close()
     finally:
-        primary = sys.exception()
+        settlement_primary = sys.exception()
         descriptors = tuple(descriptor for descriptor in (reopened_fd, fd) if descriptor >= 0)
         failure = None
         for descriptor in descriptors:
@@ -2013,8 +2013,8 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
             except OSError as error:
                 failure = failure or error
         if failure is not None:
-            if primary is not None:
-                primary.add_note(f"checkpoint descriptor cleanup also failed: {type(failure).__name__}")
+            if settlement_primary is not None:
+                settlement_primary.add_note(f"checkpoint descriptor cleanup also failed: {type(failure).__name__}")
             else:
                 raise failure
     if int(checkpoint[0]) != 0:

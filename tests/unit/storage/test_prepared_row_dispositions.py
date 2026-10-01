@@ -44,8 +44,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_rows,
     prepared_row_dispositions,
     reset_prepared_row_dispositions,
-    write_parsed_session_to_archive,
 )
+from tests.infra.index_writer import write_fixture_index_session
 
 
 @pytest.fixture(autouse=True)
@@ -84,9 +84,7 @@ def test_prepared_rows_are_recorded_as_consumed(tmp_path: Path) -> None:
     prepared = prepare_session_rows(session)
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(
-            conn, session, content_hash=str(session_content_hash(session)), prepared=prepared
-        )
+        write_fixture_index_session(conn, session, content_hash=str(session_content_hash(session)), prepared=prepared)
     finally:
         conn.close()
 
@@ -98,7 +96,7 @@ def test_no_shard_is_recorded_as_absent(tmp_path: Path) -> None:
     session = _session("absent", ["one"])
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, session, content_hash=str(session_content_hash(session)))
+        write_fixture_index_session(conn, session, content_hash=str(session_content_hash(session)))
     finally:
         conn.close()
 
@@ -114,7 +112,7 @@ def test_changed_content_is_recorded_as_a_hash_mismatch(tmp_path: Path) -> None:
 
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn, mutated, content_hash=str(session_content_hash(mutated)), prepared=stale_prepared
         )
     finally:
@@ -138,9 +136,9 @@ def test_prefix_sharing_child_is_recorded_as_slicing(tmp_path: Path) -> None:
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, parent, content_hash=str(session_content_hash(parent)))
+        write_fixture_index_session(conn, parent, content_hash=str(session_content_hash(parent)))
         reset_prepared_row_dispositions()
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             child,
             content_hash=str(session_content_hash(child)),
@@ -157,7 +155,7 @@ def test_append_with_a_matching_frontier_consumes_the_carrier(tmp_path: Path) ->
     first = _session("append", ["one"])
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, first, content_hash=str(session_content_hash(first)))
+        write_fixture_index_session(conn, first, content_hash=str(session_content_hash(first)))
         appended = _session("append", ["two"], id_offset=1)
         # Pin the carrier to the frontier the writer will observe, exactly as
         # a preparation running against this connection would.
@@ -168,7 +166,7 @@ def test_append_with_a_matching_frontier_consumes_the_carrier(tmp_path: Path) ->
             content_occurrence_offsets=archive_tier_write._stored_content_occurrences(conn, session_id),
         )
         reset_prepared_row_dispositions()
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             appended,
             content_hash=str(session_content_hash(appended)),
@@ -188,13 +186,13 @@ def test_append_pinned_to_a_stale_frontier_is_recorded_and_recomputed(tmp_path: 
     first = _session("stale-append", ["one"])
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, first, content_hash=str(session_content_hash(first)))
+        write_fixture_index_session(conn, first, content_hash=str(session_content_hash(first)))
         appended = _session("stale-append", ["two"], id_offset=1)
         # Pinned against an empty session: the live frontier is position 1.
         stale = prepare_session_rows(appended, position_offset=0, content_occurrence_offsets={})
         assert stale.position_offset == 0
         reset_prepared_row_dispositions()
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             appended,
             content_hash=str(session_content_hash(appended)),
@@ -236,9 +234,9 @@ def test_a_shard_carrier_is_not_row_tuples_for_an_append(tmp_path: Path) -> None
     )
     conn = _connect(tmp_path / "index.db")
     try:
-        write_parsed_session_to_archive(conn, first, content_hash=str(session_content_hash(first)))
+        write_fixture_index_session(conn, first, content_hash=str(session_content_hash(first)))
         reset_prepared_row_dispositions()
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             appended,
             content_hash=str(session_content_hash(appended)),
@@ -258,11 +256,11 @@ def test_dispositions_accumulate_across_writes(tmp_path: Path) -> None:
         for index in range(3):
             session = _session(f"sum-{index}", ["body"])
             prepared = prepare_session_rows(session) if index else None
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, session, content_hash=str(session_content_hash(session)), prepared=prepared
             )
         corrupted = _session("sum-corrupt", ["body"])
-        write_parsed_session_to_archive(
+        write_fixture_index_session(
             conn,
             corrupted,
             content_hash=str(session_content_hash(corrupted)),

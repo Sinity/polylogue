@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
+from polylogue.core.write_admission import WriteAdmission, active_write_admission
 from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 from polylogue.core.write_lease import (
     WriteLeaseDelegation,
@@ -40,8 +41,7 @@ from polylogue.core.write_lease import (
 from polylogue.logging import ERROR, INFO, WARNING, emit
 
 if TYPE_CHECKING:
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-    from polylogue.storage.sqlite.write_lease import SQLCustodyOwner
+    from polylogue.core.sql_settlement import AsyncSQLCustodyOwner, SQLCustodyOwner
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -256,9 +256,6 @@ class _WriteRequest:
 
 
 WriteEventObserver = Callable[[DaemonWriteEvent], None]
-_ACTIVE_LEASE: contextvars.ContextVar[tuple[DaemonWriteCoordinator, asyncio.Task[object]] | None] = (
-    contextvars.ContextVar("polylogue_active_daemon_write_lease", default=None)
-)
 _TELEMETRY_LOCK = threading.Lock()
 _LATEST_TELEMETRY: dict[str, object] = {
     "active_actor": None,
@@ -283,7 +280,7 @@ def daemon_write_lease_active() -> bool:
     unrelated maintenance process racing the daemon.  This is an authority
     check, not merely a daemon-process check.
     """
-    return _ACTIVE_LEASE.get() is not None
+    return active_write_admission.get() is not None
 
 
 class DaemonWriterSettlementError(RuntimeError):
@@ -410,7 +407,7 @@ class DaemonWriteCoordinator:
         self._owner_pid = os.getpid()
         self._terminal_guard = threading.Lock()
         self._terminal_workers: set[_TerminalWriter] = set()
-        self._terminal_async_backends: dict[int, SQLiteBackend] = {}
+        self._terminal_async_backends: dict[int, AsyncSQLCustodyOwner] = {}
         self._terminal_async_attempt: asyncio.Task[None] | None = None
         self._lock = _PriorityGate()
         self._observer = observer
@@ -455,7 +452,7 @@ class DaemonWriteCoordinator:
             self._idle.set()
         self._publish_telemetry()
 
-    def _retained_async_backends(self) -> tuple[SQLiteBackend, ...]:
+    def _retained_async_backends(self) -> tuple[AsyncSQLCustodyOwner, ...]:
         self._require_process()
         with self._terminal_guard:
             return tuple(self._terminal_async_backends.values())
@@ -464,7 +461,7 @@ class DaemonWriteCoordinator:
         return bool(self._retained_workers() or self._retained_async_backends())
 
     async def _settle_async_backends(self) -> None:
-        from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+        from polylogue.operations.sql_settlement import retained_async_sql_owners
 
         first_error: BaseException | None = None
         cancellation: asyncio.CancelledError | None = None
@@ -475,7 +472,7 @@ class DaemonWriteCoordinator:
                 cancellation = cancellation or exc
             except BaseException as exc:
                 first_error = first_error or exc
-            if not any(owner is backend for owner in retained_write_backends_on_current_thread()):
+            if not any(owner is backend for owner in retained_async_sql_owners()):
                 with self._terminal_guard:
                     self._terminal_async_backends.pop(id(backend), None)
         if first_error is not None:
@@ -515,13 +512,13 @@ class DaemonWriteCoordinator:
                 with self._terminal_guard:
                     self._terminal_workers.discard(worker)
         if self._retained_async_backends():
-            attempt = self._terminal_async_attempt
-            if attempt is None or attempt.done():
-                attempt = asyncio.create_task(self._settle_async_backends())
-                self._terminal_async_attempt = attempt
-                attempt.add_done_callback(self._async_settlement_completed)
+            async_attempt = self._terminal_async_attempt
+            if async_attempt is None or async_attempt.done():
+                async_attempt = asyncio.create_task(self._settle_async_backends())
+                self._terminal_async_attempt = async_attempt
+                async_attempt.add_done_callback(self._async_settlement_completed)
             try:
-                await asyncio.shield(attempt)
+                await asyncio.shield(async_attempt)
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:
@@ -572,9 +569,9 @@ class DaemonWriteCoordinator:
         current_task = asyncio.current_task()
         if current_task is None:
             raise RuntimeError("daemon write coordination requires an asyncio task")
-        active_lease = _ACTIVE_LEASE.get()
-        if active_lease is not None and active_lease[0] is self:
-            if active_lease[1] is current_task:
+        active_lease = active_write_admission.get()
+        if active_lease is not None and active_lease.coordinator is self:
+            if active_lease.admits(self, self._archive_root):
                 return await operation()
             raise RuntimeError(
                 "daemon write lease was inherited by a child task; nested writes must run in the owning task"
@@ -640,7 +637,7 @@ class DaemonWriteCoordinator:
         if owner is None:  # pragma: no cover - asyncio always owns created tasks
             self._lock.release()
             raise RuntimeError("coordinator execution has no owning task")
-        token = _ACTIVE_LEASE.set((self, owner))
+        token = active_write_admission.set(WriteAdmission(self, owner, self._archive_root))
         budget_s = write_hold_budget_s(request.actor)
         hold_token = enter_write_hold(request.actor, budget_s)
         outcome: WriteOutcome = "success"
@@ -660,12 +657,12 @@ class DaemonWriteCoordinator:
             # actual writer thread, so every writable open remains behind the
             # same gate even when the callable is synchronous.
             async with async_write_lease(request.actor, archive_root=self._archive_root, coordinator=self) as lease:
-                from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+                from polylogue.operations.sql_settlement import retained_async_sql_owners
 
                 try:
                     value = await operation()
                 finally:
-                    retained = retained_write_backends_on_current_thread(lease=lease)
+                    retained = retained_async_sql_owners(lease=lease)
                     if retained:
                         with self._terminal_guard:
                             self._terminal_async_backends.update((id(backend), backend) for backend in retained)
@@ -680,7 +677,7 @@ class DaemonWriteCoordinator:
             raise
         finally:
             exit_write_hold(hold_token)
-            _ACTIVE_LEASE.reset(token)
+            active_write_admission.reset(token)
             hold_seconds = time.perf_counter() - acquired_at
             over_budget = hold_seconds > budget_s
             if over_budget:
@@ -999,27 +996,25 @@ async def _run_writer_worker(
     thread_grant = grant_write_lease_thread() if current_write_lease() is not None else None
 
     def worker() -> None:
-        from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
+        from polylogue.operations.sql_settlement import retained_async_sql_owners
 
         custody = thread_grant.lease.custody if thread_grant is not None else None
 
         def sql_owners() -> tuple[SQLCustodyOwner, ...]:
-            from polylogue.storage.sqlite.reference_seal import retained_reference_seals_on_current_thread
-            from polylogue.storage.sqlite.write_lease import retained_sql_owners_on_current_thread
+            from polylogue.operations.sql_settlement import retained_sync_sql_owners
 
-            observers = retained_reference_seals_on_current_thread()
-            registered = retained_sql_owners_on_current_thread()
+            registered = retained_sync_sql_owners()
             prepared = dispatch.settlement_owners() if dispatch is not None else ()
-            return tuple({id(owner): owner for owner in (*registered, *observers, *prepared)}.values())
+            return tuple({id(owner): owner for owner in (*registered, *prepared)}.values())
 
         def reconcile_cached_handles() -> None:
-            from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
+            from polylogue.operations.sql_settlement import settle_cached_sql
 
             if custody is not None:
-                settle_cached_connections_on_current_thread(custody)
+                settle_cached_sql(custody)
 
         def pending() -> bool:
-            return bool(sql_owners() or retained_write_backends_on_current_thread())
+            return bool(sql_owners() or retained_async_sql_owners())
 
         def cleanup() -> None:
             first_error: BaseException | None = None
@@ -1031,13 +1026,13 @@ async def _run_writer_worker(
 
             async def close_async_owners() -> None:
                 nonlocal first_error
-                for backend in retained_write_backends_on_current_thread():
+                for backend in retained_async_sql_owners():
                     try:
                         await backend.close()
                     except BaseException as exc:
                         first_error = first_error or exc
 
-            if retained_write_backends_on_current_thread():
+            if retained_async_sql_owners():
                 asyncio.run(close_async_owners())
             if first_error is not None:
                 raise first_error
@@ -1161,7 +1156,7 @@ class DaemonWriteThreadBridge:
             task = asyncio.current_task()
             assert task is not None
             self._coordinator._track_execution(task, actor=delegation.actor)
-            token = _ACTIVE_LEASE.set((self._coordinator, task))
+            token = active_write_admission.set(WriteAdmission(self._coordinator, task, self._coordinator._archive_root))
             try:
                 with adopt_write_lease(delegation):
                     child_delegation = delegate_write_lease()
@@ -1177,7 +1172,7 @@ class DaemonWriteThreadBridge:
                         self._coordinator, None, work, f"polylogue-writer:{delegation.actor}"
                     )
             finally:
-                _ACTIVE_LEASE.reset(token)
+                active_write_admission.reset(token)
 
         coroutine = admitted()
         try:

@@ -160,7 +160,7 @@ def cli_archive_writer_ownership() -> Iterator[None]:
                 offline_lock_held = True
             arrived = resident_archive_writer(root)
             if arrived is None:
-                from polylogue.storage.sqlite.write_lease import (
+                from polylogue.core.write_lease import (
                     archive_write_custody,
                     current_sql_custody,
                     current_write_lease,

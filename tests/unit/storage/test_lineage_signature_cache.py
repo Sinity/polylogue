@@ -19,10 +19,8 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    LineageSignatureCache,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import LineageSignatureCache
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -92,12 +90,12 @@ def test_disabling_cache_preserves_lineage_output(tmp_path: Path) -> None:
     uncached_conn = _connect(tmp_path / "uncached.db")
     try:
         cached = LineageSignatureCache(max_bytes=1024 * 1024)
-        write_parsed_session_to_archive(cached_conn, parent, signature_cache=cached)
-        write_parsed_session_to_archive(cached_conn, child, signature_cache=cached)
+        write_fixture_index_session(cached_conn, parent, signature_cache=cached)
+        write_fixture_index_session(cached_conn, child, signature_cache=cached)
 
         disabled = LineageSignatureCache(max_bytes=1024 * 1024, enabled=False)
-        write_parsed_session_to_archive(uncached_conn, parent, signature_cache=disabled)
-        write_parsed_session_to_archive(uncached_conn, child, signature_cache=disabled)
+        write_fixture_index_session(uncached_conn, parent, signature_cache=disabled)
+        write_fixture_index_session(uncached_conn, child, signature_cache=disabled)
 
         for table in ("sessions", "messages", "blocks", "session_links"):
             left = [tuple(row) for row in cached_conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
@@ -118,7 +116,7 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
     conn = _connect(db)
     cache = LineageSignatureCache(max_bytes=1024 * 1024)
     parent = _session("parent", [_msg("p0", "hello", 0), _msg("p1", "reply", 1)])
-    parent_id = write_parsed_session_to_archive(conn, parent, signature_cache=cache)
+    parent_id = write_fixture_index_session(conn, parent, signature_cache=cache)
 
     calls = 0
     original = write_module._own_db_signatures
@@ -139,8 +137,8 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
         [_msg("b0", "hello", 0), _msg("b1", "reply", 1), _msg("b2", "B tail", 2)],
         parent="parent",
     )
-    child_a_id = write_parsed_session_to_archive(conn, child_a, signature_cache=cache)
-    child_b_id = write_parsed_session_to_archive(conn, child_b, signature_cache=cache)
+    child_a_id = write_fixture_index_session(conn, child_a, signature_cache=cache)
+    child_b_id = write_fixture_index_session(conn, child_b, signature_cache=cache)
 
     # Parent own signatures are read once; the second sibling consumes the
     # composed cache hit. The branch point remains the parent's canonical row.
@@ -162,11 +160,11 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
 def test_one_byte_prefix_difference_is_a_miss_and_stays_spawned_fresh(tmp_path: Path) -> None:
     """A semantic prefix mismatch cannot inherit a nearby parent row."""
     conn = _connect(tmp_path / "index.db")
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         conn,
         _session("parent", [_msg("p0", "hello", 0), _msg("p1", "reply", 1)]),
     )
-    child_id = write_parsed_session_to_archive(
+    child_id = write_fixture_index_session(
         conn,
         _session(
             "child",
@@ -199,14 +197,14 @@ def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path:
     def lineage_messages(stem: str, texts: list[str]) -> list[ParsedMessage]:
         return [_msg(f"{stem}{position}", text, position) for position, text in enumerate(texts)]
 
-    write_parsed_session_to_archive(conn, _session("a", lineage_messages("a", prefix[:2])), signature_cache=cache)
-    b_id = write_parsed_session_to_archive(
+    write_fixture_index_session(conn, _session("a", lineage_messages("a", prefix[:2])), signature_cache=cache)
+    b_id = write_fixture_index_session(
         conn, _session("b", lineage_messages("b", prefix[:3]), parent="a"), signature_cache=cache
     )
-    c_id = write_parsed_session_to_archive(
+    c_id = write_fixture_index_session(
         conn, _session("c", lineage_messages("c", prefix), parent="b"), signature_cache=cache
     )
-    write_parsed_session_to_archive(
+    write_fixture_index_session(
         conn, _session("d1", lineage_messages("d1", [*prefix, "D1 tail"]), parent="c"), signature_cache=cache
     )
     composed_c = cache.get_composed(c_id)
@@ -225,9 +223,9 @@ def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path:
 
     # Rewrite A in place: same message ids, the first message's content edited.
     edited = ["hello, edited", *prefix[1:]]
-    write_parsed_session_to_archive(conn, _session("a", lineage_messages("a", edited[:2])), signature_cache=cache)
+    write_fixture_index_session(conn, _session("a", lineage_messages("a", edited[:2])), signature_cache=cache)
 
-    d2_id = write_parsed_session_to_archive(
+    d2_id = write_fixture_index_session(
         conn, _session("d2", lineage_messages("d2", [*edited, "D2 tail"]), parent="c"), signature_cache=cache
     )
     link = conn.execute(

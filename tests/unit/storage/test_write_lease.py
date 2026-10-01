@@ -603,7 +603,7 @@ def test_archive_close_can_settle_a_finished_task_only_on_its_original_thread(tm
             with pytest.raises(RuntimeError):
                 store.commit()
             store.close()
-            assert store._conn is None
+            assert store._owned_index_connection is None
             assert current_write_lease() is None
             async with async_write_lease("test.store.successor", archive_root=root):
                 with sqlite3.connect(root / "index.db") as conn:

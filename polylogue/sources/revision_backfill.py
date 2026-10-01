@@ -3704,6 +3704,7 @@ def backfill_historical_revision_evidence(
     )
     with (
         archive_context as archive,
+        ExitStack() as replay_windows,
         _ParsedSessionSpill(
             archive_root,
             index_path=active_index_path,
@@ -3756,13 +3757,23 @@ def backfill_historical_revision_evidence(
         membership_keys = set(selected_membership_keys)
 
         pending_replay_commits = 0
+        replay_window: ExitStack | None = None
+
+        def ensure_replay_window() -> None:
+            nonlocal replay_window
+            if replay_batched and replay_window is None:
+                replay_window = replay_windows.enter_context(ExitStack())
+                replay_window.enter_context(archive.index_mutation_scope())
 
         def commit_replay_unit() -> None:
-            nonlocal pending_replay_commits
+            nonlocal pending_replay_commits, replay_window
             pending_replay_commits += 1
             if replay_batch_size is not None and pending_replay_commits >= replay_batch_size:
                 commit_started = time.perf_counter()
                 archive.commit()
+                if replay_window is not None:
+                    replay_window.close()
+                    replay_window = None
                 stage_timings["replay.commit"] = stage_timings.get("replay.commit", 0.0) + (
                     time.perf_counter() - commit_started
                 )
@@ -3982,6 +3993,7 @@ def backfill_historical_revision_evidence(
                         prepared_inputs=prepared_inputs,
                     )
                     if shard_transport is None:
+                        ensure_replay_window()
                         archive.apply_raw_revision_replay(
                             plan,
                             parsed_by_raw_id,
@@ -4022,6 +4034,7 @@ def backfill_historical_revision_evidence(
                         try:
                             with archive.attached_session_shard(shard_path, required=True) as bindings:
                                 prepared = _required_shard_prepared_rows(tip_raw_id, composed[0], bindings)
+                                ensure_replay_window()
                                 archive.apply_raw_revision_replay(
                                     plan,
                                     parsed_by_raw_id,
@@ -4059,6 +4072,7 @@ def backfill_historical_revision_evidence(
                                 tip_raw_id,
                                 exc,
                             )
+                            ensure_replay_window()
                             archive.apply_raw_revision_replay(
                                 plan,
                                 parsed_by_raw_id,
@@ -4200,6 +4214,7 @@ def backfill_historical_revision_evidence(
                             prepared_inputs=prepared_inputs,
                         )
                     if shard_transport is None or not classification.accepted_raw_ids:
+                        ensure_replay_window()
                         archive.apply_raw_membership_classification(
                             logical_key,
                             classification,
@@ -4230,6 +4245,7 @@ def backfill_historical_revision_evidence(
                                 shard_transport.path_for_raw(accepted_raw_id), required=True
                             ) as bindings:
                                 prepared = _required_shard_prepared_rows(accepted_raw_id, accepted_session, bindings)
+                                ensure_replay_window()
                                 archive.apply_raw_membership_classification(
                                     logical_key,
                                     classification,
@@ -4263,6 +4279,7 @@ def backfill_historical_revision_evidence(
                                 accepted_raw_id,
                                 exc,
                             )
+                            ensure_replay_window()
                             archive.apply_raw_membership_classification(
                                 logical_key,
                                 classification,
@@ -4310,6 +4327,7 @@ def backfill_historical_revision_evidence(
                     _LOGGER.warning("work_event_session_absent: raw_id=%s session_id=%s", logical_key, event_session_id)
                     adoption_deferred += 1
                     continue
+                ensure_replay_window()
                 archive._index_parsed_for_retained_raw(
                     event_session,
                     raw_id=logical_key,
@@ -4330,6 +4348,9 @@ def backfill_historical_revision_evidence(
                 stage_counts.update(decode_prefetcher.counts())
         if replay_batched:
             archive.commit()
+            if replay_window is not None:
+                replay_window.close()
+                replay_window = None
         if fresh_build:
             # A candidate is publishable only after its final reader schema
             # and all build-deferred derived surfaces exist.  Keep this one
@@ -5960,11 +5981,15 @@ class _ReplaySpillPrefetcher:
                     index_frame = None
                     index_conn = None
             spill_conn: sqlite3.Connection | None = None
+            spill_owner = None
             try:
                 plan, descriptors = self._build_plan(source_conn, keys, extra_members)
                 if not plan:
                     return
                 spill_conn = sqlite3.connect(self._spill.path, timeout=30.0)
+                from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+                spill_owner = NativeSQLCustodyOwner(spill_conn)
                 spill_conn.execute("PRAGMA busy_timeout = 30000")
                 for seq, raw_id in plan:
                     if self._wait_for_budget(generation, seq) is False:
@@ -6004,8 +6029,8 @@ class _ReplaySpillPrefetcher:
                         )
                         self._buffered_tree_bytes += tree_bytes
             finally:
-                if spill_conn is not None:
-                    spill_conn.close()
+                if spill_owner is not None:
+                    spill_owner.close()
 
     def _wait_for_budget(self, generation: int, seq: int) -> bool:
         """Block until buffer headroom exists; False means phase over."""
@@ -6231,6 +6256,10 @@ class _ParsedSessionSpill:
         self.path = Path(name)
         self._scratch_directories: list[Path] = []
         self.conn = sqlite3.connect(self.path)
+        self._sql_closed = False
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+        NativeSQLCustodyOwner(self.conn, terminal_parent=self)
         # Disposable single-connection cache: durability is meaningless (the
         # fallback is reparsing durable source evidence), so skip the
         # journal and every fsync -- the per-add commit previously paid a
@@ -6304,11 +6333,36 @@ class _ParsedSessionSpill:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        del exc_type, exc, traceback
-        self.conn.close()
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc is None:
+                raise
+            exc.add_note(f"retained parsed-session cleanup also failed: {type(cleanup_error).__name__}")
+            raise exc from cleanup_error
+
+    def close(self) -> None:
+        from polylogue.storage.sqlite.connection_profile import (
+            close_parent_native_connection,
+            native_sql_children,
+            retire_native_sql_parent,
+        )
+
+        children = native_sql_children(self)
+        if not children and not self._sql_closed:
+            raise RuntimeError("parsed-session spill cleanup requires its creator thread")
+        if not self._sql_closed:
+            close_parent_native_connection(self, self.conn)
+            self._sql_closed = True
+        # Failed close retains both the actual owner and all backing artifacts.
+        # Closed children remain in the existing native census until every
+        # artifact obligation below also succeeds.
         self.path.unlink(missing_ok=True)
-        for directory in self._scratch_directories:
-            shutil.rmtree(directory, ignore_errors=True)
+        for directory in tuple(self._scratch_directories):
+            if directory.exists():
+                shutil.rmtree(directory)
+            self._scratch_directories.remove(directory)
+        retire_native_sql_parent(self)
 
     def scratch_directory(self, *, prefix: str) -> Path:
         """Allocate scratch beside this target archive and remove it on close."""

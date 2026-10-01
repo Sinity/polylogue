@@ -331,6 +331,10 @@ async def _scoped_backend_connection(
 async def _backend_write_lease(backend: SQLiteBackend, actor: str) -> AsyncIterator[None]:
     """Prepare a configured fresh root, then serialize its first archive SQL."""
     _require_transaction_reader(backend)
+    from polylogue.core.compute_cancel import compute_cancel_requested
+
+    if compute_cancel_requested():
+        raise asyncio.CancelledError("async archive mutation cancelled before admission")
     root = backend._source_db_path.parent
     require_write_lease(f"async writer admission({actor})", archive_root=root)
     if backend._bootstrap_needed:

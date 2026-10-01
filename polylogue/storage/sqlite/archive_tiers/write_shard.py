@@ -31,11 +31,10 @@ re-derives nothing from it. Two consequences follow and both are load-bearing:
 from __future__ import annotations
 
 import hashlib
-import os
 import sqlite3
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import closing, contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import dataclass
 from itertools import islice
 from pathlib import Path
@@ -173,6 +172,18 @@ class SessionShard:
         return ShardSessionMapping(self.path, len(self.sessions))
 
 
+@contextmanager
+def _shard_connection(path: Path, *, readonly: bool = True) -> Iterator[sqlite3.Connection]:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+    connection = sqlite3.connect(_read_only_uri(path), uri=True) if readonly else sqlite3.connect(path)
+    owner = NativeSQLCustodyOwner(connection)
+    try:
+        yield connection
+    finally:
+        owner.close()
+
+
 class SessionShardBuilder:
     """Writes one shard file. Not thread-safe: one builder per worker.
 
@@ -184,6 +195,11 @@ class SessionShardBuilder:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._conn = sqlite3.connect(path, isolation_level=None)
+        self._sql_closed = False
+        self._discard_on_close = True
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+        NativeSQLCustodyOwner(self._conn, terminal_parent=self)
         # A shard is scratch: it is read once, by one process, and deleted.
         # Its durability is the source file it was parsed from, so paying for
         # synchronous writes here would buy nothing the re-parse does not.
@@ -285,22 +301,31 @@ class SessionShardBuilder:
                 # Dense ascending rowids are what the range scans assume; a
                 # gap means this file cannot address its own sessions.
                 self._conn.execute("ROLLBACK")
-                self._conn.close()
+                self.close()
                 raise ShardRefusedError(f"shard {self.path}: {table} rowids are not dense")
         self._conn.execute(
             "INSERT INTO shard_seal VALUES (?, ?, ?)",
             (SHARD_LAYOUT_VERSION, shard_column_signature(), self._session_count),
         )
         self._conn.execute("COMMIT")
-        self._conn.close()
+        self._discard_on_close = False
+        self.close()
         return SessionShard(path=self.path, sessions=ShardSessionSequence(self.path, self._session_count))
 
-    def abandon(self) -> None:
-        """Discard an unsealed shard and its file."""
-        try:
-            self._conn.close()
-        finally:
+    def close(self) -> None:
+        from polylogue.storage.sqlite.connection_profile import close_parent_native_connection, retire_native_sql_parent
+
+        if not self._sql_closed:
+            close_parent_native_connection(self, self._conn)
+            self._sql_closed = True
+        if self._discard_on_close:
             discard_session_shard(self.path)
+        retire_native_sql_parent(self)
+
+    def abandon(self) -> None:
+        """Discard only after the actual builder connection closes."""
+        self._discard_on_close = True
+        self.close()
 
 
 def build_session_shard(directory: Path, prepared_sessions: Sequence[object]) -> SessionShard:
@@ -357,7 +382,7 @@ class ShardIdentitySequence(Sequence[tuple[str, int]]):
             # writer resolves every message of a session through here.
             start = index - index % _IDENTITY_PAGE_ROWS
             end = min(start + _IDENTITY_PAGE_ROWS, len(self)) - 1
-            with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+            with _shard_connection(self.path) as conn:
                 page = tuple(
                     (str(identity), int(occurrence))
                     for identity, occurrence in conn.execute(
@@ -373,12 +398,8 @@ class ShardIdentitySequence(Sequence[tuple[str, int]]):
         return page[offset]
 
     def __iter__(self) -> Iterator[tuple[str, int]]:
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
-            for identity, occurrence in conn.execute(
-                "SELECT content_identity, content_occurrence FROM messages WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
-                (self.lo, self.hi),
-            ):
-                yield str(identity), int(occurrence)
+        for index in range(len(self)):
+            yield self[index]
 
 
 def _read_message_identities(
@@ -446,7 +467,7 @@ class ShardSessionSequence(Sequence[ShardSessionRows]):
             index += self._count
         if index < 0 or index >= self._count:
             raise IndexError(index)
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+        with _shard_connection(self.path) as conn:
             row = conn.execute(
                 "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
                 "FROM shard_session WHERE rowid = ?",
@@ -457,12 +478,17 @@ class ShardSessionSequence(Sequence[ShardSessionRows]):
             return _session_entry(conn, self.path, row)
 
     def __iter__(self) -> Iterator[ShardSessionRows]:
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
-            for row in conn.execute(
-                "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
-                "FROM shard_session ORDER BY rowid"
-            ):
-                yield _session_entry(conn, self.path, row)
+        for start in range(0, self._count, 512):
+            with _shard_connection(self.path) as connection:
+                page = tuple(
+                    _session_entry(connection, self.path, row)
+                    for row in connection.execute(
+                        "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
+                        "FROM shard_session WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
+                        (start + 1, min(start + 512, self._count)),
+                    )
+                )
+            yield from page
 
 
 class ShardSessionMapping(Mapping[str, ShardSessionRows]):
@@ -476,12 +502,20 @@ class ShardSessionMapping(Mapping[str, ShardSessionRows]):
         return self.count
 
     def __iter__(self) -> Iterator[str]:
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
-            for (session_id,) in conn.execute("SELECT session_id FROM shard_session ORDER BY rowid"):
+        after = 0
+        while True:
+            with _shard_connection(self.path) as connection:
+                rows = connection.execute(
+                    "SELECT rowid, session_id FROM shard_session WHERE rowid > ? ORDER BY rowid LIMIT 512", (after,)
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0])
+            for _rowid, session_id in rows:
                 yield str(session_id)
 
     def __getitem__(self, session_id: str) -> ShardSessionRows:
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+        with _shard_connection(self.path) as conn:
             rows = conn.execute(
                 "SELECT session_id, content_hash, message_lo, message_hi, block_lo, block_hi "
                 "FROM shard_session INDEXED BY shard_session_id WHERE session_id = ? LIMIT 2",
@@ -507,7 +541,7 @@ def open_session_shard(path: Path) -> SessionShard:
         raise ShardRefusedError(f"shard {path}: file is absent")
     checked_count = 0
     try:
-        with closing(sqlite3.connect(path)) as conn:
+        with _shard_connection(path, readonly=False) as conn:
             seal = conn.execute("SELECT layout_version, column_signature, session_count FROM shard_seal").fetchall()
             if len(seal) != 1:
                 raise ShardRefusedError(f"shard {path}: unsealed ({len(seal)} seal rows)")
@@ -568,9 +602,13 @@ def open_session_shard(path: Path) -> SessionShard:
 
 def discard_session_shard(path: Path) -> None:
     """Remove a shard and any journal it left behind."""
-    for candidate in (path, path.with_name(path.name + "-journal"), path.with_name(path.name + "-wal")):
-        with suppress(OSError):
-            os.unlink(candidate)
+    for candidate in (
+        path,
+        path.with_name(path.name + "-journal"),
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
 
 
 def _read_only_uri(path: Path) -> str:

@@ -38,8 +38,8 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,
@@ -875,7 +875,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"tool-conv-1").hexdigest(),
@@ -927,7 +927,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
 
     conn = _open_index_archive(tmp_path)
     try:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=hashlib.sha256(b"duplicate-message-conv").hexdigest(),

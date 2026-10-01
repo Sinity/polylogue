@@ -38,7 +38,6 @@ from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.pipeline.services.ingest_batch._core import _write_session
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.security.excision import apply_session_excision, plan_session_excision
 from polylogue.sources.live import WatchSource
@@ -57,6 +56,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
 _SESSION_B = "5c3d1e40-0000-4000-8000-00000000b002"
@@ -544,7 +544,7 @@ def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> Non
             _attachment_session("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
             _attachment_session("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),
         ):
-            changed, _counts = _write_session(conn, payload, blob_publisher=publisher)
+            changed, _counts = write_fixture_ingest_payload(conn, payload, blob_publisher=publisher)
             assert changed is True
         conn.commit()
         session_a = str(conn.execute("SELECT session_id FROM sessions WHERE native_id = 'att-a'").fetchone()[0])

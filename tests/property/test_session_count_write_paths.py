@@ -21,11 +21,8 @@ from polylogue.storage.derived.session.summary import refresh_session_summary
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import (
-    _build_message_rows,
-    _duplicate_message_native_ids,
-    write_parsed_session_to_archive,
-)
+from polylogue.storage.sqlite.archive_tiers.write import _build_message_rows, _duplicate_message_native_ids
+from tests.infra.index_writer import write_fixture_index_session
 
 _COUNT_COLUMNS = (
     "message_count",
@@ -144,15 +141,15 @@ def test_session_counts_agree_across_full_append_and_refresh_paths(messages: lis
     try:
         full_conn, append_conn, refresh_conn = connections
 
-        full_id = write_parsed_session_to_archive(full_conn, _new_session(messages))
+        full_id = write_fixture_index_session(full_conn, _new_session(messages), standalone_memory=True)
 
         split = 1 if messages else 0
         first, tail = messages[:split], messages[split:]
-        append_id = write_parsed_session_to_archive(append_conn, _new_session(first))
+        append_id = write_fixture_index_session(append_conn, _new_session(first), standalone_memory=True)
         if tail:
-            write_parsed_session_to_archive(append_conn, _new_session(tail), merge_append=True)
+            write_fixture_index_session(append_conn, _new_session(tail), merge_append=True, standalone_memory=True)
 
-        refresh_id = write_parsed_session_to_archive(refresh_conn, _new_session([]))
+        refresh_id = write_fixture_index_session(refresh_conn, _new_session([]), standalone_memory=True)
         duplicate_ids = _duplicate_message_native_ids(messages)
         refresh_conn.executemany(
             archive_tier_write._messages_insert_sql(),

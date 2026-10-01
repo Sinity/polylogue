@@ -23,7 +23,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO
 
-import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.config import Source
 from polylogue.core.json import JSONValue
 from polylogue.pipeline.ids import session_content_hash
@@ -37,6 +36,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.index_writer import write_fixture_ingest_payload
 
 
 @dataclass
@@ -188,6 +188,6 @@ def _write_via_ingest_batch(
         attachment_count=len(session.attachments),
         raw_id=raw_id,
     )
-    changed, _ = ingest_batch_core._write_session(conn, payload, blob_publisher=blob_publisher, source_conn=source_conn)
+    changed, _ = write_fixture_ingest_payload(conn, payload, blob_publisher=blob_publisher, source_conn=source_conn)
     assert changed is True
     conn.commit()

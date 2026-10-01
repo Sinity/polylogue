@@ -150,10 +150,13 @@ from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_f
 from polylogue.storage.sqlite.reference_seal import (
     IndexMutationScope,
     PreparedIndexMutation,
+    ReferenceSealError,
+    current_index_mutation_scope,
     index_path_for_connection,
     note_current_deleted_message_ids,
     note_current_deleted_session,
     note_current_lineage_change,
+    note_current_session_namespace_change,
 )
 from polylogue.storage.usage import provider_usage_event_identity
 
@@ -661,7 +664,7 @@ class LineageSignatureCache:
 _SignatureCacheLike = dict[str, list[tuple[str, str]]] | LineageSignatureCache
 
 
-def _repair_stale_session_observations(
+def _retain_stale_session_observations(
     conn: sqlite3.Connection,
     session_id: str,
     session: ParsedSession,
@@ -673,9 +676,14 @@ def _repair_stale_session_observations(
     Freshness/content governance may reject the snapshot, but its earlier
     creation evidence and repository observations are still legitimate evidence.
     Keeping this at the low-level writer boundary prevents direct API and
-    revision-governance callers from silently losing the repair that batch ingest
-    performs.
+    revision-governance callers from silently losing observations retained by
+    batch ingest.
     """
+    scope = current_index_mutation_scope()
+    if scope is None:
+        raise RuntimeError("stale observations require the caller's Index mutation scope")
+    scope.require_new_work(conn)
+    scope.note_lineage_change(session_id)
     candidate_created_at_ms, _candidate_updated_at_ms = session_evidence_timestamps(
         session,
         fallback_timestamp=fallback_timestamp,
@@ -2124,6 +2132,32 @@ def bind_session_shard(schema: str, shard: SessionShard) -> Mapping[str, Prepare
     return _BoundSessionShardRows(schema, shard)
 
 
+@contextmanager
+def _index_write_scope(
+    conn: sqlite3.Connection,
+    *,
+    archive_root: Path | None,
+    mutation_scope: IndexMutationScope | None,
+    manage_transaction: bool,
+) -> Iterator[IndexMutationScope]:
+    """Admit both stale-observation and content writes through one owner seam."""
+    if mutation_scope is not None:
+        mutation_scope.require_new_work(conn)
+        if not conn.in_transaction:
+            raise ReferenceSealError("a borrowed Index scope requires its active transaction")
+        yield mutation_scope
+        return
+    if archive_root is None:
+        raise ReferenceSealError("Index writes require their matching transaction scope or active archive root")
+    if not manage_transaction or conn.in_transaction:
+        raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
+    with (
+        PreparedIndexMutation(index_path_for_connection(conn), archive_root=archive_root) as seal,
+        seal.mutation_scope(conn) as scope,
+    ):
+        yield scope
+
+
 def write_parsed_session_to_archive(
     conn: sqlite3.Connection,
     session: ParsedSession,
@@ -2194,11 +2228,9 @@ def write_parsed_session_to_archive(
     failure, not a slow path. Default ``None`` means "the two coincide" and
     leaves every non-append caller exactly as before.
 
-    By default the whole write runs in its own transaction (``with conn:``)
-    committed on success. A bulk caller that wants many sessions in one
-    transaction — to amortize the per-commit fsync and WAL page churn that
-    dominate re-ingest I/O — passes ``manage_transaction=False`` and owns the
-    surrounding commit and any rollback-on-error itself.
+    An explicit active archive root owns a sealed transaction for this write.
+    A batch passes its matching mutation scope and owns the surrounding commit
+    and rollback, reusing one durable-reference proof for that commit window.
 
     ``bulk_fts`` (polylogue-crd8, default ``False`` so ordinary daemon ingest
     is byte-for-byte unchanged) enables the guard-gated bulk FTS mode for the
@@ -2236,6 +2268,12 @@ def write_parsed_session_to_archive(
     # head and later re-ingest compare against those, and an annotation does
     # not change which raw authored the session. The rule keys on the
     # retained raw identity, so every route replays an event the same way.
+    if mutation_scope is not None:
+        mutation_scope.require_new_work(conn)
+    elif archive_root is None:
+        raise ReferenceSealError("Index writes require their matching transaction scope or active archive root")
+    elif not manage_transaction or conn.in_transaction:
+        raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
     stored_header = (
         _stored_session_header(
             conn,
@@ -2338,10 +2376,14 @@ def write_parsed_session_to_archive(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_ms,
         ):
-            # The stale path returns before the normal write transaction below;
-            # own a short transaction here so direct callers cannot lose repairs.
-            with conn if manage_transaction else nullcontext():
-                _repair_stale_session_observations(conn, session_id, session)
+            with _index_write_scope(
+                conn,
+                archive_root=archive_root,
+                mutation_scope=mutation_scope,
+                manage_transaction=manage_transaction,
+            ) as scope:
+                scope.note_lineage_change(session_id)
+                _retain_stale_session_observations(conn, session_id, session)
             add_timing("index.skip_stale_replace", t0)
             if write_outcome is not None:
                 write_outcome.append(ArchiveWriteOutcome(session_id=session_id, wrote=False, stale_skipped=True))
@@ -2494,30 +2536,20 @@ def write_parsed_session_to_archive(
             identity_scope.__exit__(None, None, None)
         raise PreparedSessionWriteRefusedError("prepared replay lowering is stale or unavailable")
     add_timing("index.prepare", t0)
-    if mutation_scope is not None:
-        mutation_scope.require_connection(conn)
-        if not conn.in_transaction:
-            raise RuntimeError("a borrowed index mutation scope requires its active outer transaction")
-    elif archive_root is not None and not manage_transaction:
-        raise RuntimeError("manage_transaction=False requires the caller's live index mutation scope")
-    elif archive_root is not None and conn.in_transaction:
-        raise RuntimeError("a prepared index mutation must be opened before the outer transaction begins")
-    mutation_seal = (
-        PreparedIndexMutation(index_path_for_connection(conn), archive_root=archive_root)
-        if archive_root is not None and mutation_scope is None
-        else None
-    )
     # An owned scope, not ``with conn``, decides the actual outer commit after
     # checking that every formerly resolved typed anchor still resolves.
     invalidated_identity_children: set[str] = set()
     prefix_guard: _InheritedPrefixGuard | None = None
     try:
         with ExitStack() as mutation_stack:
-            if mutation_seal is not None:
-                mutation_stack.enter_context(mutation_seal)
-                mutation_stack.enter_context(mutation_seal.mutation_scope(conn))
-            elif mutation_scope is None and manage_transaction:
-                mutation_stack.enter_context(conn)
+            mutation_stack.enter_context(
+                _index_write_scope(
+                    conn,
+                    archive_root=archive_root,
+                    mutation_scope=mutation_scope,
+                    manage_transaction=manage_transaction,
+                )
+            )
             if prepared_write is not None:
                 prepared_union = prepared_write.cross_acquisition_union
                 if prepared_union is not None:
@@ -2677,6 +2709,8 @@ def write_parsed_session_to_archive(
             if stored_header is not None:
                 session_row_values.update(stored_header)
             sessions_spec = archive_tiers_specs.SESSIONS_SPEC
+            note_current_session_namespace_change(conn)
+            note_current_lineage_change(conn, session_id)
             conn.execute(
                 f"""
                 INSERT INTO sessions (

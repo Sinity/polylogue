@@ -19,9 +19,9 @@ from polylogue.storage.derived.session.usage_rollup import (
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -93,7 +93,7 @@ def test_sync_hydration_preserves_stored_attachment_provenance(tmp_path: Path) -
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     with write_lease("test.w5.hydrate", archive_root=root), closing(_connection(root / "index.db")) as conn:
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CHATGPT,

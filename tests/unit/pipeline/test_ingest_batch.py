@@ -80,12 +80,17 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import (
+    fixture_index_mutation_scope,
+    write_fixture_index_session,
+    write_fixture_ingest_payload,
+)
 from tests.infra.storage_records import admit_raw_record
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
@@ -161,7 +166,7 @@ def test_stale_observation_repair_derives_created_time_from_session_event(tmp_pa
                 )
             ],
         )
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         candidate = session.model_copy(
             update={
                 "session_events": [
@@ -179,7 +184,8 @@ def test_stale_observation_repair_derives_created_time_from_session_event(tmp_pa
             fallback_timestamp="2020-01-01T00:00:00Z",
         )
 
-        ingest_batch_core._repair_stale_revision_observations(conn, payload)
+        with fixture_index_mutation_scope(conn):
+            ingest_batch_core._retain_stale_revision_observations(conn, payload)
         row = conn.execute("SELECT created_at_ms FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     finally:
         conn.close()
@@ -734,7 +740,7 @@ def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
             message_tuples=[c_msg],
         )
 
-        _write_session(conn, child)
+        write_fixture_ingest_payload(conn, child)
         conn.commit()
 
         row = conn.execute(
@@ -775,8 +781,8 @@ def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
             message_tuples=[c_msg],
         )
 
-        _write_session(conn, parent)
-        _write_session(conn, child)
+        write_fixture_ingest_payload(conn, parent)
+        write_fixture_ingest_payload(conn, child)
         conn.commit()
 
         row = conn.execute(
@@ -836,7 +842,7 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
                 _attachment_ref_tuple("att-2", "codex-session:replace", "msg-2"),
             ],
         )
-        changed, counts = _write_session(conn, archive)
+        changed, counts = write_fixture_ingest_payload(conn, archive)
         assert changed is True
         assert counts["messages"] == 2
 
@@ -866,7 +872,7 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
             attachment_tuples=[_attachment_tuple("att-1")],
             attachment_ref_tuples=[_attachment_ref_tuple("att-1", "codex-session:replace", "msg-1")],
         )
-        changed, counts = _write_session(conn, v2)
+        changed, counts = write_fixture_ingest_payload(conn, v2)
         assert changed is True
         assert counts["messages"] == 1
         conn.commit()
@@ -954,8 +960,8 @@ def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -
             append_only=True,
         )
 
-        changed_initial, _initial_counts = _write_session(conn, initial)
-        changed_tail, tail_counts = _write_session(conn, tail)
+        changed_initial, _initial_counts = write_fixture_ingest_payload(conn, initial)
+        changed_tail, tail_counts = write_fixture_ingest_payload(conn, tail)
         conn.commit()
 
         rows = conn.execute(
@@ -1013,8 +1019,8 @@ def test_write_session_append_dedupes_whitespace_padded_native_id(tmp_path: Path
             append_only=True,
         )
 
-        changed_initial, _ = _write_session(conn, initial)
-        changed_duplicate, counts_duplicate = _write_session(conn, duplicate)
+        changed_initial, _ = write_fixture_ingest_payload(conn, initial)
+        changed_duplicate, counts_duplicate = write_fixture_ingest_payload(conn, duplicate)
         conn.commit()
 
         rows = conn.execute(
@@ -1073,8 +1079,8 @@ def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> Non
             append_only=True,
         )
 
-        changed_initial, _initial_counts = _write_session(conn, initial)
-        changed_recapture, recapture_counts = _write_session(conn, recapture)
+        changed_initial, _initial_counts = write_fixture_ingest_payload(conn, initial)
+        changed_recapture, recapture_counts = write_fixture_ingest_payload(conn, recapture)
         conn.commit()
 
         raw_id = conn.execute(
@@ -1106,7 +1112,7 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
                 )
             ],
         )
-        changed, _ = _write_session(conn, archive)
+        changed, _ = write_fixture_ingest_payload(conn, archive)
         assert changed is True
 
         v2 = _session_data(
@@ -1123,11 +1129,11 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
                 )
             ],
         )
-        unchanged, counts = _write_session(conn, v2)
+        unchanged, counts = write_fixture_ingest_payload(conn, v2)
         assert unchanged is False
         assert counts["skipped_sessions"] == 1
 
-        forced, counts = _write_session(conn, v2, force_write=True)
+        forced, counts = write_fixture_ingest_payload(conn, v2, force_write=True)
         assert forced is True
         assert counts["messages"] == 1
         conn.commit()
@@ -1162,7 +1168,7 @@ def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> N
             created_at="2026-04-02T00:00:00Z",
             updated_at="2026-04-02T00:10:00Z",
         )
-        changed, _ = _write_session(conn, newer)
+        changed, _ = write_fixture_ingest_payload(conn, newer)
         assert changed is True
 
         older = _session_data(
@@ -1182,11 +1188,11 @@ def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> N
             created_at="2026-04-02T00:00:00Z",
             updated_at="2026-04-02T00:05:00Z",
         )
-        skipped, skipped_counts = _write_session(conn, older)
+        skipped, skipped_counts = write_fixture_ingest_payload(conn, older)
         assert skipped is False
         assert skipped_counts["messages"] == 0
 
-        forced, forced_counts = _write_session(conn, older, force_write=True)
+        forced, forced_counts = write_fixture_ingest_payload(conn, older, force_write=True)
         assert forced is True
         assert forced_counts["messages"] == 1
         conn.commit()
@@ -1243,7 +1249,7 @@ def test_write_session_freshness_tie_keeps_acquired_attachment(tmp_path: Path) -
             created_at="2026-07-18T17:46:10Z",
             updated_at="2026-07-18T17:46:10Z",
         )
-        changed, counts = _write_session(conn, fetched, blob_publisher=publisher)
+        changed, counts = write_fixture_ingest_payload(conn, fetched, blob_publisher=publisher)
         assert changed is True
         assert counts["attachments"] == 1
         conn.commit()
@@ -1278,7 +1284,7 @@ def test_write_session_freshness_tie_keeps_acquired_attachment(tmp_path: Path) -
             created_at="2026-07-18T17:46:10Z",
             updated_at="2026-07-18T17:46:10Z",
         )
-        skipped, skipped_counts = _write_session(conn, unfetched_revision)
+        skipped, skipped_counts = write_fixture_ingest_payload(conn, unfetched_revision)
         conn.commit()
 
         assert skipped is False
@@ -1322,7 +1328,7 @@ def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Pat
             created_at="2026-07-18T17:46:10Z",
             updated_at="2026-07-18T17:46:10Z",
         )
-        changed, _ = _write_session(conn, unfetched)
+        changed, _ = write_fixture_ingest_payload(conn, unfetched)
         assert changed is True
         conn.commit()
 
@@ -1347,7 +1353,7 @@ def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Pat
             created_at="2026-07-18T17:46:10Z",
             updated_at="2026-07-18T17:46:10Z",
         )
-        changed, counts = _write_session(conn, fetched, blob_publisher=publisher)
+        changed, counts = write_fixture_ingest_payload(conn, fetched, blob_publisher=publisher)
         conn.commit()
 
         assert changed is True
@@ -1436,7 +1442,9 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
             created_at="2026-07-18T17:46:10Z",
             updated_at="2026-07-18T17:46:10Z",
         )
-        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        changed_first, _ = write_fixture_ingest_payload(
+            conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn
+        )
         conn.commit()
         assert changed_first is True
 
@@ -1451,7 +1459,9 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
             created_at="2026-07-18T17:46:15Z",
             updated_at="2026-07-18T17:46:15Z",
         )
-        changed_second, _ = _write_session(conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        changed_second, _ = write_fixture_ingest_payload(
+            conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn
+        )
         conn.commit()
         assert changed_second is True
 
@@ -1544,7 +1554,9 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        changed_first, _ = write_fixture_ingest_payload(
+            conn, first_session, blob_publisher=blob_publisher, source_conn=source_conn
+        )
         conn.commit()
         assert changed_first is True
 
@@ -1561,7 +1573,9 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_second, _ = _write_session(conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn)
+        changed_second, _ = write_fixture_ingest_payload(
+            conn, second_session, blob_publisher=blob_publisher, source_conn=source_conn
+        )
         conn.commit()
 
         assert changed_second is True
@@ -1605,7 +1619,7 @@ def test_write_session_freshness_tie_regression_without_lineage_still_blocks(tmp
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        changed_first, _ = write_fixture_ingest_payload(conn, first_session, blob_publisher=blob_publisher)
         conn.commit()
         assert changed_first is True
 
@@ -1618,7 +1632,9 @@ def test_write_session_freshness_tie_regression_without_lineage_still_blocks(tmp
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        changed_second, counts_second = write_fixture_ingest_payload(
+            conn, second_session, blob_publisher=blob_publisher
+        )
         conn.commit()
 
         assert changed_second is False
@@ -1678,7 +1694,7 @@ def test_write_session_freshness_tie_with_distinct_messages_is_not_skipped(tmp_p
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        changed_first, _ = write_fixture_ingest_payload(conn, first_session, blob_publisher=blob_publisher)
         conn.commit()
         assert changed_first is True
 
@@ -1691,7 +1707,9 @@ def test_write_session_freshness_tie_with_distinct_messages_is_not_skipped(tmp_p
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        changed_second, counts_second = write_fixture_ingest_payload(
+            conn, second_session, blob_publisher=blob_publisher
+        )
         conn.commit()
 
         assert changed_second is True
@@ -1733,7 +1751,7 @@ def test_write_session_freshness_tie_with_a_revised_semantic_field_is_not_skippe
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_first, _ = _write_session(conn, first_session, blob_publisher=blob_publisher)
+        changed_first, _ = write_fixture_ingest_payload(conn, first_session, blob_publisher=blob_publisher)
         conn.commit()
         assert changed_first is True
 
@@ -1746,7 +1764,9 @@ def test_write_session_freshness_tie_with_a_revised_semantic_field_is_not_skippe
             created_at=tied_timestamp,
             updated_at=tied_timestamp,
         )
-        changed_second, counts_second = _write_session(conn, second_session, blob_publisher=blob_publisher)
+        changed_second, counts_second = write_fixture_ingest_payload(
+            conn, second_session, blob_publisher=blob_publisher
+        )
         conn.commit()
 
         assert changed_second is True
@@ -1787,7 +1807,7 @@ def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path
             raw_id="raw-chatgpt",
             provider=Provider.CHATGPT,
         )
-        changed, counts = _write_session(conn, session)
+        changed, counts = write_fixture_ingest_payload(conn, session)
         conn.commit()
 
         assert changed is True
@@ -1860,7 +1880,7 @@ def test_write_session_records_an_excised_inline_attachment_unavailable(tmp_path
             raw_id="raw-excised-inline",
             provider=Provider.CHATGPT,
         )
-        changed, _counts = _write_session(conn, session, blob_publisher=publisher)
+        changed, _counts = write_fixture_ingest_payload(conn, session, blob_publisher=publisher)
         conn.commit()
 
         assert changed is True
@@ -1901,7 +1921,7 @@ def test_write_session_records_an_excised_precomputed_attachment_unavailable(tmp
             raw_id="raw-excised-precomputed",
             provider=Provider.CHATGPT,
         )
-        changed, _counts = _write_session(conn, session, source_conn=source_conn)
+        changed, _counts = write_fixture_ingest_payload(conn, session, source_conn=source_conn)
         conn.commit()
 
         assert changed is True
@@ -1956,7 +1976,7 @@ def test_write_session_reserves_a_worker_published_blob_until_its_reference_comm
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     receipts: list[tuple[str, bytes]] = []
     with open_connection(tmp_path / "index.db") as conn:
-        changed, _counts = _write_session(
+        changed, _counts = write_fixture_ingest_payload(
             conn,
             _precomputed_blob_session(blob_hash, size),
             blob_publisher=publisher,
@@ -1989,7 +2009,7 @@ def test_write_session_refuses_a_worker_published_blob_gc_reclaimed(tmp_path: Pa
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     with open_connection(tmp_path / "index.db") as conn:
         with pytest.raises(AdoptedBlobEvictedError) as refused:
-            _write_session(conn, _precomputed_blob_session(blob_hash, size), blob_publisher=publisher)
+            write_fixture_ingest_payload(conn, _precomputed_blob_session(blob_hash, size), blob_publisher=publisher)
         assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
 
     assert storage_fault_kind(refused.value) is StorageFaultKind.EVICTED
@@ -2054,7 +2074,7 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
             ],
             action_tuples=[_sidecar_matched_event("toolu_1")],
         )
-        changed, counts = _write_session(conn, session, blob_publisher=publisher)
+        changed, counts = write_fixture_ingest_payload(conn, session, blob_publisher=publisher)
         conn.commit()
 
         assert changed is True
@@ -2090,7 +2110,7 @@ def test_write_session_counts_no_refused_sidecar_blob(tmp_path: Path) -> None:
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
     publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
     with open_connection(tmp_path / "index.db") as conn:
-        _changed, counts = _write_session(
+        _changed, counts = write_fixture_ingest_payload(
             conn, _excised_sidecar_session("claude-code-session:sidecar-excised", full_text), blob_publisher=publisher
         )
         conn.commit()
@@ -2163,7 +2183,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             ],
             action_tuples=[_sidecar_matched_event("toolu_a")],
         )
-        changed_a, counts_a = _write_session(conn, first, blob_publisher=publisher)
+        changed_a, counts_a = write_fixture_ingest_payload(conn, first, blob_publisher=publisher)
         conn.commit()
         assert changed_a is True
         assert counts_a["sidecar_blob_bytes_new"] == len(full_text.encode("utf-8"))
@@ -2196,7 +2216,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             ],
             action_tuples=[_sidecar_matched_event("toolu_b")],
         )
-        changed_b, counts_b = _write_session(conn, second, blob_publisher=publisher)
+        changed_b, counts_b = write_fixture_ingest_payload(conn, second, blob_publisher=publisher)
         conn.commit()
 
         assert changed_b is True
@@ -2233,7 +2253,7 @@ def test_write_session_skips_sidecar_blob_for_debt_events(tmp_path: Path) -> Non
             ],
             action_tuples=[debt_event],
         )
-        changed, counts = _write_session(conn, session, blob_publisher=publisher)
+        changed, counts = write_fixture_ingest_payload(conn, session, blob_publisher=publisher)
         conn.commit()
 
         assert changed is True
@@ -2261,7 +2281,7 @@ def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: 
                 )
             ],
         )
-        changed, _ = _write_session(conn, first)
+        changed, _ = write_fixture_ingest_payload(conn, first)
         assert changed is True
 
         recapture = _session_data(
@@ -2279,7 +2299,7 @@ def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: 
                 )
             ],
         )
-        unchanged, counts = _write_session(conn, recapture)
+        unchanged, counts = write_fixture_ingest_payload(conn, recapture)
         conn.commit()
 
         tags = conn.execute(
@@ -2330,8 +2350,8 @@ def test_write_session_refreshes_raw_link_when_content_is_unchanged(tmp_path: Pa
             ],
         )
 
-        changed, _ = _write_session(conn, first)
-        unchanged, counts = _write_session(conn, recapture)
+        changed, _ = write_fixture_ingest_payload(conn, first)
+        unchanged, counts = write_fixture_ingest_payload(conn, recapture)
         conn.commit()
 
         raw_id = conn.execute(
@@ -2388,8 +2408,8 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
             ],
         )
 
-        changed_full, _counts_full = _write_session(conn, fuller)
-        changed_stale, counts_stale = _write_session(conn, stale)
+        changed_full, _counts_full = write_fixture_ingest_payload(conn, fuller)
+        changed_stale, counts_stale = write_fixture_ingest_payload(conn, stale)
         conn.commit()
 
         messages = conn.execute(
@@ -2464,8 +2484,8 @@ def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) ->
             ],
         )
 
-        changed_existing, _counts_existing = _write_session(conn, existing)
-        changed_duplicate, counts_duplicate = _write_session(conn, duplicate)
+        changed_existing, _counts_existing = write_fixture_ingest_payload(conn, existing)
+        changed_duplicate, counts_duplicate = write_fixture_ingest_payload(conn, duplicate)
         conn.commit()
 
         messages = conn.execute(
@@ -2540,8 +2560,8 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
             ],
         )
 
-        changed_native, _counts_native = _write_session(conn, native)
-        changed_fallback, counts_fallback = _write_session(conn, dom_fallback)
+        changed_native, _counts_native = write_fixture_ingest_payload(conn, native)
+        changed_fallback, counts_fallback = write_fixture_ingest_payload(conn, dom_fallback)
         conn.commit()
 
         messages = conn.execute(
@@ -2612,8 +2632,8 @@ def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_lin
             ],
         )
 
-        changed_native, _counts_native = _write_session(conn, native)
-        changed_fallback, counts_fallback = _write_session(conn, dom_fallback)
+        changed_native, _counts_native = write_fixture_ingest_payload(conn, native)
+        changed_fallback, counts_fallback = write_fixture_ingest_payload(conn, dom_fallback)
         conn.commit()
 
         raw_id = conn.execute(
@@ -2676,8 +2696,8 @@ def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp
             ],
         )
 
-        changed_fallback, _counts_fallback = _write_session(conn, dom_fallback)
-        changed_native, counts_native = _write_session(conn, native)
+        changed_fallback, _counts_fallback = write_fixture_ingest_payload(conn, dom_fallback)
+        changed_native, counts_native = write_fixture_ingest_payload(conn, native)
         conn.commit()
 
         messages = conn.execute(
@@ -2779,11 +2799,11 @@ def test_write_session_native_browser_precedence_matrix(
         )
 
     with open_connection(tmp_path / "index.db") as conn:
-        changed_initial, _counts_initial = _write_session(
+        changed_initial, _counts_initial = write_fixture_ingest_payload(
             conn,
             payload(initial_kind, initial_count, "raw-initial", updated_at="2026-04-03T00:00:00Z"),
         )
-        changed_incoming, counts_incoming = _write_session(
+        changed_incoming, counts_incoming = write_fixture_ingest_payload(
             conn,
             payload(
                 incoming_kind,
@@ -2870,7 +2890,7 @@ def test_write_session_browser_precedence_tracks_three_arrivals(
 
     with open_connection(tmp_path / "index.db") as conn:
         outcomes = [
-            _write_session(conn, payload(kind, count, title, updated_at, f"raw-{index}"))
+            write_fixture_ingest_payload(conn, payload(kind, count, title, updated_at, f"raw-{index}"))
             for index, (kind, count, title, updated_at) in enumerate(arrivals)
         ]
         conn.commit()
@@ -2897,7 +2917,7 @@ def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
             content_hash="hash-empty",
             message_tuples=[],
         )
-        changed, counts = _write_session(conn, empty)
+        changed, counts = write_fixture_ingest_payload(conn, empty)
         conn.commit()
 
         # Verify skipped
@@ -2931,7 +2951,7 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
             content_hash="hash-1",
             message_tuples=[msg],
         )
-        _write_session(conn, first)
+        write_fixture_ingest_payload(conn, first)
         conn.commit()
 
         # Same session, different hash, zero messages — should be allowed
@@ -2940,7 +2960,7 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
             content_hash="hash-2",
             message_tuples=[],
         )
-        changed, counts = _write_session(conn, update)
+        changed, counts = write_fixture_ingest_payload(conn, update)
         conn.commit()
 
         assert changed is True
@@ -2988,7 +3008,7 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
             raw_id="raw-accepted",
             message_tuples=[],
         )
-        _write_session(conn, stub, force_write=True)
+        write_fixture_ingest_payload(conn, stub, force_write=True)
         conn.execute(
             "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
             "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
@@ -3012,7 +3032,7 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
             raw_id="raw-accepted",
             message_tuples=[real_msg],
         )
-        changed, counts = _write_session(conn, corrective)
+        changed, counts = write_fixture_ingest_payload(conn, corrective)
         conn.commit()
 
         stored = conn.execute(
@@ -3046,7 +3066,7 @@ def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_
                 )
             ],
         )
-        _write_session(conn, winner)
+        write_fixture_ingest_payload(conn, winner)
         conn.execute(
             "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
             "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
@@ -3071,7 +3091,7 @@ def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_
                 )
             ],
         )
-        changed, counts = _write_session(conn, loser)
+        changed, counts = write_fixture_ingest_payload(conn, loser)
         conn.commit()
 
         stored = conn.execute(
@@ -3129,7 +3149,7 @@ def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_
                 )
             ],
         )
-        changed, counts = _write_session(conn, incoming)
+        changed, counts = write_fixture_ingest_payload(conn, incoming)
         conn.commit()
 
         stored = conn.execute(
@@ -3229,8 +3249,10 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
             message_tuples=[settled_msg],
         )
 
-        changed_ambiguous, counts_ambiguous = _write_session(conn, ambiguous_payload, source_conn=source_conn)
-        changed_settled, counts_settled = _write_session(conn, settled_payload, source_conn=source_conn)
+        changed_ambiguous, counts_ambiguous = write_fixture_ingest_payload(
+            conn, ambiguous_payload, source_conn=source_conn
+        )
+        changed_settled, counts_settled = write_fixture_ingest_payload(conn, settled_payload, source_conn=source_conn)
         conn.commit()
 
     assert changed_ambiguous is False
@@ -3931,7 +3953,7 @@ def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
     )
 
     with open_connection(db_path) as conn:
-        _write_session(conn, stale)
+        write_fixture_ingest_payload(conn, stale)
         conn.commit()
 
     def fake_ingest_record(
@@ -5172,12 +5194,11 @@ def test_a_grouped_raw_with_one_excised_session_still_records_its_written_siblin
         "ingest_record",
         lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[refused, written]),
     )
-    real_write = ingest_batch_core._write_session
 
     def refuse_one(conn: sqlite3.Connection, payload: Any, **kwargs: Any) -> Any:
         if payload.session_id == refused.session_id:
             raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
-        return real_write(conn, payload, **kwargs)
+        return write_fixture_ingest_payload(conn, payload, **kwargs)
 
     monkeypatch.setattr(ingest_batch_core, "_write_session", refuse_one)
     summary = _process_ingest_batch_sync(

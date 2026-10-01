@@ -38,8 +38,9 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
+from polylogue.core.sql_settlement import SQLCustodyOwner
 from polylogue.logging import get_logger
 
 __all__ = [
@@ -67,12 +68,6 @@ logger = get_logger(__name__)
 _CUSTODY_REGISTRY_LOCK = threading.RLock()
 _CUSTODIES: set[ArchiveWriteCustody] = set()
 _FORK_ABANDONED_CUSTODIES: list[ArchiveWriteCustody] = []
-
-
-class SQLCustodyOwner(Protocol):
-    """An actual SQL owner whose close settles its retained handles."""
-
-    def close(self) -> None: ...
 
 
 class ArchiveWriteCustody:
@@ -779,41 +774,6 @@ def _restore_context_custody(previous: object) -> None:
         _CUSTODY_CONTEXT.custody = previous
 
 
-def _current_task() -> asyncio.Task[Any] | None:
-    """Return the exact task object, distinguishing inherited child contexts."""
-    try:
-        return asyncio.current_task()
-    except RuntimeError:
-        return None
-
-
-def _current_thread_grant(lease: WriteLease) -> bool:
-    grant = getattr(_THREAD_GRANT_CONTEXT, "grant", None)
-    return isinstance(grant, WriteLeaseThreadGrant) and grant.lease is lease and grant.live_for_current_thread()
-
-
-_NO_CONTEXT_CUSTODY = object()
-
-
-def _context_custody() -> ArchiveWriteCustody | None:
-    custody = getattr(_CUSTODY_CONTEXT, "custody", None)
-    return custody if isinstance(custody, ArchiveWriteCustody) else None
-
-
-def _set_context_custody(custody: ArchiveWriteCustody) -> object:
-    previous = getattr(_CUSTODY_CONTEXT, "custody", _NO_CONTEXT_CUSTODY)
-    _CUSTODY_CONTEXT.custody = custody
-    return previous
-
-
-def _restore_context_custody(previous: object) -> None:
-    if previous is _NO_CONTEXT_CUSTODY:
-        if hasattr(_CUSTODY_CONTEXT, "custody"):
-            del _CUSTODY_CONTEXT.custody
-    else:
-        _CUSTODY_CONTEXT.custody = previous
-
-
 def write_lease_enforced() -> bool:
     """Whether an unleased write-mode open is an error in this thread."""
     return _PROCESS_ENFORCEMENT or bool(getattr(_ENFORCEMENT, "armed", _ENFORCEMENT_DEFAULT))
@@ -1220,7 +1180,7 @@ def write_lease(
         return
     if archive_root is None:
         raise UnleasedWriteError("an outer write lease must name its archive root")
-    owns_custody = _custody is None and archive_root is not None
+    owns_custody = _custody is None
     owns_custody_ref = False
     custody = _custody
     if custody is not None:
@@ -1230,7 +1190,7 @@ def write_lease(
             custody.require_sql_owner_context(_sql_owner)
     elif _sql_owner is not None:
         raise UnleasedWriteError("retained SQL cleanup requires its original custody")
-    if custody is None and archive_root is not None:
+    if custody is None:
         inherited_custody = _context_custody()
         if inherited_custody is not None and inherited_custody.archive_root == Path(archive_root).resolve():
             inherited_custody.retain_owner_scope()
@@ -1267,21 +1227,14 @@ def write_lease(
     try:
         yield lease
     except BaseException:
-        # The hold budget never displaces the hold's own failure. Raising from
-        # the ``finally`` below would replace an in-flight exception with this
-        # timing complaint, demoting it to ``__context__`` where no ``except``
-        # clause matches it. That is worst precisely under contention -- the
-        # only condition that puts a hold over budget -- and it erases the
-        # caller's own typed failure, which is the fact an operator needs. An
-        # over-budget hold is still reported: the caller's own error is the
-        # stronger signal, and the budget breach is logged rather than raised.
+        # Elapsed hold telemetry cannot change the operation's own outcome.
         if lease.over_budget:
             logger.warning(
-                "writer %s held the lease %.3fs against a declared %.3fs budget "
-                "while failing; reporting the hold's own error",
-                actor,
-                lease.held_seconds,
-                lease.max_hold_seconds,
+                "write_lease_observed_hold_exceeded",
+                actor=actor,
+                held_seconds=lease.held_seconds,
+                declared_hold_seconds=lease.max_hold_seconds,
+                outcome="failed",
             )
         _restore_active_lease(token, lease)
         # Release revokes, whether or not the hold succeeded: the delegation
@@ -1298,11 +1251,11 @@ def write_lease(
         lease.retire()
         if lease.over_budget:
             logger.warning(
-                "writer %s held the lease %.3fs against a declared %.3fs budget; "
-                "the completed archive mutation remains successful",
-                actor,
-                lease.held_seconds,
-                lease.max_hold_seconds,
+                "write_lease_observed_hold_exceeded",
+                actor=actor,
+                held_seconds=lease.held_seconds,
+                declared_hold_seconds=lease.max_hold_seconds,
+                outcome="committed",
             )
         if lease.owns_custody_ref and lease.custody is not None:
             lease.custody.release()
@@ -1332,17 +1285,10 @@ async def async_write_lease(
     # authority; this helper never turns an unowned daemon call into a writer.
     coordinator_authorized = False
     if coordinator is not None:
-        from polylogue.daemon.write_coordinator import _ACTIVE_LEASE, DaemonWriteCoordinator
+        from polylogue.core.write_admission import active_write_admission
 
-        coordinator_lease = _ACTIVE_LEASE.get()
-        task = asyncio.current_task()
-        coordinator_authorized = (
-            isinstance(coordinator, DaemonWriteCoordinator)
-            and coordinator_lease is not None
-            and coordinator_lease[0] is coordinator
-            and coordinator_lease[1] is task
-            and Path(archive_root).resolve() == coordinator._archive_root.resolve()
-        )
+        coordinator_lease = active_write_admission.get()
+        coordinator_authorized = coordinator_lease is not None and coordinator_lease.admits(coordinator, archive_root)
     if not coordinator_authorized:
         require_write_lease(f"async writer admission({actor})", archive_root=archive_root)
     inherited_custody = _context_custody()

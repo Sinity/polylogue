@@ -131,7 +131,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _message_content_hash,
     _normalized_message_native_id,
     _parsed_message_signature,
-    _repair_stale_session_observations,
+    _retain_stale_session_observations,
     prepare_session_write,
     raw_source_path,
     recorded_attachment_owner_gaps,
@@ -773,12 +773,12 @@ def _append_payload_changes_existing_message(
     return False
 
 
-def _repair_stale_revision_observations(
+def _retain_stale_revision_observations(
     conn: sqlite3.Connection,
     payload: SessionWritePayload,
 ) -> None:
     """Merge monotonic facts from a stale revision without replacing content."""
-    _repair_stale_session_observations(
+    _retain_stale_session_observations(
         conn,
         payload.session_id,
         payload.parsed_session,
@@ -1489,7 +1489,7 @@ def _write_session(
         raw_id=payload.raw_id or "",
         provider_session_id=payload.parsed_session.provider_session_id,
     ):
-        _repair_stale_revision_observations(conn, payload)
+        _retain_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -1543,7 +1543,7 @@ def _write_session(
                 session_id=payload.session_id,
                 events=payload.parsed_session.session_events,
             )
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
             counts["session_events"] = counts.get("session_events", 0) + outage_events
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
@@ -1567,7 +1567,7 @@ def _write_session(
             incoming_freshness_ms=incoming_freshness_ms,
             existing_updated_at_ms=existing_updated_at_int,
         ):
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
             counts["skipped_sessions"] = 1
             counts["skipped_messages"] = payload.message_count
             counts["skipped_attachments"] = payload.attachment_count
@@ -1808,7 +1808,7 @@ def _write_session(
             if prepared_write is not payload.prepared_write:
                 prepared_write.close()
         if writer_outcomes[0].stale_skipped:
-            _repair_stale_revision_observations(conn, payload)
+            _retain_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
@@ -3948,8 +3948,8 @@ async def process_ingest_batch(
             if unit is None:
                 continue
 
-            async def publish(raw_id: str = raw_id, unit: _PreparedIngestUnit = unit) -> ParseBatchObservation | None:
-                return await process_ingest_batch(
+            try:
+                last_observation = await process_ingest_batch(
                     service,
                     backend,
                     [raw_id],
@@ -3959,9 +3959,6 @@ async def process_ingest_batch(
                     fresh_build=fresh_build,
                     prepared_unit=unit,
                 )
-
-            try:
-                last_observation = await service.execution.publish("ingest", publish)
             finally:
                 discard_ingest_result_payload(unit.result)
         return last_observation

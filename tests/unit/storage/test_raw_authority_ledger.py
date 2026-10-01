@@ -764,3 +764,39 @@ def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(tmp_pa
 
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
+
+
+@pytest.mark.parametrize("prior_decision", ["ambiguous", "deferred"])
+def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
+    tmp_path: Path, prior_decision: str
+) -> None:
+    bootstrap_archive_root(tmp_path)
+    raw_id, _status = _seed_ambiguous_membership_component(
+        tmp_path, native_id="semantic-receipt", parser_fingerprint="revision-membership-v5"
+    )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        source.execute("UPDATE raw_session_memberships SET decision = ? WHERE raw_id = ?", (prior_decision, raw_id))
+    derivation = RawObservationDerivation(tmp_path)
+    assert derivation.inspect(raw_observation_frame(tmp_path, raw_ids=(raw_id,)), (raw_id,))[raw_id] == "stale"
+
+    report = _derive_after_source_stages(tmp_path)
+    assert _derived_success(report)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute(
+            "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (raw_authority_parser_fingerprint(), "complete")
+        assert (
+            source.execute("SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+            == "accepted"
+        )
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive.resolve_exact_session_ids(("codex-session:semantic-receipt",)) == (
+            "codex-session:semantic-receipt",
+        )
+        assert (
+            archive._conn.execute(
+                "SELECT text FROM messages WHERE session_id = ?", ("codex-session:semantic-receipt",)
+            ).fetchone()[0]
+            == "authored content"
+        )
+    assert derivation.inspect(raw_observation_frame(tmp_path, raw_ids=(raw_id,)), (raw_id,))[raw_id] == "valid"

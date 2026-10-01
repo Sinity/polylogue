@@ -40,6 +40,7 @@ class SettlementHandle:
         self.connection.rollback()
 
     def close(self) -> None:
+        self.cleanup_started.set()
         self.calls.append(("close", threading.current_thread()))
         assert threading.current_thread() is self.owner
         if not self.allow_cleanup.is_set():

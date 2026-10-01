@@ -23,10 +23,10 @@ from collections.abc import (
     Sequence,
     Set,
 )
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import BinaryIO, TypeVar, overload
+from typing import BinaryIO, TypeVar, cast, overload
 from urllib.parse import quote
 
 import ijson
@@ -45,6 +45,7 @@ from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 from polylogue.sources.value_bounds import require_storable_string
+from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 # The occurrence a parent id names (see the active-branch meaning below):
 # the nearest earlier occurrence, else the last one.
@@ -648,7 +649,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             decoded = _DECODED_SESSIONS.get(key) if key is not None else None
             if decoded is not None:
                 return decoded[ordinal]
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -728,7 +729,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         if self._writer is not None:
             row = self._writer.execute(sql, (self.session_ordinal,)).fetchone()
         else:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(sql, (self.session_ordinal,)).fetchone()
         low, high = row if row is not None else (None, None)
         return (int(low) if low is not None else None, int(high) if high is not None else None)
@@ -758,30 +759,29 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
         spool: PickleSpool[ParsedMessage] | None = None
         retained_bytes = 0
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            # The budget is in stored bytes: ``len`` of the decoded text
-            # counts code points and undercounts non-ASCII transcripts.
-            cursor = conn.execute(
-                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
-                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
-                (self.session_ordinal, start),
-            )
-            for row in cursor:
-                message = _from_text_json(ParsedMessage, row[0])
-                if retained is not None:
-                    retained_bytes += int(row[1])
-                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
-                        # Too large to keep decoded in memory: the rest of
-                        # this walk goes to a spool the next walks replay.
-                        spool = PickleSpool[ParsedMessage](indexed=True)
-                        for earlier in retained:
-                            spool.append(earlier)
-                        retained = None
-                    else:
-                        retained.append(message)
-                if spool is not None:
-                    spool.append(message)
-                yield message
+        for row in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_message",
+            ordinal="message_ordinal",
+            columns="message_json, length(CAST(message_json AS BLOB))",
+            session=self.session_ordinal,
+            start=start,
+        ):
+            message = _from_text_json(ParsedMessage, cast(str, row[0]))
+            if retained is not None:
+                retained_bytes += int(cast(int, row[1]))
+                if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                    # Too large to keep decoded in memory: the rest of
+                    # this walk goes to a spool the next walks replay.
+                    spool = PickleSpool[ParsedMessage](indexed=True)
+                    for earlier in retained:
+                        spool.append(earlier)
+                    retained = None
+                else:
+                    retained.append(message)
+            if spool is not None:
+                spool.append(message)
+            yield message
         # Only a walk that reached the end holds the whole session.
         # An empty session costs nothing to decode and would occupy an LRU
         # entry the byte budget never charges for.
@@ -908,8 +908,13 @@ class SqliteProviderMessageIds(Set[str | None]):
         self.messages = messages
         self.include_none = include_none
 
-    def _connection(self) -> sqlite3.Connection:
-        return self.messages._writer or sqlite3.connect(_read_uri(self.messages.path), uri=True)
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        if self.messages._writer is not None:
+            yield self.messages._writer
+        else:
+            with _prepared_reader(self.messages.path) as connection:
+                yield connection
 
     def _where(self, alias: str = "") -> str:
         prefix = f"{alias}." if alias else ""
@@ -920,47 +925,59 @@ class SqliteProviderMessageIds(Set[str | None]):
             return False
         if value is not None and not isinstance(value, str):
             return False
-        conn = self._connection()
-        try:
+        with self._connection() as conn:
             row = conn.execute(
                 "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS ? LIMIT 1",
                 (self.messages.session_ordinal, value),
             ).fetchone()
             return row is not None
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
 
     def __iter__(self) -> Iterator[str | None]:
-        conn = self._connection()
-        try:
-            for (provider_id,) in conn.execute(
+        if self.messages._writer is not None:
+            for (provider_id,) in self.messages._writer.execute(
                 f"SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()} ORDER BY provider_id",
                 (self.messages.session_ordinal,),
             ):
                 yield provider_id
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
+            return
+        if self.include_none:
+            with _prepared_reader(self.messages.path) as connection:
+                has_none = (
+                    connection.execute(
+                        "SELECT 1 FROM prepared_message WHERE session_ordinal = ? AND provider_id IS NULL LIMIT 1",
+                        (self.messages.session_ordinal,),
+                    ).fetchone()
+                    is not None
+                )
+            if has_none:
+                yield None
+        after: str | None = None
+        while True:
+            with _prepared_reader(self.messages.path) as connection:
+                rows = connection.execute(
+                    "SELECT DISTINCT provider_id FROM prepared_message WHERE session_ordinal = ? "
+                    "AND provider_id IS NOT NULL AND (? IS NULL OR provider_id > ?) ORDER BY provider_id LIMIT 512",
+                    (self.messages.session_ordinal, after, after),
+                ).fetchall()
+            if not rows:
+                return
+            after = str(rows[-1][0])
+            for (provider_id,) in rows:
+                yield str(provider_id)
 
     def __len__(self) -> int:
-        conn = self._connection()
-        try:
+        with self._connection() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) FROM (SELECT DISTINCT provider_id FROM prepared_message WHERE {self._where()})",
                 (self.messages.session_ordinal,),
             ).fetchone()
             return int(row[0])
-        finally:
-            if conn is not self.messages._writer:
-                conn.close()
 
     def __le__(self, other: object) -> bool:
         if not isinstance(other, Set):
             return NotImplemented
         if isinstance(other, SqliteProviderMessageIds):
-            conn = sqlite3.connect(_read_uri(self.messages.path), uri=True)
-            try:
+            with _prepared_reader(self.messages.path) as conn:
                 other_table = "prepared_message"
                 if other.messages.path != self.messages.path:
                     conn.execute("ATTACH DATABASE ? AS other_prepared", (_read_uri(other.messages.path),))
@@ -973,8 +990,6 @@ class SqliteProviderMessageIds(Set[str | None]):
                     (self.messages.session_ordinal, other.messages.session_ordinal),
                 ).fetchone()
                 return row is None
-            finally:
-                conn.close()
         return all(value in other for value in self)
 
 
@@ -1019,7 +1034,7 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            with _prepared_reader(self.path) as conn:
                 row = conn.execute(
                     "SELECT attachment_json FROM prepared_attachment WHERE session_ordinal = ? AND attachment_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -1071,13 +1086,14 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             for ordinal, encoded in rows:
                 yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
             return
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            rows = conn.execute(
-                "SELECT attachment_ordinal, attachment_json FROM prepared_attachment WHERE session_ordinal = ? ORDER BY attachment_ordinal",
-                (self.session_ordinal,),
-            )
-            for ordinal, encoded in rows:
-                yield _decode_attachment(encoded, self.path, self.session_ordinal, ordinal)
+        for ordinal, encoded in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_attachment",
+            ordinal="attachment_ordinal",
+            columns="attachment_ordinal, attachment_json",
+            session=self.session_ordinal,
+        ):
+            yield _decode_attachment(cast(str, encoded), self.path, self.session_ordinal, cast(int, ordinal))
 
 
 class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
@@ -1117,7 +1133,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         ordinal = self._ordinal(index)
         conn = self._writer
         if conn is None:
-            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as reader:
+            with _prepared_reader(self.path) as reader:
                 row = reader.execute(
                     "SELECT event_json FROM prepared_event WHERE session_ordinal = ? AND event_ordinal = ?",
                     (self.session_ordinal, ordinal),
@@ -1241,24 +1257,51 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         writer.execute("DROP TABLE temp.prepared_event_insert")
 
     def __iter__(self) -> Iterator[ParsedSessionEvent]:
-        yield from self._iter_query("ORDER BY event_ordinal")
-
-    def _iter_query(self, order_sql: str, parameters: tuple[object, ...] = ()) -> Iterator[ParsedSessionEvent]:
-        sql = "SELECT event_json FROM prepared_event WHERE session_ordinal = ? " + order_sql
         if self._writer is not None:
-            cursor = self._writer.execute(sql, (self.session_ordinal, *parameters))
-            for row in cursor:
+            for row in self._writer.execute(
+                "SELECT event_json FROM prepared_event WHERE session_ordinal = ? ORDER BY event_ordinal",
+                (self.session_ordinal,),
+            ):
                 yield _from_text_json(ParsedSessionEvent, row[0])
             return
-        with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
-            for row in conn.execute(sql, (self.session_ordinal, *parameters)):
-                yield _from_text_json(ParsedSessionEvent, row[0])
+        for (encoded,) in _prepared_ordinal_rows(
+            self.path,
+            table="prepared_event",
+            ordinal="event_ordinal",
+            columns="event_json",
+            session=self.session_ordinal,
+        ):
+            yield _from_text_json(ParsedSessionEvent, cast(str, encoded))
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
-        order = "ORDER BY COALESCE(timestamp, ''), CASE event_type " + clauses + " ELSE 0 END, event_ordinal"
+        tier_sql = "CASE event_type " + clauses + " ELSE 0 END" if clauses else "0"
         parameters: tuple[object, ...] = tuple(item for pair in type_order_tier.items() for item in pair)
-        yield from self._iter_query(order, parameters)
+        base_sql = (
+            "WITH ordered AS (SELECT event_json, COALESCE(timestamp, '') AS stamp, "
+            + tier_sql
+            + " AS tier, event_ordinal FROM prepared_event WHERE session_ordinal = ?) "
+            "SELECT event_json, stamp, tier, event_ordinal FROM ordered"
+        )
+        if self._writer is not None:
+            for row in self._writer.execute(
+                base_sql + " ORDER BY stamp, tier, event_ordinal", (*parameters, self.session_ordinal)
+            ):
+                yield _from_text_json(ParsedSessionEvent, row[0])
+            return
+        after: tuple[str, int, int] | None = None
+        while True:
+            predicate = " WHERE (stamp, tier, event_ordinal) > (?, ?, ?)" if after is not None else ""
+            with _prepared_reader(self.path) as connection:
+                rows = connection.execute(
+                    base_sql + predicate + " ORDER BY stamp, tier, event_ordinal LIMIT 512",
+                    (*parameters, self.session_ordinal, *(after or ())),
+                ).fetchall()
+            if not rows:
+                return
+            after = (str(rows[-1][1]), int(rows[-1][2]), int(rows[-1][3]))
+            for row in rows:
+                yield _from_text_json(ParsedSessionEvent, row[0])
 
     def sort_in_place(self, type_order_tier: Mapping[str, int]) -> None:
         if self._writer is None:
@@ -1298,12 +1341,44 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         self._writer.execute("DROP TABLE temp.prepared_event_order")
 
 
+@contextmanager
+def _prepared_reader(path: Path) -> Iterator[sqlite3.Connection]:
+    connection = sqlite3.connect(_read_uri(path), uri=True)
+    owner = NativeSQLCustodyOwner(connection)
+    try:
+        yield connection
+    finally:
+        owner.close()
+
+
+def _prepared_ordinal_rows(
+    path: Path, *, table: str, ordinal: str, columns: str, session: int | None, start: int = 0
+) -> Iterator[tuple[object, ...]]:
+    """Read indexed immutable pages and close SQL before yielding any row."""
+    after = start - 1
+    while True:
+        with _prepared_reader(path) as connection:
+            rows = connection.execute(
+                f"SELECT {ordinal}, {columns} FROM {table} WHERE "
+                + ("session_ordinal = ? AND " if session is not None else "")
+                + f"{ordinal} > ? ORDER BY {ordinal} LIMIT 512",
+                (session, after) if session is not None else (after,),
+            ).fetchall()
+        if not rows:
+            return
+        after = int(rows[-1][0])
+        for row in rows:
+            yield tuple(row[1:])
+
+
 class SqliteMessageStore:
     """Own the unsealed scratch transaction until its producer has finished."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.conn = sqlite3.connect(path)
+        self._sql_owner = NativeSQLCustodyOwner(self.conn)
+        self._sql_owner.retain_lifetime(self)
         self.conn.execute("PRAGMA journal_mode = DELETE")
         # The schema is created inside the store's one transaction: as separate
         # autocommit statements each CREATE paid its own journal and fsync, per
@@ -1341,7 +1416,7 @@ class SqliteMessageStore:
         return sink
 
     def close(self) -> None:
-        self.conn.close()
+        self._sql_owner.close()
 
 
 class ClaudeChatEvidence:

@@ -170,19 +170,19 @@ class TestIdempotentReimport:
         source_name, raw_bytes, unique_id = data
         db_path = db_setup(workspace_env)
 
-        from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
         from polylogue.storage.sqlite.connection import open_connection
+        from tests.infra.index_writer import write_fixture_index_session
 
         with open_connection(db_path) as conn:
             result = parse_payload_roundtrip(source_name, raw_bytes, unique_id)
 
-            session_id = write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
+            session_id = write_fixture_index_session(conn, result.parsed, content_hash=result.content_hash)
             first_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             first_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)
             ).fetchone()[0]
 
-            write_parsed_session_to_archive(conn, result.parsed, content_hash=result.content_hash)
+            write_fixture_index_session(conn, result.parsed, content_hash=result.content_hash)
             second_sessions = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             second_messages = conn.execute(
                 "SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)

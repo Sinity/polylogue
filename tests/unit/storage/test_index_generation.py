@@ -856,9 +856,9 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
     from polylogue.core.enums import BlockType, Provider
     from polylogue.core.refs import ObjectRef
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
     from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.index_writer import write_fixture_index_session
 
     _archive(tmp_path)
     session = ParsedSession(
@@ -882,7 +882,7 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
         conn = sqlite3.connect(tmp_path / "index.db")
         conn.row_factory = sqlite3.Row
         try:
-            session_id = write_parsed_session_to_archive(conn, session)
+            session_id = write_fixture_index_session(conn, session)
             message_id = str(
                 conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
             )
@@ -950,14 +950,13 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
     assert store.load(candidate.generation_id).state == "inactive"
 
     preserving_candidate = store.create(owner_id="preserving-owner", source_snapshot="snapshot-c")
-    with write_lease("test.seed-preserving-candidate", archive_root=tmp_path):
-        candidate_conn = sqlite3.connect(preserving_candidate.index_path)
-        candidate_conn.row_factory = sqlite3.Row
-        try:
-            write_parsed_session_to_archive(candidate_conn, session)
-            candidate_conn.commit()
-        finally:
-            candidate_conn.close()
+    with ArchiveStore.open_owned_inactive_generation(
+        Path(preserving_candidate.index_path).parent,
+        generation_id=preserving_candidate.generation_id,
+        owner_id=preserving_candidate.owner_id,
+    ) as candidate_archive:
+        with candidate_archive.index_mutation_scope():
+            write_fixture_index_session(candidate_archive._conn, session)
     with store.prepare_promotion(preserving_candidate) as prepared:
         with write_lease("test.promote-preserving-candidate", archive_root=tmp_path):
             promoted = store.promote(preserving_candidate, prepared)
@@ -999,11 +998,9 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
     from polylogue.core.enums import BlockType, Provider
     from polylogue.core.refs import EvidenceRef, ObjectRef
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import (
-        read_archive_session_envelope,
-        write_parsed_session_to_archive,
-    )
+    from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
     from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+    from tests.infra.index_writer import write_fixture_index_session
 
     def parent_and_child(child_id: str) -> tuple[ParsedSession, ParsedSession]:
         parent = ParsedSession(
@@ -1061,8 +1058,8 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
     try:
         parent, child = parent_and_child("composed-child")
         with write_lease("test.seed-composed-reference", archive_root=tmp_path):
-            parent_id = write_parsed_session_to_archive(active, parent)
-            child_id = write_parsed_session_to_archive(active, child)
+            parent_id = write_fixture_index_session(active, parent)
+            child_id = write_fixture_index_session(active, child)
             parent_message = active.execute(
                 "SELECT message_id FROM messages WHERE session_id = ?", (parent_id,)
             ).fetchone()
@@ -1114,8 +1111,8 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
         )
         # Parent's target is present in the candidate, but the child's scoped
         # EvidenceRef must remain composed through the child-parent edge.
-        write_parsed_session_to_archive(candidate_conn, parent)
-        write_parsed_session_to_archive(candidate_conn, child_without_parent)
+        write_fixture_index_session(candidate_conn, parent)
+        write_fixture_index_session(candidate_conn, child_without_parent)
         candidate_conn.commit()
     finally:
         candidate_conn.close()
@@ -1127,8 +1124,8 @@ def test_promotion_preserves_same_composed_session_evidence_ref(tmp_path: Path) 
     preserving_conn.row_factory = sqlite3.Row
     try:
         parent, child = parent_and_child("composed-child")
-        write_parsed_session_to_archive(preserving_conn, parent)
-        write_parsed_session_to_archive(preserving_conn, child)
+        write_fixture_index_session(preserving_conn, parent)
+        write_fixture_index_session(preserving_conn, child)
         preserving_conn.commit()
     finally:
         preserving_conn.close()

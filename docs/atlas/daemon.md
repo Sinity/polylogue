@@ -9,7 +9,12 @@ wait deadline reports an indeterminate result and leaves accepted work owned.
 If SQL cleanup fails, that original worker remains available for cleanup before
 the next mutation can acquire physical custody; HTTP reports retryable
 `writer_sql_unsettled` with status 503. The preceding mutation may have committed. Read routes keep their compute
-admission and read cancellation behavior.
+admission and read cancellation behavior. Writer hold duration is telemetry;
+elapsed time alone cannot reject a progressing append operation. New work
+checks cancellation, while rollback, close and failed-close retry remain
+available to the original owner. A supervised service constructs its coroutine
+inside the owned task, so cancellation before startup leaves no unawaited
+watcher coroutine.
 
 The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 

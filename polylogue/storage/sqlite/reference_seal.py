@@ -16,17 +16,60 @@ import threading
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from polylogue.storage.index_generation import IndexGeneration
 
 from polylogue.core.compute_cancel import compute_cancel_requested
-from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
+from polylogue.core.refs import (
+    EvidenceRef,
+    ObjectRef,
+    parse_delegation_ancestry_object_id,
+    parse_delegation_edge_object_id,
+    parse_delegation_subtree_object_id,
+    parse_public_ref,
+)
 from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.storage.block_anchor import (
+    BlockAnchor,
+    InvalidBlockAnchorError,
+    parse_block_anchor,
+    resolve_block_anchor,
+)
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _LIVE_SEALS_LOCK = threading.RLock()
 _LIVE_SEALS: dict[int, PreparedIndexMutation] = {}
+_FORK_ABANDONED_SEALS: list[PreparedIndexMutation] = []
+
+
+def _before_seal_fork() -> None:
+    _LIVE_SEALS_LOCK.acquire()
+
+
+def _after_seal_fork_parent() -> None:
+    _LIVE_SEALS_LOCK.release()
+
+
+def _after_seal_fork_child() -> None:
+    global _LIVE_SEALS, _LIVE_SEALS_LOCK
+    # Keep the copied handles unreachable for use without running SQLite
+    # finalizers during fork. Parent settlement retains its original owners.
+    _FORK_ABANDONED_SEALS.extend(_LIVE_SEALS.values())
+    _LIVE_SEALS = {}
+    _LIVE_SEALS_LOCK = threading.RLock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        before=_before_seal_fork,
+        after_in_parent=_after_seal_fork_parent,
+        after_in_child=_after_seal_fork_child,
+    )
 
 
 def retained_reference_seals_on_current_thread() -> tuple[PreparedIndexMutation, ...]:
@@ -111,6 +154,8 @@ class _ResolvedReference:
     qualifier: str | None = None
     scope_session_id: str | None = None
     target_message_id: str | None = None
+    wire_ref: str = ""
+    has_session_alias: bool = False
 
 
 def _tier_identity(path: Path) -> tuple[int, int, int, int]:
@@ -147,14 +192,27 @@ def _json_strings(conn: sqlite3.Connection, value: object, *, field: str) -> Ite
         raise ReferenceSealError(f"durable {field} is not valid JSON") from exc
 
 
-def _relevant_ref(value: str) -> ObjectRef | EvidenceRef | None:
+def _relevant_ref(value: str) -> ObjectRef | EvidenceRef | BlockAnchor | None:
+    try:
+        return parse_block_anchor(value)
+    except InvalidBlockAnchorError:
+        pass
     try:
         parsed = parse_public_ref(value)
     except ValueError as exc:
         raise ReferenceSealError(f"durable reference is malformed: {value!r}") from exc
     if isinstance(parsed, EvidenceRef):
         return parsed
-    if parsed.kind in {"session", "message", "block", "action"}:
+    if parsed.kind in {
+        "session",
+        "message",
+        "block",
+        "action",
+        "delegation",
+        "run",
+        "observed-event",
+        "context-snapshot",
+    }:
         return parsed
     return None
 
@@ -222,7 +280,18 @@ def _references_from_audit(conn: sqlite3.Connection) -> Iterable[str]:
             yield str(value)
 
 
-def _resolve(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef) -> _ResolvedReference | None:
+def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | BlockAnchor) -> _ResolvedReference | None:
+    if isinstance(ref, BlockAnchor):
+        resolution = resolve_block_anchor(conn, ref)
+        if resolution.state not in {"ok", "drifted_position", "drifted_message", "relocated_lineage"}:
+            return None
+        return _ResolvedReference(
+            "block-anchor",
+            ref.session_id,
+            ref.content_hash_hex,
+            scope_session_id=ref.session_id,
+            target_message_id=resolution.resolved_message_id,
+        )
     if isinstance(ref, EvidenceRef):
         from polylogue.storage.sqlite.archive_tiers.archive import resolve_session_id_in_index
 
@@ -255,6 +324,49 @@ def _resolve(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef) -> _Resolve
             "block-position", str(row[0]), str(row[1]), str(row[2]), scope_session_id, str(row[1])
         )
 
+    if ref.kind == "delegation":
+        root = parse_delegation_ancestry_object_id(ref.object_id) or parse_delegation_subtree_object_id(ref.object_id)
+        if root is not None:
+            row = conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (root,)).fetchone()
+            return None if row is None else _ResolvedReference("delegation-root", root, ref.object_id)
+        edge = parse_delegation_edge_object_id(ref.object_id)
+        if edge is None:
+            row = conn.execute(
+                "SELECT parent_session_id, child_session_id, instruction_message_id FROM delegation_facts "
+                "WHERE instruction_tool_use_block_id = ? LIMIT 1",
+                (ref.object_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT parent_session_id, child_session_id, instruction_message_id FROM delegation_facts "
+                "WHERE parent_session_id = ? AND child_session_id = ? "
+                "AND mapping_state IN ('edge_only', 'quarantined', 'authority-contradicted') LIMIT 1",
+                edge,
+            ).fetchone()
+        if row is None:
+            return None
+        return _ResolvedReference(
+            "delegation",
+            str(row[0]),
+            ref.object_id,
+            scope_session_id=str(row[1]) if row[1] is not None else None,
+            target_message_id=str(row[2]) if row[2] is not None else None,
+        )
+    if ref.kind in {"run", "observed-event", "context-snapshot"}:
+        from polylogue.storage.sqlite.run_projection_relations import (
+            context_snapshot_relation_sql,
+            observed_event_relation_sql,
+            run_relation_sql,
+        )
+
+        if ref.kind == "run":
+            relation, table, column = run_relation_sql(), "runs", "run_ref"
+        elif ref.kind == "observed-event":
+            relation, table, column = observed_event_relation_sql(source_where="1=1"), "observed_events", "event_ref"
+        else:
+            relation, table, column = context_snapshot_relation_sql(), "context_snapshots", "snapshot_ref"
+        row = conn.execute(f"{relation} SELECT session_id FROM {table} WHERE {column} = ?", (ref.format(),)).fetchone()
+        return None if row is None else _ResolvedReference(ref.kind, str(row[0]), ref.object_id)
     if ref.kind == "session":
         from polylogue.storage.sqlite.archive_tiers.archive import resolve_session_id_in_index
 
@@ -295,27 +407,38 @@ def _resolve(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef) -> _Resolve
     return None
 
 
+def _resolve(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | BlockAnchor) -> _ResolvedReference | None:
+    target = _resolve_target(conn, ref)
+    if target is None:
+        return None
+    lookup_session = (
+        ref.session_id
+        if isinstance(ref, EvidenceRef)
+        else ref.object_id
+        if isinstance(ref, ObjectRef) and ref.kind == "session"
+        else None
+    )
+    canonical_session = target.scope_session_id or target.owner_session_id
+    wire = ref.to_text() if isinstance(ref, BlockAnchor) else ref.format()
+    return replace(
+        target, wire_ref=wire, has_session_alias=lookup_session is not None and lookup_session != canonical_session
+    )
+
+
 def _still_resolves(conn: sqlite3.Connection, ref: _ResolvedReference) -> bool:
-    if ref.kind == "session":
-        query = "SELECT 1 FROM sessions WHERE session_id = ?"
-        params: tuple[object, ...] = (ref.object_id,)
-    elif ref.kind == "message":
-        query = "SELECT 1 FROM messages WHERE message_id = ?"
-        params = (ref.object_id,)
-    elif ref.kind == "block-id":
-        query = "SELECT 1 FROM blocks WHERE block_id = ?"
-        params = (ref.object_id,)
-    else:
-        query = "SELECT 1 FROM blocks WHERE message_id = ? AND position = ?"
-        params = (ref.object_id, int(ref.qualifier or "-1"))
-    if conn.execute(query, params).fetchone() is None:
+    # Re-run the original typed lookup. Surviving canonical rows do not prove
+    # that an unqualified alias still identifies that same row.
+    parsed = _relevant_ref(ref.wire_ref)
+    if parsed is None:
         return False
-    if ref.scope_session_id is not None and ref.kind in {"message", "block-id", "block-position"}:
-        return (
-            ref.target_message_id is not None
-            and _locate_composed_message(conn, ref.scope_session_id, ref.target_message_id) is not None
-        )
-    return True
+    actual = _resolve_target(conn, parsed)
+    if ref.kind == "block-anchor" and actual is not None:
+        # A content anchor explicitly permits unique relocation. Its declared
+        # target is the hash within the original composed scope; message IDs
+        # only select affected witnesses, not the anchor's identity.
+        actual = replace(actual, target_message_id=None)
+        ref = replace(ref, target_message_id=None)
+    return actual is not None and actual == replace(ref, wire_ref="", has_session_alias=False)
 
 
 def _locate_composed_message(conn: sqlite3.Connection, session_id: str, message_id: str) -> int | None:
@@ -333,6 +456,10 @@ class PreparedIndexMutation:
     def __init__(self, index_path: Path, *, archive_root: Path) -> None:
         self.archive_root = archive_root.resolve(strict=True)
         self.index_path = index_path.resolve(strict=True)
+        from polylogue.storage.archive_identity import resolve_active_index_path
+
+        if resolve_active_index_path(self.archive_root).resolve(strict=True) != self.index_path:
+            raise ReferenceSealError("active reference seal requires the archive's actual active Index")
         self.index_thread = threading.current_thread()
         self.index_pid = os.getpid()
         self.index_task = _current_task()
@@ -357,8 +484,9 @@ class PreparedIndexMutation:
         self._pending_source_permit: KnownSourceMutationPermit | None = None
         self._pending_source_receipt: KnownSourceMutationReceipt | None = None
         self._closed = False
-        self._scratch_directory: tempfile.TemporaryDirectory | None = None
-        self._scratch: sqlite3.Connection | None = None
+        self._session_namespace_noted = False
+        self._scratch_directory: tempfile.TemporaryDirectory[str] | None = None
+        self._owned_scratch_connection: sqlite3.Connection | None = None
         with _LIVE_SEALS_LOCK:
             _LIVE_SEALS[id(self)] = self
         try:
@@ -367,19 +495,20 @@ class PreparedIndexMutation:
             self._scratch = connect_scratch_database(Path(self._scratch_directory.name) / "refs.db")
             self._scratch.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
             self._scratch.executescript(
-                "CREATE TABLE resolved_refs ("
+                "CREATE TEMP TABLE resolved_refs ("
                 "kind TEXT NOT NULL, owner_session_id TEXT NOT NULL, object_id TEXT NOT NULL, "
                 "qualifier TEXT NOT NULL, scope_session_id TEXT NOT NULL, target_message_id TEXT NOT NULL, "
-                "PRIMARY KEY(kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id)) "
+                "wire_ref TEXT PRIMARY KEY, has_session_alias INTEGER NOT NULL) "
                 "WITHOUT ROWID;"
-                "CREATE INDEX resolved_refs_by_session ON resolved_refs(owner_session_id, kind, object_id, qualifier);"
-                "CREATE INDEX resolved_refs_by_scope_session ON resolved_refs(scope_session_id, kind, object_id, qualifier);"
-                "CREATE INDEX resolved_refs_by_target_message ON resolved_refs(target_message_id);"
-                "CREATE TABLE destructive_message_ids(message_id TEXT PRIMARY KEY) WITHOUT ROWID;"
-                "CREATE TABLE candidate_refs ("
+                "CREATE INDEX temp.resolved_refs_by_session ON resolved_refs(owner_session_id, kind, object_id, qualifier);"
+                "CREATE INDEX temp.resolved_refs_by_scope_session ON resolved_refs(scope_session_id, kind, object_id, qualifier);"
+                "CREATE INDEX temp.resolved_refs_by_target_message ON resolved_refs(target_message_id);"
+                "CREATE INDEX temp.resolved_refs_aliases ON resolved_refs(has_session_alias) WHERE has_session_alias = 1;"
+                "CREATE TEMP TABLE destructive_message_ids(message_id TEXT PRIMARY KEY) WITHOUT ROWID;"
+                "CREATE TEMP TABLE candidate_refs ("
                 "kind TEXT NOT NULL, owner_session_id TEXT NOT NULL, object_id TEXT NOT NULL, "
                 "qualifier TEXT NOT NULL, scope_session_id TEXT NOT NULL, target_message_id TEXT NOT NULL, "
-                "PRIMARY KEY(kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id)) "
+                "wire_ref TEXT PRIMARY KEY, has_session_alias INTEGER NOT NULL) "
                 "WITHOUT ROWID;"
             )
             for name, path in self._paths.items():
@@ -394,12 +523,29 @@ class PreparedIndexMutation:
                 raise asyncio.CancelledError("durable-reference preparation cancelled") from exc
             raise
 
+    @property
+    def _scratch(self) -> sqlite3.Connection:
+        connection = self._owned_scratch_connection
+        if connection is None:
+            raise ReferenceSealError("reference proof has no live scratch connection")
+        return connection
+
+    @_scratch.setter
+    def _scratch(self, connection: sqlite3.Connection) -> None:
+        self._owned_scratch_connection = connection
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+        NativeSQLCustodyOwner(connection, terminal_parent=self)
+
     def _open_observer(self, name: str, path: Path) -> sqlite3.Connection:
         leaf = VerifiedAuditLeaf(path.parent, filename=path.name, identity_access="lock-preserving")
         leaf.__enter__()
         self._observer_leaves[name] = leaf
         conn = open_readonly_connection(leaf.anchored_path, validate_schema=False)
         self._observers[name] = conn
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+        NativeSQLCustodyOwner(conn, terminal_parent=self)
         try:
             leaf.assert_unchanged()
             conn.row_factory = sqlite3.Row
@@ -407,13 +553,18 @@ class PreparedIndexMutation:
             return conn
         except BaseException:
             try:
-                conn.close()
+                self._close_native_connection(conn)
             except BaseException:
                 # Retain both actual handles for owner-thread recovery.
                 raise
             else:
                 self._observers.pop(name, None)
             raise
+
+    def _close_native_connection(self, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.connection_profile import close_parent_native_connection
+
+        close_parent_native_connection(self, connection)
 
     def _observer_identity(self, name: str) -> tuple[int, int, int, int]:
         metadata = self._observer_leaves[name].identity_metadata()
@@ -451,7 +602,7 @@ class PreparedIndexMutation:
                             target = _resolve(index_observer, parsed)
                             if target is not None:
                                 self._scratch.execute(
-                                    "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?)",
+                                    "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                                     (
                                         target.kind,
                                         target.owner_session_id,
@@ -459,6 +610,8 @@ class PreparedIndexMutation:
                                         target.qualifier or "",
                                         target.scope_session_id or "",
                                         target.target_message_id or "",
+                                        target.wire_ref,
+                                        int(target.has_session_alias),
                                     ),
                                 )
                 except BaseException:
@@ -481,18 +634,28 @@ class PreparedIndexMutation:
         self._versions["index"] = after_index
         self._scratch.commit()
 
+    def note_session_namespace_change(self) -> None:
+        self._require_new_work()
+        if not self._session_namespace_noted:
+            self._scratch.execute(
+                "INSERT OR IGNORE INTO candidate_refs SELECT * FROM resolved_refs WHERE has_session_alias = 1"
+            )
+            self._session_namespace_noted = True
+
     def note_deleted_session(self, session_id: str) -> None:
-        self._require_live_owner()
+        self._require_new_work()
+        self.note_session_namespace_change()
         self._scratch.execute(
             "INSERT OR IGNORE INTO candidate_refs "
-            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id FROM resolved_refs "
+            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias FROM resolved_refs "
             "WHERE owner_session_id = ? OR scope_session_id = ?",
             (session_id, session_id),
         )
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
-        self._require_live_owner()
+        self._require_new_work()
+        self.note_session_namespace_change()
         from polylogue.archive.topology.edge import topology_status_composes_sql
 
         status_predicate = topology_status_composes_sql("l.status")
@@ -514,20 +677,21 @@ class PreparedIndexMutation:
             _check_reference_cancellation()
             self._scratch.execute(
                 "INSERT OR IGNORE INTO candidate_refs "
-                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id "
-                "FROM resolved_refs WHERE scope_session_id = ?",
-                (str(affected_session_id),),
+                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
+                "FROM resolved_refs WHERE scope_session_id = ? OR (owner_session_id = ? AND "
+                "kind IN ('delegation', 'delegation-root', 'run', 'observed-event', 'context-snapshot'))",
+                (str(affected_session_id), str(affected_session_id)),
             )
         self._scratch.commit()
 
     def note_deleted_message_ids(self, message_ids: Iterable[str]) -> None:
-        self._require_live_owner()
+        self._require_new_work()
         self._scratch.executemany(
             "INSERT OR IGNORE INTO destructive_message_ids VALUES (?)", ((message_id,) for message_id in message_ids)
         )
         self._scratch.execute(
             "INSERT OR IGNORE INTO candidate_refs "
-            "SELECT r.kind, r.owner_session_id, r.object_id, r.qualifier, r.scope_session_id, r.target_message_id "
+            "SELECT r.kind, r.owner_session_id, r.object_id, r.qualifier, r.scope_session_id, r.target_message_id, r.wire_ref, r.has_session_alias "
             "FROM resolved_refs AS r JOIN destructive_message_ids AS d "
             "ON d.message_id = r.target_message_id"
         )
@@ -543,23 +707,11 @@ class PreparedIndexMutation:
 
         require_write_lease("prepared index mutation", archive_root=self.archive_root)
         self.validate_for_writer(conn)
-        scope = IndexMutationScope(self, conn)
-        token = _ACTIVE_MUTATION_SCOPE.set(scope)
-        try:
-            conn.execute("BEGIN IMMEDIATE")
+        with _owned_index_transaction(IndexMutationScope(self, conn)) as scope:
             yield scope
-            if not scope._committed:
-                scope.commit()
-        except BaseException:
-            if conn.in_transaction:
-                conn.rollback()
-            raise
-        finally:
-            scope.close()
-            _ACTIVE_MUTATION_SCOPE.reset(token)
 
     def validate_for_writer(self, conn: sqlite3.Connection) -> None:
-        self._require_live_owner()
+        self._require_new_work()
         if conn.in_transaction:
             raise ReferenceSealStaleError("reference seal validation must precede the writer transaction")
         if self._writer_identity(conn) != self.index_identity:
@@ -574,14 +726,14 @@ class PreparedIndexMutation:
 
     def observer(self, tier: str) -> sqlite3.Connection:
         """Return one retained readonly observer to its seal-owning worker."""
-        self._require_live_owner()
+        self._require_new_work()
         try:
             return self._observers[tier]
         except KeyError as exc:
             raise ValueError(f"unknown reference-seal tier {tier!r}") from exc
 
     def observer_version(self, tier: str) -> int:
-        self._require_live_owner()
+        self._require_new_work()
         try:
             return self._versions[tier]
         except KeyError as exc:
@@ -589,7 +741,7 @@ class PreparedIndexMutation:
 
     def validate_observers_current(self) -> None:
         """Point-check every retained observer immediately after gate admission."""
-        self._require_live_owner()
+        self._require_new_work()
         for name, _path in self._paths.items():
             if self._observer_identity(name) != self._identities[name]:
                 raise ReferenceSealStaleError(f"the {name}.db file incarnation changed after preparation")
@@ -616,7 +768,7 @@ class PreparedIndexMutation:
         The full reference and active-coverage scans happen here; callers must
         only perform point currency checks after acquiring archive custody.
         """
-        self._require_live_owner()
+        self._require_new_work()
         if self._candidate_path is not None:
             raise ReferenceSealError("this reference seal already has a promotion candidate")
         candidate = Path(candidate_index_path).resolve(strict=True)
@@ -626,12 +778,15 @@ class PreparedIndexMutation:
         lost_count = 0
         version_before = version_after = -1
         primary: BaseException | None = None
+        schema: tuple[int, str | None] = (0, None)
+        missing_count = 0
+        first_missing: str | None = None
         try:
             version_before = int(observer.execute("PRAGMA data_version").fetchone()[0])
             schema = self._candidate_schema_identity(observer)
             observer.execute("BEGIN")
             rows = self._scratch.execute(
-                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id "
+                "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
                 "FROM resolved_refs ORDER BY kind, object_id, qualifier"
             )
             for row in rows:
@@ -643,6 +798,8 @@ class PreparedIndexMutation:
                     str(row[3]) or None,
                     str(row[4]) or None,
                     str(row[5]) or None,
+                    str(row[6]),
+                    bool(row[7]),
                 )
                 if not _still_resolves(observer, ref):
                     lost_count += 1
@@ -749,7 +906,7 @@ class PreparedIndexMutation:
 
     def validate_candidate_current(self, candidate_index_path: Path) -> tuple[int, int, int, int]:
         """Point-check the retained candidate proof after writer admission."""
-        self._require_live_owner()
+        self._require_new_work()
         candidate = Path(candidate_index_path).resolve(strict=True)
         if candidate != self._candidate_path or self._candidate_identity is None:
             raise ReferenceSealStaleError("promotion candidate differs from its prepared proof")
@@ -774,7 +931,7 @@ class PreparedIndexMutation:
         rows: tuple[tuple[object, ...], ...],
     ) -> KnownSourceMutationPermit:
         """Bind one exact prepared Source write to this observer baseline."""
-        self._require_live_owner()
+        self._require_new_work()
         if not table.isidentifier() or not columns or any(not column.isidentifier() for column in columns):
             raise ReferenceSealError("known Source mutation must name declared SQL identifiers")
         if any(len(row) != len(columns) + 1 for row in rows):
@@ -815,11 +972,18 @@ class PreparedIndexMutation:
         return receipt
 
     def accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
-        """Advance the same observer only after verifying this exact committed write."""
+        """Settle an already committed Source receipt even after cancellation."""
         self._require_live_owner()
+        observer = self._observers["source"]
+        observer.set_progress_handler(None, 0)
+        try:
+            self._accept_known_source_commit(receipt)
+        finally:
+            observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
+
+    def _accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
         if (
-            not isinstance(receipt, KnownSourceMutationReceipt)
-            or receipt._seal is not self
+            receipt._seal is not self
             or receipt is not self._pending_source_receipt
             or receipt._seal_nonce is not self._source_mutation_nonce
             or receipt._source_identity != self._identities["source"]
@@ -858,11 +1022,11 @@ class PreparedIndexMutation:
         self._pending_source_receipt = None
 
     def validate_reachability(self, conn: sqlite3.Connection) -> None:
-        self._require_live_owner()
+        self._require_new_work()
         if not _same_incarnation(self._writer_identity(conn), self.index_identity):
             raise ReferenceSealStaleError("reference seal settled on a different index incarnation")
         rows = self._scratch.execute(
-            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id "
+            "SELECT kind, owner_session_id, object_id, qualifier, scope_session_id, target_message_id, wire_ref, has_session_alias "
             "FROM candidate_refs "
             "ORDER BY kind, object_id, qualifier"
         )
@@ -877,6 +1041,8 @@ class PreparedIndexMutation:
                 str(row[3]) or None,
                 str(row[4]) or None,
                 str(row[5]) or None,
+                str(row[6]),
+                bool(row[7]),
             )
             if not _still_resolves(conn, ref):
                 lost_count += 1
@@ -888,8 +1054,11 @@ class PreparedIndexMutation:
                 f"first lost {first.kind} reference in session {first.owner_session_id!r}"
             )
 
-    def _require_live_owner(self) -> None:
+    def _require_new_work(self) -> None:
+        self._require_live_owner()
         _check_reference_cancellation()
+
+    def _require_live_owner(self) -> None:
         if self._closed:
             raise ReferenceSealError("reference seal is closed")
         if (
@@ -921,26 +1090,33 @@ class PreparedIndexMutation:
                 return False
 
         for name, observer in tuple(self._observers.items()):
-            if settle(observer.close):
+            if settle(lambda observer=observer: self._close_native_connection(observer)):
                 self._observers.pop(name, None)
         for name, leaf in tuple(self._observer_leaves.items()):
             if name not in self._observers and settle(leaf.close):
                 self._observer_leaves.pop(name, None)
-        if self._scratch is not None:
-            scratch = self._scratch
-            if settle(scratch.close):
-                self._scratch = None
-        if self._scratch is None and self._scratch_directory is not None:
+        if self._owned_scratch_connection is not None:
+            scratch = self._owned_scratch_connection
+            if settle(lambda: self._close_native_connection(scratch)):
+                self._owned_scratch_connection = None
+        if self._owned_scratch_connection is None and self._scratch_directory is not None:
             directory = self._scratch_directory
             if settle(directory.cleanup):
                 self._scratch_directory = None
+        from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
+
+        for owner in native_sql_children(self):
+            if not owner._settled:
+                settle(owner.close)
         self._closed = (
             not self._observers
             and not self._observer_leaves
-            and self._scratch is None
+            and self._owned_scratch_connection is None
             and self._scratch_directory is None
+            and all(owner._settled for owner in native_sql_children(self))
         )
         if self._closed:
+            retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:
                 _LIVE_SEALS.pop(id(self), None)
         if first_error is not None:
@@ -958,33 +1134,161 @@ class PreparedIndexMutation:
             exc.add_note(f"reference-seal cleanup also failed: {close_error}")
 
 
+@dataclass(frozen=True, slots=True)
+class IndexMutationDestination:
+    """Explicit derived-only destination, never permission from an absent root."""
+
+    index_path: Path | None
+    kind: Literal["owned_inactive", "standalone", "standalone_memory"]
+    generation: IndexGeneration | None = None
+    memory_connection: sqlite3.Connection | None = None
+
+    @classmethod
+    def owned_inactive(cls, generation: IndexGeneration) -> IndexMutationDestination:
+        destination = cls(Path(generation.index_path).resolve(strict=True), "owned_inactive", generation)
+        destination.validate()
+        return destination
+
+    @classmethod
+    def standalone(cls, index_path: Path) -> IndexMutationDestination:
+        destination = cls(index_path.resolve(strict=True), "standalone")
+        destination.validate()
+        return destination
+
+    @classmethod
+    def standalone_memory(cls, conn: sqlite3.Connection) -> IndexMutationDestination:
+        destination = cls(None, "standalone_memory", memory_connection=conn)
+        destination.validate()
+        return destination
+
+    def validate(self) -> None:
+        if self.kind == "standalone_memory":
+            conn = self.memory_connection
+            if conn is None or self.index_path is not None or self.generation is not None:
+                raise ReferenceSealError("standalone memory Index lacks its exact declared connection")
+            databases = conn.execute("PRAGMA database_list").fetchall()
+            if any(str(row[1]) not in {"main", "temp"} or str(row[2]) for row in databases):
+                raise ReferenceSealError("standalone memory Index cannot contain an archive database")
+            return
+        if self.index_path is None or self.memory_connection is not None:
+            raise ReferenceSealError("named Index destination lacks its actual path")
+        if self.kind == "owned_inactive":
+            from polylogue.storage.index_generation import IndexGenerationStore
+
+            generation = self.generation
+            if generation is None or generation.state != "inactive":
+                raise ReferenceSealError("Index destination lacks an inactive generation owner")
+            current = IndexGenerationStore.for_archive_root(Path(generation.archive_root), repair_anchor=False).load(
+                generation.generation_id
+            )
+            if current != generation or Path(current.index_path).resolve(strict=True) != self.index_path:
+                raise ReferenceSealStaleError("inactive Index generation ownership changed")
+            return
+        if self.generation is not None:
+            raise ReferenceSealError("standalone Index destination carries archive generation metadata")
+        parent = self.index_path.parent
+        if ".index-generations" in self.index_path.parts or any(
+            (parent / filename).exists() or (parent / filename).is_symlink()
+            for filename in (
+                "source.db",
+                "user.db",
+                "audit.db",
+                "ops.db",
+                "embeddings.db",
+                "generation.json",
+                ".polylogue-format.json",
+                ".index-active-pointer",
+                ".index-generations",
+                ".index-rebuild-transactions",
+                ".bootstrap",
+            )
+        ):
+            raise ReferenceSealError("an archive or generation cannot be declared a standalone Index")
+
+    @contextmanager
+    def mutation_scope(self, conn: sqlite3.Connection) -> Iterator[IndexMutationScope]:
+        self.validate()
+        if conn.in_transaction:
+            raise ReferenceSealError("an Index mutation scope must start before BEGIN")
+        if self.kind == "standalone_memory":
+            matches = conn is self.memory_connection
+        else:
+            matches = index_path_for_connection(conn).resolve(strict=True) == self.index_path
+        if not matches:
+            raise ReferenceSealError("Index destination does not match its connection")
+        with _owned_index_transaction(IndexMutationScope(None, conn, destination=self)) as scope:
+            yield scope
+
+
+@contextmanager
+def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutationScope]:
+    token = _ACTIVE_MUTATION_SCOPE.set(scope)
+    try:
+        _check_reference_cancellation()
+        scope.conn.execute("BEGIN IMMEDIATE")
+        yield scope
+        if not scope._committed:
+            scope.commit()
+    except BaseException as primary:
+        try:
+            if scope.conn.in_transaction:
+                scope.conn.rollback()
+        except BaseException as rollback_error:
+            primary.add_note(f"Index transaction rollback also failed: {rollback_error}")
+        raise
+    finally:
+        scope.close()
+        _ACTIVE_MUTATION_SCOPE.reset(token)
+
+
 @dataclass(slots=True)
 class IndexMutationScope:
     """Exact writer transaction that borrows a prepared durable-reference seal."""
 
-    seal: PreparedIndexMutation
+    seal: PreparedIndexMutation | None
     conn: sqlite3.Connection
+    destination: IndexMutationDestination | None = None
     owner_thread: threading.Thread = field(default_factory=threading.current_thread)
     owner_pid: int = field(default_factory=os.getpid)
     owner_task: object | None = field(default_factory=_current_task)
     _active: bool = True
     _committed: bool = False
 
+    def __post_init__(self) -> None:
+        if (self.seal is None) == (self.destination is None):
+            raise ReferenceSealError("Index transaction requires exactly one declared destination authority")
+
+    def note_session_namespace_change(self) -> None:
+        self.require_connection(self.conn)
+        _check_reference_cancellation()
+        if self.seal is not None:
+            self.seal.note_session_namespace_change()
+
     def note_deleted_session(self, session_id: str) -> None:
         self.require_connection(self.conn)
-        self.seal.note_deleted_session(session_id)
+        _check_reference_cancellation()
+        if self.seal is not None:
+            self.seal.note_deleted_session(session_id)
 
     def note_deleted_message_ids(self, message_ids: Iterable[str]) -> None:
         self.require_connection(self.conn)
-        self.seal.note_deleted_message_ids(message_ids)
+        _check_reference_cancellation()
+        if self.seal is not None:
+            self.seal.note_deleted_message_ids(message_ids)
 
     def note_lineage_change(self, session_id: str) -> None:
         self.require_connection(self.conn)
-        self.seal.note_lineage_change(self.conn, session_id)
+        _check_reference_cancellation()
+        if self.seal is not None:
+            self.seal.note_lineage_change(self.conn, session_id)
 
     def require_connection(self, conn: sqlite3.Connection) -> None:
         if not self._active or conn is not self.conn or not self._same_owner():
             raise ReferenceSealError("operation requires the matching live index mutation scope")
+
+    def require_new_work(self, conn: sqlite3.Connection) -> None:
+        self.require_connection(conn)
+        _check_reference_cancellation()
 
     def _same_owner(self) -> bool:
         return (
@@ -995,13 +1299,24 @@ class IndexMutationScope:
 
     def validate_reachability(self, conn: sqlite3.Connection) -> None:
         self.require_connection(conn)
-        self.seal.validate_reachability(conn)
+        _check_reference_cancellation()
+        if self.seal is not None:
+            self.seal.validate_reachability(conn)
+        elif self.destination is not None:
+            self.destination.validate()
+            matches = (
+                conn is self.destination.memory_connection
+                if self.destination.kind == "standalone_memory"
+                else index_path_for_connection(conn).resolve(strict=True) == self.destination.index_path
+            )
+            if not matches:
+                raise ReferenceSealStaleError("Index transaction destination changed")
 
     def commit(self) -> None:
         self.require_connection(self.conn)
         if not self.conn.in_transaction:
             raise ReferenceSealError("index mutation scope cannot commit without its transaction")
-        self.seal.validate_reachability(self.conn)
+        self.validate_reachability(self.conn)
         self.conn.commit()
         self._committed = True
         self._active = False
@@ -1029,6 +1344,10 @@ def _current_index_mutation_scope(conn: sqlite3.Connection) -> IndexMutationScop
     return scope
 
 
+def note_current_session_namespace_change(conn: sqlite3.Connection) -> None:
+    _current_index_mutation_scope(conn).note_session_namespace_change()
+
+
 def note_current_deleted_session(conn: sqlite3.Connection, session_id: str) -> None:
     _current_index_mutation_scope(conn).note_deleted_session(session_id)
 
@@ -1042,11 +1361,13 @@ def note_current_lineage_change(conn: sqlite3.Connection, session_id: str) -> No
 
 
 __all__ = [
+    "IndexMutationDestination",
     "IndexMutationScope",
     "PreparedIndexMutation",
     "ReferenceSealError",
     "ReferenceSealStaleError",
     "current_index_mutation_scope",
+    "note_current_session_namespace_change",
     "note_current_deleted_message_ids",
     "note_current_lineage_change",
     "note_current_deleted_session",

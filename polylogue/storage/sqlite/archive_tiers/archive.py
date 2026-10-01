@@ -21,7 +21,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import wraps
@@ -30,7 +30,13 @@ from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
 if TYPE_CHECKING:
-    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
+    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.sqlite.reference_seal import (
+        IndexMutationDestination,
+        IndexMutationScope,
+        PreparedIndexMutation,
+    )
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody, WriteLease
 
 from polylogue.analysis.affordance_usage import (
     clean_patterns as _clean_affordance_patterns,
@@ -345,6 +351,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_connection,
     open_readonly_connection,
     open_source_tier_write_connection,
+    readonly_connection_context,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
@@ -852,16 +859,18 @@ class ArchiveStore:
             self._sqlite_owner_task = asyncio.current_task()
         except RuntimeError:
             self._sqlite_owner_task = None
-        self._conn = None
-        self._source_conn = None
-        self.operation_vector_connection = None
+        self._owned_index_connection: sqlite3.Connection | None = None
+        self._source_conn: sqlite3.Connection | None = None
+        self._operation_vector_connection: sqlite3.Connection | None = None
         self._user_write_connections: list[sqlite3.Connection] = []
-        self._blob_publisher = None
-        self._replay_publisher_slot = None
+        self._blob_publisher: ArchiveBlobPublisher | None = None
+        self._replay_publisher_slot: ExitStack | None = None
+        self._retained_writes_in_progress = 0
         self._sql_custody: ArchiveWriteCustody | None = None
         self._archive_custody_identity: tuple[int, int] | None = None
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
+        self._index_mutation_destination: IndexMutationDestination | None = None
         self._frozen_index_path = frozen_index_path
         self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
@@ -881,8 +890,8 @@ class ArchiveStore:
         # root rather than the candidate path so daemon cold-build opens are
         # accepted only by the owner of the real archive.
         self._write_lease_archive_root = archive_root
-        self._active_writer_lease = None
-        self._pending_archive_mutation_lease_context = None
+        self._active_writer_lease: ActiveWriterLease | None = None
+        self._pending_archive_mutation_lease_context: AbstractContextManager[WriteLease] | None = None
         self._deferred_secondary_indexes: tuple[str, ...] = ()
         self._generation_empty_at_open = False
         if not read_only:
@@ -942,6 +951,9 @@ class ArchiveStore:
                     or Path(generation.index_path).parent.resolve(strict=True) != archive_root.resolve(strict=True)
                 ):
                     raise RuntimeError("inactive index generation ownership validation failed")
+                from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+                self._index_mutation_destination = IndexMutationDestination.owned_inactive(authoritative_generation)
                 for filename in _GENERATION_READ_THROUGH_MEMBERS:
                     expected = declared_archive_root / filename
                     candidate = archive_root / filename
@@ -1043,10 +1055,79 @@ class ArchiveStore:
                 and not self._has_pending_write_sql()
                 and (
                     construction_complete
-                    or (self._conn is None and self._source_conn is None and self.operation_vector_connection is None)
+                    or (
+                        self._owned_index_connection is None
+                        and self._source_conn is None
+                        and self.operation_vector_connection is None
+                    )
                 )
             ):
                 self._release_mutation_lease(None)
+
+    @property
+    def _conn(self) -> sqlite3.Connection:
+        connection = self._owned_index_connection
+        if connection is None:
+            raise RuntimeError("ArchiveStore has no live Index connection")
+        return connection
+
+    @_conn.setter
+    def _conn(self, connection: sqlite3.Connection | None) -> None:
+        self._owned_index_connection = connection
+        if connection is not None and not isinstance(connection, _SourceTierOnlyIndexConnection):
+            self._retain_native_connection(connection)
+
+    def _retain_native_connection(self, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+
+        if not any(owner._connection_identity == id(connection) for owner in native_sql_children(self)):
+            NativeSQLCustodyOwner(connection, terminal_parent=self)
+
+    def _close_native_connection(self, connection: sqlite3.Connection) -> None:
+        from polylogue.storage.sqlite.connection_profile import close_parent_native_connection
+
+        close_parent_native_connection(self, connection)
+
+    def _open_read_connection(
+        self, path: Path, *, timeout: float = 30.0, validate_schema: bool = True
+    ) -> sqlite3.Connection:
+        connection = open_readonly_connection(path, timeout=timeout, validate_schema=validate_schema)
+        self._retain_native_connection(connection)
+        return connection
+
+    def _close_owned_read_connection(self, connection: sqlite3.Connection) -> None:
+        self._close_native_connection(connection)
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        for owner in native_sql_children(self):
+            if owner._connection_identity == id(connection):
+                owner.retire_terminal_parent(self)
+
+    @contextmanager
+    def _owned_read_connection(
+        self, path: Path, *, timeout: float = 30.0, validate_schema: bool = True
+    ) -> Iterator[sqlite3.Connection]:
+        connection = self._open_read_connection(path, timeout=timeout, validate_schema=validate_schema)
+        try:
+            yield connection
+        finally:
+            self._close_owned_read_connection(connection)
+
+    @property
+    def operation_vector_connection(self) -> sqlite3.Connection | None:
+        return self._operation_vector_connection
+
+    @operation_vector_connection.setter
+    def operation_vector_connection(self, connection: sqlite3.Connection | None) -> None:
+        if connection is not None:
+            self._retain_native_connection(connection)
+        self._operation_vector_connection = connection
+
+    def close_operation_vector_connection(self) -> None:
+        connection = self.operation_vector_connection
+        if connection is not None:
+            self._close_owned_read_connection(connection)
+            self._operation_vector_connection = None
 
     def _initialize_store(
         self,
@@ -1063,11 +1144,6 @@ class ArchiveStore:
     ) -> None:
         self.archive_root = archive_root
         self._sqlite_owner_thread = threading.current_thread()
-        self._conn: sqlite3.Connection | None = None
-        self._source_conn: sqlite3.Connection | None = None
-        self.operation_vector_connection: sqlite3.Connection | None = None
-        self._blob_publisher: ArchiveBlobPublisher | None = None
-        self._replay_publisher_slot: ExitStack | None = None
         try:
             self._sqlite_owner_task = asyncio.current_task()
         except RuntimeError:
@@ -1075,7 +1151,6 @@ class ArchiveStore:
         from polylogue.storage.archive_identity import ArchiveIdentity
 
         self.operation_identity: ArchiveIdentity | None = None
-        self.operation_vector_connection: sqlite3.Connection | None = None
         self._operation_read_guard: tuple[Callable[[], int], int] | None = None
         #: True between ``begin_read_snapshot()`` and ``end_read_snapshot()``.
         #: Read paths that would otherwise end a stale transaction must leave
@@ -1093,8 +1168,6 @@ class ArchiveStore:
         # Attribute type declarations shared by every open mode (the
         # source-tier acquisition branch below returns early, so inference
         # from a single assignment site would otherwise mistype these).
-        self._source_conn: sqlite3.Connection | None = None
-        self._blob_publisher: ArchiveBlobPublisher | None = None
         # This archive's own CAS for read-side availability. One instance for
         # the store's lifetime, so its read-verification memo spans reads.
         self._read_blob_store = BlobStore(archive_root / "blob")
@@ -1104,7 +1177,6 @@ class ArchiveStore:
         #: Excision takes the slot exclusively before it resolves anything,
         #: so it cannot remove a session between this replay's checks and
         #: its commit, only before or after the whole write.
-        self._replay_publisher_slot: ExitStack | None = None
         #: Retained writes in progress; a commit inside one (a batched
         #: replay commits its prior cohorts before a flush) keeps the slot.
         self._retained_writes_in_progress = 0
@@ -1120,7 +1192,7 @@ class ArchiveStore:
                 path = archive_root / spec.filename
                 if not path.exists():
                     raise RuntimeError(f"source-tier acquisition refused: durable tier {spec.filename} is missing")
-                with closing(open_readonly_connection(path, timeout=read_timeout, validate_schema=False)) as vconn:
+                with self._owned_read_connection(path, timeout=read_timeout, validate_schema=False) as vconn:
                     current = int(vconn.execute("PRAGMA user_version").fetchone()[0])
                 if current != spec.version:
                     raise RuntimeError(
@@ -1250,6 +1322,12 @@ class ArchiveStore:
             # still settle every transaction.
             raise RuntimeError("ArchiveStore must use its SQLite handles on their owning thread")
 
+        if not cleanup:
+            from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+            if any(owner.close_required and not owner._settled for owner in native_sql_children(self)):
+                raise ArchiveStoreSettlementError(self, RuntimeError("archive SQL close remains unsettled"))
+
     def _require_writable(self, operation: str) -> None:
         """Reject mutations before they can open or use a writable tier."""
         self._require_sql_owner()
@@ -1260,6 +1338,17 @@ class ArchiveStore:
         """Enter the existing archive gate unless an outer owner already holds it."""
         from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease, write_lease
 
+        if not settlement:
+            from polylogue.core.compute_cancel import compute_cancel_requested
+
+            if compute_cancel_requested():
+                raise asyncio.CancelledError("archive mutation cancelled before admission")
+        if self._inactive_candidate_durable_read_only:
+            destination = self._index_mutation_destination
+            if destination is None:
+                raise RuntimeError("inactive Index writer has no admitted generation destination")
+            destination.validate()
+            return
         active = current_write_lease()
         if active is not None:
             lease = require_write_lease("ArchiveStore mutation", archive_root=self._write_lease_archive_root)
@@ -1294,6 +1383,47 @@ class ArchiveStore:
         self._pending_archive_mutation_lease_context = context
         return
 
+    @contextmanager
+    def index_mutation_scope(
+        self, *, prepared_seal: PreparedIndexMutation | None = None
+    ) -> Iterator[IndexMutationScope]:
+        """Own one commit window, or borrow its exact already active scope."""
+        from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, current_index_mutation_scope
+
+        self._require_writable("own an Index mutation transaction")
+        current = current_index_mutation_scope()
+        if current is not None:
+            current.require_connection(self._conn)
+            yield current
+            return
+        destination = self._index_mutation_destination
+        try:
+            with ExitStack() as stack:
+                if destination is not None:
+                    if prepared_seal is not None:
+                        raise RuntimeError("inactive Index construction cannot borrow an active archive seal")
+                    scope = stack.enter_context(destination.mutation_scope(self._conn))
+                else:
+                    seal = prepared_seal
+                    if seal is None:
+                        seal = stack.enter_context(
+                            PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
+                        )
+                    self._enter_mutation_lease()
+                    scope = stack.enter_context(seal.mutation_scope(self._conn))
+                yield scope
+                if scope._active:
+                    self.commit()
+        except BaseException as primary:
+            try:
+                self.rollback()
+            except BaseException as rollback_error:
+                primary.add_note(f"Index rollback also failed: {rollback_error}")
+            raise
+        finally:
+            if not self._has_pending_write_sql():
+                self._release_mutation_lease(None)
+
     def _retain_sql_custody(self, custody: ArchiveWriteCustody) -> None:
         from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 
@@ -1307,12 +1437,27 @@ class ArchiveStore:
         self._sql_custody = custody
 
     def _has_pending_write_sql(self) -> bool:
-        """Retain transactions and temporary writers whose close has not settled."""
+        """Retain actual transactions and temporary writers until close settles."""
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        owners = {owner._connection_identity: owner for owner in native_sql_children(self)}
+
+        def in_transaction(connection: sqlite3.Connection | None) -> bool:
+            if connection is None or isinstance(connection, _SourceTierOnlyIndexConnection):
+                return False
+            owner = owners.get(id(connection))
+            if owner is not None and owner.connection is None:
+                # SQL closed, but its parent still owns artifact/leaf cleanup.
+                # Querying the retired Python handle would hide that actual
+                # settlement state behind "closed database" driver errors.
+                return False
+            return connection.in_transaction
+
         return bool(
-            (self._conn is not None and self._conn.in_transaction)
-            or (self._source_conn is not None and self._source_conn.in_transaction)
-            or (self.operation_vector_connection is not None and self.operation_vector_connection.in_transaction)
-            or bool(self._user_write_connections)
+            in_transaction(self._owned_index_connection)
+            or in_transaction(self._source_conn)
+            or in_transaction(self.operation_vector_connection)
+            or self._user_write_connections
         )
 
     def _release_mutation_lease(self, exc_info: tuple[object, object, object] | None) -> None:
@@ -1684,6 +1829,7 @@ class ArchiveStore:
         first_error: BaseException | None = None
         index_settled = False
         try:
+            self._conn.set_progress_handler(None, 0)
             if self._conn.in_transaction:
                 self._conn.rollback()
             index_settled = True
@@ -1691,6 +1837,7 @@ class ArchiveStore:
             first_error = exc
         if self._source_conn is not None:
             try:
+                self._source_conn.set_progress_handler(None, 0)
                 if self._source_conn.in_transaction:
                     self._source_conn.rollback()
             except BaseException as exc:
@@ -1699,13 +1846,14 @@ class ArchiveStore:
         if getattr(self, "operation_vector_connection", None) is not None:
             connection = self.operation_vector_connection
             try:
+                connection.set_progress_handler(None, 0)
                 if connection.in_transaction:
                     connection.rollback()
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
             try:
-                connection.close()
+                self.close_operation_vector_connection()
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
@@ -1713,6 +1861,11 @@ class ArchiveStore:
                 self.operation_vector_connection = None
         if index_settled:
             self._read_snapshot_owned = False
+        if self._operation_read_guard is not None:
+            guard, opcodes = self._operation_read_guard
+            for connection in (self._owned_index_connection, self._source_conn):
+                if connection is not None:
+                    connection.set_progress_handler(guard, opcodes)
         if first_error is not None:
             raise first_error
 
@@ -1770,6 +1923,7 @@ class ArchiveStore:
                     self.source_db_path, archive_root=self._write_lease_archive_root
                 )
             self._source_conn = conn
+            self._retain_native_connection(conn)
             self.configure_operation_read_connection(conn)
         return self._source_conn
 
@@ -1784,11 +1938,12 @@ class ArchiveStore:
             initialize_archive_database(self.user_db_path, ArchiveTier.USER)
         connection = open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
         self._user_write_connections.append(connection)
+        self._retain_native_connection(connection)
         return connection
 
     def _close_user_connection(self, connection: sqlite3.Connection) -> None:
-        """Retire a User writer only after its actual close succeeds."""
-        connection.close()
+        """Retire a User handle only after its actual close succeeds."""
+        self._close_owned_read_connection(connection)
         self._user_write_connections[:] = [
             retained for retained in self._user_write_connections if retained is not connection
         ]
@@ -1914,20 +2069,9 @@ class ArchiveStore:
                 return False
 
         def settle_connection(connection: sqlite3.Connection) -> bool:
-            nonlocal first_error
-            try:
-                if connection.in_transaction:
-                    connection.rollback()
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-            try:
-                connection.close()
+            if isinstance(connection, _SourceTierOnlyIndexConnection):
                 return True
-            except BaseException as exc:
-                if first_error is None:
-                    first_error = exc
-                return False
+            return settle(lambda: self._close_native_connection(connection))
 
         # Finish every handle before releasing physical custody. One failed
         # close must not strand a later SQL connection or let another writer
@@ -1948,15 +2092,21 @@ class ArchiveStore:
             connection = self._source_conn
             if settle_connection(connection):
                 self._source_conn = None
-        if getattr(self, "_conn", None) is not None:
-            connection = self._conn
+        if self._owned_index_connection is not None:
+            connection = self._owned_index_connection
             if settle_connection(connection):
-                self._conn = None
+                self._owned_index_connection = None
+        from polylogue.storage.sqlite.connection_profile import native_sql_children, retire_native_sql_parent
+
+        for owner in native_sql_children(self):
+            if not owner._settled:
+                settle(owner.close)
         transactions_settled = not self._has_pending_write_sql()
         handles_closed = (
-            self.operation_vector_connection is None
+            all(owner._settled for owner in native_sql_children(self))
+            and self.operation_vector_connection is None
             and self._source_conn is None
-            and self._conn is None
+            and self._owned_index_connection is None
             and not self._user_write_connections
         )
         if handles_closed and self._active_writer_lease is not None:
@@ -1971,6 +2121,13 @@ class ArchiveStore:
             except BaseException as exc:
                 if first_error is None:
                     first_error = exc
+        if (
+            handles_closed
+            and self._active_writer_lease is None
+            and self._pending_archive_mutation_lease_context is None
+            and self._sql_custody is None
+        ):
+            settle(lambda: retire_native_sql_parent(self))
         if first_error is not None:
             if not handles_closed:
                 raise ArchiveStoreSettlementError(self, first_error) from first_error
@@ -3306,7 +3463,7 @@ class ArchiveStore:
         if raw_row is None or raw_row["raw_id"] is None or not self.source_db_path.exists():
             return [], 0
         raw_id = str(raw_row["raw_id"])
-        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
+        source_conn = self._open_read_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             total = int(
@@ -3324,7 +3481,7 @@ class ArchiveStore:
                 (raw_id, max(limit, 0), max(offset, 0)),
             ).fetchall()
         finally:
-            source_conn.close()
+            self._close_owned_read_connection(source_conn)
         return [
             {
                 "raw_id": str(row["raw_id"]),
@@ -3362,12 +3519,12 @@ class ArchiveStore:
             return None
         origin = str(row["origin"])
         native_id = str(row["native_id"])
-        source_conn = open_readonly_connection(self.source_db_path, validate_schema=False)
+        source_conn = self._open_read_connection(self.source_db_path, validate_schema=False)
         source_conn.row_factory = sqlite3.Row
         try:
             events = list_hook_events(source_conn, origin=origin, session_native_id=native_id)
         finally:
-            source_conn.close()
+            self._close_owned_read_connection(source_conn)
         by_event_type: dict[str, int] = {}
         for event in events:
             by_event_type[event.event_type] = by_event_type.get(event.event_type, 0) + 1
@@ -5336,7 +5493,7 @@ class ArchiveStore:
         resolved_session_id = self.resolve_session_id(session_id)
         if not self.user_db_path.exists():
             return {}
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             rows = list_assertions_for_target(user_conn, f"session:{resolved_session_id}", kind=AssertionKind.METADATA)
@@ -5434,7 +5591,7 @@ class ArchiveStore:
         """List user marks from archive user.db."""
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.MARK)
         finally:
@@ -5527,7 +5684,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_durable_annotation_schema(user_conn, schema_id, version)
@@ -5539,7 +5696,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return list_durable_annotation_schemas(user_conn)
@@ -5563,7 +5720,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return read_annotation_batch(user_conn, batch_id)
@@ -5582,7 +5739,7 @@ class ArchiveStore:
 
         if not self.user_db_path.exists():
             return ()
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         user_conn.row_factory = sqlite3.Row
         try:
             return _list_annotation_batches(
@@ -5618,7 +5775,7 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.ANNOTATION)
         finally:
@@ -5743,7 +5900,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.SAVED_QUERY)
         finally:
@@ -5832,7 +5989,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.RECALL_PACK)
         finally:
@@ -5914,7 +6071,7 @@ class ArchiveStore:
         del where, params
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.WORKSPACE_NOTE)
         finally:
@@ -5990,7 +6147,7 @@ class ArchiveStore:
             return []
         resolved_session_id = self.resolve_session_id(session_id) if session_id else None
         correction_kind = parse_correction_kind(kind).value if kind is not None else None
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             assertions = list_assertions_by_kind(user_conn, AssertionKind.CORRECTION)
         finally:
@@ -6092,7 +6249,7 @@ class ArchiveStore:
         """
         if not self.user_db_path.exists():
             return []
-        user_conn = open_readonly_connection(self.user_db_path)
+        user_conn = self._open_read_connection(self.user_db_path)
         try:
             return list_archive_blackboard_note_envelopes(user_conn, limit=limit)
         finally:
@@ -6111,8 +6268,8 @@ class ArchiveStore:
         before anything is deleted. The caller resolved its selection once, at
         preview, and a re-resolution here could only widen it.
 
-        User-tier overlays are intentionally left in ``user.db``; the user
-        overlay orphan checker owns follow-up visibility for those durable rows.
+        User-tier overlays remain in ``user.db``. The mutation scope refuses
+        deletion before commit if it would orphan a resolved durable reference.
 
         polylogue-meoz: a plain per-session ``DELETE FROM sessions`` detonates
         the per-row derived-refresh triggers -- ``blocks_action_pairs_ad``
@@ -6540,7 +6697,7 @@ class ArchiveStore:
         """Return retryable operation debt without using it as readiness truth."""
         if not self.ops_db_path.exists():
             return ()
-        conn = open_readonly_connection(self.ops_db_path, validate_schema=False)
+        conn = self._open_read_connection(self.ops_db_path, validate_schema=False)
         try:
             present = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
@@ -6551,7 +6708,7 @@ class ArchiveStore:
                 "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
             ).fetchall()
         finally:
-            conn.close()
+            self._close_owned_read_connection(conn)
         return tuple(str(row[0]) for row in rows)
 
     def _insight_readiness_entry(
@@ -9192,7 +9349,7 @@ def _archive_source_raw_link_debt(
     # expired query deadline could not stop these scans.  ``configure_connection``
     # is ArchiveStore.configure_operation_read_connection -- the hook that
     # already exists to extend the current read budget to a sibling handle.
-    with closing(open_readonly_connection(index_db_path)) as conn:
+    with readonly_connection_context(index_db_path) as conn:
         if configure_connection is not None:
             configure_connection(conn)
         raw_links = _count_scalar(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
@@ -9247,7 +9404,7 @@ def _archive_user_overlay_debt(
     # avoids ATTACH/DETACH racing the long-lived ArchiveStore connection's
     # own transaction, and inherits the caller's read budget rather than
     # running outside every cancellation boundary.
-    with closing(open_readonly_connection(index_db_path)) as conn:
+    with readonly_connection_context(index_db_path) as conn:
         if configure_connection is not None:
             configure_connection(conn)
         attach_readonly_database(conn, user_db_path, alias="user_debt")

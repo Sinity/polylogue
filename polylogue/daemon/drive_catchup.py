@@ -15,7 +15,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.logging import propagate
 
 if TYPE_CHECKING:
-    from polylogue.storage.sqlite.write_lease import SQLCustodyOwner
+    from polylogue.core.sql_settlement import SQLCustodyOwner
 
 T = TypeVar("T")
 P = TypeVar("P")

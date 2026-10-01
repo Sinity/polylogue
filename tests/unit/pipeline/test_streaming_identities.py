@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,36 @@ from polylogue.pipeline import ids
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
+
+
+def test_disk_projection_transfers_files_and_closes_handles_before_iterator_yields(tmp_path: Path) -> None:
+    def build() -> ids.SessionRevisionProjection:
+        store = SqliteMessageStore(tmp_path / "transfer.db")
+        try:
+            sink = store.new_sink()
+            sink.extend(
+                ParsedMessage(provider_message_id=f"message-{number}", role=Role.USER, text=str(number))
+                for number in range(700)
+            )
+            return ids.session_revision_projection(_session([], [], []).model_copy(update={"messages": sink}))
+        finally:
+            store.close()
+
+    with ThreadPoolExecutor(max_workers=1) as producer:
+        projection = producer.submit(build).result()
+    with ThreadPoolExecutor(max_workers=1) as first_consumer:
+        iterator = iter(projection.message_hashes)
+        first = first_consumer.submit(next, iterator).result()
+    # The first consumer is gone; resuming and abandoning the iterator must
+    # not require that thread to close a native connection.
+    assert isinstance(first, bytes)
+    assert len(tuple(iterator)) == 699
+    abandoned = iter(projection.message_contents)
+    with ThreadPoolExecutor(max_workers=1) as second_consumer:
+        second_consumer.submit(next, abandoned).result()
+    assert isinstance(abandoned, Generator)
+    abandoned.close()
+    assert len(projection.message_contents) == 700
 
 
 def _session(

@@ -16,9 +16,10 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows, write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
 from polylogue.surfaces.payloads import message_render_envelope_from_domain
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def test_supported_json_usage_extractors_preserve_missing_and_zero() -> None:
@@ -74,7 +75,7 @@ def test_unknown_and_measured_zero_survive_prepared_write_and_public_message(tmp
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(
+        session_id = write_fixture_index_session(
             conn,
             session,
             content_hash=str(session_content_hash(session)),

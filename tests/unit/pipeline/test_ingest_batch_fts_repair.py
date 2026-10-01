@@ -11,6 +11,7 @@ from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.index_writer import write_fixture_ingest_payload
 from tests.unit.pipeline.test_ingest_batch import _message_tuple, _session_data
 
 _write_session = ingest_batch_core._write_session
@@ -50,7 +51,7 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
     )
 
     with open_connection(db_path) as conn:
-        changed, _counts = _write_session(conn, session)
+        changed, _counts = write_fixture_ingest_payload(conn, session)
         assert changed is True
         from polylogue.storage.fts.fts_lifecycle import repair_fts_index_sync
 

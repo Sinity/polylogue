@@ -639,10 +639,8 @@ class TestFunctionsExecLowering:
 
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-        from polylogue.storage.sqlite.archive_tiers.write import (
-            read_archive_session_envelope,
-            write_parsed_session_to_archive,
-        )
+        from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+        from tests.infra.index_writer import write_fixture_index_session
 
         session = _parse(
             [
@@ -667,7 +665,7 @@ class TestFunctionsExecLowering:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_id = write_parsed_session_to_archive(conn, session)
+        session_id = write_fixture_index_session(conn, session)
         envelope = read_archive_session_envelope(conn, session_id)
         conn.close()
 

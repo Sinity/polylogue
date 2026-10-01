@@ -343,8 +343,7 @@ def open_operation_read(
             except DatabaseError as exc:
                 if execution_context is not None and execution_context.should_abort():
                     raise
-                vector_connection.close()
-                archive.operation_vector_connection = None
+                archive.close_operation_vector_connection()
                 vector_failure = LaneFailure(
                     "vector",
                     "construction_failed",

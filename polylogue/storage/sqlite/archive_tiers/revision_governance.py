@@ -104,7 +104,7 @@ import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -205,13 +205,14 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWriteRefusedError,
     _json_dumps,
     _next_session_event_position,
-    _repair_stale_session_observations,
+    _retain_stale_session_observations,
     raw_source_path,
     recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.reference_seal import IndexMutationScope
 
 
 class ActiveByteRevisionChainError(RuntimeError):
@@ -279,6 +280,10 @@ class RawRevisionGovernanceHost(Protocol):
     """
 
     _conn: sqlite3.Connection
+    index_db_path: Path
+
+    def index_mutation_scope(self) -> AbstractContextManager[IndexMutationScope]: ...
+
     archive_root: Path
     _write_lease_archive_root: Path
     _blob_publisher: ArchiveBlobPublisher | None
@@ -529,25 +534,11 @@ def _write_parsed_precedence_result(
 
     def write_with_reparse_receipt(*, force_replace: bool) -> None:
         """Keep a reparse receipt and its session replacement in one index txn."""
-        starts_transaction = not store._conn.in_transaction
-        mutation_stack = ExitStack()
-        mutation_scope = None
-        try:
-            if starts_transaction:
-                if not manage_transaction:
-                    raise RuntimeError("manage_transaction=False requires the caller's live index mutation scope")
-                from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
 
-                seal = PreparedIndexMutation(store.index_db_path, archive_root=store._write_lease_archive_root)
-                mutation_stack.enter_context(seal)
-                mutation_scope = mutation_stack.enter_context(seal.mutation_scope(store._conn))
-            else:
-                from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
-
-                mutation_scope = current_index_mutation_scope()
-                if mutation_scope is None:
-                    raise RuntimeError("an existing index transaction requires its outer mutation scope")
-                mutation_scope.require_connection(store._conn)
+        if not manage_transaction and current_index_mutation_scope() is None:
+            raise RuntimeError("manage_transaction=False requires the caller's live Index mutation scope")
+        with store.index_mutation_scope() as mutation_scope:
             _reissue_accepted_head_reparse_receipt(
                 store,
                 raw_id=raw_id,
@@ -589,11 +580,6 @@ def _write_parsed_precedence_result(
             )
             if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
                 _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
-        except BaseException as exc:
-            mutation_stack.__exit__(type(exc), exc, exc.__traceback__)
-            raise
-        else:
-            mutation_stack.close()
 
     if revision_authoritative:
         write_with_reparse_receipt(force_replace=source_index >= 0 and not fresh_build)
@@ -617,8 +603,8 @@ def _write_parsed_precedence_result(
         raw_id=raw_id,
         provider_session_id=session.provider_session_id,
     ):
-        with store._conn if manage_transaction else nullcontext():
-            _repair_stale_session_observations(store._conn, session_id, session)
+        with store.index_mutation_scope():
+            _retain_stale_session_observations(store._conn, session_id, session)
         return ArchiveRawParsedWriteResult(
             raw_id=raw_id,
             session_id=session_id,
@@ -690,8 +676,8 @@ def _write_parsed_precedence_result(
         ):
             # This early return bypasses the ordinary index write transaction;
             # make stale observation repair durable for direct governance calls.
-            with store._conn if manage_transaction else nullcontext():
-                _repair_stale_session_observations(store._conn, session_id, session)
+            with store.index_mutation_scope():
+                _retain_stale_session_observations(store._conn, session_id, session)
             return ArchiveRawParsedWriteResult(
                 raw_id=raw_id,
                 session_id=session_id,

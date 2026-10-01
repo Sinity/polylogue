@@ -36,8 +36,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     count_dangling_prefix_branch_points,
     read_archive_session_envelope,
-    write_parsed_session_to_archive,
 )
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -161,17 +161,19 @@ class TestBranchPointWitness:
     def test_exact_hashed_block_fields_invalidate_the_branch_witness(self, tmp_path: Path) -> None:
         """Metadata, edits, and web constructs all participate in the witness."""
         for extra_kind in ("metadata", "file_edit", "web_constructs"):
-            db = tmp_path / f"{extra_kind}.db"
+            root = tmp_path / extra_kind
+            root.mkdir()
+            db = root / "index.db"
             conn = _connect(db)
             try:
                 parent = _witness_session("parent", extra_kind=extra_kind, extra_value="before")
                 child = _witness_session("child", extra_kind=extra_kind, extra_value="before", parent="parent")
-                write_parsed_session_to_archive(conn, parent)
-                child_id = write_parsed_session_to_archive(conn, child)
+                write_fixture_index_session(conn, parent)
+                child_id = write_fixture_index_session(conn, child)
                 conn.commit()
                 assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
 
-                write_parsed_session_to_archive(
+                write_fixture_index_session(
                     conn,
                     _witness_session("parent", extra_kind=extra_kind, extra_value="after"),
                 )
@@ -205,9 +207,9 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_fixture_index_session(conn, _session("gp", [("m0", "m0"), ("m1", "other-m1")]))
+            write_fixture_index_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_fixture_index_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
@@ -215,7 +217,7 @@ class TestBranchPointWitness:
             assert anchored_id == "codex-session:parent:n:m1"
             assert _composed(conn, child_id) == (["m0", "m1", "x"], True, None)
 
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, _session("parent", [("m0", "m0"), ("m1", "other-m1"), ("m2", "m2")], parent="gp")
             )
             conn.commit()
@@ -242,14 +244,14 @@ class TestBranchPointWitness:
         cursor = CursorStore(db)
         conn = _connect(db)
         try:
-            write_parsed_session_to_archive(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
-            write_parsed_session_to_archive(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
-            child_id = write_parsed_session_to_archive(
+            write_fixture_index_session(conn, _session("gp", [("m0", "m0"), ("m1", "m1")]))
+            write_fixture_index_session(conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")]))
+            child_id = write_fixture_index_session(
                 conn, _session("child", [("m0", "m0"), ("m1", "m1"), ("x", "x")], parent="parent")
             )
             conn.commit()
 
-            write_parsed_session_to_archive(
+            write_fixture_index_session(
                 conn, _session("parent", [("m0", "m0"), ("m1", "m1"), ("m2", "m2")], parent="gp")
             )
             conn.commit()

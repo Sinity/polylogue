@@ -26,6 +26,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
     return _implementation().require_write_lease(purpose, archive_root=archive_root)
 
 
+def current_sql_custody() -> Any:
+    return _implementation().current_sql_custody()
+
+
 def grant_write_lease_thread() -> Any:
     return _implementation().grant_write_lease_thread()
 

@@ -228,7 +228,7 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
     """Replacing a lost session cannot violate message uniqueness or touch a foreign session."""
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from tests.infra.index_writer import write_fixture_index_session
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(
@@ -242,7 +242,7 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         target_id = str(conn.execute("SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
         conn.execute("PRAGMA foreign_keys = OFF")
-        foreign_id = write_parsed_session_to_archive(
+        foreign_id = write_fixture_index_session(
             conn,
             ParsedSession(
                 source_name=Provider.CODEX,
