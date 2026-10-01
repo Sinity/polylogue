@@ -4,7 +4,7 @@ Both routes that will run during the production reindex are driven end to
 end here: ``_process_ingest_batch_sync`` (pipeline ingest) and
 ``_enrich_retained_parse_results`` (retained-raw replay). Neither test hands
 assembly a ``retained_state_titles`` key -- the evidence is produced by the
-real writer (``apply_retained_state_export`` over a real ``state_5.sqlite``
+real writer (``apply_prepared_state_snapshot`` over a real ``state_5.sqlite``
 export) and must be found by the route itself. Sever either consumer and both
 sessions fall back to the content-heuristic first-prompt title, which is
 exactly what these assertions reject.
@@ -21,8 +21,6 @@ import pytest
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.sources.assembly_codex import resolve_retained_codex_state_titles
-from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
-from polylogue.sources.revision_backfill import _enrich_retained_parse_results
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
@@ -34,6 +32,7 @@ from polylogue.storage.sqlite.agent_thread_state import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.retained_replay import replay_retained_components
 
 _THREAD_ID = "3f2a9c10-7b41-4d55-9a6e-1c2b3d4e5f60"
 _CURATED_TITLE = "Curated thread title from state db"
@@ -100,17 +99,8 @@ def _archive_with_retained_state_export(tmp_path: Path) -> Path:
             source_path=str(state_path),
             acquired_at_ms=1_767_000_000_000,
         )
-        record_codex_state_snapshot_terminal(
-            archive,
-            raw_id,
-            state_path=store.blob_path(export.blob_hash),
-            state_kind="thread_state",
-            source_path=str(state_path),
-            acquired_at_ms=1_767_000_000_000,
-            censused_at_ms=1_767_000_000_000,
-            blob_hash=export.blob_hash,
-        )
         archive.commit()
+    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
     return archive_root
 
 
@@ -125,17 +115,8 @@ def _record_state_export(archive_root: Path, state_path: Path, *, acquired_at_ms
             source_path=str(state_path),
             acquired_at_ms=acquired_at_ms,
         )
-        record_codex_state_snapshot_terminal(
-            archive,
-            raw_id,
-            state_path=store.blob_path(export.blob_hash),
-            state_kind="thread_state",
-            source_path=str(state_path),
-            acquired_at_ms=acquired_at_ms,
-            censused_at_ms=acquired_at_ms,
-            blob_hash=export.blob_hash,
-        )
         archive.commit()
+    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
 
 
 def test_pipeline_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
@@ -174,7 +155,6 @@ def test_pipeline_ingest_resolves_the_projected_state_title(tmp_path: Path) -> N
 
 
 def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> None:
-    from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources.dispatch import parse_stream_payload
 
     archive_root = _archive_with_retained_state_export(tmp_path)
@@ -197,14 +177,12 @@ def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> N
     )
     assert sessions and sessions[0].title != _CURATED_TITLE
 
-    descriptors = {raw_id: (Provider.CODEX, "", source_path, RawRevisionKind.FULL, len(content), _THREAD_ID)}
-    results: dict[str, object] = {raw_id: (sessions, len(content), RawRevisionKind.FULL)}
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        _enrich_retained_parse_results(archive, descriptors=descriptors, results=results)  # type: ignore[arg-type]
-
-    enriched = results[raw_id][0]  # type: ignore[index]
-    assert enriched[0].title == _CURATED_TITLE
-    assert enriched[0].title_source is TitleSource.ORIGIN
+    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
+    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        title = index_conn.execute(
+            "SELECT title, title_source FROM sessions WHERE native_id = ?", (_THREAD_ID,)
+        ).fetchone()
+    assert title == (_CURATED_TITLE, TitleSource.ORIGIN.value)
 
 
 def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path: Path) -> None:

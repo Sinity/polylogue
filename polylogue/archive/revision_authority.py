@@ -21,35 +21,11 @@ class RawRevisionKind(StrEnum):
 
 
 class RawRevisionAuthority(PolylogueStrEnum):
-    """Closed vocabulary for ``revision_authority``/``previous_revision_authority``.
-
-    ``PolylogueStrEnum`` (not a plain ``StrEnum``) so this generates its SQL
-    CHECK via ``archive_tiers/common.py``'s ``check()``/``nullable_check()``
-    at every column sharing the full 3-value domain, instead of each site
-    hand-copying the literal list (polylogue-h57ic). ``raw_session_
-    memberships.revision_authority`` is a genuinely narrower 2-value domain
-    (``ASSERTED`` never applies there) and uses the separate
-    ``ProvenRevisionAuthority`` literal alias in
-    ``storage/sqlite/archive_tiers/types.py`` instead of this enum.
-    """
+    """Typed source-revision authority, validated at durable write boundaries."""
 
     ASSERTED = "asserted"
     BYTE_PROVEN = "byte_proven"
     QUARANTINED = "quarantined"
-
-
-def revision_authority_for_census_detail(detail: str) -> RawRevisionAuthority | None:
-    """Translate legacy census markers at the write boundary.
-
-    ``detail`` remains display text; durable readers must use the typed
-    ``raw_membership_census.revision_authority`` column.  This narrow bridge
-    exists only while older callers still supply the explanatory marker.
-    """
-    if detail == BYTE_AUTHORITY_CENSUS_DETAIL:
-        return RawRevisionAuthority.BYTE_PROVEN
-    if detail == HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL:
-        return RawRevisionAuthority.QUARANTINED
-    return None
 
 
 BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision authority"

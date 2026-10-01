@@ -48,8 +48,7 @@ class RawSessionRecord(BaseModel):
     complete_prefix_record_count: int | None = Field(default=None, exclude=True)
     captured_file_observation: tuple[int, int, int, int, int] | None = Field(default=None, exclude=True)
     # Frozen provider-assembly sidecar snapshot (polylogue-ih67 AC#3/4),
-    # resolved during acquisition and carried across the ProcessPoolExecutor
-    # boundary. ``ingest_record`` never re-reads live home-directory sidecars
+    # resolved during acquisition and carried into the compute request. ``ingest_record`` never re-reads live home-directory sidecars
     # during replay. ``None`` and an empty dict both mean that no optional
     # evidence is available; the former is ordinary absence, while the latter
     # is an explicit acquisition result. Neither permits ambient discovery.

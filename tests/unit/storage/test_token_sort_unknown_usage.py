@@ -63,7 +63,7 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=prepare_session_rows(session),
+                prepared_rows=prepare_session_rows(session),
             )
 
         order_by = _summary_order_by(sample=False, sort="tokens", reverse=True)

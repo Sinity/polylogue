@@ -41,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _codex_conversation_bytes(session_id: str = "session", text: str = "hi") -> bytes:
@@ -228,7 +229,6 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
     """Replacing a lost session cannot violate message uniqueness or touch a foreign session."""
     from polylogue.archive.message.roles import Role
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from tests.infra.index_writer import write_fixture_index_session
 
     bootstrap_archive_root(tmp_path)
     raw_id = _admit(

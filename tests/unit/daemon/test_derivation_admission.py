@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.daemon.cli import _derivation_admission
 from polylogue.daemon.derivation import (
     DerivationFrame,
@@ -50,6 +51,25 @@ def test_truncated_failure_sample_still_counts() -> None:
     """A failure only in ``counts`` (sample truncated) must not read as a duplicate."""
     report = DerivationReport(frame=_FRAME, outcomes=(), counts={Outcome.FAILED: 1}, truncated=True)
 
+    assert _derivation_admission(report, "raw-1", subject="raw observation").outcome is AdmissionOutcome.RETRYABLE
+
+
+@pytest.mark.parametrize("key", ["raw-1", "*"])
+def test_only_exact_typed_terminal_input_failure_is_excluded(key: str) -> None:
+    report = _report(
+        KeyOutcome(
+            key=_key(key),
+            outcome=Outcome.FAILED,
+            error="retained decode refusal",
+            terminal_refusal=RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT,
+        )
+    )
+    expected = AdmissionOutcome.EXCLUDED if key == "raw-1" else AdmissionOutcome.RETRYABLE
+    assert _derivation_admission(report, "raw-1", subject="raw observation").outcome is expected
+
+
+def test_nontransient_infrastructure_failure_remains_retryable() -> None:
+    report = _report(KeyOutcome(key=_key("raw-1"), outcome=Outcome.FAILED, error="schema unavailable", transient=False))
     assert _derivation_admission(report, "raw-1", subject="raw observation").outcome is AdmissionOutcome.RETRYABLE
 
 

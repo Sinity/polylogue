@@ -9,6 +9,8 @@ from pathlib import Path
 from polylogue.archive.artifact_taxonomy import classify_artifact, classify_artifact_path
 from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.config import Source
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -202,6 +204,7 @@ def iter_antigravity_language_server_sessions(
                     error_detail=str(exc),
                 )
                 continue
+            check_compute_cancelled()
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
         logger.warning(
@@ -348,18 +351,15 @@ def _parse_one_source_path_bound(
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Parse a single source file into ``(raw, session)`` tuples.
 
-    Module-level and picklable-by-argument so it can run inside a
-    ``ProcessPoolExecutor`` worker: all parameters are picklable (str, str,
-    str, the dataclass-backed ``SidecarData`` mapping, bool) and the yielded
-    ``RawSessionData``/``ParsedSession`` pydantic models pickle cheaply (pickle
-    round-trip is ~6x cheaper than parsing). Blob writes are content-addressed
-    and atomic (tempfile + ``os.replace`` in ``blob_store.write_from_path``), so
-    concurrent worker blob writes are process-safe.
+    Worker inputs describe source capture and sidecars explicitly; archive
+    handles remain with their creating owner. Blob writes are content-addressed
+    and atomic (tempfile plus replacement in ``blob_store.write_from_path``).
 
     Errors (parse/decode/missing-file) propagate to the caller; the sequential
     iterator records them against ``cursor_state`` and the parallel driver
     catches per-future and increments ``parse_failures``.
     """
+    check_compute_cancelled()
     path = Path(path_str)
     provider_hint = Provider.from_string(source_name)
     if (
@@ -402,6 +402,7 @@ def _parse_one_source_path_bound(
                 blob_publication_receipt_id=snapshot.blob_publication_receipt_id,
             )
         for session in antigravity.parse_trajectory_db(retained_path, fallback_id=path.stem, immutable=True):
+            check_compute_cancelled()
             yield (raw_data, session)
         return
     source_class = recognize_source_class(provider_hint, path)
@@ -480,6 +481,7 @@ def _parse_one_source_path_bound(
             profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
+            check_compute_cancelled()
             yield (raw_data, session)
         return
 
@@ -519,6 +521,7 @@ def _parse_one_source_path_bound(
             profile_identity=snapshot.captured_profile_key,
             immutable=True,
         ):
+            check_compute_cancelled()
             yield (raw_data, session)
         return
 
@@ -590,6 +593,7 @@ def iter_source_sessions(
         cursor_state=cursor_state,
         capture_raw=False,
     ):
+        check_compute_cancelled()
         yield session
 
 
@@ -629,6 +633,7 @@ def iter_source_sessions_with_raw(
     try:
         failed_count = 0
         for path, file_mtime in walk.paths_to_process:
+            check_compute_cancelled()
             if (
                 Provider.from_string(source.name) is Provider.ANTIGRAVITY
                 and path.suffix.lower() == ".pb"
@@ -684,6 +689,8 @@ def iter_source_sessions_with_raw(
                 failed_count += 1
                 logger.warning("Failed to parse %s: %s", path, exc)
                 _record_cursor_failure(cursor_state, str(path), str(exc))
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 failed_count += 1
                 logger.error("Unexpected error processing %s: %s", path, exc)

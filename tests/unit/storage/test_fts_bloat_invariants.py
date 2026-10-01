@@ -18,6 +18,7 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from tests.infra.index_writer import write_fixture_index_session
 
 
 def _seed_session(conn: sqlite3.Connection, native_id: str = "c1") -> str:
@@ -195,7 +196,6 @@ def test_session_rewrite_purges_fts_when_only_the_delete_trigger_is_missing(tmp_
     the guard removes.
     """
     from polylogue.storage.sqlite.schema import SCHEMA_DDL
-    from tests.infra.index_writer import write_fixture_index_session
 
     def parsed_session(*texts: str) -> ParsedSession:
         return ParsedSession(
@@ -246,7 +246,6 @@ def test_parsed_session_rewrite_purges_fts_when_bulk_triggers_suspended(tmp_path
     """Full session rewrite must not orphan old FTS rowids in dropped-trigger bulk mode."""
     from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync, restore_fts_triggers_sync
     from polylogue.storage.sqlite.schema import SCHEMA_DDL
-    from tests.infra.index_writer import write_fixture_index_session
 
     def parsed_session(*texts: str) -> ParsedSession:
         return ParsedSession(

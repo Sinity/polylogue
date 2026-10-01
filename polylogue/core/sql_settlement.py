@@ -35,6 +35,8 @@ class NativeSQLCustodyOwner(SQLCustodyOwner, Protocol):
 
 
 class AsyncSQLCustodyOwner(Protocol):
+    def request_sql_settlement(self) -> None: ...
+
     async def close(self) -> None: ...
 
 

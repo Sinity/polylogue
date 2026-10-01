@@ -9,7 +9,7 @@ exists in ``tests/unit/sources/parsers/test_codex_state.py``). The production
 surface under test is ``sources/live/batch.py``'s acquire-loop branch that
 exports ``state_5.sqlite`` and the parse-stage branch that calls
 ``record_codex_state_snapshot_terminal`` ->
-``codex_state_projection.apply_retained_state_export``. Removing either wiring
+``codex_state_projection.apply_prepared_state_snapshot``. Removing either wiring
 point (or reverting the acquire loop to a raw ``path.read_bytes()``) makes the
 assertions below fail -- this is not a self-validating mock: the join runs
 against a real acquired export blob and a real archive.
@@ -718,22 +718,26 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
 ) -> None:
     """A codex-state raw admitted before the terminal receipt existed (the live
     archive's ``goals_1``/``memories_1``/``state_5`` rows) is resolved from its
-    immutable blob by ``resolve_retained_codex_state_receipts``.
+    immutable blob by canonical preparation and sealed publication.
 
-    Anti-vacuity: with the resolver a no-op, the seeded state keeps reporting
+    Anti-vacuity: without prepared state publication, the seeded state keeps reporting
     ``source_raws_without_accepted_head`` and the gate stays blocked.
     """
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+    from tests.infra.retained_replay import replay_retained_components
 
     archive_root = workspace_env["archive_root"]
-    await _seed_unreceipted_codex_state_raws(workspace_env)
+    raw_ids = await _seed_unreceipted_codex_state_raws(workspace_env)
 
-    assert resolve_retained_codex_state_receipts(archive_root) == 2
+    replay_retained_components(archive_root, selected_raw_ids=list(raw_ids.values()))
     assert _cursor_authority_gap_states(archive_root) == []
     assert raw_frontier_source_selection_block_reason(archive_root) is None
-    # Idempotent: a second pass finds nothing left to resolve.
-    assert resolve_retained_codex_state_receipts(archive_root) == 0
+    # Replaying the same retained input keeps the terminal authority stable.
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        before = conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall()
+    replay_retained_components(archive_root, selected_raw_ids=list(raw_ids.values()))
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall() == before
 
 
 @pytest.mark.asyncio
@@ -753,7 +757,7 @@ async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export
     """
     import asyncio
 
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 
@@ -788,10 +792,9 @@ async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export
 def test_historical_codex_page_image_is_not_finalized_as_current_state(
     workspace_env: dict[str, Path],
 ) -> None:
-    """The resolver must require the declared export, not merely a database
-    whose table shape happens to match an old ``state_5.sqlite`` page image."""
+    """A page image gets its diagnostic receipt without a current state projection."""
     from polylogue.core.enums import Provider
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+    from tests.infra.retained_replay import replay_retained_components
 
     archive_root = workspace_env["archive_root"]
     state_path = workspace_env["data_root"] / "state_5.sqlite"
@@ -806,9 +809,14 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
         )
         archive.commit()
 
-    assert resolve_retained_codex_state_receipts(archive_root) == 0
+    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
+    from polylogue.sources.revision_backfill import LEGACY_PAGE_IMAGE_CENSUS_DETAIL
+
     with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+        detail = conn.execute("SELECT detail FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()
+        assert detail is not None and LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(detail[0])
+    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        assert read_thread_titles(archive.index_connection, thread_ids=[_THREAD_ID]) == {}
 
 
 @pytest.mark.asyncio
@@ -817,11 +825,10 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
 ) -> None:
     """A malformed thread-state schema is isolated while valid candidates finalize.
 
-    Anti-vacuity: removing the resolver's per-candidate finalization guard
-    raises OperationalError for the missing ``agent_role`` column before the
-    valid goals snapshot receives its terminal receipt.
+    Anti-vacuity: coupling preparation to a malformed sibling prevents the
+    valid goals snapshot from receiving its terminal receipt.
     """
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+    from tests.infra.retained_replay import replay_retained_components
 
     archive, codex_root, codex_state_root = _make_processor(
         workspace_env, "codex-home-schema-drift", "codex-state-schema-drift.db"
@@ -859,7 +866,11 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
         )
         conn.commit()
 
-    assert resolve_retained_codex_state_receipts(workspace_env["archive_root"]) == 1
+    retained_by_path = {str(path): str(raw_id) for raw_id, path in rows}
+    replay_retained_components(
+        workspace_env["archive_root"],
+        selected_raw_ids=[retained_by_path[str(good_path)]],
+    )
     with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
         states = dict(
             conn.execute(
@@ -1185,3 +1196,50 @@ async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
             ).fetchall()
         )
     assert links == {"a-parent": HOOK_AUTHORITATIVE_LINK_METHOD}
+
+
+@pytest.mark.asyncio
+async def test_live_state_publishes_every_captured_page_after_source_changes(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Publication uses the complete sealed capture, even after the live source changes."""
+    archive, codex_root, state_root = _make_processor(workspace_env, "paged-state", "paged-state.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    source = state_root / "state_5.sqlite"
+    _write_state_5_sqlite(source)
+    expected = {f"synthetic-thread-{i:04d}": f"Captured title {i}" for i in range(1001)}
+    with sqlite3.connect(source) as conn:
+        conn.executemany(
+            "INSERT INTO threads VALUES (?, ?, '/repo', 1000, 2000, 'cli', 'synthetic', NULL, NULL, 0)",
+            expected.items(),
+        )
+        conn.commit()
+    expected[_THREAD_ID] = "Synthetic curated title"
+    original_publish = processor._ingest_full_paths_prepared
+
+    async def change_live_source_then_publish(*args: object, **kwargs: object) -> object:
+        with sqlite3.connect(source) as conn:
+            conn.execute("UPDATE threads SET title = 'Later live title'")
+            conn.commit()
+        return await original_publish(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(processor, "_ingest_full_paths_prepared", change_live_source_then_publish)
+    try:
+        result = await processor.ingest_files([source], emit_event=False)
+        assert result.failed_file_count == 0
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
+            assert read_thread_titles(conn) == expected
+            assert read_spawn_edges(conn) == {(_THREAD_ID, _CHILD_THREAD_ID): "closed"}
+        with sqlite3.connect(source) as conn:
+            assert conn.execute("SELECT DISTINCT title FROM threads").fetchall() == [("Later live title",)]
+    finally:
+        await archive.close()

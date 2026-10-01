@@ -30,7 +30,7 @@ def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
         conn,
         session,
         content_hash=str(session_content_hash(session)),
-        prepared=prepare_session_rows(session),
+        prepared_rows=prepare_session_rows(session),
     )
 
 

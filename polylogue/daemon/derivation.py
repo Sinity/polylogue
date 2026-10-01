@@ -42,11 +42,13 @@ the output relations that are already authoritative.
 from __future__ import annotations
 
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Protocol
 
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
 from polylogue.logging import WARNING, emit
 
 __all__ = [
@@ -173,6 +175,10 @@ class ReplacementLike(Protocol):
     @property
     def empty(self) -> bool: ...
 
+    def close(self) -> None:
+        """Retire a computed carrier whose publication never started."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class Replacement:
@@ -188,6 +194,9 @@ class Replacement:
     input_binding: str
     payload: object
     empty: bool = False
+
+    def close(self) -> None:
+        """This value replacement owns no physical resources."""
 
 
 def _is_transient_failure(exc: BaseException) -> bool:
@@ -209,6 +218,8 @@ class KeyOutcome:
     """For ``FAILED``: whether the failure can clear with no change to the
     key's evidence (lock contention, a storage fault). Anything else repeats
     identically on the unchanged key."""
+    terminal_refusal: RawFailureEvidenceKind | None = None
+    """Exact retained input refusal, distinct from a nontransient execution fault."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -950,14 +961,17 @@ class _Pass:
                     outcome=Outcome.FAILED,
                     error=f"compute {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
+                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
             return
 
         held_at_admission: dict[str, str] = {}
+        publication_started = False
 
         def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
+            nonlocal publication_started
             # Compute ran outside the writer, so the pre-compute barrier
             # decision may be stale: an ingest can stage a newer, unpublished
             # revision meanwhile. Re-decide inside the writer admission, where
@@ -966,6 +980,7 @@ class _Pass:
                 held_at_admission.update(self.barrier_blocks(adapter, (key,), phase=DiscoveryPhase.REQUIRED))
                 if held_at_admission:
                     return False
+            publication_started = True
             return adapter.publish(self.frame, replacement)
 
         # The publication budget bounds *attempts*, not successes. Counting
@@ -973,7 +988,20 @@ class _Pass:
         # issue unbounded publish() calls inside one pass (polylogue-tjtua).
         self.published += 1
         try:
-            accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
+            try:
+                accepted = self.publisher(adapter.domain, _publish) if self.publisher is not None else _publish()
+            except BaseException as primary:
+                if not publication_started:
+                    try:
+                        replacement.close()
+                    except BaseException as cleanup:
+                        raise BaseExceptionGroup(
+                            "publication admission and carrier cleanup failed", [primary, cleanup]
+                        ) from primary
+                raise
+            else:
+                if not publication_started:
+                    replacement.close()
         except Exception as exc:
             emit(
                 "daemon.derivation.key_failed",
@@ -991,6 +1019,7 @@ class _Pass:
                     outcome=Outcome.FAILED,
                     error=f"publish {type(exc).__name__}: {exc}",
                     transient=_is_transient_failure(exc),
+                    terminal_refusal=exc.kind if isinstance(exc, RetainedRawDecodeRefusalError) else None,
                     elapsed_s=time.monotonic() - started_key,
                 )
             )

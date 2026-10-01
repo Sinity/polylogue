@@ -8,20 +8,29 @@ import os
 import shutil
 import sqlite3
 import uuid
-from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
-from itertools import islice
 from pathlib import Path
-from typing import BinaryIO, cast, overload
+from typing import TYPE_CHECKING, BinaryIO, Literal, cast, overload
 
 import ijson
 
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactClassification,
+    ArtifactKind,
+    ArtifactStreamClassification,
+    classify_artifact_stream,
+)
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.prepared_file import PreparedFileSeal, file_digest
 from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
@@ -39,7 +48,6 @@ from polylogue.sources.decoder_json import (
     drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
-    grok_taxonomy_witness,
     hermes_snapshot_envelope,
     iter_container_member_files,
     iter_grok_export_events,
@@ -64,6 +72,7 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.parsers import (
     browser_capture,
     chatgpt,
+    codex_state,
     drive,
     grok,
     hermes_spans,
@@ -98,6 +107,13 @@ from polylogue.sources.prepared_message_sink import (
 )
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
 from polylogue.sources.value_bounds import ValueBoundRefusedError
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    PreparedBlobPublicationClaim,
+    _prepared_claim_from_record,
+)
+from polylogue.storage.blob_store import PreparedBlob
+from polylogue.storage.materials import PreparedMaterial
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     append_session_to_shard,
@@ -110,7 +126,11 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
 )
 
-_ARTIFACT_VERSION = 3
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+
+_ARTIFACT_VERSION = 6
 
 
 class _SourceChangedDuringPreparationError(ValueError):
@@ -125,6 +145,7 @@ def _gemini_cli_envelope(handle: BinaryIO) -> dict[str, JSONValue] | None:
     envelope: dict[str, JSONValue] = {}
     message_arrays = 0
     for prefix, event, value in events:
+        check_compute_cancelled()
         if prefix == "" and event == "end_map":
             if next(events, None) is not None:
                 return None
@@ -158,10 +179,6 @@ def _append_gemini_raw_message(conn: sqlite3.Connection, ordinal: int, item: obj
     )
 
 
-class VerificationCancelledError(Exception):
-    """A digest pass stopped at a chunk boundary because its caller was cancelled."""
-
-
 class DecodeFailure(StrEnum):
     """Which JSON decode boundary refused a source's bytes."""
 
@@ -174,9 +191,8 @@ class DecodeFailure(StrEnum):
 class PreparedDecodeError(ValueError):
     """A worker's decode failure, raised again by the writer with its kind.
 
-    An exception does not survive the worker boundary with its type (the
-    carrier is pickled, and ``JsonlDecodeError`` cannot be rebuilt from its
-    message), so the carrier names the kind and the writer raises this.
+    A failed preparation records its decode kind in the sealed carrier. The
+    writer reconstructs that typed refusal without parsing retained bytes.
     """
 
     def __init__(self, kind: DecodeFailure, detail: str) -> None:
@@ -229,16 +245,6 @@ def terminal_decode_evidence(error: BaseException, *, provider: Provider) -> Raw
     return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
 
 
-def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            if stop is not None and stop():
-                raise VerificationCancelledError(str(path))
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 @contextmanager
 def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, CapturedHermesProfile]]:
     """Copy one revision of ``source`` into private scratch and name its digest.
@@ -252,7 +258,7 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, 
     keeps the source's file name, which decides JSON and JSONL handling.
     """
     holder = directory / f"source-{uuid.uuid4().hex}"
-    holder.mkdir(parents=True)
+    holder.mkdir(mode=0o700, parents=True)
     snapshot = holder / source.name
     try:
         digest = hashlib.sha256()
@@ -261,6 +267,7 @@ def source_snapshot(source: Path, directory: Path) -> Iterator[tuple[Path, str, 
             if profile is None:
                 raise OSError("source snapshot has no bound declared namespace")
             for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+                check_compute_cancelled()
                 digest.update(chunk)
                 writer.write(chunk)
         os.chmod(snapshot, 0o400)
@@ -276,51 +283,12 @@ def _iter_prefix_lines(handle: BinaryIO, prefix_size: int) -> Iterator[bytes]:
         raise ValueError("JSONL prefix size must be non-negative")
     remaining = prefix_size
     while remaining:
+        check_compute_cancelled()
         line = handle.readline(remaining)
         if not line:
             raise OSError("sealed source ended before its prepared JSONL prefix")
         remaining -= len(line)
         yield line
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedFileSeal:
-    """Closed scratch-file bytes and the exact inode handed to publication."""
-
-    sha256: str
-    device: int
-    inode: int
-    size: int
-    mtime_ns: int
-    ctime_ns: int
-
-    @classmethod
-    def capture(cls, path: Path) -> PreparedFileSeal:
-        # No supported writer exists after the SQLite owner closes. Read-only
-        # permissions make accidental edits fail; the stat pair rejects a
-        # replacement or concurrent mutation during the digest pass.
-        os.chmod(path, 0o400)
-        before = path.stat()
-        digest = _source_digest(path)
-        after = path.stat()
-        if _file_identity(before) != _file_identity(after):
-            raise ValueError(f"prepared file changed while sealing: {path}")
-        return cls(digest, *_file_identity(after))
-
-    def verify(self, path: Path, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
-        before = path.stat()
-        if _file_identity(before) != self.identity:
-            raise ValueError(f"prepared file identity changed: {path}")
-        if full:
-            if _source_digest(path, stop=stop) != self.sha256:
-                raise ValueError(f"prepared file content changed: {path}")
-            after = path.stat()
-            if _file_identity(after) != self.identity:
-                raise ValueError(f"prepared file changed during verification: {path}")
-
-    @property
-    def identity(self) -> tuple[int, int, int, int, int]:
-        return self.device, self.inode, self.size, self.mtime_ns, self.ctime_ns
 
 
 def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
@@ -396,19 +364,6 @@ def _atif_subagents(conn: sqlite3.Connection) -> Iterator[hermes_spans.AtifSubag
             step_count,
             partial(_atif_subagent_steps, conn, ordinal),
         )
-
-
-def _atif_subagent_witness(conn: sqlite3.Connection) -> list[JSONValue]:
-    """The first 64 subagent entries, each with at most its first 64 steps."""
-    witness: list[JSONValue] = []
-    for ordinal, fields_json, step_count in conn.execute(
-        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal LIMIT 64"
-    ):
-        fields = json.loads(fields_json)
-        if step_count is not None:
-            fields["steps"] = list(islice(_atif_subagent_steps(conn, ordinal), 64))
-        witness.append(fields)
-    return witness
 
 
 def _otlp_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], str] | None:
@@ -652,14 +607,37 @@ def _stream_claude_ai_object(
     return session
 
 
-def _classify_grok_witness(source: Path, classify: Callable[[JSONValue], bool]) -> bool:
-    with source.open("rb") as handle:
-        witness = grok_taxonomy_witness(handle)
-    return classify(witness)
+@dataclass(frozen=True, slots=True)
+class _PreparedCodexThreads:
+    artifact: PreparedJsonl
+
+    def __iter__(self) -> Iterator[codex_state.CodexThreadRecord]:
+        for row in self.artifact._iter_codex_records("prepared_codex_thread"):
+            yield codex_state.CodexThreadRecord(
+                thread_id=cast(str, row["thread_id"]),
+                title=cast(str, row["title"]),
+                cwd=cast(str, row["cwd"]),
+                created_at_ms=cast(int, row["created_at_ms"]),
+                updated_at_ms=cast(int, row["updated_at_ms"]),
+                source=cast(str, row["source"]),
+                model=cast(str | None, row["model"]),
+                agent_nickname=cast(str | None, row["agent_nickname"]),
+                agent_role=cast(str | None, row["agent_role"]),
+                archived=cast(bool, row["archived"]),
+            )
 
 
-def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
-    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+@dataclass(frozen=True, slots=True)
+class _PreparedCodexSpawnEdges:
+    artifact: PreparedJsonl
+
+    def __iter__(self) -> Iterator[codex_state.CodexSpawnEdge]:
+        for row in self.artifact._iter_codex_records("prepared_codex_spawn"):
+            yield codex_state.CodexSpawnEdge(
+                parent_thread_id=cast(str, row["parent_thread_id"]),
+                child_thread_id=cast(str, row["child_thread_id"]),
+                status=cast(str, row["status"]),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -691,6 +669,92 @@ class PreparedJsonl:
     missing_profile_identity: bool = False
     retained_zip_membership_unproved: bool = False
     captured_profile_key: str | None = None
+    codex_state_kind: str | None = None
+    codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS
+    publication_publisher: ArchiveBlobPublisher | None = None
+
+    @classmethod
+    def from_sessions(
+        cls,
+        sessions: Iterable[ParsedSession],
+        *,
+        blob_hash: str,
+        artifact_directory: Path,
+        publication_publisher: ArchiveBlobPublisher,
+    ) -> PreparedJsonl:
+        """Seal already-admitted parser output on the canonical paged carrier.
+
+        The caller owns the private directory through physical preparation
+        completion, including failures. No parser or alternate attachment
+        representation is introduced at this boundary.
+        """
+        from polylogue.core.compute import capture_compute_bridge
+        from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+        from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+        sessions_path = artifact_directory / f"sessions-{uuid.uuid4().hex}.db"
+        shard_path = artifact_directory / f"shard-{uuid.uuid4().hex}.db"
+        store: SqliteMessageStore | None = None
+        builder: SessionShardBuilder | None = None
+
+        provisional = cls(blob_hash, sessions_path, shard_path, attempt_directory=artifact_directory)
+        try:
+            with capture_compute_bridge()(), retain_native_sql_lifetimes(artifact_directory):
+                try:
+                    store = SqliteMessageStore(sessions_path)
+                    builder = SessionShardBuilder(shard_path)
+
+                    def lowered_sessions() -> Iterator[ParsedSession]:
+                        assert builder is not None
+                        for session in sessions:
+                            check_compute_cancelled()
+                            append_session_to_shard(builder, session)
+                            yield session
+
+                    _write_artifact(
+                        store,
+                        blob_hash,
+                        lowered_sessions(),
+                        enrichment_digest=None,
+                        enrichment_index_path=None,
+                    )
+                    _prepare_attachment_publications(store, publication_publisher, artifact_directory)
+                    _prepare_sidecar_publications(store, publication_publisher, artifact_directory)
+                    builder.seal()
+                    builder = None
+                    store.close()
+                    store = None
+                    return cls.seal(
+                        blob_hash,
+                        sessions_path,
+                        shard_path,
+                        positive_evidence_filtered=True,
+                        attempt_directory=artifact_directory,
+                        publication_publisher=publication_publisher,
+                    )
+                except BaseException as primary:
+                    failures: list[BaseException] = [primary]
+                    for close in (
+                        builder.abandon
+                        if builder is not None
+                        and not any(owner.close_required for owner in native_sql_children(builder))
+                        else None,
+                        store.close if store is not None and not store._sql_owner.close_required else None,
+                    ):
+                        if close is not None:
+                            try:
+                                close()
+                            except BaseException as cleanup:
+                                failures.append(cleanup)
+                    if len(failures) > 1:
+                        raise BaseExceptionGroup("canonical session preparation cleanup failed", failures) from None
+                    raise
+        except BaseException as primary:
+            try:
+                provisional.discard()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("canonical carrier and cleanup failed", [primary, cleanup]) from None
+            raise
 
     @classmethod
     def seal(
@@ -706,6 +770,9 @@ class PreparedJsonl:
         captured_profile_key: str | None = None,
         positive_evidence_filtered: bool = False,
         attempt_directory: Path | None = None,
+        codex_state_kind: str | None = None,
+        codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
+        publication_publisher: ArchiveBlobPublisher | None = None,
     ) -> PreparedJsonl:
         """Take custody only after both SQLite writers have closed."""
         return cls(
@@ -721,6 +788,9 @@ class PreparedJsonl:
             captured_profile_key=captured_profile_key,
             positive_evidence_filtered=positive_evidence_filtered,
             attempt_directory=attempt_directory,
+            codex_state_kind=codex_state_kind,
+            codex_state_text_chars=codex_state_text_chars,
+            publication_publisher=publication_publisher,
         )
 
     def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
@@ -740,8 +810,25 @@ class PreparedJsonl:
         self.shard_seal.verify(self.shard_path, full=full, stop=stop)
 
     def discard(self) -> None:
+        failures: list[BaseException] = []
         for prepared in self.prepared_writes:
-            prepared.close()
+            try:
+                prepared.close()
+            except BaseException as exc:
+                failures.append(exc)
+        if failures:
+            raise BaseExceptionGroup("prepared write cleanup failed", failures)
+        from polylogue.storage.sqlite.connection_profile import (
+            NativeConnectionSettlementError,
+            retained_native_sql_owners_for_lifetime,
+        )
+
+        for dependency in (self.sessions_path, self.shard_path, self.attempt_directory):
+            pending = retained_native_sql_owners_for_lifetime(dependency) if dependency is not None else ()
+            if pending:
+                raise NativeConnectionSettlementError(
+                    pending[0], RuntimeError("artifact cleanup requires native drain")
+                )
         if self.sessions_path is not None:
             discard_decoded_sessions(self.sessions_path)
         if self.attempt_directory is not None:
@@ -756,6 +843,7 @@ class PreparedJsonl:
                     outcome="degraded",
                     reason="sealed attempt scratch removal failed",
                 )
+                raise
             return
         if self.sessions_path is not None:
             self.sessions_path.unlink(missing_ok=True)
@@ -763,7 +851,7 @@ class PreparedJsonl:
         if self.shard_path is not None:
             discard_session_shard(self.shard_path)
 
-    def iter_sessions(self) -> Generator[ParsedSession, None, None]:
+    def iter_sessions(self) -> Generator[ParsedSession]:
         if self.sessions_path is None or self.blob_hash is None:
             raise RuntimeError(self.error or "JSONL preparation has no sealed artifact")
         if self.shard_path is None:
@@ -830,6 +918,235 @@ class PreparedJsonl:
                     "attachments": SqliteAttachmentSink(self.sessions_path, attachment_ordinal, count=attachment_count),
                 }
             )
+
+    @property
+    def codex_state_snapshot(self) -> codex_state.CodexStateSnapshot | None:
+        if self.codex_state_kind != "thread_state":
+            return None
+        return codex_state.CodexStateSnapshot(
+            threads=_PreparedCodexThreads(self),
+            spawn_edges=_PreparedCodexSpawnEdges(self),
+        )
+
+    def _iter_codex_records(
+        self, table: Literal["prepared_codex_thread", "prepared_codex_spawn"]
+    ) -> Iterator[dict[str, object]]:
+        from polylogue.sources.prepared_message_sink import _prepared_reader
+
+        if self.sessions_path is None or self.codex_state_kind != "thread_state":
+            raise ValueError("prepared artifact has no thread state")
+        self.verify_files(full=False)
+        ordinal = -1
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as conn:
+                if conn.execute("SELECT kind FROM prepared_codex_state").fetchall() != [("thread_state",)]:
+                    raise ValueError("prepared state kind changed")
+                rows = conn.execute(
+                    f"SELECT ordinal, metadata_json FROM {table} WHERE ordinal > ? ORDER BY ordinal LIMIT 256",
+                    (ordinal,),
+                ).fetchall()
+            if not rows:
+                return
+            for _ordinal, metadata in rows:
+                check_compute_cancelled()
+                yield json.loads(metadata)
+
+    def iter_codex_state_material(self) -> Iterator[tuple[str, str, str, int, PreparedMaterial | None]]:
+        """Read complete pre-encoded state parts through closed bounded pages."""
+        from polylogue.sources.prepared_message_sink import _prepared_reader
+
+        if self.sessions_path is None or self.codex_state_kind not in {"goals", "memories"}:
+            raise ValueError("prepared artifact has no state material")
+        if self.publication_publisher is None:
+            raise ValueError("prepared material has no captured publisher owner")
+        self.verify_files(full=False)
+        ordinal = -1
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as conn:
+                kind = conn.execute("SELECT kind FROM prepared_codex_state").fetchall()
+                if kind != [(self.codex_state_kind,)]:
+                    raise ValueError("prepared state kind changed")
+                rows = conn.execute(
+                    "SELECT ordinal, thread_id, item_id, part_kind, byte_size, prepared_json FROM prepared_codex_state_part "
+                    "WHERE ordinal > ? ORDER BY ordinal LIMIT 256",
+                    (ordinal,),
+                ).fetchall()
+            if not rows:
+                return
+            from polylogue.storage.materials import _prepared_material_from_record
+
+            for _ordinal, thread_id, item_id, part_kind, byte_size, prepared_json in rows:
+                yield (
+                    str(thread_id),
+                    str(item_id),
+                    str(part_kind),
+                    int(byte_size),
+                    (
+                        _prepared_material_from_record(prepared_json, self.publication_publisher)
+                        if prepared_json is not None
+                        else None
+                    ),
+                )
+
+    def iter_attachment_claims(
+        self, *, session_ordinal: int | None = None
+    ) -> Iterator[tuple[int, int, PreparedBlobPublicationClaim]]:
+        """Read exact captured claims through closed bounded artifact pages."""
+        if self.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.verify_files(full=False)
+        after = (-1, -1)
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as connection:
+                predicate = "" if session_ordinal is None else "AND session_ordinal=? "
+                parameters = after if session_ordinal is None else (*after, session_ordinal)
+                rows = connection.execute(
+                    "SELECT session_ordinal, attachment_ordinal, claim_json FROM prepared_attachment_publication "
+                    "WHERE (session_ordinal, attachment_ordinal) > (?, ?) "
+                    + predicate
+                    + "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
+                    parameters,
+                ).fetchall()
+            if not rows:
+                return
+            if self.publication_publisher is None:
+                raise ValueError("prepared attachments have no captured publisher")
+            after = (int(rows[-1][0]), int(rows[-1][1]))
+            for session_ordinal, attachment_ordinal, encoded in rows:
+                check_compute_cancelled()
+                yield (
+                    int(session_ordinal),
+                    int(attachment_ordinal),
+                    _prepared_claim_from_record(str(encoded), self.publication_publisher),
+                )
+
+    def attachment_blobs(
+        self, *, source_connection: sqlite3.Connection, session_id: str
+    ) -> Mapping[object, tuple[bytes | None, int, str]]:
+        """Borrow writer-owned excision evidence for the sealed attachment view."""
+        if self.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT attachment_ordinal FROM prepared_session WHERE session_id=?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        return _PreparedAttachmentBlobs(self, source_connection, int(row[0]))
+
+    def iter_attachment_refs(self, *, source_path: str, acquired_at_ms: int, source_connection: sqlite3.Connection):
+        from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, is_blob_hash_excised
+
+        for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
+            blob_hash = bytes.fromhex(claim.receipt.blob_hash)
+            if not is_blob_hash_excised(source_connection, blob_hash):
+                assert self.publication_publisher is not None
+                self.publication_publisher.validate_published_claim(source_connection, claim, source_path=source_path)
+                yield ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    ref_type="attachment",
+                    source_path=source_path,
+                    size_bytes=claim.receipt.size_bytes,
+                    acquired_at_ms=acquired_at_ms,
+                    publication_receipt_id=claim.receipt.publication_id,
+                )
+
+    def iter_sidecar_claims(
+        self, *, session_ordinal: int | None = None
+    ) -> Iterator[tuple[int, str, PreparedBlobPublicationClaim, bool]]:
+        if self.sessions_path is None or self.publication_publisher is None:
+            return
+        self.verify_files(full=False)
+        after = (-1, "")
+        while True:
+            check_compute_cancelled()
+            with _prepared_reader(self.sessions_path) as connection:
+                predicate = "" if session_ordinal is None else "AND session_ordinal=? "
+                parameters = after if session_ordinal is None else (*after, session_ordinal)
+                rows = connection.execute(
+                    "SELECT session_ordinal,tool_use_id,claim_json,already_present FROM prepared_sidecar_publication "
+                    "WHERE claim_json IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) "
+                    + predicate
+                    + "ORDER BY session_ordinal,tool_use_id LIMIT 256",
+                    parameters,
+                ).fetchall()
+            if not rows:
+                return
+            after = int(rows[-1][0]), str(rows[-1][1])
+            for ordinal, tool_use_id, encoded, present in rows:
+                yield (
+                    int(ordinal),
+                    str(tool_use_id),
+                    _prepared_claim_from_record(str(encoded), self.publication_publisher),
+                    bool(present),
+                )
+
+    def publish_blobs(self, *, reference_seal: PreparedIndexMutation | None = None) -> None:
+        """Publish exact closed-page claims before any Source transaction."""
+        publisher = self.publication_publisher
+        page: list[PreparedBlobPublicationClaim] = []
+
+        def flush_page() -> None:
+            assert publisher is not None
+            publisher.flush(reference_seal=reference_seal)
+            for completed in page:
+                publisher.forget_completed_claim(completed)
+            page.clear()
+
+        for _session_ordinal, _attachment_ordinal, claim in self.iter_attachment_claims():
+            assert publisher is not None
+            publisher.queue_prepared(
+                PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
+            )
+            page.append(claim)
+            if len(page) == 256:
+                flush_page()
+        for _session_ordinal, _tool_use_id, claim, _present in self.iter_sidecar_claims():
+            assert publisher is not None
+            publisher.queue_prepared(
+                PreparedBlob(claim.receipt.blob_hash, claim.receipt.size_bytes, claim.prepared_path), claim=claim
+            )
+            page.append(claim)
+            if len(page) == 256:
+                flush_page()
+        if page:
+            flush_page()
+        from polylogue.storage.materials import publish_prepared_materials
+
+        if self.codex_state_kind not in {"goals", "memories"}:
+            return
+        publish_prepared_materials(
+            material for *_coordinate, material in self.iter_codex_state_material() if material is not None
+        )
+
+    def stream_classification(self) -> ArtifactStreamClassification | None:
+        """Read the complete original-input proof from this sealed artifact."""
+        if self.sessions_path is None:
+            return None
+        self.verify_files(full=False)
+        with _prepared_reader(self.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT provider, kind, parse_as_session, schema_eligible, priority, reason, "
+                "proved_non_session, record_count FROM prepared_classification"
+            ).fetchone()
+        if row is None:
+            return None
+        return ArtifactStreamClassification(
+            ArtifactClassification(
+                provider=Provider.from_string(row[0]),
+                kind=ArtifactKind(row[1]),
+                parse_as_session=bool(row[2]),
+                schema_eligible=bool(row[3]),
+                default_priority=int(row[4]),
+                reason=str(row[5]),
+            ),
+            proved_non_session=bool(row[6]),
+            record_count=int(row[7]),
+        )
 
     def session_sequence(self) -> PreparedSessionSequence:
         """Expose a sealed cohort without retaining its parsed sessions in Python."""
@@ -930,6 +1247,118 @@ class PreparedJsonl:
             )
 
 
+class _PreparedAttachmentBlobs(Mapping[object, tuple[bytes | None, int, str]]):
+    """A writer-local view, never a transferred SQL handle or population map."""
+
+    def __init__(self, artifact: PreparedJsonl, source_connection: sqlite3.Connection, ordinal: int) -> None:
+        self.artifact = artifact
+        self.source_connection = source_connection
+        self.ordinal = ordinal
+
+    def __len__(self) -> int:
+        if self.artifact.sessions_path is None:
+            raise ValueError("prepared artifact has no attachment carrier")
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_attachment_publication WHERE session_ordinal=?", (self.ordinal,)
+                ).fetchone()[0]
+            )
+
+    def __iter__(self) -> Iterator[object]:
+        for session_ordinal, attachment_ordinal, _claim in self.artifact.iter_attachment_claims(
+            session_ordinal=self.ordinal
+        ):
+            yield str(self.artifact.sessions_path), session_ordinal, attachment_ordinal
+
+    def __getitem__(self, key: object) -> tuple[bytes | None, int, str]:
+        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+        if (
+            not isinstance(key, tuple)
+            or len(key) != 3
+            or key[0] != str(self.artifact.sessions_path)
+            or key[1] != self.ordinal
+        ):
+            raise KeyError(key)
+        self.artifact.verify_files(full=False)
+        if self.artifact.sessions_path is None or self.artifact.publication_publisher is None:
+            raise ValueError("prepared attachments have no captured publisher")
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT claim_json FROM prepared_attachment_publication WHERE session_ordinal = ? AND attachment_ordinal = ?",
+                (key[1], key[2]),
+            ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        claim = _prepared_claim_from_record(str(row[0]), self.artifact.publication_publisher)
+        blob_hash = bytes.fromhex(claim.receipt.blob_hash)
+        if is_blob_hash_excised(self.source_connection, blob_hash):
+            return None, claim.receipt.size_bytes, "unavailable"
+        claim.publisher.validate_published_claim(self.source_connection, claim, source_path="")
+        return blob_hash, claim.receipt.size_bytes, "acquired"
+
+
+class PreparedSidecarLocators(Mapping[str, Mapping[str, str]]):
+    """Read the captured sidecar claim for one session without a tool map."""
+
+    def __init__(self, artifact: PreparedJsonl, ordinal: int, source_connection: sqlite3.Connection) -> None:
+        self.artifact = artifact
+        self.ordinal = ordinal
+        self.source_connection = source_connection
+
+    def __iter__(self) -> Iterator[str]:
+        for _ordinal, tool_use_id, _claim, _present in self.artifact.iter_sidecar_claims(session_ordinal=self.ordinal):
+            yield tool_use_id
+
+    def __len__(self) -> int:
+        if self.artifact.sessions_path is None:
+            return 0
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            return int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM prepared_sidecar_publication WHERE session_ordinal=? AND claim_json IS NOT NULL",
+                    (self.ordinal,),
+                ).fetchone()[0]
+            )
+
+    def __getitem__(self, tool_use_id: str) -> Mapping[str, str]:
+        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+        if self.artifact.sessions_path is None or self.artifact.publication_publisher is None:
+            raise KeyError(tool_use_id)
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute(
+                "SELECT claim_json FROM prepared_sidecar_publication WHERE session_ordinal=? AND tool_use_id=?",
+                (self.ordinal, tool_use_id),
+            ).fetchone()
+        if row is None or row[0] is None:
+            raise KeyError(tool_use_id)
+        claim = _prepared_claim_from_record(str(row[0]), self.artifact.publication_publisher)
+        if is_blob_hash_excised(self.source_connection, bytes.fromhex(claim.receipt.blob_hash)):
+            return {"blob_refusal": "content_excised"}
+        claim.publisher.validate_published_claim(self.source_connection, claim, source_path="")
+        return {"blob_hash": claim.receipt.blob_hash}
+
+    def publication_counts(self) -> dict[str, int]:
+        counts = {
+            "sidecar_blob_bytes_new": 0,
+            "sidecar_blob_bytes_dedup": 0,
+            "sidecar_blobs_written": 0,
+            "sidecar_blobs_refused_excised": 0,
+        }
+        for _ordinal, tool_use_id, claim, present in self.artifact.iter_sidecar_claims(session_ordinal=self.ordinal):
+            if self[tool_use_id].get("blob_refusal"):
+                counts["sidecar_blobs_refused_excised"] += 1
+            else:
+                counts["sidecar_blobs_written"] += 1
+                counts["sidecar_blob_bytes_dedup" if present else "sidecar_blob_bytes_new"] += claim.receipt.size_bytes
+        return counts
+
+
 class PreparedSessionSequence(Sequence[ParsedSession]):
     """A reusable session view over the sealed worker artifact."""
 
@@ -983,7 +1412,14 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
             index += self._count
         if index < 0 or index >= self._count:
             raise IndexError(index)
-        return next(islice(self.artifact.iter_sessions(), index, index + 1))
+        if self.artifact.sessions_path is None:
+            raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
+        self.artifact.verify_files(full=False)
+        with _prepared_reader(self.artifact.sessions_path) as connection:
+            row = connection.execute("SELECT session_id FROM prepared_session WHERE ordinal = ?", (index,)).fetchone()
+        if row is None:
+            raise ValueError("JSONL preparation ordinal disappeared")
+        return self.by_session_id(str(row[0]))
 
 
 def _write_artifact(
@@ -993,6 +1429,12 @@ def _write_artifact(
     *,
     enrichment_digest: str | None,
     enrichment_index_path: str | None,
+    codex_state_path: Path | None = None,
+    codex_state_kind: str | None = None,
+    codex_state_text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
+    codex_semantic_source_path: str | None = None,
+    codex_material_store: ArchiveBlobPublisher | None = None,
+    codex_material_directory: Path | None = None,
 ) -> None:
     conn = store.conn
     try:
@@ -1001,6 +1443,76 @@ def _write_artifact(
         for ordinal, session in enumerate(sessions):
             _append_artifact_session(store, ordinal, session)
             count += 1
+        if codex_state_kind is not None:
+            if codex_state_path is None:
+                raise ValueError("prepared state requires retained export path")
+            conn.execute("INSERT INTO prepared_codex_state VALUES (?)", (codex_state_kind,))
+            if codex_state_kind == "thread_state":
+                from dataclasses import asdict
+
+                thread_ordinal = 0
+                spawn_ordinal = 0
+                for record in codex_state.iter_codex_state_records(codex_state_path, immutable=True):
+                    check_compute_cancelled()
+                    if isinstance(record, codex_state.CodexThreadRecord):
+                        conn.execute(
+                            "INSERT INTO prepared_codex_thread VALUES (?, ?)",
+                            (thread_ordinal, json.dumps(asdict(record), ensure_ascii=False)),
+                        )
+                        thread_ordinal += 1
+                    else:
+                        conn.execute(
+                            "INSERT INTO prepared_codex_spawn VALUES (?, ?)",
+                            (spawn_ordinal, json.dumps(asdict(record), ensure_ascii=False)),
+                        )
+                        spawn_ordinal += 1
+            elif codex_state_kind in {"goals", "memories"}:
+                from polylogue.sources.codex_state_evidence import _encode_state_payload, codex_material_coordinate
+                from polylogue.storage.materials import _prepared_material_record, prepare_material
+
+                if (
+                    codex_semantic_source_path is None
+                    or codex_material_store is None
+                    or codex_material_directory is None
+                ):
+                    raise ValueError("state material requires captured scope and owned blob staging")
+
+                for ordinal, part in enumerate(
+                    codex_state.iter_codex_state_parts(
+                        codex_state_path,
+                        state_kind=cast(Literal["goals", "memories"], codex_state_kind),
+                        text_chars=codex_state_text_chars,
+                        immutable=True,
+                    )
+                ):
+                    check_compute_cancelled()
+                    encoded = _encode_state_payload(part.payload)
+                    prepared_record = None
+                    if part.part_kind != "invalid":
+                        material_kind = codex_state_kind if part.part_kind == "record" else f"{codex_state_kind}-text"
+                        source_uri, referrer_ref = codex_material_coordinate(
+                            codex_semantic_source_path,
+                            part.thread_id,
+                            material_kind,
+                            part.item_id,
+                        )
+                        prepared = prepare_material(
+                            blob_store=codex_material_store,
+                            staging_directory=codex_material_directory,
+                            source_uri=source_uri,
+                            referrer_ref=referrer_ref,
+                            payload=encoded,
+                            media_type="application/json",
+                            filename=f"{material_kind}-{part.item_id}.json",
+                            privacy_classification="private",
+                        )
+                        prepared_record = _prepared_material_record(prepared)
+                    conn.execute(
+                        "INSERT INTO prepared_codex_state_part VALUES (?, ?, ?, ?, ?, ?)",
+                        (ordinal, part.thread_id, part.item_id, part.part_kind, len(encoded), prepared_record),
+                    )
+            else:
+                raise ValueError("unsupported prepared Codex state kind")
         _seal_artifact(conn, source_hash, count, enrichment_digest, enrichment_index_path)
         conn.commit()
     except BaseException:
@@ -1010,12 +1522,160 @@ def _write_artifact(
 
 def _create_artifact_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
+        "CREATE TABLE prepared_sidecar_publication (session_ordinal INTEGER NOT NULL, tool_use_id TEXT NOT NULL, "
+        "claim_json TEXT, captured_text TEXT, already_present INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY(session_ordinal,tool_use_id)) WITHOUT ROWID"
+    )
+    conn.execute(
+        "CREATE TABLE prepared_attachment_publication (session_ordinal INTEGER NOT NULL, "
+        "attachment_ordinal INTEGER NOT NULL, claim_json TEXT NOT NULL, "
+        "PRIMARY KEY(session_ordinal, attachment_ordinal)) WITHOUT ROWID"
+    )
+    conn.execute(
+        "CREATE TABLE prepared_classification (provider TEXT NOT NULL, kind TEXT NOT NULL, "
+        "parse_as_session INTEGER NOT NULL, schema_eligible INTEGER NOT NULL, priority INTEGER NOT NULL, "
+        "reason TEXT NOT NULL, proved_non_session INTEGER NOT NULL, record_count INTEGER NOT NULL)"
+    )
+    conn.execute("CREATE TABLE prepared_codex_state (kind TEXT NOT NULL)")
+    conn.execute("CREATE TABLE prepared_codex_thread (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
+    conn.execute("CREATE TABLE prepared_codex_spawn (ordinal INTEGER PRIMARY KEY, metadata_json TEXT NOT NULL)")
+    conn.execute(
+        "CREATE TABLE prepared_codex_state_part (ordinal INTEGER PRIMARY KEY, thread_id TEXT NOT NULL, item_id TEXT NOT NULL, part_kind TEXT NOT NULL, byte_size INTEGER NOT NULL, prepared_json TEXT)"
+    )
+    conn.execute(
         "CREATE TABLE prepared_session (ordinal INTEGER PRIMARY KEY, session_id TEXT NOT NULL UNIQUE, metadata_json TEXT NOT NULL, message_ordinal INTEGER NOT NULL, message_count INTEGER NOT NULL, event_ordinal INTEGER NOT NULL, event_count INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_count INTEGER NOT NULL)"
     )
     conn.execute(
         "CREATE TABLE artifact_seal (version INTEGER NOT NULL, source_hash TEXT NOT NULL, "
         "session_count INTEGER NOT NULL, enrichment_digest TEXT, enrichment_index_path TEXT)"
     )
+
+
+def _prepare_attachment_publications(
+    store: SqliteMessageStore, publisher: ArchiveBlobPublisher, directory: Path
+) -> None:
+    """Seal attachment claims on the existing artifact before writer admission."""
+    from polylogue.sources.prepared_message_sink import _decode_attachment
+    from polylogue.storage.blob_publication import _prepared_claim_record
+
+    after = (-1, -1)
+    while True:
+        check_compute_cancelled()
+        rows = store.conn.execute(
+            "SELECT session_ordinal, attachment_ordinal, attachment_json FROM prepared_attachment "
+            "WHERE (session_ordinal, attachment_ordinal) > (?, ?) "
+            "ORDER BY session_ordinal, attachment_ordinal LIMIT 256",
+            after,
+        ).fetchall()
+        if not rows:
+            break
+        for session_ordinal, attachment_ordinal, attachment_json in rows:
+            check_compute_cancelled()
+            attachment = _decode_attachment(attachment_json, store.path, session_ordinal, attachment_ordinal)
+            if attachment.inline_bytes is not None:
+                blob = publisher.prepare_from_bytes(attachment.inline_bytes, staging_directory=directory)
+            elif attachment.precomputed_blob is not None:
+                expected_hash, expected_size = attachment.precomputed_blob
+                blob = publisher.prepare_from_path(
+                    publisher.blob_path(expected_hash), staging_directory=directory, heartbeat=check_compute_cancelled
+                )
+                if (blob.hash_hex, blob.size_bytes) != (expected_hash, expected_size):
+                    publisher.discard_prepared(blob)
+                    raise ValueError("prepared attachment disagrees with its retained blob")
+            else:
+                continue
+            try:
+                claim = publisher.prepare_claim(blob)
+                store.conn.execute(
+                    "INSERT INTO prepared_attachment_publication VALUES (?, ?, ?)",
+                    (session_ordinal, attachment_ordinal, _prepared_claim_record(claim)),
+                )
+            except BaseException as primary:
+                try:
+                    publisher.discard_prepared(blob)
+                except BaseException as cleanup:
+                    primary.add_note(f"attachment preparation cleanup failed: {cleanup!r}")
+                raise
+        after = (int(rows[-1][0]), int(rows[-1][1]))
+    store.conn.commit()
+
+
+def _prepare_sidecar_publications(store: SqliteMessageStore, publisher: ArchiveBlobPublisher, directory: Path) -> None:
+    """Capture matched tool-result bytes on the existing sealed artifact."""
+    import unicodedata
+
+    from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES
+    from polylogue.storage.blob_publication import _prepared_claim_record
+
+    event_marks = ",".join("?" for _ in SIDECAR_BLOB_EVENT_TYPES)
+    store.conn.execute(
+        "INSERT OR IGNORE INTO prepared_sidecar_publication(session_ordinal,tool_use_id) "
+        "SELECT s.ordinal,json_extract(e.event_json,'$.payload.tool_use_id') "
+        "FROM prepared_session s JOIN prepared_event e ON e.session_ordinal=s.event_ordinal "
+        f"WHERE e.event_type IN ({event_marks}) "
+        "AND json_extract(e.event_json,'$.payload.acquisition_status')='matched' "
+        "AND json_extract(e.event_json,'$.payload.content_replaced') "
+        "AND json_type(e.event_json,'$.payload.tool_use_id')='text'",
+        tuple(SIDECAR_BLOB_EVENT_TYPES),
+    )
+    # Resolve the parser's final matching block once in parser order. The
+    # exact sidecar row is the disk-backed owner of this temporary evidence.
+    blocks = store.conn.execute(
+        "SELECT s.ordinal,p.tool_use_id,json_extract(b.value,'$.text') "
+        "FROM prepared_session s JOIN prepared_message m ON m.session_ordinal=s.message_ordinal "
+        "JOIN json_each(m.message_json,'$.blocks') b "
+        "JOIN prepared_sidecar_publication p ON p.session_ordinal=s.ordinal "
+        "AND p.tool_use_id=json_extract(b.value,'$.tool_id') "
+        "WHERE json_extract(b.value,'$.type')='tool_result' AND json_type(b.value,'$.text')='text' "
+        "ORDER BY s.ordinal,m.message_ordinal,CAST(b.key AS INTEGER)"
+    )
+    try:
+        while True:
+            check_compute_cancelled()
+            row = blocks.fetchone()
+            if row is None:
+                break
+            ordinal, tool_use_id, text = row
+            store.conn.execute(
+                "UPDATE prepared_sidecar_publication SET captured_text=? WHERE session_ordinal=? AND tool_use_id=?",
+                (text, ordinal, tool_use_id),
+            )
+            del row, text
+    finally:
+        blocks.close()
+    after = (-1, "")
+    while True:
+        check_compute_cancelled()
+        rows = store.conn.execute(
+            "SELECT session_ordinal,tool_use_id FROM prepared_sidecar_publication "
+            "WHERE captured_text IS NOT NULL AND (session_ordinal,tool_use_id)>(?,?) ORDER BY session_ordinal,tool_use_id LIMIT 128",
+            after,
+        ).fetchall()
+        if not rows:
+            break
+        for ordinal, tool_use_id in rows:
+            check_compute_cancelled()
+            # The page carries only coordinates. Variable-size prose is read
+            # and released one value at a time, never accumulated by row count.
+            text_row = store.conn.execute(
+                "SELECT captured_text FROM prepared_sidecar_publication WHERE session_ordinal=? AND tool_use_id=?",
+                (ordinal, tool_use_id),
+            ).fetchone()
+            if text_row is None or text_row[0] is None:
+                raise ValueError("captured sidecar content disappeared during preparation")
+            text = text_row[0]
+            blob = publisher.prepare_from_bytes(
+                unicodedata.normalize("NFC", str(text)).encode("utf-8"), staging_directory=directory
+            )
+            del text_row, text
+            claim = publisher.prepare_claim(blob)
+            store.conn.execute(
+                "UPDATE prepared_sidecar_publication SET claim_json=?,already_present=?,captured_text=NULL "
+                "WHERE session_ordinal=? AND tool_use_id=?",
+                (_prepared_claim_record(claim), int(publisher.exists(blob.hash_hex)), ordinal, tool_use_id),
+            )
+        after = int(rows[-1][0]), str(rows[-1][1])
+    store.conn.commit()
 
 
 def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: ParsedSession) -> None:
@@ -1080,6 +1740,79 @@ def _seal_artifact(
     )
 
 
+def _prepare_codex_state_blob(
+    source: Path,
+    directory: Path,
+    *,
+    state_kind: str,
+    source_hash: str,
+    semantic_source_path: str,
+    enrichment_digest: str | None = None,
+    enrichment_index_path: str | None = None,
+    attempt_directory: Path | None = None,
+    text_chars: int = codex_state.CODEX_STATE_MAX_TEXT_CHARS,
+    publication_publisher: ArchiveBlobPublisher | None = None,
+) -> PreparedJsonl:
+    """Seal the non-session branch of the existing canonical artifact."""
+    sessions_path = directory / f"prepared-{uuid.uuid4().hex}.db"
+    shard_path: Path | None = None
+    store: SqliteMessageStore | None = None
+    sealed = False
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+
+    with retain_native_sql_lifetimes(directory):
+        try:
+            staging_root = next((parent for parent in directory.parents if parent.name == ".staging"), None)
+            if staging_root is None:
+                raise ValueError("state material preparation requires archive-owned blob staging")
+            material_store = publication_publisher or ArchiveBlobPublisher(
+                staging_root.parent.parent / "source.db", staging_root.parent
+            )
+            if material_store.root.resolve() != staging_root.parent.resolve():
+                raise ValueError("prepared state publisher belongs to another blob root")
+            store = SqliteMessageStore(sessions_path)
+            _write_artifact(
+                store,
+                source_hash,
+                (),
+                enrichment_digest=enrichment_digest,
+                enrichment_index_path=enrichment_index_path,
+                codex_state_path=source,
+                codex_state_kind=state_kind,
+                codex_state_text_chars=text_chars,
+                codex_semantic_source_path=semantic_source_path,
+                codex_material_store=material_store,
+                codex_material_directory=directory,
+            )
+            shard_path = prepare_session_shard(directory, ()).path
+            if file_digest(source) != source_hash:
+                raise _SourceChangedDuringPreparationError("retained state changed during preparation")
+            store.close()
+            store = None
+            artifact = PreparedJsonl.seal(
+                source_hash,
+                sessions_path,
+                shard_path,
+                enrichment_digest=enrichment_digest,
+                enrichment_index_path=enrichment_index_path,
+                resolved_provider=Provider.CODEX,
+                positive_evidence_filtered=True,
+                attempt_directory=attempt_directory,
+                codex_state_kind=state_kind,
+                codex_state_text_chars=text_chars,
+                publication_publisher=material_store,
+            )
+            sealed = True
+            return artifact
+        finally:
+            if store is not None:
+                store.close()
+            if not sealed:
+                sessions_path.unlink(missing_ok=True)
+                if shard_path is not None:
+                    discard_session_shard(shard_path)
+
+
 def prepare_jsonl_blob(
     blob_path: str,
     source_path: str,
@@ -1094,21 +1827,10 @@ def prepare_jsonl_blob(
     prepare_session: Callable[[ParsedSession], ParsedSession] | None = None,
     preparation_dependency: Callable[[], tuple[str | None, str | None]] | None = None,
     parse_prefix_size: int | None = None,
-    prepare_records: Callable[[Iterable[JSONValue]], Iterable[JSONValue]] | None = None,
-    classify_grok_export: Callable[[JSONValue], bool] | None = None,
-    classify_generic_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
-    classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
-    classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
-    classify_bundle_members: Callable[[Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
     source_sha256: str | None = None,
     strict_jsonl_records: bool = False,
+    publication_publisher: ArchiveBlobPublisher | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC.
 
@@ -1124,10 +1846,10 @@ def prepare_jsonl_blob(
     for ``Provider.UNKNOWN``.
     """
     directory = Path(shard_directory)
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     artifact_directory = attempt_directory if attempt_directory is not None else directory
     if attempt_directory is not None:
-        artifact_directory.mkdir(parents=True, exist_ok=True)
+        artifact_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if artifact_directory.parent != directory:
             raise ValueError("prepared attempt directory must be a direct child of the shard directory")
     sessions_path = artifact_directory / f"prepared-{uuid.uuid4().hex}.db"
@@ -1140,13 +1862,48 @@ def prepare_jsonl_blob(
     before_hash: str | None = None
     try:
         provider = Provider.from_string(provider_value)
+        if provider is Provider.CODEX and not is_stream and source_path.lower().endswith((".sqlite", ".db")):
+            state_kind = codex_state.classify_codex_sqlite_path(source, immutable=True)
+            if state_kind in codex_state.IN_SCOPE_KINDS:
+                before_hash = source_sha256 if source_sha256 is not None else file_digest(source)
+                enrichment_digest, enrichment_index_path = (
+                    preparation_dependency() if preparation_dependency is not None else (None, None)
+                )
+                return _prepare_codex_state_blob(
+                    source,
+                    artifact_directory,
+                    state_kind=state_kind,
+                    source_hash=before_hash,
+                    semantic_source_path=source_path,
+                    enrichment_digest=enrichment_digest,
+                    enrichment_index_path=enrichment_index_path,
+                    attempt_directory=attempt_directory,
+                    publication_publisher=publication_publisher,
+                )
         store = SqliteMessageStore(sessions_path)
-        before_hash = source_sha256 if source_sha256 is not None else _source_digest(source)
+        before_hash = source_sha256 if source_sha256 is not None else file_digest(source)
+        from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
+
+        with source.open("rb") as classification_source, ExitStack() as classification_lifetime:
+            classification_input = (
+                classification_lifetime.enter_context(
+                    jsonl_parse_input_of_handle(classification_source, check_stop=check_compute_cancelled)
+                )
+                if is_stream
+                else classification_source
+            )
+            taxonomy = classify_artifact_stream(
+                classification_input,
+                provider=provider,
+                source_path=source_path,
+                wire_format="jsonl" if is_stream else "json",
+                check_stop=check_compute_cancelled,
+            )
+        input_admitted = not taxonomy.proved_non_session
         record_container: str | None = None
         stream_prefix: str | None = None
         bundle_count = 0
         bundle_browser_captures = True
-        bundle_witnesses: list[JSONValue] = []
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
@@ -1175,19 +1932,14 @@ def prepare_jsonl_blob(
             else:
                 for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                     store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-        if (
-            not is_stream
-            and provider is Provider.GEMINI_CLI
-            and (prepare_sessions is None or classify_gemini_object is not None)
-            and (prepare_records is None or classify_gemini_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.GEMINI_CLI and Path(source_path).name.lower().endswith(".json"):
             store.conn.execute(
                 "CREATE TABLE gemini_raw_message (ordinal INTEGER PRIMARY KEY, message_json TEXT NOT NULL)"
             )
             future_wire_type = False
             with source.open("rb") as handle:
                 for ordinal, item in enumerate(ijson.items(handle, "messages.item")):
+                    check_compute_cancelled()
                     if not future_wire_type and _unknown_wire_type(item) is not None:
                         future_wire_type = True
                     _append_gemini_raw_message(store.conn, ordinal, item)
@@ -1207,13 +1959,7 @@ def prepare_jsonl_blob(
                     gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
-        if (
-            not is_stream
-            and provider is Provider.HERMES
-            and (prepare_sessions is None or classify_hermes_object is not None)
-            and (prepare_records is None or classify_hermes_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.HERMES and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 hermes_envelope = hermes_snapshot_envelope(handle)
             if hermes_envelope is not None and (
@@ -1222,13 +1968,7 @@ def prepare_jsonl_blob(
                 or hermes_spans.looks_like_atif_payload(hermes_envelope)
             ):
                 hermes_envelope = None
-        if (
-            not is_stream
-            and provider is Provider.GROK
-            and (prepare_sessions is None or classify_grok_export is not None)
-            and (prepare_records is None or classify_grok_export is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.GROK and Path(source_path).name.lower().endswith(".json"):
             store.conn.execute(
                 "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
             )
@@ -1247,7 +1987,6 @@ def prepare_jsonl_blob(
             not is_stream
             and provider in BUNDLE_PROVIDERS
             and prepare_sessions is None
-            and (prepare_records is None or classify_bundle_members is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
@@ -1257,15 +1996,13 @@ def prepare_jsonl_blob(
                 def observe_bundle_member(index: int, shape: JSONValue, witness: JSONValue | None) -> None:
                     nonlocal bundle_browser_captures
                     bundle_browser_captures = bundle_browser_captures and browser_capture.looks_like(shape)
-                    if witness is not None:
-                        bundle_witnesses.append(witness)
 
                 with source.open("rb") as handle:
                     scanned = scan_container_members(
                         handle,
                         record_container,
                         shape_keys=_BROWSER_CAPTURE_SHAPE_KEYS,
-                        witnesses=64 if classify_bundle_members is not None else 0,
+                        witnesses=0,
                         on_member=observe_bundle_member,
                     )
                 if scanned is not None:
@@ -1274,8 +2011,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI, Provider.UNKNOWN}
-            and (prepare_sessions is None or classify_generic_object is not None)
-            and (prepare_records is None or classify_generic_object is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
             with source.open("rb") as handle:
@@ -1286,8 +2021,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.CLAUDE_DESIGN
-            and (prepare_sessions is None or classify_claude_design_object is not None)
-            and (prepare_records is None or classify_claude_design_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
         ):
@@ -1296,8 +2029,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.CLAUDE_AI
-            and (prepare_sessions is None or classify_claude_ai_object is not None)
-            and (prepare_records is None or classify_claude_ai_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and record_container is None
         ):
@@ -1308,8 +2039,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider in {Provider.DRIVE, Provider.GEMINI}
-            and (prepare_sessions is None or classify_drive_chunked_object is not None)
-            and (prepare_records is None or classify_drive_chunked_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and generic_envelope is None
         ):
@@ -1318,8 +2047,6 @@ def prepare_jsonl_blob(
         if (
             not is_stream
             and provider is Provider.HERMES
-            and (prepare_sessions is None or classify_hermes_atif_object is not None)
-            and (prepare_records is None or classify_hermes_atif_object is not None)
             and Path(source_path).name.lower().endswith(".json")
             and hermes_envelope is None
         ):
@@ -1329,13 +2056,7 @@ def prepare_jsonl_blob(
                 with source.open("rb") as handle:
                     if not _spill_atif_subagents(handle, store.conn):
                         atif = None
-        if (
-            not is_stream
-            and provider is Provider.OTEL_GENAI
-            and (prepare_sessions is None or classify_otel_object is not None)
-            and (prepare_records is None or classify_otel_object is not None)
-            and Path(source_path).name.lower().endswith(".json")
-        ):
+        if not is_stream and provider is Provider.OTEL_GENAI and Path(source_path).name.lower().endswith(".json"):
             with source.open("rb") as handle:
                 otlp = _otlp_envelope(handle)
             if otlp is not None:
@@ -1346,13 +2067,7 @@ def prepare_jsonl_blob(
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            sample = tuple(
-                json.loads(row[0])
-                for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal LIMIT 64")
-            )
-            gemini_admitted = (
-                classify_gemini_object(gemini_envelope, sample) if classify_gemini_object is not None else True
-            )
+            gemini_admitted = input_admitted
             gemini_session = None
             if gemini_admitted:
                 gemini_records = (
@@ -1406,7 +2121,7 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, gemini_session)
                 _append_artifact_session(store, session_count, gemini_session)
                 session_count += 1
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1420,9 +2135,7 @@ def prepare_jsonl_blob(
             assert chatgpt_mapping is not None
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            chatgpt_admitted = (
-                classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
-            )
+            chatgpt_admitted = input_admitted
             # The parser reads the mapping node by node from scratch, and
             # keeps its normalized messages, attachments and events there.
             session: ParsedSession | None = (
@@ -1501,7 +2214,7 @@ def prepare_jsonl_blob(
             # Parser-only scratch never reaches the sealed artifact.
             for table in _CHATGPT_PARSER_SCRATCH_TABLES:
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1514,19 +2227,7 @@ def prepare_jsonl_blob(
         elif hermes_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            hermes_admitted = True
-            if classify_hermes_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                hermes_admitted = classify_hermes_object(hermes_envelope, sample)
+            hermes_admitted = input_admitted
             session = None
             if hermes_admitted:
                 with source.open("rb") as handle:
@@ -1557,7 +2258,7 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1570,19 +2271,7 @@ def prepare_jsonl_blob(
         elif generic_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            generic_admitted = True
-            if classify_generic_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                generic_admitted = classify_generic_object(generic_envelope, sample)
+            generic_admitted = input_admitted
             session = None
             if generic_admitted:
                 with source.open("rb") as handle:
@@ -1611,7 +2300,7 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1624,19 +2313,7 @@ def prepare_jsonl_blob(
         elif design_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            design_admitted = True
-            if classify_claude_design_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                design_admitted = classify_claude_design_object(design_envelope, sample)
+            design_admitted = input_admitted
             session = None
             if design_admitted:
                 with source.open("rb") as handle:
@@ -1666,7 +2343,7 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1679,23 +2356,7 @@ def prepare_jsonl_blob(
         elif claude_ai_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            claude_ai_admitted = True
-            if classify_claude_ai_object is not None:
-                with source.open("rb") as handle:
-                    sample = tuple(
-                        islice(
-                            (
-                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
-                                for item in ijson.items(handle, "chat_messages.item")
-                            ),
-                            64,
-                        )
-                    )
-                witness = dict(claude_ai_envelope)
-                for key in claude_ai_arrays:
-                    with source.open("rb") as handle:
-                        witness[key] = list(islice(iter_root_array_items(handle, key), 64))
-                claude_ai_admitted = classify_claude_ai_object(witness, sample)
+            claude_ai_admitted = input_admitted
             # The collecting route parses this document as a one-item bundle,
             # so its fallback identity carries that suffix.
             session = (
@@ -1729,7 +2390,7 @@ def prepare_jsonl_blob(
                 store.conn.execute(
                     f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
                 )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1747,18 +2408,10 @@ def prepare_jsonl_blob(
             def drive_chunks() -> Iterator[object]:
                 with source.open("rb") as handle:
                     for item in ijson.items(handle, f"{chunk_prefix}.item"):
+                        check_compute_cancelled()
                         yield normalize_ijson_stdlib_numbers(item)
 
-            drive_admitted = True
-            if classify_drive_chunked_object is not None:
-                chunk_sample: list[JSONValue] = [cast(JSONValue, item) for item in islice(drive_chunks(), 64)]
-                witness = {key: value for key, value in drive_envelope.items() if not key.startswith("__")}
-                if chunk_prefix == "chunks":
-                    witness["chunks"] = chunk_sample
-                else:
-                    prompt = witness.get("chunkedPrompt")
-                    witness["chunkedPrompt"] = {**(prompt if isinstance(prompt, dict) else {}), "chunks": chunk_sample}
-                drive_admitted = classify_drive_chunked_object(witness)
+            drive_admitted = input_admitted
             session = None
             if drive_admitted:
                 session = drive.parse_chunked_prompt_stream(
@@ -1797,7 +2450,7 @@ def prepare_jsonl_blob(
                 store.conn.execute(
                     f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
                 )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1815,14 +2468,10 @@ def prepare_jsonl_blob(
             def atif_steps() -> Iterator[JSONValue]:
                 with source.open("rb") as handle:
                     for item in ijson.items(handle, "steps.item"):
+                        check_compute_cancelled()
                         yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
 
-            atif_admitted = True
-            if classify_hermes_atif_object is not None:
-                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_steps(), 64))}
-                if atif_has_subagents:
-                    atif_witness["subagent_trajectories"] = _atif_subagent_witness(store.conn)
-                atif_admitted = classify_hermes_atif_object(atif_witness)
+            atif_admitted = input_admitted
             atif_sessions: list[ParsedSession] = []
             if atif_admitted:
                 # The dispatch route proves the whole document against the
@@ -1881,7 +2530,7 @@ def prepare_jsonl_blob(
                 store.conn.execute(
                     f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
                 )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1906,9 +2555,7 @@ def prepare_jsonl_blob(
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
             # Taxonomy decides a declared OTLP path by its rule and root
             # markers, so the witness carries the root fields, not the spans.
-            otel_admitted = otel_index.normalizable and (
-                classify_otel_object is None or classify_otel_object({**otel_envelope, otel_root_key: []})
-            )
+            otel_admitted = input_admitted and otel_index.normalizable
             session_count = 0
             for session in (
                 otel_index.sessions(new_messages=store.new_sink, new_events=store.new_event_sink)
@@ -1940,7 +2587,7 @@ def prepare_jsonl_blob(
                 store.conn.execute(
                     f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
                 )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -1953,9 +2600,7 @@ def prepare_jsonl_blob(
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            grok_admitted = (
-                _classify_grok_witness(source, classify_grok_export) if classify_grok_export is not None else True
-            )
+            grok_admitted = input_admitted
             grok_member_conn = store.conn
 
             def include_grok_member(index: int) -> bool:
@@ -2029,7 +2674,7 @@ def prepare_jsonl_blob(
             if grok_admitted and member_index + 1 != grok_count:
                 raise _SourceChangedDuringPreparationError("Grok conversation count changed during preparation")
             store.conn.execute("DROP TABLE grok_member_valid")
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -2042,7 +2687,7 @@ def prepare_jsonl_blob(
         elif stream_prefix is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
-            bundle_admitted = classify_bundle_members(bundle_witnesses) if classify_bundle_members is not None else True
+            bundle_admitted = input_admitted
             drift = BundleCandidateDrift()
             session_count = 0
             member_count = 0
@@ -2101,7 +2746,7 @@ def prepare_jsonl_blob(
                 store.conn.execute(
                     f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
                 )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             enrichment_digest, enrichment_index_path = (
@@ -2121,8 +2766,8 @@ def prepare_jsonl_blob(
                     Path(source_path).name,
                     fail_on_decode_error=strict_jsonl_records or provider is Provider.UNKNOWN,
                 )
-                if prepare_records is not None:
-                    records = prepare_records(records)
+                if not input_admitted:
+                    records = iter(())
                 if is_stream:
                     sessions = parse_stream_payload(
                         provider,
@@ -2143,7 +2788,7 @@ def prepare_jsonl_blob(
                         profile_identity=profile_identity,
                         sidecar_resolver=sidecar_resolver,
                     )
-            after_hash = _source_digest(source)
+            after_hash = file_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
             sessions = require_positive_conversational_evidence(sessions, provider=provider, source_path=source_path)
@@ -2164,6 +2809,23 @@ def prepare_jsonl_blob(
                 enrichment_digest=enrichment_digest,
                 enrichment_index_path=enrichment_index_path,
             )
+        classification = taxonomy.classification
+        store.conn.execute(
+            "INSERT INTO prepared_classification VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                classification.provider.value,
+                classification.kind.value,
+                int(classification.parse_as_session),
+                int(classification.schema_eligible),
+                classification.default_priority,
+                classification.reason,
+                int(taxonomy.proved_non_session),
+                taxonomy.record_count,
+            ),
+        )
+        if publication_publisher is not None:
+            _prepare_attachment_publications(store, publication_publisher, artifact_directory)
+            _prepare_sidecar_publications(store, publication_publisher, artifact_directory)
         store.close()
         store = None
         result = PreparedJsonl.seal(
@@ -2178,6 +2840,7 @@ def prepare_jsonl_blob(
             # Every branch above admits its sessions before sealing.
             positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
+            publication_publisher=publication_publisher,
         )
         sealed = True
         return result
@@ -2186,11 +2849,13 @@ def prepare_jsonl_blob(
             shard_builder.abandon()
         if shard_path is not None:
             discard_session_shard(shard_path)
+        if isinstance(exc, DaemonOperationCancelled):
+            raise
         retryable = isinstance(exc, (OSError, sqlite3.OperationalError, _SourceChangedDuringPreparationError))
         error_hash: str | None = None
         if before_hash is not None:
             try:
-                after_error_hash = _source_digest(source)
+                after_error_hash = file_digest(source)
             except OSError:
                 retryable = True
             else:

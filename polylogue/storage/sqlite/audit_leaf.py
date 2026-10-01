@@ -6,6 +6,7 @@ import fcntl
 import os
 import sqlite3
 import stat
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -88,6 +89,7 @@ class VerifiedAuditLeaf:
         self._sidecar_fds: dict[str, int] = {}
         self._sidecar_identities: dict[str, _AuditLeafIdentity] = {}
         self._first_transaction_guard_armed = False
+        self._terminal_owner: NativeSQLCustodyOwner | None = None
 
     def __enter__(self) -> VerifiedAuditLeaf:
         from polylogue.storage.sqlite.population_admission import assert_population_admitted
@@ -111,14 +113,19 @@ class VerifiedAuditLeaf:
             self._anchored_path = self._resolve_portable_child_path()
             self._assert_sidecar_namespace()
         except BaseException as exc:
-            self._close_after_failed_enter()
+            self._close_after_failed_enter(exc)
             if isinstance(exc, AuditLeafError):
                 raise
             raise AuditLeafError(f"cannot safely open audit tier leaf: {self._archive_root / self._filename}") from exc
         return self
 
-    def __exit__(self, _exc_type: object, _exc: object, _traceback: object) -> None:
-        self.close()
+    def __exit__(self, _exc_type: object, exc: BaseException | None, _traceback: object) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            if exc is not None:
+                raise BaseExceptionGroup("Audit leaf operation and cleanup failed", [exc, cleanup]) from exc
+            raise
 
     def sqlite_uri(self, *, readonly: bool = False) -> str:
         if readonly:
@@ -164,46 +171,53 @@ class VerifiedAuditLeaf:
         return os.fstat(self._leaf_fd)
 
     def close(self) -> None:
-        directory_fd, leaf_fd = self._directory_fd, self._leaf_fd
-        writer_lock_held = self._writer_lock_held
-        self._directory_fd = None
+        owner = self._terminal_owner
+        if owner is not None:
+            if owner.anchored_descriptors:
+                owner.close()
+                return
+            # Native settlement calls back only after all transferred
+            # descriptors retired. Never close their numeric slots again.
+            self._terminal_owner = None
+            self._directory_identity = None
+            self._identity = None
+            self._anchored_path = None
+            self._writer_lock_held = False
+            self._sidecar_identities = {}
+            self._first_transaction_guard_armed = False
+            return
+        descriptors = (
+            *self._sidecar_fds.values(),
+            *((self._leaf_fd,) if self._leaf_fd is not None else ()),
+            *((self._directory_fd,) if self._directory_fd is not None else ()),
+        )
+        # Move exact bindings into the existing native owner before closing.
+        # Its descriptor ledger preserves ambiguity, original creator and
+        # flock; a substituted closer cannot erase leaf cleanup obligations.
+        self._sidecar_fds = {}
         self._leaf_fd = None
-        self._directory_identity = None
-        self._identity = None
-        self._anchored_path = None
-        self._writer_lock_held = False
-        sidecar_fds, self._sidecar_fds = self._sidecar_fds, {}
-        self._sidecar_identities = {}
-        self._first_transaction_guard_armed = False
-        errors: list[OSError] = []
-        for descriptor in sidecar_fds.values():
-            try:
-                os.close(descriptor)
-            except OSError as exc:
-                errors.append(exc)
-        if leaf_fd is not None:
-            if writer_lock_held:
-                try:
-                    fcntl.flock(leaf_fd, fcntl.LOCK_UN)
-                except OSError as exc:
-                    errors.append(exc)
-            try:
-                os.close(leaf_fd)
-            except OSError as exc:
-                errors.append(exc)
-        if directory_fd is not None:
-            try:
-                os.close(directory_fd)
-            except OSError as exc:
-                errors.append(exc)
-        if errors:
-            raise errors[0]
+        self._directory_fd = None
+        if not descriptors:
+            self._directory_identity = None
+            self._identity = None
+            self._anchored_path = None
+            self._writer_lock_held = False
+            self._sidecar_identities = {}
+            self._first_transaction_guard_armed = False
+            return
+        try:
+            owner = NativeSQLCustodyOwner(None, leaf=self, anchored_descriptors=descriptors)
+        except NativeConnectionSettlementError as failure:
+            self._terminal_owner = failure.owner
+            raise
+        self._terminal_owner = owner
+        owner.close()
 
-    def _close_after_failed_enter(self) -> None:
+    def _close_after_failed_enter(self, primary: BaseException) -> None:
         try:
             self.close()
-        except OSError:
-            return
+        except BaseException as cleanup:
+            raise BaseExceptionGroup("Audit leaf construction and cleanup failed", [primary, cleanup]) from primary
 
     def _acquire_writer_lock(self) -> None:
         if self._leaf_fd is None:
@@ -224,10 +238,14 @@ class VerifiedAuditLeaf:
 
     def _open_leaf_metadata(self) -> os.stat_result:
         descriptor = self._open_leaf()
+        owner = NativeSQLCustodyOwner(None, anchored_descriptors=(descriptor,))
         try:
-            return os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
+            metadata = os.fstat(descriptor)
+        except BaseException as primary:
+            _close_failed_native_construction(owner, primary)
+            raise
+        owner.close()
+        return metadata
 
     def _lstat_leaf_metadata(self) -> os.stat_result:
         if self._directory_fd is None:
@@ -301,21 +319,27 @@ class VerifiedAuditLeaf:
                 self._identity_open_flag | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=self._directory_fd,
             )
-            try:
-                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
-            except BaseException:
-                os.close(descriptor)
-                raise
-            if actual != expected:
-                os.close(descriptor)
-                raise AuditLeafError(f"audit tier sidecar changed while opening: {self._archive_root / filename}")
-            if self._identity_open_flag == getattr(os, "O_PATH", None) and filename not in self._sidecar_fds:
-                # Keep the selected inode alive for the observer's entire
-                # lifetime. O_PATH close cannot release SQLite's POSIX locks.
+            persistent = self._identity_open_flag == getattr(os, "O_PATH", None) and filename not in self._sidecar_fds
+            if persistent:
+                # Attach before validation so every constructor/namespace
+                # failure leaves the actual descriptor with its existing leaf.
                 self._sidecar_fds[filename] = descriptor
+                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+                if actual != expected:
+                    raise AuditLeafError(f"audit tier sidecar changed while opening: {self._archive_root / filename}")
                 self._sidecar_identities[filename] = actual
             else:
-                os.close(descriptor)
+                owner = NativeSQLCustodyOwner(None, anchored_descriptors=(descriptor,))
+                try:
+                    actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+                    if actual != expected:
+                        raise AuditLeafError(
+                            f"audit tier sidecar changed while opening: {self._archive_root / filename}"
+                        )
+                except BaseException as primary:
+                    _close_failed_native_construction(owner, primary)
+                    raise
+                owner.close()
         self._assert_pinned_sidecars()
 
     def prepare_writable_sqlite(self, connection: sqlite3.Connection) -> None:
@@ -382,6 +406,9 @@ class VerifiedAuditLeaf:
             raise RuntimeError("audit leaf descriptor is closed")
         for suffix in ("-wal", "-shm"):
             filename = f"{self._filename}{suffix}"
+            if filename in self._sidecar_fds:
+                self._assert_pinned_sidecars()
+                continue
             try:
                 expected = self._validate(
                     os.stat(filename, dir_fd=self._directory_fd, follow_symlinks=False),
@@ -401,15 +428,10 @@ class VerifiedAuditLeaf:
                 raise AuditLeafError(
                     f"audit tier did not create required WAL sidecar: {self._archive_root / filename}"
                 ) from exc
-            try:
-                actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
-            except BaseException:
-                os.close(descriptor)
-                raise
-            if actual != expected:
-                os.close(descriptor)
-                raise AuditLeafError(f"audit tier sidecar changed while pinning: {self._archive_root / filename}")
             self._sidecar_fds[filename] = descriptor
+            actual = self._validate(os.fstat(descriptor), description="audit tier sidecar", filename=filename)
+            if actual != expected:
+                raise AuditLeafError(f"audit tier sidecar changed while pinning: {self._archive_root / filename}")
             self._sidecar_identities[filename] = actual
 
     def _assert_pinned_sidecars(self, *, allow_absent: bool = True) -> None:

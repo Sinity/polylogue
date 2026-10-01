@@ -1762,7 +1762,7 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
     reports ``outcome == "failed"`` with
     ``error.code == "DaemonOperationCancelled"``, and both assertions go red.
     """
-    from polylogue.daemon.execution import CancellationHandle
+    from polylogue.core.compute import CancellationHandle
     from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
     from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -1810,6 +1810,8 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             assert exchange.future is not None
             assert not exchange.future.done(), "the operation must still be queued or this test is vacuous"
             assert not exchange.acceptance_started
+            request_bytes = len(json.dumps(request.to_dict(), separators=(",", ":"), allow_nan=False).encode())
+            assert stack.execution_kernel.snapshot().used_bytes == request_bytes
             if operation == "query.aggregate":
                 assert exchange.deadline is None
                 assert exchange.context.read_control is not None
@@ -1818,6 +1820,7 @@ def test_cancelled_queued_operation_reports_cancelled_not_failed(
             disconnect.cancel()
             caller.join(timeout=5)
             assert not caller.is_alive()
+            assert stack.execution_kernel.snapshot().used_bytes == 0
         finally:
             release.set()
             for blocker in blockers:
@@ -2444,6 +2447,143 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
         else:
             assert envelope["outcome"] == "timed-out"
             assert envelope["result"] is None
+
+
+def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def seed(root: Path) -> None:
+        _seed_sessions(root, count=2)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        actual_submit = stack.execution_kernel.submit
+        admitted: list[str] = []
+        reserved_bytes: list[int] = []
+        received_bytes: list[int] = []
+        actual_call = stack.runtime.call
+
+        def record_call(*args: Any, **kwargs: Any) -> Any:
+            received_bytes.append(kwargs["request_body_bytes"])
+            return actual_call(*args, **kwargs)
+
+        def record_submit(function: Any, **kwargs: Any) -> Any:
+            admitted.append(kwargs["admission_class"])
+            reserved_bytes.append(kwargs["estimated_bytes"])
+            return actual_submit(function, **kwargs)
+
+        monkeypatch.setattr(stack.execution_kernel, "submit", record_submit)
+        monkeypatch.setattr(stack.runtime, "call", record_call)
+        envelope = stack.client.operation("query.aggregate", {"mode": "count", "params": {"limit": 1}})
+        assert envelope is not None
+        assert envelope["outcome"] == "completed"
+        assert envelope["result"]["count"] == 2
+        assert admitted == ["bulk-candidate"]
+        assert reserved_bytes == received_bytes
+        assert reserved_bytes[0] > 0
+
+
+def test_socket_controls_remain_available_during_waiting_work_and_slow_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Use real sockets, queued work and an unread large response, without reserving fake slots."""
+    from polylogue.operations import daemon_reads
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+    session_id = ""
+    entered = threading.Event()
+    release = threading.Event()
+    delivery_finished = threading.Event()
+    actual_aggregate = daemon_reads._aggregate_payload
+    actual_setup = MachineOperationHandler.setup
+    actual_send = MachineOperationHandler._send
+
+    def seed(root: Path) -> None:
+        nonlocal session_id
+        builder = SessionBuilder(root / "index.db", "slow-delivery").provider("codex")
+        builder.add_message(text="Synthetic bounded delivery prose. " * 32768).save()
+        session_id = builder.native_session_id()
+        _clear_connection_cache()
+
+    def held_aggregate(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert release.wait(30)
+        return actual_aggregate(*args, **kwargs)
+
+    def setup(handler: MachineOperationHandler) -> None:
+        handler.request.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+        actual_setup(handler)
+
+    def send(handler: MachineOperationHandler, status: int, payload: dict[str, object]) -> None:
+        try:
+            actual_send(handler, status, payload)
+        finally:
+            if payload.get("operation") == "session.read":
+                delivery_finished.set()
+
+    monkeypatch.setattr(MachineOperationHandler, "setup", setup)
+    monkeypatch.setattr(MachineOperationHandler, "_send", send)
+    monkeypatch.setattr(daemon_reads, "_aggregate_payload", held_aggregate)
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed, compute_workers=1) as stack:
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        peer.settimeout(10)
+        peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+        responses: queue.Queue[dict[str, object]] = queue.Queue()
+        failures: queue.Queue[BaseException] = queue.Queue()
+
+        def query(request_id: str) -> None:
+            try:
+                client = DaemonClient(stack.socket_path, timeout_s=30)
+                result = client.operation("query.aggregate", {"mode": "count"}, request_id=request_id)
+                assert result is not None
+                responses.put(result)
+            except BaseException as failure:
+                failures.put(failure)
+
+        callers: list[threading.Thread] = []
+        try:
+            peer.connect(str(stack.socket_path))
+            request = DaemonOperationRequest("session.read", {"ref": session_id}, request_id="slow-socket-delivery")
+            body = json.dumps(request.to_dict(), separators=(",", ":")).encode()
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\nHost: local\r\nContent-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode()
+                + body
+            )
+            headers = bytearray()
+            while not headers.endswith(b"\r\n\r\n"):
+                chunk = peer.recv(1)
+                assert chunk, "delivery ended before response headers"
+                headers.extend(chunk)
+            assert bytes(headers).startswith(b"HTTP/1.1 200 ")
+            length_line = next(line for line in bytes(headers).split(b"\r\n") if line.startswith(b"Content-Length:"))
+            assert int(length_line.split(b":", 1)[1]) > 512 * 1024
+            assert not delivery_finished.is_set()
+
+            for request_id in ("socket-running-work", "socket-queued-work"):
+                caller = threading.Thread(target=query, args=(request_id,), daemon=True)
+                callers.append(caller)
+                caller.start()
+                if request_id == "socket-running-work":
+                    assert entered.wait(10)
+            with stack.runtime._condition:
+                assert stack.runtime._condition.wait_for(
+                    lambda: "socket-queued-work" in stack.runtime._exchanges, timeout=10
+                )
+            status = stack.client.operation("operation.status", {"request_id": "socket-running-work"})
+            assert status is not None and status["outcome"] == "completed"
+            assert status["result"]["outcome"] in {"accepted", "running"}
+            cancelled = stack.client.operation("operation.cancel", {"request_id": "socket-queued-work"})
+            assert cancelled is not None and cancelled["outcome"] == "completed"
+            assert cancelled["result"]["outcome"] == "cancelled"
+            assert not delivery_finished.is_set()
+            assert not release.is_set()
+        finally:
+            peer.close()
+            release.set()
+            for caller in callers:
+                caller.join(30)
+                assert not caller.is_alive()
+        assert failures.empty(), list(failures.queue)
+        assert responses.qsize() == 2
 
 
 @pytest.mark.parametrize("lane", ["semantic", "hybrid"])

@@ -422,3 +422,22 @@ def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_pa
     assert read_thread_titles(index, thread_ids=["other-thread"]) == {"other-thread": "Other title"}
     provenance = read_provenance(index, source_scope="/install")
     assert provenance is not None and provenance.raw_id == "raw-3"
+
+
+@pytest.mark.parametrize("reader", [read_parent_thread_id, read_provenance, read_spawn_edges])
+def test_graph_authority_reads_propagate_interruption(index_conn: sqlite3.Connection, reader: object) -> None:
+    """A failed authority read cannot authorize a replacement graph as absent."""
+    _write(index_conn)
+    index_conn.set_progress_handler(lambda: 1, 1)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            if reader is read_parent_thread_id:
+                read_parent_thread_id(index_conn, "child-thread")
+            elif reader is read_provenance:
+                read_provenance(index_conn)
+            else:
+                read_spawn_edges(index_conn)
+    finally:
+        index_conn.set_progress_handler(None, 0)
+    assert read_parent_thread_id(index_conn, "child-thread") == "parent-thread"
+    assert read_thread_titles(index_conn) == {"parent-thread": "Curated title"}

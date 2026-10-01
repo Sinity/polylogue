@@ -26,6 +26,7 @@ from polylogue.storage.ingest_governance import (
     CohortMembershipRefusalError,
     PreparedIngestCohort,
     _census_binding,
+    discard_prepared_ingest_cohort,
     prepare_ingest_cohort,
     prepare_raw_census,
     publish_ingest_cohort,
@@ -466,10 +467,9 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
             acquired_at_ms=3,
         )
         assert prepared.prepared_rows_by_raw_id
-        assert prepared.prepared_attachment_blobs
-        prepared_blob = prepared.prepared_attachment_blobs[0].prepared_blob
-        assert prepared_blob is not None
-        stale_staged_path = prepared_blob.temporary_path
+        assert prepared.prepared_artifact is not None
+        prepared_claim = next(prepared.prepared_artifact.iter_attachment_claims())[2]
+        stale_staged_path = prepared_claim.prepared_path
         assert stale_staged_path.is_file()
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
@@ -496,9 +496,9 @@ def test_read_only_compute_defers_attachment_publication_until_writer_revalidati
             parse_retained_raw=parse,
             acquired_at_ms=4,
         )
-        fresh_blob = fresh.prepared_attachment_blobs[0].prepared_blob
-        assert fresh_blob is not None
-        fresh_staged_path = fresh_blob.temporary_path
+        assert fresh.prepared_artifact is not None
+        fresh_claim = next(fresh.prepared_artifact.iter_attachment_claims())[2]
+        fresh_staged_path = fresh_claim.prepared_path
         assert fresh_staged_path.is_file()
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
         result = publish_ingest_cohort(writer, fresh)
@@ -593,12 +593,15 @@ def _prepared_precomputed_cohort(tmp_path: Path) -> tuple[PreparedIngestCohort, 
             parse_retained_raw=parse,
             acquired_at_ms=2,
         )
-    assert prepared.prepared_attachment_blobs[0].prepared_blob is None
+    assert prepared.prepared_artifact is not None
+    claim = next(prepared.prepared_artifact.iter_attachment_claims())[2]
+    assert claim.receipt.blob_hash == hash_hex
+    assert claim.prepared_path.is_file()
     return prepared, hash_hex
 
 
 def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(tmp_path: Path) -> None:
-    """A compute-published attachment blob is adopted: referenced, its receipt consumed.
+    """A captured attachment claim is published, referenced, and its receipt consumed.
 
     Anti-vacuity: omitting the precomputed entry from the map makes the shared
     attachment writer raise its explicit missing-preacquisition ValueError;
@@ -618,20 +621,29 @@ def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(tmp_pat
         ).fetchone() == (0,)
 
 
-def test_precomputed_attachment_reclaimed_before_the_writer_is_refused(tmp_path: Path) -> None:
-    """A precomputed blob GC removed before admission fails the publish as a storage fault.
-
-    Anti-vacuity: trusting ``precomputed_blob`` records the attachment
-    ``acquired`` against bytes that no longer exist.
-    """
-    from polylogue.storage.blob_publication import AdoptedBlobEvictedError
-
+def test_precomputed_attachment_captured_bytes_survive_public_blob_collection(tmp_path: Path) -> None:
+    """The sealed private capture remains authoritative if GC collects the public copy."""
     prepared, hash_hex = _prepared_precomputed_cohort(tmp_path)
-    BlobStore(tmp_path / "blob").blob_path(hash_hex).unlink()
+    blob_path = BlobStore(tmp_path / "blob").blob_path(hash_hex)
+    blob_path.unlink()
     with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
-        with pytest.raises(AdoptedBlobEvictedError):
+        assert publish_ingest_cohort(writer, prepared).published
+        assert writer._conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone()[0] == hash_hex
+    assert blob_path.read_bytes() == b"precomputed attachment"
+    discard_prepared_ingest_cohort(prepared)
+
+
+def test_missing_sealed_attachment_capture_refuses_before_index_publication(tmp_path: Path) -> None:
+    """Losing the actual private capture cannot become an acquired attachment."""
+    prepared, _hash_hex = _prepared_precomputed_cohort(tmp_path)
+    assert prepared.prepared_artifact is not None
+    claim = next(prepared.prepared_artifact.iter_attachment_claims())[2]
+    claim.prepared_path.unlink()
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
+        with pytest.raises(FileNotFoundError):
             publish_ingest_cohort(writer, prepared)
         assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+    discard_prepared_ingest_cohort(prepared)
 
 
 def test_raising_production_parser_records_a_failed_census_instead_of_escaping(tmp_path: Path) -> None:
@@ -889,6 +901,21 @@ def test_cohort_carries_byte_identical_session_digest(tmp_path: Path) -> None:
 
     carried = prepared.parsed_by_raw_id[raw_id]
     assert bound_session_content_hash(carried) == expected_hex
+    assert prepared.prepared_artifact is not None
+    # The real sealed carrier preserves the parser's complete declared fields,
+    # including provider order and repeated message occurrences.
+    assert carried.model_dump(
+        mode="json", exclude={"messages", "attachments", "session_events", "content_hash"}
+    ) == unbound.model_dump(mode="json", exclude={"messages", "attachments", "session_events", "content_hash"})
+    assert [message.model_dump(mode="json") for message in carried.messages] == [
+        message.model_dump(mode="json") for message in unbound.messages
+    ]
+    assert [event.model_dump(mode="json") for event in carried.session_events] == [
+        event.model_dump(mode="json") for event in unbound.session_events
+    ]
+    assert [attachment.model_dump(mode="json") for attachment in carried.attachments] == [
+        attachment.model_dump(mode="json") for attachment in unbound.attachments
+    ]
     assert prepared.projections_by_raw_id[raw_id].session_hash.hex() == expected_hex
     rows = prepared.prepared_rows_by_raw_id[raw_id]
     assert rows.session_content_hash == bytes.fromhex(expected_hex)

@@ -30,6 +30,7 @@ from polylogue.storage.raw_authority import (
     BLOCKER_ORIGIN_KEY,
     RawReplayPlan,
 )
+from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 logger = get_logger(__name__)
@@ -441,7 +442,7 @@ def _reconcile_frontier_obligations(
     current_ids = {item.plan_id for item in blocking}
     published: dict[str, str] = {}
     assert_population_admitted(root)
-    with closing(sqlite3.connect(root / "source.db")) as conn, conn:
+    with closing(open_source_tier_write_connection(root / "source.db", archive_root=root)) as conn, conn:
         for item in blocking:
             blocker_id = _open_frontier_blocker_id(conn, pass_id=pass_id, plan_id=item.plan_id)
             published[item.plan_id] = blocker_id
@@ -571,7 +572,7 @@ def _frontier_items(config: Config) -> tuple[tuple[RawAuthorityFrontierItem, ...
     assert_population_admitted(index_db)
     if not source_db.is_file() or not index_db.is_file():
         raise RuntimeError("raw authority frontier census requires initialized source and index tiers")
-    with closing(sqlite3.connect(source_db)) as conn, conn:
+    with closing(open_source_tier_write_connection(source_db, archive_root=root)) as conn, conn:
         conn.row_factory = sqlite3.Row
         conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
         head_rows = _frontier_rows(conn)

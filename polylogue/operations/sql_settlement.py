@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from polylogue.core.sql_settlement import AsyncSQLCustodyOwner, SQLCustodyOwner
 from polylogue.storage.sqlite.async_sqlite import retained_write_backends_on_current_thread
-from polylogue.storage.sqlite.connection import settle_cached_connections_on_current_thread
-from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+from polylogue.storage.sqlite.connection_profile import (
+    retained_native_settlement_owners_on_current_thread,
+    settle_cached_connections_on_current_thread,
+)
 from polylogue.storage.sqlite.reference_seal import retained_reference_seals_on_current_thread
 from polylogue.storage.sqlite.write_lease import WriteLease, retained_sql_owners_on_current_thread
 

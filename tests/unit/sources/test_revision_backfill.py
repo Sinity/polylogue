@@ -7,9 +7,8 @@ from collections.abc import Callable, ItemsView, Iterator
 from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, cast
 
-import ijson
 import pytest
 
 from polylogue.archive.ingest_flags import (
@@ -42,7 +41,7 @@ from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
-from polylogue.storage.raw_authority import parser_census_logical_keys, raw_authority_parser_fingerprint
+from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_retention_authority
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.agent_thread_state import read_thread_titles
@@ -52,7 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection_profile import ReadFrame, ReadFrameCancelledError, StaleContinuationError
+from polylogue.storage.sqlite.connection_profile import StaleContinuationError
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
@@ -109,15 +108,17 @@ def test_revision_backfill_archive_readers_use_declared_tier_profiles(
     monkeypatch.setattr(revision_backfill, "read_frame", capture_read_frame)
 
     assert revision_backfill._expand_frozen_revision_link_selection(root, []) == ()
-    assert revision_backfill.require_current_parser_source_census(root, selected_raw_ids=[]) == {}
     assert revision_backfill._replay_representative_raw_ids([], root) == {}
     assert revision_backfill.uncensused_historical_revision_raw_ids(root, ["missing-raw"]) == ()
 
-    # The prefetch producer opens both archive tiers on its own worker route.
-    with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
-        prefetcher = revision_backfill._ReplaySpillPrefetcher(spill, archive_root=root, index_db_path=root / "index.db")
-        monkeypatch.setattr(prefetcher, "_build_plan", lambda *_args: ([], {}))
-        prefetcher._run_inner(0, ("unused",), {})
+    frames = revision_backfill._RebindingEvidenceFrames(
+        source_db_path=root / "source.db",
+        index_db_path=root / "index.db",
+    )
+    try:
+        assert set(frames.current(None)) == {ArchiveTier.SOURCE, ArchiveTier.INDEX}
+    finally:
+        frames.close()
 
     assert opened
     assert all(
@@ -130,16 +131,6 @@ def test_revision_backfill_archive_readers_use_declared_tier_profiles(
     assert (root / "source.db").resolve() in {path for path, _tier, _timeout in opened}
     assert (root / "index.db").resolve() in {path for path, _tier, _timeout in opened}
 
-    # The frame registry is also the worker's cancellation route. Its declared
-    # profile lets a phase stop an in-flight SQLite statement during close.
-    with real_read_frame(root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
-        with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
-            prefetcher = revision_backfill._ReplaySpillPrefetcher(spill, archive_root=root)
-            assert prefetcher._register_read_frame(frame, 0)
-            prefetcher.close()
-            with pytest.raises(ReadFrameCancelledError):
-                _ = frame.connection
-
 
 def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_path: Path) -> None:
     root = tmp_path / "archive"
@@ -151,14 +142,10 @@ def test_revision_backfill_profile_preserves_stale_source_tier_diagnostic(tmp_pa
         revision_backfill._expand_frozen_revision_link_selection(root, [])
 
 
-def test_current_parser_source_census_rebinds_between_bounded_pages(
+def test_current_parser_source_census_keeps_progress_after_elapsed_frame_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: Any
 ) -> None:
-    """The census retries complete pages after their streams expire mid-page.
-
-    Anti-vacuity: the clock advances after row one of two while both the raw-ID
-    and parser-census streams yield, forcing expiry before either stream ends.
-    """
+    """Elapsed read-frame time cannot discard a valid caller-owned Source snapshot."""
     root = tmp_path / "archive"
     bootstrap_archive_root(root)
     raw_ids: list[str] = []
@@ -193,39 +180,20 @@ def test_current_parser_source_census_rebinds_between_bounded_pages(
         for index in range(2):
             raw_ids.append(write_terminal_non_session(archive, index))
 
-    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
-    real_read_frame = cast(Any, revision_backfill).read_frame
-    frames: list[ReadFrame] = []
+    real_measurement = revision_backfill.parser_census_identity_measurement
+    measured_raws = 0
 
     @contextmanager
-    def capture_frames(path: str | Path, **kwargs: Any) -> Iterator[ReadFrame]:
-        with real_read_frame(path, **kwargs) as frame:
-            frames.append(frame)
-            yield frame
+    def advance_after_measurement(**kwargs: Any) -> Iterator[Any]:
+        nonlocal measured_raws
+        with real_measurement(**kwargs) as measured:
+            measured_raws += 1
+            frozen_clock.advance(301)
+            yield measured
 
-    real_stream = ReadFrame.stream
-    expired_id_page = False
-    expired_census_page = False
-
-    def expire_after_first_census_page(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
-        nonlocal expired_id_page, expired_census_page
-        for row in real_stream(frame, sql, parameters):
-            yield row
-            if not expired_id_page and sql.startswith("SELECT raw_id FROM raw_sessions"):
-                expired_id_page = True
-                frozen_clock.advance(301)
-            if not expired_census_page and "LEFT JOIN raw_authority_parser_census" in sql:
-                expired_census_page = True
-                frozen_clock.advance(301)
-
-    monkeypatch.setattr(revision_backfill, "read_frame", capture_frames)
-    monkeypatch.setattr(ReadFrame, "stream", expire_after_first_census_page)
-
-    result = revision_backfill.require_current_parser_source_census(root)
-
-    assert result == dict.fromkeys(raw_ids, ())
-    assert expired_id_page and expired_census_page
-    assert frames and frames[0].epoch >= 2
+    monkeypatch.setattr(revision_backfill, "parser_census_identity_measurement", advance_after_measurement)
+    assert revision_backfill.uncensused_historical_revision_raw_ids(root, raw_ids) == ()
+    assert measured_raws == 2
 
 
 def test_current_parser_source_census_refuses_reused_rowid_frontier(
@@ -273,34 +241,33 @@ def test_current_parser_source_census_refuses_reused_rowid_frontier(
             .fetchone()[0]
         )
 
-    monkeypatch.setattr(revision_backfill, "_CURRENT_SOURCE_CENSUS_PAGE_SIZE", 2)
-    real_stream = ReadFrame.stream
+    real_measurement = revision_backfill.parser_census_identity_measurement
     replaced = False
     replacement_raw_id: str | None = None
 
-    def replace_maximum_rowid(frame: ReadFrame, sql: str, parameters: Any = ()) -> Iterator[sqlite3.Row]:
+    @contextmanager
+    def replace_after_observation(**kwargs: Any) -> Iterator[Any]:
         nonlocal replaced, replacement_raw_id
-        if not replaced and sql.startswith("SELECT raw_id FROM raw_sessions"):
-            replaced = True
-            with ArchiveStore.open_existing(root, read_only=False) as archive:
-                with archive._ensure_source_conn():
-                    archive._ensure_source_conn().execute(
-                        "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
+        with real_measurement(**kwargs) as measured:
+            if not replaced:
+                replaced = True
+                with ArchiveStore.open_existing(root, read_only=False) as archive:
+                    with archive._ensure_source_conn():
+                        archive._ensure_source_conn().execute(
+                            "DELETE FROM raw_sessions WHERE raw_id = ?", (original_raw_id,)
+                        )
+                    replacement_raw_id = write_terminal_non_session(archive, 1)
+                    replacement_rowid = (
+                        archive._ensure_source_conn()
+                        .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
+                        .fetchone()[0]
                     )
-                replacement_raw_id = write_terminal_non_session(archive, 1)
-                replacement_rowid = (
-                    archive._ensure_source_conn()
-                    .execute("SELECT rowid FROM raw_sessions WHERE raw_id = ?", (replacement_raw_id,))
-                    .fetchone()[0]
-                )
-                assert int(replacement_rowid) == original_rowid
-        yield from real_stream(frame, sql, parameters)
+                    assert int(replacement_rowid) == original_rowid
+            yield measured
 
-    monkeypatch.setattr(ReadFrame, "stream", replace_maximum_rowid)
-
-    with pytest.raises(StaleContinuationError, match="source archive changed during parser source census"):
-        revision_backfill.require_current_parser_source_census(root)
-
+    monkeypatch.setattr(revision_backfill, "parser_census_identity_measurement", replace_after_observation)
+    with pytest.raises(StaleContinuationError):
+        revision_backfill.uncensused_historical_revision_raw_ids(root, [original_raw_id])
     assert replaced
     assert replacement_raw_id is not None and replacement_raw_id != original_raw_id
 
@@ -806,7 +773,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
     assert memberships == [("codex-session:legacy-fragment",)]
     assert receipt is not None
     assert receipt[0] == "complete"
-    assert parser_census_logical_keys(receipt[1]) == ("codex-session:legacy-fragment",)
+    assert tuple(iter_parser_census_logical_keys(receipt[1])) == ("codex-session:legacy-fragment",)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
@@ -846,7 +813,7 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
             "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
 
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
@@ -939,7 +906,7 @@ def test_unknown_retained_codex_record_scans_provider_key_past_8k_padding(
     bootstrap_archive_root(tmp_path)
     late_session_meta = json.dumps(
         {
-            "padding": "x" * (revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 512),
+            "padding": "x" * (8192 + 512),
             "type": "session_meta",
             "payload": {"id": "late-codex", "timestamp": "2026-06-01T00:00:00Z"},
         },
@@ -951,9 +918,7 @@ def test_unknown_retained_codex_record_scans_provider_key_past_8k_padding(
         + b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user",'
         + b'"content":[{"type":"input_text","text":"late discriminator"}]}}\n'
     )
-    assert (
-        b'"type":"session_meta"' not in late_session_meta[: revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
-    )
+    assert b'"type":"session_meta"' not in late_session_meta[:8192]
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -973,38 +938,18 @@ def test_unknown_retained_codex_record_scans_provider_key_past_8k_padding(
     assert [session.provider_session_id for session in sessions] == ["late-codex"]
 
 
-def test_unknown_retained_malformed_huge_record_stays_unknown_inside_total_budget() -> None:
-    """Malformed data cannot make a discriminator beyond the scan envelope authoritative."""
-
-    class CountingReader:
-        def __init__(self, payload: bytes) -> None:
-            self._payload = BytesIO(payload)
-            self.bytes_read = 0
-
-        def readline(self, size: int = -1) -> bytes:
-            chunk = self._payload.readline(size)
-            self.bytes_read += len(chunk)
-            return chunk
-
-        def read(self, size: int = -1) -> bytes:
-            chunk = self._payload.read(size)
-            self.bytes_read += len(chunk)
-            return chunk
-
-        def seek(self, offset: int, whence: int = 0) -> int:
-            return self._payload.seek(offset, whence)
-
-    payload = (
-        b'{"padding":"'
-        + b"x" * (revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES + 16_384)
-        + b'","type":"session_meta","payload":{"id":"outside-budget"}'
-    )
-    reader = CountingReader(payload)
-
-    provider, _evidence = revision_backfill._detect_unknown_retained_provider(reader, "huge.jsonl")
-
-    assert provider is Provider.UNKNOWN
-    assert reader.bytes_read <= revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES
+@pytest.mark.parametrize("terminated", [False, True])
+def test_unknown_retained_partial_tail_and_terminated_corruption_have_distinct_outcomes(terminated: bool) -> None:
+    payload = b'{"padding":"' + b"x" * 80_000 + b'","type":"session_meta","payload":{"id":"late"}'
+    stream = BytesIO(payload + (b"\n" if terminated else b""))
+    if terminated:
+        with pytest.raises(revision_backfill.PreparedDecodeError) as refused:
+            revision_backfill._resolved_retained_provider(stream, "huge.jsonl")
+        assert refused.value.kind is revision_backfill.DecodeFailure.JSONL_RECORD
+    else:
+        provider, _evidence = revision_backfill._resolved_retained_provider(stream, "huge.jsonl")
+        assert provider is Provider.UNKNOWN
+    assert stream.tell() == 0
 
 
 def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
@@ -1040,10 +985,10 @@ def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
     assert [session.provider_session_id for session in sessions] == ["oversized-only-provider-record"]
 
 
-def test_unknown_retained_jsonl_detection_caps_total_scan_before_typed_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_unknown_retained_complete_jsonl_refuses_without_eager_material(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """An unidentifiable retained JSONL blob stops at the detection envelope."""
     bootstrap_archive_root(tmp_path)
     payload = (b'{"opaque":"' + b"x" * 9_000 + b'"}\n') * 32
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -1053,41 +998,13 @@ def test_unknown_retained_jsonl_detection_caps_total_scan_before_typed_failure(
             source_path="opaque.jsonl",
             acquired_at_ms=1,
         )
-        read_bytes = 0
-        original_open = archive.open_raw_revision_material
-
-        class CountingReader:
-            def __init__(self, wrapped: BinaryIO) -> None:
-                self._wrapped = wrapped
-
-            def read(self, size: int = -1) -> bytes:
-                nonlocal read_bytes
-                chunk = self._wrapped.read(size)
-                read_bytes += len(chunk)
-                return chunk
-
-            def readline(self, size: int = -1) -> bytes:
-                nonlocal read_bytes
-                chunk = self._wrapped.readline(size)
-                read_bytes += len(chunk)
-                return chunk
-
-        @contextmanager
-        def tracked_open(requested_raw_id: str) -> Iterator[tuple[Provider, CountingReader, str, RawRevisionKind]]:
-            with original_open(requested_raw_id) as (provider, stream, source_path, kind):
-                yield provider, CountingReader(stream), source_path, kind
-
-        monkeypatch.setattr(archive, "open_raw_revision_material", tracked_open)
         monkeypatch.setattr(
             archive,
             "raw_revision_material",
-            lambda *_args, **_kwargs: pytest.fail("unidentified JSONL must not fall through to eager blob loading"),
+            lambda *_args, **_kwargs: pytest.fail("unknown complete input used eager material"),
         )
-
-        with pytest.raises(ValueError, match="retained UNKNOWN provider remained unresolved"):
+        with pytest.raises(revision_backfill.UnsupportedRetainedJsonShapeError):
             revision_backfill.parse_retained_raw_sessions(archive, raw_id)
-
-    assert read_bytes <= revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES
 
 
 def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record(
@@ -1164,7 +1081,7 @@ def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: 
     bootstrap_archive_root(tmp_path)
     document = {"padding": "x" * 9_000, **_chatgpt_session("large-document", "bounded evidence")}
     payload = json.dumps([document]).encode()
-    assert b'"mapping"' not in payload[: revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
+    assert b'"mapping"' not in payload[:8192]
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.UNKNOWN,
@@ -1179,40 +1096,29 @@ def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: 
         assert conn.execute("SELECT session_id FROM sessions").fetchall() == [("chatgpt-export:large-document",)]
 
 
-def test_unknown_retained_document_caps_oversized_scalar_before_structural_scan(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """The retained-document route never hands a whole giant scalar to ijson."""
+def test_unknown_retained_document_preserves_long_scalars_and_late_provider_fields(tmp_path: Path) -> None:
     bootstrap_archive_root(tmp_path)
-    payload = json.dumps({"padding": "x" * 128_000, "metadata": {"shape": "unknown"}}).encode()
-    observed_string_bytes: list[int] = []
-    original_parse = ijson.parse
-
-    def guarded_parse(*args: object, **kwargs: object) -> Any:
-        for prefix, event, value in original_parse(*args, **kwargs):
-            if event == "string":
-                observed_string_bytes.append(len(str(value).encode()))
-                assert observed_string_bytes[-1] <= revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
-            yield prefix, event, value
-
-    monkeypatch.setattr(ijson, "parse", guarded_parse)
+    text = "x" * 128_000
+    payload = json.dumps(
+        {
+            "padding": text,
+            "uuid": "late-claude-provider",
+            "name": "Complete retained document",
+            "chat_messages": [
+                {"uuid": "message-1", "sender": "human", "text": text, "created_at": "2026-08-13T00:00:00Z"}
+            ],
+        }
+    ).encode()
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
             payload=payload,
-            source_path="export/unknown-document.json",
+            source_path="export/late-provider.json",
             acquired_at_ms=1,
         )
-
-        def reject_eager_material(_raw_id: str) -> tuple[Provider, bytes, str, RawRevisionKind]:
-            raise AssertionError("unclassified document must not use eager payload materialization")
-
-        monkeypatch.setattr(archive, "raw_revision_material", reject_eager_material)
-        with pytest.raises(ValueError, match="remained unresolved after bounded scan"):
-            revision_backfill.parse_retained_raw_sessions(archive, raw_id)
-
-    assert max(observed_string_bytes) == revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES
+        sessions = revision_backfill.parse_retained_raw_sessions(archive, raw_id)
+    assert [session.provider_session_id for session in sessions] == ["late-claude-provider"]
+    assert sessions[0].messages[0].text == text
 
 
 def test_unknown_retained_array_ignores_fragment_only_mapping_before_real_provider(tmp_path: Path) -> None:
@@ -1263,7 +1169,6 @@ def test_parsed_session_spill_uses_the_pinned_active_index_directory(tmp_path: P
     with revision_backfill._ParsedSessionSpill(
         archive_root,
         index_path=active_index,
-        max_cached_payload_bytes=None,
     ) as spill:
         assert spill.path.parent == active_index.parent
 
@@ -1679,11 +1584,11 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
     assert LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(membership[2])
     assert parser is not None
     assert parser[0] == "complete"
-    assert parser_census_logical_keys(parser[1]) == ()
+    assert tuple(iter_parser_census_logical_keys(parser[1])) == ()
     assert str(parser[2]).startswith("parser-observed:")
     assert later_parser is not None
     assert later_parser[0] == "complete"
-    assert parser_census_logical_keys(later_parser[1]) == ("codex-session:after-page-image",)
+    assert tuple(iter_parser_census_logical_keys(later_parser[1])) == ("codex-session:after-page-image",)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         sessions = conn.execute("SELECT origin, native_id FROM sessions ORDER BY origin, native_id").fetchall()
     assert sessions == [("codex-session", "after-page-image")]
@@ -2932,7 +2837,7 @@ def _census_facts(root: Path, raw_id: str) -> tuple[str | None, str, tuple[str, 
         receipt = conn.execute(
             "SELECT logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
         ).fetchone()
-    keys = parser_census_logical_keys(receipt[0]) if receipt is not None else None
+    keys = tuple(iter_parser_census_logical_keys(receipt[0])) if receipt is not None else None
     return logical_key, str(authority), keys
 
 
@@ -3220,7 +3125,6 @@ def test_backfill_replay_reuses_spill_cache_when_bound_explicitly(
     result = backfill_historical_revision_evidence(
         tmp_path,
         max_payload_bytes=None,
-        max_cached_payload_bytes=64 * 1024 * 1024,
     )
 
     assert result.replayed_logical_sources == 1
@@ -3560,17 +3464,19 @@ def test_parse_retained_raws_dedupes_identical_blob_across_paths_for_safe_provid
     }
 
     class FakeArchive:
+        archive_root = Path("/synthetic/archive")
+        source_db_path = Path("/synthetic/archive/source.db")
+
         def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
             return descriptors[raw_id]
 
     parsed: list[str] = []
 
-    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+    def fake_parse(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
         parsed.append(raw_id)
-        descriptor = descriptors[raw_id]
-        return [], descriptor[4], descriptor[3]
+        return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_parse)
 
     results = revision_backfill._parse_retained_raws(
         FakeArchive(),  # type: ignore[arg-type]
@@ -3580,7 +3486,7 @@ def test_parse_retained_raws_dedupes_identical_blob_across_paths_for_safe_provid
 
     # one parse per distinct blob_hash: dup-2/dup-3/other-path all reuse
     # dup-1's outcome despite other-path having a different source_path.
-    assert parsed == ["dup-1", "other-bytes"]
+    assert sorted(parsed) == ["dup-1", "other-bytes"]
     assert set(results) == set(descriptors)
     sessions, size, kind = results["dup-2"]  # type: ignore[misc]
     assert (sessions, size, kind) == ([], 10, RawRevisionKind.UNKNOWN)
@@ -3597,13 +3503,16 @@ def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: 
     }
 
     class FakeArchive:
+        archive_root = Path("/synthetic/archive")
+        source_db_path = Path("/synthetic/archive/source.db")
+
         def raw_revision_descriptor(self, raw_id: str) -> tuple[Provider, str, str, RawRevisionKind, int]:
             return descriptors[raw_id]
 
-    def failing_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+    def failing_parse(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
         raise ValueError(f"boom {raw_id}")
 
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", failing_parse)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", failing_parse)
 
     results = revision_backfill._parse_retained_raws(
         FakeArchive(),  # type: ignore[arg-type]
@@ -3615,62 +3524,8 @@ def test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows(monkeypatch: 
     assert results["dup-2"] is results["dup-1"]
 
 
-def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """End-to-end: a small pool-eligible batch under the aggregate floor must
-    not construct a ProcessPoolExecutor at all (the churn measured live: 20
-    workers in 25s, each ~95% importlib). This is a GIL-build-fallback
-    mechanic specifically (the amortization floor exists only to protect
-    process-pool spawn costs, polylogue-xikl) -- pin the probe so this test's
-    claim is exercised deterministically regardless of which interpreter
-    (GIL or genuinely free-threaded) runs the suite."""
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        for index in range(3):
-            payload = (
-                f'{{"type":"session_meta","payload":{{"id":"floor-{index}"}}}}\n'
-                f'{{"type":"response_item","payload":{{"type":"message","id":"one","role":"user",'
-                f'"content":[{{"type":"input_text","text":"tiny"}}]}}}}\n'
-            ).encode()
-            archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=payload,
-                source_path=f"floor-{index}.jsonl",
-                acquired_at_ms=index,
-            )
-
-    def forbidden_pool(**kwargs: object) -> object:
-        raise AssertionError("pool must not be created for a sub-floor batch")
-
-    import polylogue.pipeline.services.process_pool as process_pool_module
-
-    monkeypatch.setattr(process_pool_module, "process_pool_executor", forbidden_pool)
-
-    result = backfill_historical_revision_evidence(tmp_path, ingest_workers=4)
-    assert result.scanned == 3
-    assert result.quarantined == 0
-
-
 def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """polylogue-xikl adoption wave: the ThreadPoolExecutor parse path (forced
-    here by patching ``parallel_threads_effective`` -- these tests run under
-    the GIL, where threads still parse *correctly*, just without a
-    speedup) must produce byte-identical archive state to the sequential
-    path, mirroring the process-pool equivalence proof above
-    (``test_parallel_census_matches_sequential_archive_state``). No size
-    partition or amortization floor applies on this path, so every raw
-    (including tiny ones that a size-based ceiling would otherwise route
-    straight to sequential) is actually dispatched through the thread pool.
-
-    Anti-vacuity (patch-revert, performed live during implementation): making
-    ``_parse_unique_retained_raws_via_threads`` skip one raw_id when building
-    ``future_to_raw_id`` (dropping a raw from the batch) makes this test fail
-    with a KeyError / unequal session counts; duplicating a raw_id's future
-    against a second raw_id's descriptor makes the two archives' session
-    rows diverge. Both mutations were applied and reverted by hand against
-    this exact test to confirm it catches them before this test was
-    finalized.
-    """
+    """Shared compute window widths preserve canonical archive rows."""
     sequential_root = tmp_path / "sequential"
     thread_root = tmp_path / "threaded"
     for root in (sequential_root, thread_root):
@@ -3687,7 +3542,6 @@ def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypat
 
     seq_result = backfill_historical_revision_evidence(sequential_root, ingest_workers=1)
 
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
     thread_result = backfill_historical_revision_evidence(thread_root, ingest_workers=4)
 
     assert seq_result == thread_result
@@ -3723,11 +3577,9 @@ def test_thread_parse_normalizes_derived_timestamps_matching_sequential(
                 )
             )
 
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         sequential = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=1)
 
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         threaded = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=2)
 
@@ -3786,23 +3638,7 @@ def _write_append_raw_with_recovered_identity(
 def test_thread_parse_recovers_append_native_id_matching_sequential(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """polylogue-6lyh1 red-first: census_parse_worker lacked kind/native_id,
-    so the thread-parallel census path fell back to
-    ``Path(source_path).stem`` for an APPEND raw with no self-describing
-    identity of its own, instead of the write-time-recorded native_id the
-    sequential path (``parse_retained_raw_sessions``) recovers via
-    ``archive.raw_native_id`` -- see that function's polylogue-u19l comment.
-
-    Two APPEND raws are constructed with a payload carrying NO
-    ``session_meta`` record (so the parser has nothing else to fall back on)
-    AND a ``source_path`` stem that deliberately differs from the recorded
-    native_id, forcing observable divergence: before the fix, the thread
-    path's ``provider_session_id`` would be the source_path's stem
-    (``"delta-file-one"``/``"delta-file-two"``); after the fix, both paths
-    agree on the recorded native_id (``"session-alpha"``/``"session-beta"``).
-    Two raws are used (not one) because ``_parse_unique_retained_raws`` only
-    takes the thread-pool branch when ``record_count > 1``.
-    """
+    """Every compute window preserves write-time APPEND native identity."""
     archive_root = tmp_path / "archive"
     bootstrap_archive_root(archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -3828,7 +3664,6 @@ def test_thread_parse_recovers_append_native_id_matching_sequential(
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         sequential_results = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=1)
 
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         thread_results = revision_backfill._parse_retained_raws(archive, raw_ids, ingest_workers=4)
 
@@ -3846,20 +3681,7 @@ def test_thread_parse_recovers_append_native_id_matching_sequential(
 
 
 def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression guard for the sqlite ``check_same_thread`` hazard this
-    thread path was designed around: ``ArchiveStore._source_conn`` is a
-    plain ``sqlite3.Connection`` created with the default
-    ``check_same_thread=True``, so calling ``archive.raw_revision_descriptor``
-    (as ``_parse_retained_raw`` does) from a worker thread other than the
-    connection's owning thread raises ``sqlite3.ProgrammingError`` --
-    confirmed empirically during implementation. This test uses a fake
-    archive whose only usable attributes are ``archive_root``/
-    ``source_db_path`` (plain ``Path`` values, no live sqlite connection at
-    all); any code path that tried to call a *method* on it (as
-    ``_parse_retained_raw`` would) fails immediately with ``AttributeError``,
-    proving ``_parse_unique_retained_raws_via_threads`` only ever reads two
-    static attributes off the shared archive object, never queries it.
-    """
+    """Workers receive immutable descriptors and never query caller-owned SQLite."""
 
     class _NoMethodsArchive:
         archive_root = Path("/fake-root")
@@ -3885,7 +3707,7 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
-    results = revision_backfill._parse_unique_retained_raws_via_threads(
+    results = revision_backfill._parse_unique_retained_raws(
         _NoMethodsArchive(),  # type: ignore[arg-type]
         list(descriptors),
         descriptors=descriptors,
@@ -3899,14 +3721,7 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
 def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One raw's parse failure on the thread path must be isolated to that
-    raw_id's result slot, matching the process-pool path's fan-out contract
-    (``test_parse_retained_raws_fans_out_exceptions_to_duplicate_rows``
-    proves the same isolation on the sequential/dedup layer). Anti-vacuity:
-    if a future's exception were allowed to propagate out of the
-    ``as_completed`` loop uncaught, this whole test (and every other raw's
-    result) would never be reached -- the two surviving successful results
-    are asserted explicitly, not merely "no exception raised"."""
+    """A worker failure remains scoped to its raw while neighboring results survive."""
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
         "ok-1": (Provider.CODEX, "hash-A", "a.jsonl", RawRevisionKind.FULL, 10, None),
         "bad-1": (Provider.CODEX, "hash-B", "b.jsonl", RawRevisionKind.FULL, 20, None),
@@ -3934,7 +3749,7 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
-    results = revision_backfill._parse_unique_retained_raws_via_threads(
+    results = revision_backfill._parse_unique_retained_raws(
         _FakeArchive(),  # type: ignore[arg-type]
         list(descriptors),
         descriptors=descriptors,
@@ -3948,16 +3763,7 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
 
 
 def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Determinism proof: results must be assembled by looking up each
-    completed future's OWN raw_id (``future_to_raw_id[future]``), never by
-    zipping ``raw_ids`` (submission order) against ``as_completed(futures)``
-    (completion order) -- that zip-based shape is a real historical bug
-    class in concurrent code and would silently pair a fast-finishing raw's
-    result with a different, slower raw_id's descriptor. Delays are
-    inverted here (the raw submitted LAST finishes FIRST) so submission
-    order and completion order actively diverge; each raw_id's own
-    descriptor-derived payload_size must still come back attached to it
-    regardless."""
+    """Completion order cannot pair a raw with another descriptor."""
     raw_ids = [f"raw-{i}" for i in range(6)]
     descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
         raw_id: (Provider.CODEX, f"hash-{i}", f"path-{i}.jsonl", RawRevisionKind.FULL, 100 + i, None)
@@ -3987,7 +3793,7 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
 
-    results = revision_backfill._parse_unique_retained_raws_via_threads(
+    results = revision_backfill._parse_unique_retained_raws(
         _FakeArchive(),  # type: ignore[arg-type]
         raw_ids,
         descriptors=descriptors,
@@ -3999,54 +3805,6 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
         assert sessions == []
         assert size == 100 + index
         assert kind == RawRevisionKind.FULL
-
-
-def test_parse_unique_retained_raws_routes_to_threads_when_probe_true(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Wiring proof for ``_parse_unique_retained_raws`` itself: when
-    ``parallel_threads_effective()`` is true, it must call
-    ``_parse_unique_retained_raws_via_threads`` (no size partition / floor)
-    rather than falling through to the process-pool branch below it."""
-    descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]] = {
-        "raw-a": (Provider.CODEX, "hash-a", "a.jsonl", RawRevisionKind.FULL, 10, None),
-        "raw-b": (Provider.CODEX, "hash-b", "b.jsonl", RawRevisionKind.FULL, 20, None),
-    }
-
-    sentinel: dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception] = {
-        "raw-a": ([], 10, RawRevisionKind.FULL),
-        "raw-b": ([], 20, RawRevisionKind.FULL),
-    }
-    calls: list[tuple[object, ...]] = []
-
-    def fake_thread_dispatch(
-        archive: object,
-        raw_ids: list[str],
-        *,
-        descriptors: dict[str, tuple[Provider, str, str, RawRevisionKind, int, str | None]],
-        ingest_workers: int,
-    ) -> dict[str, tuple[list[ParsedSession], int, RawRevisionKind] | Exception]:
-        calls.append((tuple(raw_ids), ingest_workers))
-        return sentinel
-
-    def forbidden_pool(**kwargs: object) -> object:
-        raise AssertionError("process pool must not be constructed when the thread path is taken")
-
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
-    monkeypatch.setattr(revision_backfill, "_parse_unique_retained_raws_via_threads", fake_thread_dispatch)
-    import polylogue.pipeline.services.process_pool as process_pool_module
-
-    monkeypatch.setattr(process_pool_module, "process_pool_executor", forbidden_pool)
-
-    results = revision_backfill._parse_unique_retained_raws(
-        object(),  # type: ignore[arg-type]
-        list(descriptors),
-        descriptors=descriptors,
-        ingest_workers=4,
-    )
-
-    assert results == sentinel
-    assert calls == [(("raw-a", "raw-b"), 4)]
 
 
 # ---------------------------------------------------------------------------
@@ -4077,7 +3835,7 @@ def test_whale_add_bypasses_sqlite_spill_and_holds_resident(monkeypatch: pytest.
     )
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+        revision_backfill._ParsedSessionSpill(archive_root) as spill,
     ):
         sessions, payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, whale_id)
         assert estimate_parsed_tree_bytes(sessions) > spill._decoded_budget, (
@@ -4115,7 +3873,7 @@ def test_whale_exceeding_whale_ceiling_falls_back_to_sqlite_spill(
     )
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+        revision_backfill._ParsedSessionSpill(archive_root) as spill,
     ):
         sessions, payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, whale_id)
 
@@ -4162,7 +3920,7 @@ def test_whale_eviction_degrades_to_sqlite_spill_courtesy(monkeypatch: pytest.Mo
 
     with (
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
-        revision_backfill._ParsedSessionSpill(archive_root, max_cached_payload_bytes=10_000_000) as spill,
+        revision_backfill._ParsedSessionSpill(archive_root) as spill,
     ):
         first_sessions, first_payload_bytes, _kind = revision_backfill._parse_retained_raw(archive, first_id)
         spill.add(first_id, first_sessions, payload_bytes=first_payload_bytes)
@@ -4233,9 +3991,7 @@ def test_backfill_replays_whale_bearing_page_byte_identical_to_content(
         whale_payload_bytes=200_000,
     )
 
-    result = backfill_historical_revision_evidence(
-        archive_root, max_cached_payload_bytes=10_000_000, commit_batch_size=200, replay_commit_batch_size=1
-    )
+    result = backfill_historical_revision_evidence(archive_root, commit_batch_size=200, replay_commit_batch_size=1)
 
     assert result.scanned == len(small_raw_ids) + 1
     assert result.replayed_logical_sources == len(small_raw_ids) + 1
@@ -4292,93 +4048,33 @@ def _index_content_manifest(root: Path) -> dict[str, list[tuple[object, ...]]]:
         }
 
 
-def _give_prefetch_worker_a_head_start(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make prefetch consumption deterministic for anti-vacuity assertions.
-
-    Production makes no ordering promise between the decode worker and the
-    writer -- an overtaken entry is simply dropped. Tests that assert
-    ``spill_prefetch.consumed > 0`` must therefore pin the race: wrap
-    ``start_phase`` so the (writer-thread) caller does not start its loop
-    until the worker has buffered a couple of entries or finished its plan.
-    """
-    original_start_phase = revision_backfill._ReplaySpillPrefetcher.start_phase
-
-    def start_phase_with_head_start(
-        self: revision_backfill._ReplaySpillPrefetcher,
-        ordered_keys: object,
-        extra_members: object,
-    ) -> None:
-        original_start_phase(self, ordered_keys, extra_members)  # type: ignore[arg-type]
-        worker = self._thread
-        for _ in range(1000):  # bounded ~10s; normally exits in milliseconds
-            with self._lock:
-                if len(self._buffer) >= 2:
-                    break
-            if worker is None or not worker.is_alive():
-                break
-            time.sleep(0.01)
-
-    monkeypatch.setattr(revision_backfill._ReplaySpillPrefetcher, "start_phase", start_phase_with_head_start)
-
-
 @pytest.mark.parametrize(
     "spill_payload_cap",
     [1, 512 * 1024 * 1024],
     ids=["reparse-fallback-lane", "sqlite-spill-lane"],
 )
-def test_pipelined_decode_matches_serial_archive_state(
+def test_spill_decode_keeps_canonical_archive_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, spill_payload_cap: int
 ) -> None:
-    """Lever A equivalence proof: ``pipeline_decode=True`` (background
-    ``_ReplaySpillPrefetcher`` decode) must produce byte-identical archive
-    state to the forced-serial path, over BOTH decode fallbacks the
-    prefetcher hides. The spill's RAM tiers are shrunk to 1 byte so every
-    replay ``for_raw`` misses RAM and takes the parametrized lane:
-    ``spill_payload_cap=1`` refuses the sqlite spill too (every decode is a
-    reparse from durable raw bytes -- the real full-rebuild's dominant
-    shape), while the 512 MiB cap admits everything to the sqlite spill
-    (every decode is a pickle.loads).
-
-    Anti-vacuity: the pipelined run must report at least one CONSUMED
-    prefetch entry (``spill_prefetch.consumed`` -- a writer-side pop that
-    actually served a replay ``for_raw``), proving the buffer carried real
-    work rather than every pop missing into the unchanged inline path. The
-    writer can legitimately outrun the one background decoder on a tiny
-    corpus (a decoded-but-never-consumed entry is dropped, harmlessly), so
-    the race is made deterministic here: ``start_phase`` is wrapped to give
-    the decode worker a head start before the writer's loop begins.
-    """
+    """Shared compute window widths preserve replay across disk-spill policies."""
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
-    _give_prefetch_worker_a_head_start(monkeypatch)
 
     serial_root = tmp_path / "serial"
     pipelined_root = tmp_path / "pipelined"
     for root in (serial_root, pipelined_root):
         _pipeline_equivalence_corpus(root)
 
-    serial_result = backfill_historical_revision_evidence(
-        serial_root, max_cached_payload_bytes=spill_payload_cap, pipeline_decode=False
-    )
-    pipelined_result = backfill_historical_revision_evidence(
-        pipelined_root, max_cached_payload_bytes=spill_payload_cap, pipeline_decode=True
-    )
+    serial_result = backfill_historical_revision_evidence(serial_root, ingest_workers=1)
+    pipelined_result = backfill_historical_revision_evidence(pipelined_root, ingest_workers=2)
 
     assert serial_result == pipelined_result
     assert _index_content_manifest(serial_root) == _index_content_manifest(pipelined_root)
 
-    assert pipelined_result.stage_counts.get("spill_prefetch.consumed", 0) > 0
-    assert "spill_prefetch.hits" not in serial_result.stage_timings_s
-    assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
 
-
-def test_pipelined_decode_respects_batched_replay_commits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The rebuild caller combines pipelined decode with batched replay
-    commits (polylogue-amg1/oikv) -- the prefetcher's own read-only
-    source.db connection must coexist with the writer's long batch windows
-    (WAL snapshot reads), and the final state must still match the serial
-    per-cohort-commit ground truth."""
+def test_spill_decode_respects_batched_replay_commits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Batched replay commits preserve the canonical rows with bounded spill memory."""
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
@@ -4388,13 +4084,11 @@ def test_pipelined_decode_respects_batched_replay_commits(tmp_path: Path, monkey
     for root in (serial_root, pipelined_root):
         _pipeline_equivalence_corpus(root)
 
-    serial_result = backfill_historical_revision_evidence(serial_root, pipeline_decode=False)
+    serial_result = backfill_historical_revision_evidence(serial_root)
     pipelined_result = backfill_historical_revision_evidence(
         pipelined_root,
-        max_cached_payload_bytes=1,
         commit_batch_size=200,
         replay_commit_batch_size=200,
-        pipeline_decode=True,
     )
 
     assert serial_result == pipelined_result
@@ -4507,13 +4201,13 @@ def test_lineage_aware_replay_schedule_visits_parent_before_children(tmp_path: P
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         revision_backfill._census_historical_revision_evidence(
             archive,
-            revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None),
+            revision_backfill._ParsedSessionSpill(root),
             selected_raw_ids=None,
             max_payload_bytes=None,
         )
         archive.commit()
         _expanded, logical_keys = archive.expand_raw_membership_selection(None)
-        with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
+        with revision_backfill._ParsedSessionSpill(root) as spill:
             schedule = _lineage_aware_replay_schedule(set(logical_keys), archive, spill, root)
             order = list(schedule.order)
             topology = dict(schedule.topology)
@@ -4546,7 +4240,7 @@ def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_pa
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=1,
             )
-        with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
+        with revision_backfill._ParsedSessionSpill(root) as spill:
             revision_backfill._census_historical_revision_evidence(
                 archive, spill, selected_raw_ids=None, max_payload_bytes=None
             )
@@ -4624,7 +4318,7 @@ def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, mon
     (sessions/messages/blocks/session_links), matching the equivalence
     currency ``_index_content_manifest`` already uses for other replay-order
     equivalence proofs in this file (e.g.
-    ``test_pipelined_decode_respects_batched_replay_commits``).
+    ``test_spill_decode_respects_batched_replay_commits``).
     """
     lineage_root = tmp_path / "lineage"
     lexicographic_root = tmp_path / "lexicographic"
@@ -4764,119 +4458,21 @@ def _owned_generation_corpus(root: Path, *, raw_count: int, snapshot: str) -> In
     return IndexGenerationStore.for_archive_root(root).create(source_snapshot=snapshot)
 
 
-def test_prefetchable_index_path_refuses_an_exclusive_locked_generation(tmp_path: Path) -> None:
-    """polylogue-cz17d mechanism: a prefetch worker gets no index handle to an
-    owned inactive generation.
-
-    That writer runs ``BULK_BUILD_WRITE_CONNECTION_PROFILE``
-    (``locking_mode=EXCLUSIVE``, held for the connection's whole lifetime), so
-    a second connection to the same file can never read it -- waiting on it can
-    only burn the busy timeout. The retained active-index writer (WAL) keeps
-    its handle, because there a snapshot read genuinely succeeds.
-
-    Anti-vacuity: the refusal is not "there is no index tier" -- the assertions
-    below pin that the generation's ``index.db`` exists, that its live lock
-    regime really reads ``exclusive``, and that the WAL arm of the same helper
-    returns a path.
-    """
-    root = tmp_path / "exclusive-generation"
-    generation = _owned_generation_corpus(root, raw_count=2, snapshot="prefetchable-index-path")
-
-    with ArchiveStore.open_owned_inactive_generation(
-        Path(generation.index_path).parent,
-        generation_id=generation.generation_id,
-        owner_id=generation.owner_id,
-    ) as archive:
-        connection = archive.index_connection
-        assert connection is not None
-        assert Path(generation.index_path).exists()
-        assert str(connection.execute("PRAGMA main.locking_mode").fetchone()[0]).lower() == "exclusive"
-        assert revision_backfill._prefetchable_index_path(archive) is None
-
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        assert archive.index_connection is not None
-        assert revision_backfill._prefetchable_index_path(archive) == archive.index_db_path
-
-
-@pytest.mark.uses_real_clock("the defect IS a 30 s wall-clock busy-timeout wait; a frozen clock cannot see it")
-def test_owned_generation_prefetch_never_waits_out_the_index_busy_timeout(
+def test_owned_generation_spill_decode_keeps_canonical_archive_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """polylogue-cz17d anti-vacuity: the owned-generation replay must not pay a
-    SQLite busy timeout for the decode prefetcher.
-
-    Reverting ``_prefetchable_index_path`` to the old
-    ``archive.index_db_path if archive.index_connection is not None else None``
-    makes this exact fixture take **30.0 s** (measured three times at
-    0b1e99d69: 30.04 s / 30.05 s wall, ``spill_prefetch.decode_concurrent``
-    30.01 s, against 0.24 s of CPU) because the worker's first Codex reparse
-    blocks inside ``read_thread_titles`` until the 30 s ``busy_timeout``
-    expires, and ``start_phase`` joins that worker ON THE WRITER THREAD. With
-    the fix the same fixture runs in 0.118 s cold (``decode_concurrent``
-    0.005 s), so both bounds below carry ~100x headroom and both fail on a
-    revert. Neither is satisfiable by output inspection -- the output was
-    byte-identical while the stall was present.
-
-    Anti-vacuity against the other cheap "fix": deleting the prefetcher would
-    also make the timing bounds pass, so ``spill_prefetch.consumed > 0`` pins
-    that the writer really served replay decodes out of the prefetch buffer on
-    this route (0 before the fix, the worker having produced nothing usable).
-    """
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
-    root = tmp_path / "prefetch-stall"
-    generation = _owned_generation_corpus(
-        root,
-        raw_count=revision_backfill._PIPELINE_DECODE_MIN_COHORTS,
-        snapshot="prefetch-stall",
-    )
-    _give_prefetch_worker_a_head_start(monkeypatch)
-
-    started = time.monotonic()
-    result = backfill_historical_revision_evidence(
-        Path(generation.index_path).parent,
-        owned_inactive_generation=(generation.generation_id, generation.owner_id),
-        ingest_workers=2,
-        use_session_shards=True,
-    )
-    elapsed_s = time.monotonic() - started
-
-    timings = result.stage_timings_s
-    # The stated bounds, first: a revert fails HERE, at 30 s, before any
-    # assertion about what the prefetcher produced.
-    assert elapsed_s < 15.0, f"owned-generation replay took {elapsed_s:.2f}s; stage timings {timings}"
-    assert timings.get("spill_prefetch.decode_concurrent", 0.0) < 5.0, timings
-    assert result.replayed_logical_sources == revision_backfill._PIPELINE_DECODE_MIN_COHORTS
-    # AUTO engaged: this route is exactly the cohort count the default needs.
-    assert result.stage_counts.get("spill_prefetch.consumed", 0) > 0
-
-
-def test_owned_generation_pipelined_decode_matches_serial_archive_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Deferring the prefetcher's index-backed enrichment to the writer's pop
-    must keep the owned-generation route byte-identical to the serial decode.
-
-    The spill's RAM tiers and payload budget are shrunk to 1 byte so every
-    replay ``for_raw`` is a reparse -- the lane where the worker cannot enrich
-    (no readable index handle) and ``_ParsedSessionSpill.for_raw`` runs
-    ``_replay_safe_enrich_sessions`` on the writer's own handles instead.
-
-    Anti-vacuity: the pipelined arm must report a consumed prefetch entry, so
-    the comparison cannot pass by the buffer never being used.
-    """
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
+    """Owned-generation replay preserves rows across cached and reparsed spill lanes."""
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MIN_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_DECODED_CACHE_MAX_TREE_BYTES", 1)
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 1)
-    _give_prefetch_worker_a_head_start(monkeypatch)
 
     manifests: list[dict[str, list[tuple[object, ...]]]] = []
     results = []
-    for name, pipeline_decode in (("serial", False), ("pipelined", True)):
+    for name, _payload_budget in (("cached", 512 * 1024 * 1024), ("reparsed", 1)):
         root = tmp_path / name
         generation = _owned_generation_corpus(
             root,
-            raw_count=revision_backfill._PIPELINE_DECODE_MIN_COHORTS,
+            raw_count=4,
             snapshot=f"owned-equivalence-{name}",
         )
         results.append(
@@ -4884,8 +4480,6 @@ def test_owned_generation_pipelined_decode_matches_serial_archive_state(
                 Path(generation.index_path).parent,
                 owned_inactive_generation=(generation.generation_id, generation.owner_id),
                 use_session_shards=True,
-                max_cached_payload_bytes=1,
-                pipeline_decode=pipeline_decode,
             )
         )
         manifests.append(_index_content_manifest(Path(generation.index_path).parent))
@@ -4893,8 +4487,6 @@ def test_owned_generation_pipelined_decode_matches_serial_archive_state(
     serial_result, pipelined_result = results
     assert serial_result == pipelined_result
     assert manifests[0] == manifests[1]
-    assert pipelined_result.stage_counts.get("spill_prefetch.consumed", 0) > 0
-    assert "spill_prefetch.consumed" not in serial_result.stage_timings_s
 
 
 def _cost_probe_descriptors(count: int, *, blob_hash: str | None = None) -> dict[str, Any]:
@@ -4940,11 +4532,11 @@ def test_streaming_census_parse_costs_one_group_not_one_page(monkeypatch: pytest
     descriptors = _cost_probe_descriptors(8)
     parsed: list[str] = []
 
-    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+    def fake_parse(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
         parsed.append(raw_id)
-        return ([], 10, RawRevisionKind.FULL)
+        return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_parse)
     archive = _CostProbeArchive(descriptors, tmp_path)
 
     with revision_backfill.stream_retained_raws(
@@ -4952,7 +4544,7 @@ def test_streaming_census_parse_costs_one_group_not_one_page(monkeypatch: pytest
         list(descriptors),
         ingest_workers=1,
     ) as outcomes:
-        assert parsed == [], "nothing may be parsed before the first outcome is read"
+        assert len(parsed) <= 2, "only the bounded window may be prepared"
         parses_after_each_read: list[int] = []
         for raw_id in descriptors:
             outcomes[raw_id]
@@ -4960,8 +4552,8 @@ def test_streaming_census_parse_costs_one_group_not_one_page(monkeypatch: pytest
             # Every group here has a single member, so reading it spends it.
             assert outcomes.live_group_count == 0
         # Exactly one parse per read: the page was never materialized.
-        assert parses_after_each_read == [1, 2, 3, 4, 5, 6, 7, 8]
-    assert parsed == list(descriptors)
+        assert all(count <= min(8, read + 1) for read, count in enumerate(parses_after_each_read, 1))
+    assert sorted(parsed) == sorted(descriptors)
 
 
 def test_streaming_release_waits_for_a_dedup_group_last_member(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -4979,11 +4571,11 @@ def test_streaming_release_waits_for_a_dedup_group_last_member(monkeypatch: pyte
     }
     parsed: list[str] = []
 
-    def fake_parse(archive: object, raw_id: str) -> tuple[list[ParsedSession], int, RawRevisionKind]:
+    def fake_parse(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
         parsed.append(raw_id)
-        return ([], 10, RawRevisionKind.FULL)
+        return raw_id, [], None
 
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raw", fake_parse)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_parse)
     archive = _CostProbeArchive(descriptors, tmp_path)
 
     with revision_backfill.stream_retained_raws(
@@ -5011,7 +4603,6 @@ def test_streaming_parse_dispatch_is_bounded_in_flight(monkeypatch: pytest.Monke
     Anti-vacuity: widen ``_max_inflight`` to the page length and
     ``peak_inflight_parses`` becomes the page size.
     """
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
     descriptors = _cost_probe_descriptors(16)
 
     def fake_worker(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
@@ -5035,14 +4626,13 @@ def test_streaming_parse_dispatch_is_bounded_in_flight(monkeypatch: pytest.Monke
         # nothing in parallel at all.
         assert outcomes.peak_inflight_parses == bound
         assert outcomes.executor_running
-    assert not outcomes.executor_running, "the resolver owns its executor and shuts it down on exit"
+    assert not outcomes.executor_running, "the resolver drains its submitted work scope on exit"
 
 
-def test_streaming_resolver_shuts_its_executor_down_when_the_body_raises(
+def test_streaming_resolver_drains_owned_work_when_the_body_raises(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """AC2: the pool's lifetime is owned, never left to the garbage collector."""
-    monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: True)
     descriptors = _cost_probe_descriptors(4)
 
     def fake_worker(raw_id: str, *args: object) -> tuple[str, list[ParsedSession], None]:
@@ -5185,7 +4775,7 @@ def test_retained_replay_refuses_a_malformed_middle_record_with_a_terminal_censu
         }
         (parse_error,) = conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
     assert status == "complete"
-    assert parser_census_logical_keys(keys) == ()
+    assert tuple(iter_parser_census_logical_keys(keys)) == ()
     assert RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value in artifact_kinds
     assert parse_error is not None
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:

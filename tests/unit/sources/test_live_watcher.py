@@ -1018,7 +1018,6 @@ def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
 
 
 def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
     monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
     records = [
         RawSessionRecord(
@@ -1043,7 +1042,6 @@ def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.Mo
 
 
 def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 16)
     monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
     records = [
         RawSessionRecord(
@@ -1056,7 +1054,9 @@ def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.Monke
         for index in range(300)
     ]
 
-    assert _full_ingest_worker_count(records) == 4
+    from polylogue.core.compute import compute_window_length
+
+    assert _full_ingest_worker_count(records) == compute_window_length(len(records), 4)
 
 
 @pytest.mark.asyncio
@@ -3400,7 +3400,7 @@ def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path
     selected, deferred = watcher.classify_ingest_candidates([path])
     assert selected == (path,)
     assert deferred == ()
-    asyncio.run(watcher._ingest_files(selected))
+    asyncio.run(watcher._ingest_files(list(selected)))
 
     after = path.stat()
     assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
@@ -4292,10 +4292,7 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
             acquired_at_ms=1,
         )
         archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
+            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
         archive.apply_raw_membership_classification(
             "codex-session:decided-unresolved",
@@ -4383,7 +4380,7 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
         parsed = {materialized: session("m0"), decided: session("m0", "m1")}
         for raw_id, parsed_session in parsed.items():
             archive.replace_raw_membership_census(
-                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1
+                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
         archive.apply_raw_membership_classification(
             "codex-session:newest-outcome",

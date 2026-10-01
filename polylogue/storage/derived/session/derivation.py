@@ -914,3 +914,6 @@ class SessionProfileReplacement:
     generation_binding: str | None = None
     demand_revision: int = 0
     empty: bool = False
+
+    def close(self) -> None:
+        """The prepared insight record values own no physical resources."""

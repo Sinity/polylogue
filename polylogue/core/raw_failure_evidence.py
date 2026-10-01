@@ -99,6 +99,17 @@ RAW_FAILURE_VALIDATION_FAILURE_KINDS = frozenset(
 )
 
 
+class RetainedRawDecodeRefusalError(ValueError):
+    """Current durable decode evidence refuses this retained input permanently."""
+
+    def __init__(self, raw_id: str, kind: RawFailureEvidenceKind, diagnostic: str) -> None:
+        if kind.value not in RAW_FAILURE_VALIDATION_FAILURE_KINDS:
+            raise ValueError("retained decode refusal requires terminal decode evidence")
+        self.raw_id = raw_id
+        self.kind = kind
+        super().__init__(diagnostic)
+
+
 def raw_failure_classification_reason(
     *,
     diagnostic: str | None,
@@ -271,6 +282,7 @@ __all__ = [
     "RAW_FAILURE_TRUSTED_PROVENANCE",
     "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
     "RawFailureEvidenceKind",
+    "RetainedRawDecodeRefusalError",
     "has_trusted_raw_failure_provenance",
     "terminal_carrier_overwrite_predicate",
     "raw_failure_classification_reason",

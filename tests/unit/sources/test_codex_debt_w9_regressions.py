@@ -105,7 +105,7 @@ def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
         "is_starter_project": False,
     }
     assert dispatch.detect_provider(payload) is Provider.CLAUDE_AI
-    provider, _evidence = revision_backfill._detect_unknown_retained_provider(
+    provider, _evidence = revision_backfill._resolved_retained_provider(
         BytesIO(json.dumps(payload).encode()), "projects/w9-project.json"
     )
     assert provider is Provider.CLAUDE_AI

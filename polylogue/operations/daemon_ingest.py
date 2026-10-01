@@ -1650,7 +1650,7 @@ async def redrive_accepted_ingests(
     be driven at all terminalizes as failed. An owner shutdown leaves the run
     for the next owner. ``stop_requested`` receives the request id.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.operations.audit import AuditRepository
 
     # Claims are durable rows; the execution (its scratch state file and blob
@@ -1857,7 +1857,7 @@ async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
     """Accept immutable input before any raw admission, then settle each phase."""
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     started = monotonic()
     request = validate_execution_request(request, context)

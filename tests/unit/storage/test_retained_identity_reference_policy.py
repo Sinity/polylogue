@@ -11,10 +11,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.ids import message_content_identity
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
-from polylogue.sources.revision_backfill import (
-    backfill_historical_revision_evidence,
-    census_historical_revision_evidence,
-)
 from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -23,6 +19,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import write_index_session
 from tests.infra.retained_identity_payloads import IDENTITY_REFERENCE_CASES, identity_export, identity_export_bytes
+from tests.infra.retained_replay import replay_retained_components
 
 
 @pytest.mark.parametrize(
@@ -85,29 +82,20 @@ def test_retained_replay_and_promotion_preserve_or_refuse_prior_annotated_identi
                 owner_session_id=session_id,
             )
             archive.commit()
-        # Source census is independently committed before the owned inactive
-        # Index replay. It never borrows the candidate as durable authority.
-        census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
-        with closing(sqlite3.connect(tmp_path / "source.db")) as source:
-            census = source.execute(
-                "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
-            ).fetchone()
-            assert census == (raw_authority_parser_fingerprint(), "complete")
-
     generations = IndexGenerationStore.for_archive_root(tmp_path)
     before = Path(generations.active_pointer).resolve(strict=True)
-    candidate = generations.create(owner_id="identity-replay-owner", source_snapshot=source_revision_snapshot(tmp_path))
-    candidate_root = Path(candidate.index_path).parent
-    result = backfill_historical_revision_evidence(
-        candidate_root,
-        selected_raw_ids=[raw_id],
-        owned_inactive_generation=(candidate.generation_id, candidate.owner_id),
-        replay_commit_batch_size=2,
-    )
+    with write_lease("test.retained-identity-candidate", archive_root=tmp_path):
+        candidate = generations.create(
+            owner_id="identity-replay-owner", source_snapshot=source_revision_snapshot(tmp_path)
+        )
+    result = replay_retained_components(tmp_path, selected_raw_ids=[raw_id], owned_generation=candidate)
     assert result.replayed_logical_sources == 1
-    with ArchiveStore.open_owned_inactive_generation(
-        candidate_root, generation_id=candidate.generation_id, owner_id=candidate.owner_id
-    ) as archive:
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        census = source.execute(
+            "SELECT parser_fingerprint, status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        assert census == (raw_authority_parser_fingerprint(), "complete")
+    with ArchiveStore.open_existing(tmp_path, read_only=True, index_path=Path(candidate.index_path)) as archive:
         new_message = str(
             archive._conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[0]
         )

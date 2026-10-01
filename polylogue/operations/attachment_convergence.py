@@ -574,7 +574,9 @@ def converge_drive_attachments(
                 for item in acquired:
                     by_raw_id.setdefault(str(item.ref.raw_id), []).append(item.ref)
                 for raw_id, refs in by_raw_id.items():
-                    write_source_blob_refs(source_conn, raw_id, tuple(refs))
+                    write_source_blob_refs(source_conn, raw_id, lambda refs=tuple(refs): iter(refs))
+            if acquired:
+                source_conn.commit()
             acquired_rows = [(item.attachment_id, item.blob_hash, item.byte_count) for item in acquired]
             if acquired_rows or rebound_rows:
                 with index_conn:

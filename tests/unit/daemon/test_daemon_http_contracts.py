@@ -44,7 +44,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon.execution import BoundedComputeAdapter, DaemonBackpressureError
+from polylogue.core.compute import BoundedComputeAdapter, DaemonBackpressureError
 from polylogue.operations import build_declared_operation_catalog, build_runtime_operation_catalog
 
 if TYPE_CHECKING:

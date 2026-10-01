@@ -28,11 +28,22 @@ The SSE replay ledger `daemon_events` is a resume buffer in the disposable ops t
 
 Each ended run gets one termination receipt, reconciled by the next start as its own `termination_reconciliation` service: the run's lifecycle row records its host identity (pid, boot id, service-manager invocation, cgroup instance and `memory.events` baseline), and the receipt classifies the end from the stop marker, the manager's unit result, kernel and `systemd-oomd` kill records naming that pid or cgroup, the cgroup counters and the boot id, citing each source it used and naming each it could not (`polylogue/operations/daemon_termination.py`: `classify_termination`). `lifecycle_status` carries the newest receipt and the runs still awaiting one.
 
-Correlation crosses the compute boundary explicitly. Neither `threading.Thread`
-nor `ThreadPoolExecutor.submit` copies contextvars, so both derivation-kernel
-submits wrap their `partial` in `propagate(...)`; without it the work runs on a
-pool thread with an empty context and its events lose the run's correlation id
-(`polylogue/daemon/convergence.py:176-190`; `polylogue/daemon/convergence.py:280-284`; `polylogue/logging.py:441-445`).
+Correlation crosses the compute boundary explicitly. The shared bounded
+compute adapter captures the current submitter's context for each physical
+call and restores it on return, failure and cancellation. A reused worker
+therefore reports its current operation, regardless of the interpreter's
+`thread_inherit_context` default. Nested pure work borrows the same physical
+reservation in an isolated copy of that context. Writer capability remains
+subject to exact owner task, thread and explicit grant checks; copied logging
+correlation does not authorize a writer (`core/compute.py`; `logging.py`;
+`storage/sqlite/write_lease.py`).
+
+Ordinary machine exchanges reserve their actual received request-body bytes
+in the existing compute admission budget. Direct calls count canonical encoded
+request bytes with the shared streaming encoder. The reservation lasts until
+physical completion or queued cancellation. This is wire-byte accounting;
+decoded request heap, ingress peak memory and read/result memory require their
+own measurements and ownership proof (`daemon/uds.py`; `daemon/operation_runtime.py`).
 
 Read this as a statement about the daemon's convergence path, not about the
 tree. The ratchet is a `devtools gate patterns` rule, `legacy-stdlib-logger`,
@@ -52,7 +63,7 @@ detecting those call sites needs a second rule with its own baseline; see
 
 ## Domain derivations
 
-The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Process-local continuation state is disposable. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
+The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
 
 Raw observations use the same owner for admitted raw-to-logical membership. FTS retains canonical triggers, identity membership and the FTS refresh guard; per-session replacement joins exact canonical session membership. Its selected global orphan partition runs at low cadence and streams its binding, but still requires archive-wide scan and transaction work (`polylogue/daemon/raw_observation_owner.py:1`; `polylogue/storage/fts/derivation.py:660-690`; `polylogue/operations/fts_derivation.py:1`).
 
@@ -64,7 +75,7 @@ Session counters share one thirteen-measure declaration. Canonical writes recomp
 
 The generic stage engine remains for optional Sinex publication, raw-authority cache warming, attachment acquisition, Claude workflow, delegation evidence and standing queries. It still has path/session callbacks, barriers and stage state. Removing these requires moving each surviving product responsibility to its owner; the domain adoption does not establish complete stage retirement (`polylogue/daemon/convergence_stages.py:424-470`; `polylogue/daemon/convergence.py:733-764`).
 
-The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:690-697`; `polylogue/daemon/convergence.py:760-771`; `polylogue/core/stage_admission.py:59-70`). The live route no longer calls the stage pass at all: page admission takes no writer hold of its own, and the daemon's own stage walk owns the generic pass (`polylogue/daemon/convergence.py:704-712`).
+The stage walk itself runs off the writer lease. Each stage declares how it reaches the writer: `bridged` means it computes, downloads and drains outside admission and brackets only its short publication with `admit_stage_write`; `whole_execute` is the named residual for a stage that has not split compute from publication yet, and the engine holds the writer across its whole `execute`. Read the field, not the caller's control flow, to know which a stage is (`polylogue/daemon/convergence.py:690-697`; `polylogue/daemon/convergence.py:760-771`; `polylogue/core/stage_admission.py:59-70`). Live append and full ingest still invoke the generic stage pass through `_converge_paths`; the daemon also runs it for owed recovery. Successful debt settlement must name the actual evaluated subject and stage, rather than infer session completion from a source path (`polylogue/sources/live/batch.py`, `_converge_paths`).
 
 `convergence_debt` remains disposable retry state for those surviving stage callers. The generic drain excludes domain-owned stages through `_OWNED_DEBT_STAGES` (`polylogue/daemon/cli.py:143-151`) and filters them before retry (`polylogue/daemon/cli.py:1728-1734`). FTS, embeddings, raw parsing and session profiles therefore do not use the generic stage rows as publication authority. Raw retention has its own live-ingest retry owner (`polylogue/daemon/cli.py:137-142`).
 
@@ -81,6 +92,8 @@ Hook capture is two ordinary steps, not a route of its own. Producers append one
 `FairIntakeDispatcher` is the only intake authority: it discovers a bounded page per class, plans it against the class's byte share, and hands the whole page to one adapter call, which runs one `ingest_files` batch under one writer hold and one embedding/session-profile convergence pass for the page, both off that hold (`polylogue/daemon/intake.py:368-393`; `polylogue/operations/intake_adapters.py:488-493`; `polylogue/operations/intake_adapters.py:601-608`; `polylogue/sources/live/watcher.py:1246-1254`). Outcomes stay per item, read back from `LiveBatchMetrics` by path, so the deficit, retry and isolation accounting is unchanged by the batching. The watcher itself owns no queue: a filesystem event bumps an intake revision and sets the dispatcher's wakeup (`polylogue/sources/live/watcher.py:540-545`).
 
 Fair intake applies a process-local cooldown to repeated retryable failures. A stale cursor refusal remains retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:456-460`; `polylogue/daemon/intake.py:430-434`; `polylogue/operations/intake_adapters.py:514-522`).
+
+A current retained decode refusal remains a failed derivation outcome. Its exact raw coordinate, parser census, support status and trusted failure carrier are validated by the canonical raw adapter. A later deliberate pass reports that same typed refusal from metadata without parsing the bytes again. Fair intake excludes the exact terminal item and discovery leaves it out of retry backlog; infrastructure failures and unavailable exact-key outcomes remain retryable (`polylogue/storage/derived/raw.py`, `polylogue/daemon/derivation.py`, `polylogue/operations/intake_adapters.py`).
 
 ## Status evidence and diagnostic privacy
 

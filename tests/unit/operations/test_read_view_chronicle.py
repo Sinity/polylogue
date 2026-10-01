@@ -187,6 +187,13 @@ def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[s
     assert read_is_archive_scan("cli.query", {"params": params}) is False
 
 
+@pytest.mark.parametrize("mode", ["count", "stats", "stats_by"])
+def test_aggregate_selection_uses_scan_admission_even_with_small_page_limit(mode: str) -> None:
+    from polylogue.operations.daemon_reads import read_is_archive_scan
+
+    assert read_is_archive_scan("query.aggregate", {"mode": mode, "params": {"limit": 1}})
+
+
 def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
     """A count-sorted chronicle page reads every candidate once, not twice.
 

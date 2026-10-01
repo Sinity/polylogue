@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal, cast
@@ -78,7 +78,7 @@ def _make_raw_record(
     # Write content to blob store
     blob_store = get_blob_store()
     actual_raw_id, blob_size = blob_store.write_from_bytes(content)
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
 
     return RawSessionRecord(
         raw_id=actual_raw_id,  # Use the actual hash as raw_id

@@ -7,6 +7,7 @@ from typing import IO, BinaryIO
 
 import ijson
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.logging import get_logger
 from polylogue.sources.decoder_json import (
     JsonlDecodeError,
@@ -35,14 +36,16 @@ def _iter_json_stream(
     *,
     fail_on_decode_error: bool = False,
 ) -> Iterable[JsonValue]:
-    yield from iter_json_stream_with(
+    for value in iter_json_stream_with(
         logger,
         ijson,
         handle,
         path_name,
         unpack_lists,
         fail_on_decode_error=fail_on_decode_error,
-    )
+    ):
+        check_compute_cancelled()
+        yield value
 
 
 __all__ = [

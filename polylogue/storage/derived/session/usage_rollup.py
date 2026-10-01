@@ -407,6 +407,9 @@ class SessionUsageRollupReplacement:
     session_present: bool
     generation_binding: str | None = None
 
+    def close(self) -> None:
+        """The rollup binding values own no physical resources."""
+
     @property
     def payload(self) -> str:
         return self.input_binding

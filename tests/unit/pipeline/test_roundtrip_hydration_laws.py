@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.synthetic.core import SyntheticCorpus
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.pipeline_roundtrip import parse_payload_roundtrip, write_and_hydrate
 from tests.infra.storage_records import db_setup
 
@@ -171,7 +172,6 @@ class TestIdempotentReimport:
         db_path = db_setup(workspace_env)
 
         from polylogue.storage.sqlite.connection import open_connection
-        from tests.infra.index_writer import write_fixture_index_session
 
         with open_connection(db_path) as conn:
             result = parse_payload_roundtrip(source_name, raw_bytes, unique_id)

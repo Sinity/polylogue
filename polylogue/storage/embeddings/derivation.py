@@ -109,6 +109,9 @@ class EmbeddingMessageReplacement:
     vector: list[float] | None = None
     empty: bool = False
 
+    def close(self) -> None:
+        """The computed vector values own no physical resources."""
+
 
 _REQUIRED_KEY_PREFIX = "message:"
 _EXCESS_KEY_PREFIX = "orphan:"

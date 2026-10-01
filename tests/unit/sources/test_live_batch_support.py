@@ -3442,8 +3442,8 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     }
 
 
-def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
-    """Malformed journals remain typed evidence when decoding cannot recover them."""
+def test_append_malformed_workflow_journal_retains_failure_without_artifact_authority(tmp_path: Path) -> None:
+    """A filename cannot turn a complete corrupt record into artifact proof."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b'{"contentKey":"broken"\n'
@@ -3452,8 +3452,8 @@ def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp
 
     result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifacts = conn.execute(
             """
@@ -3461,20 +3461,21 @@ def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp
             FROM raw_artifacts
             """
         ).fetchall()
-    assert len(artifacts) == 1
-    assert [row[0] for row in artifacts] == ["workflow_journal"]
-    assert all(row[2] == 0 for row in artifacts)
-    assert all("OriginSpec" in row[1] for row in artifacts)
+        raw = conn.execute("SELECT parse_error, parsed_at_ms FROM raw_sessions").fetchone()
+    assert artifacts == []
+    assert raw is not None and raw[0] is not None and raw[1] is None
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path) -> None:
+@pytest.mark.parametrize("artifact_count", [65, 257])
+def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path, artifact_count: int) -> None:
     """Decoded session evidence bypasses path-only workflow-journal admission."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+        for index in range(artifact_count)
     ) + (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
@@ -3873,6 +3874,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                 foreign_sessions,
                 parser_fingerprint="foreign-quarantined-test",
                 censused_at_ms=1,
+                revision_authority=None,
             )
 
         path.write_text(json.dumps(capture([first_turn, acquired_turn])), encoding="utf-8")
@@ -7196,6 +7198,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
                 censused_at_ms=0,
                 detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                 retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
         store.commit()
         retired_siblings = store.raw_membership_retired_full_revision_siblings("chatgpt-export:shared")
@@ -7393,6 +7396,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
                 parser_fingerprint="test-parser",
                 censused_at_ms=10,
                 retire_full_revision_governance=True,
+                revision_authority=None,
             )
         archive.rollback()
 
@@ -7405,10 +7409,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
         # (without retiring anything) immediately before
         # ``_apply_membership_sessions`` is invoked.
         archive.replace_raw_membership_census(
-            raw_c,
-            [session_c],
-            parser_fingerprint="test-parser",
-            censused_at_ms=10,
+            raw_c, [session_c], parser_fingerprint="test-parser", censused_at_ms=10, revision_authority=None
         )
 
         with caplog.at_level("WARNING", logger="polylogue.sources.live.batch"):
@@ -7493,10 +7494,7 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
             acquired_at_ms=1,
         )
         archive.replace_raw_membership_census(
-            raw_id,
-            [session],
-            parser_fingerprint="test-parser",
-            censused_at_ms=1,
+            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
 
         # Census complete, classification never run: decision IS NULL. This
@@ -7919,6 +7917,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
             [legacy_session],
             parser_fingerprint="legacy-parser",
             censused_at_ms=1,
+            revision_authority=None,
         )
         archive.apply_raw_membership_classification(
             "chatgpt-export:parser-drift",
@@ -8169,6 +8168,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
                 [current_session],
                 parser_fingerprint="test-parser",
                 censused_at_ms=2,
+                revision_authority=None,
             )
     with sqlite3.connect(index_db) as conn:
         head_before = conn.execute(

@@ -15,16 +15,18 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Callable, Sequence
+import uuid
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from polylogue.core.enums import Origin, Provider
+import polylogue.storage.sqlite.agent_thread_state as agent_thread_state
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.parsers import codex_state
-from polylogue.storage.sqlite import agent_thread_state
-from polylogue.storage.sqlite.agent_thread_state import SpawnRecord, ThreadRecord, ThreadStateProvenance
+from polylogue.storage.sqlite.agent_thread_state import SpawnRecord, ThreadRecord
 
 logger = get_logger(__name__)
 
@@ -44,17 +46,6 @@ def thread_state_member_filenames() -> tuple[str, ...]:
         for member in capability.members
         if member.kind == THREAD_STATE_KIND and member.disposition != "out-of-scope"
     )
-
-
-@dataclass(frozen=True, slots=True)
-class RetainedStateExport:
-    """The newest retained state export for one Codex install."""
-
-    raw_id: str
-    blob_hash: str
-    source_scope: str
-    observed_at_ms: int
-    observation_order: int
 
 
 def codex_state_source_scope(source_path: str) -> str:
@@ -93,7 +84,7 @@ _RECEIPT = """
 
 
 def retained_export_order(source_conn: sqlite3.Connection | None) -> agent_thread_state.ExportOrder:
-    """Rank retained exports by raw id in durable receipt order, as :func:`latest_retained_state_exports` does.
+    """Rank retained exports by raw id in durable receipt order.
 
     Without a source tier no export is ranked, so an older export arriving
     after a newer one only adds the rows the graph does not yet hold.
@@ -115,64 +106,30 @@ def retained_export_order(source_conn: sqlite3.Connection | None) -> agent_threa
     return order
 
 
-def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[RetainedStateExport, ...]:
-    """Return the newest retained state export per Codex-install scope.
+@dataclass(frozen=True, slots=True)
+class _ThreadGraphRecords:
+    records: Iterable[codex_state.CodexThreadRecord]
 
-    Ordered exactly as ``raw_revision_observation_order`` orders one raw --
-    newest ``raw_payload`` receipt first -- so a reconciliation pass and a
-    per-export apply never disagree about which observation is current. A live
-    database that went A -> B -> A reuses A's content-derived raw id, so the
-    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority. A raw
-    with no receipt ranks oldest (order 0), as in ``raw_receipt_order_sql``.
-
-    Scans the durable tier, so callers reconcile once per pass rather than
-    once per session.
-    """
-    filenames = thread_state_member_filenames()
-    if not filenames:
-        return ()
-    clauses = " OR ".join("source_path = ? OR source_path LIKE ?" for _ in filenames)
-    parameters: list[str] = [Origin.CODEX_SESSION.value]
-    for filename in filenames:
-        parameters.extend((filename, f"%/{filename}"))
-    try:
-        rows = source_conn.execute(
-            f"""
-            SELECT
-                r.raw_id,
-                lower(hex(r.blob_hash)),
-                r.source_path,
-                COALESCE(({_RECEIPT.format(column="acquired_at_ms")}), r.acquired_at_ms),
-                COALESCE(({_RECEIPT.format(column="rowid")}), 0)
-            FROM raw_sessions AS r
-            WHERE r.origin = ? AND r.parse_error IS NULL AND ({clauses})
-            ORDER BY 5 DESC, r.raw_id DESC
-            """,
-            parameters,
-        ).fetchall()
-    except sqlite3.Error as exc:
-        logger.debug("Failed to read the newest retained Codex state export: %s", exc)
-        return ()
-    newest: dict[str, RetainedStateExport] = {}
-    for raw_id, blob_hash, source_path, observed_at_ms, observation_order in rows:
-        source_scope = codex_state_source_scope(str(source_path))
-        if source_scope in newest:
-            continue
-        newest[source_scope] = RetainedStateExport(
-            str(raw_id), str(blob_hash), source_scope, int(observed_at_ms), int(observation_order)
-        )
-    return tuple(newest[scope] for scope in sorted(newest))
+    def __iter__(self) -> Iterator[ThreadRecord]:
+        for thread in self.records:
+            yield ThreadRecord(
+                thread_id=thread.thread_id,
+                title=thread.title or None,
+                occurred_at_ms=thread.updated_at_ms or thread.created_at_ms or None,
+            )
 
 
-#: Which retained export one scope's graph was computed from.
-ProjectionProvenance = ThreadStateProvenance
+@dataclass(frozen=True, slots=True)
+class _SpawnGraphRecords:
+    records: Iterable[codex_state.CodexSpawnEdge]
 
-
-def projection_provenance(
-    index_conn: sqlite3.Connection, *, source_scope: str | None = None
-) -> ProjectionProvenance | None:
-    """Return the current projection provenance, optionally for one scope."""
-    return agent_thread_state.read_provenance(index_conn, source_scope=source_scope)
+    def __iter__(self) -> Iterator[SpawnRecord]:
+        for edge in self.records:
+            yield SpawnRecord(
+                parent_thread_id=edge.parent_thread_id,
+                child_thread_id=edge.child_thread_id,
+                status=edge.status or "unknown",
+            )
 
 
 def write_thread_state_projection(
@@ -186,74 +143,89 @@ def write_thread_state_projection(
     source_scope: str = "",
     source_conn: sqlite3.Connection | None,
 ) -> bool:
-    """Reconcile one scope's work-evidence graph from one retained export.
-
-    The graph is the only index-tier home for this evidence; see
-    :mod:`polylogue.storage.sqlite.agent_thread_state` for the node and edge
-    shapes and for the supersession and receipt-order rules. ``source_conn``
-    is the durable tier that ranks retained exports and places each archived
-    child in its own install root.
-
-    A child session can already be archived when its spawn edge lands, so
-    every child whose projected parent changed has its parent edge re-decided
-    here; otherwise lineage would depend on which raw was applied first.
-    """
+    """Publish paged sealed state and re-decide changed children in bounded pages."""
     from polylogue.storage.sqlite.archive_tiers.write import rederive_codex_spawn_parent_links
 
-    # Only children this scope names, now or in a retained revision, can have
-    # their projected parent moved by rewriting this scope's graph: in this
-    # scope, and in the cross-scope agreement a scope-less child reads.
-    children = {child for _parent, child in agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)}
-    children.update(edge.child_thread_id for edge in snapshot.spawn_edges if edge.child_thread_id)
+    # This comparison belongs to the existing graph writer's TEMP schema.
+    # It holds no source handle and never escapes this publication window.
+    table = f"codex_projection_children_{uuid.uuid4().hex}"
+    index_conn.execute(f"CREATE TEMP TABLE {table} (child TEXT PRIMARY KEY, prior_scope TEXT, prior_any TEXT)")
+    primary: BaseException | None = None
+    try:
 
-    def projected_parents() -> tuple[dict[str, str], dict[str, str]]:
-        return (
-            agent_thread_state.read_spawn_parents(index_conn, children, source_scope=source_scope),
-            agent_thread_state.read_spawn_parents(index_conn, children),
+        def remember(child: str) -> None:
+            check_compute_cancelled()
+            if not child or index_conn.execute(f"SELECT 1 FROM {table} WHERE child = ?", (child,)).fetchone():
+                return
+            prior_scope = agent_thread_state.read_parent_thread_id(index_conn, child, source_scope=source_scope)
+            prior_any = agent_thread_state.read_parent_thread_id(index_conn, child)
+            index_conn.execute(f"INSERT INTO {table} VALUES (?, ?, ?)", (child, prior_scope, prior_any))
+
+        graph_id = agent_thread_state.thread_state_graph_id(source_scope)
+        after = ""
+        while True:
+            check_compute_cancelled()
+            rows = index_conn.execute(
+                "SELECT DISTINCT target_ref FROM work_evidence_edges WHERE graph_id = ? "
+                "AND edge_kind = 'invoked' AND target_ref > ? ORDER BY target_ref LIMIT 256",
+                (graph_id, after),
+            ).fetchall()
+            if not rows:
+                break
+            after = str(rows[-1][0])
+            for (target,) in rows:
+                remember(agent_thread_state.thread_id_from_context_ref(str(target)))
+        for edge in snapshot.spawn_edges:
+            remember(edge.child_thread_id)
+
+        written = agent_thread_state.write_thread_state_graph(
+            index_conn,
+            source_scope=source_scope,
+            threads=_ThreadGraphRecords(snapshot.threads),
+            spawn_edges=_SpawnGraphRecords(snapshot.spawn_edges),
+            raw_id=raw_id,
+            blob_hash=blob_hash,
+            observed_at_ms=observed_at_ms,
+            observation_order=observation_order,
+            export_order=retained_export_order(source_conn),
         )
-
-    before = projected_parents()
-    written = agent_thread_state.write_thread_state_graph(
-        index_conn,
-        source_scope=source_scope,
-        threads=[
-            ThreadRecord(
-                thread_id=thread.thread_id,
-                title=thread.title or None,
-                occurred_at_ms=thread.updated_at_ms or thread.created_at_ms or None,
-            )
-            for thread in snapshot.threads
-        ],
-        spawn_edges=[
-            SpawnRecord(
-                parent_thread_id=edge.parent_thread_id,
-                child_thread_id=edge.child_thread_id,
-                status=edge.status or "unknown",
-            )
-            for edge in snapshot.spawn_edges
-        ],
-        raw_id=raw_id,
-        blob_hash=blob_hash,
-        observed_at_ms=observed_at_ms,
-        observation_order=observation_order,
-        export_order=retained_export_order(source_conn),
-    )
-    if written:
-        after = projected_parents()
-        moved = {
-            child
-            for child in children
-            if any(prior.get(child) != current.get(child) for prior, current in zip(before, after, strict=True))
-        }
-        rederive_codex_spawn_parent_links(index_conn, moved, source_conn=source_conn)
-    return written
+        if written:
+            after = ""
+            while True:
+                check_compute_cancelled()
+                rows = index_conn.execute(
+                    f"SELECT child, prior_scope, prior_any FROM {table} WHERE child > ? ORDER BY child LIMIT 256",
+                    (after,),
+                ).fetchall()
+                if not rows:
+                    break
+                after = str(rows[-1][0])
+                moved = [
+                    str(child)
+                    for child, prior_scope, prior_any in rows
+                    if prior_scope
+                    != agent_thread_state.read_parent_thread_id(index_conn, str(child), source_scope=source_scope)
+                    or prior_any != agent_thread_state.read_parent_thread_id(index_conn, str(child))
+                ]
+                rederive_codex_spawn_parent_links(index_conn, moved, source_conn=source_conn)
+        return written
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            index_conn.execute(f"DROP TABLE {table}")
+        except BaseException as cleanup:
+            if primary is None:
+                raise
+            primary.add_note(f"thread-state comparison cleanup failed: {cleanup!r}")
 
 
-def apply_retained_state_export(
+def apply_prepared_state_snapshot(
     archive: Any,
     raw_id: str,
     *,
-    export_path: Path,
+    snapshot: codex_state.CodexStateSnapshot,
     blob_hash: str,
     observed_at_ms: int,
     source_path: str,
@@ -264,15 +236,12 @@ def apply_retained_state_export(
     no index handle at all, and that is not a failure: the export is durable,
     so the next pass with a derived tier recomputes from it.
 
-    The durable ``raw_payload`` receipt orders this observation, the same term
-    :func:`latest_retained_state_exports` reads, so the two routes never
-    disagree about which export is current. ``observed_at_ms`` stands in only
-    for a raw with no receipt row yet.
+    The newest durable ``raw_payload`` receipt orders this observation.
+    ``observed_at_ms`` stands in only for a raw with no receipt row yet.
     """
     index_conn = archive.index_connection
     if index_conn is None:
         return False
-    snapshot = codex_state.parse_codex_state_db(export_path, immutable=True)
     try:
         receipt_at_ms, receipt_order = archive.raw_revision_observation_order(raw_id)
     except KeyError:
@@ -287,56 +256,6 @@ def apply_retained_state_export(
         source_scope=codex_state_source_scope(source_path),
         source_conn=archive.source_connection,
     )
-
-
-def ensure_thread_state_projection(
-    index_conn: sqlite3.Connection,
-    source_conn: sqlite3.Connection,
-    *,
-    blob_path_for_hash: Callable[[str], Path | None],
-) -> bool:
-    """Reconcile the projection against the newest retained state export.
-
-    Replay applies raws in no particular order, so a session can be written
-    before the state export it describes. This derives the projection from
-    durable evidence instead of from replay order; it is a no-op once the
-    projection already names the newest export.
-    """
-    latest_exports = latest_retained_state_exports(source_conn)
-    if not latest_exports:
-        return False
-    changed = False
-    for latest in latest_exports:
-        current = projection_provenance(index_conn, source_scope=latest.source_scope)
-        if (
-            current is not None
-            and current.raw_id == latest.raw_id
-            and current.blob_hash == latest.blob_hash
-            and (current.observed_at_ms, current.observation_order) == (latest.observed_at_ms, latest.observation_order)
-        ):
-            continue
-        export_path = blob_path_for_hash(latest.blob_hash)
-        if export_path is None or not Path(export_path).is_file():
-            continue
-        try:
-            snapshot = codex_state.parse_codex_state_db(Path(export_path), immutable=True)
-        except sqlite3.Error as exc:
-            logger.warning("codex state: retained export %s is not readable as thread state: %s", latest.raw_id, exc)
-            continue
-        changed = (
-            write_thread_state_projection(
-                index_conn,
-                snapshot,
-                raw_id=latest.raw_id,
-                blob_hash=latest.blob_hash,
-                observed_at_ms=latest.observed_at_ms,
-                observation_order=latest.observation_order,
-                source_scope=latest.source_scope,
-                source_conn=source_conn,
-            )
-            or changed
-        )
-    return changed
 
 
 def read_thread_titles(
@@ -378,13 +297,8 @@ def read_parent_thread_id(
 
 __all__ = [
     "THREAD_STATE_KIND",
-    "ProjectionProvenance",
-    "RetainedStateExport",
-    "apply_retained_state_export",
+    "apply_prepared_state_snapshot",
     "codex_state_source_scope",
-    "ensure_thread_state_projection",
-    "latest_retained_state_exports",
-    "projection_provenance",
     "read_parent_thread_id",
     "read_spawn_edges",
     "read_thread_titles",

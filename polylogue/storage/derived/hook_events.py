@@ -85,6 +85,9 @@ class HookEventsReplacement:
     base_offset: int = 0
     empty: bool = False
 
+    def close(self) -> None:
+        """The captured event values own no physical resources."""
+
 
 def carrier_identity(
     source_path: str,

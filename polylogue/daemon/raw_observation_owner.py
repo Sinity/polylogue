@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import DaemonConverger, DerivationConvergenceOwner
 from polylogue.daemon.derivation import Budget, DerivationReport
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.operations.raw_observation_derivation import (
     RAW_OBSERVATION_DOMAIN,

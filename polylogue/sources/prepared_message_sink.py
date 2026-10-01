@@ -281,6 +281,7 @@ def _message_json(value: ParsedMessage) -> str:
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
+    payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     return require_storable_string(_text_json(payload), kind="serialized event")
 
 
@@ -290,6 +291,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     payload["precomputed_blob"] = value.precomputed_blob
+    payload["prepared_carrier_key"] = value.prepared_carrier_key
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
@@ -305,9 +307,10 @@ def _attachment_from_json(encoded: str) -> ParsedAttachment:
 
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
-    return _attachment_from_json(encoded).model_copy(
-        update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
-    )
+    attachment = _attachment_from_json(encoded)
+    if attachment.prepared_carrier_key is not None:
+        return attachment
+    return attachment.model_copy(update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)})
 
 
 # The envelope's pointer line, and the bare path as it also appears inside the
@@ -1421,6 +1424,7 @@ class SqliteMessageStore:
             # The schema is created inside the store's one transaction: as separate
             # autocommit statements each CREATE paid its own journal and fsync, per
             # prepared artifact, before any row was spooled.
+            self.conn.execute("PRAGMA temp_store = FILE")
             self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute(
                 "CREATE TABLE prepared_message (session_ordinal INTEGER NOT NULL, message_ordinal INTEGER NOT NULL, message_json TEXT NOT NULL, provider_id TEXT, parent_id TEXT, active_leaf INTEGER NOT NULL, PRIMARY KEY (session_ordinal, message_ordinal)) WITHOUT ROWID"

@@ -17,9 +17,9 @@ from functools import lru_cache
 from importlib import resources
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
-from polylogue.storage.sqlite import migration_runner as _migration_runner
+import polylogue.storage.sqlite.migration_runner as _migration_runner
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_FORMAT_FLOOR_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
@@ -1366,20 +1366,28 @@ def _probe_source_generation_census(census: Callable[..., object]) -> str:
 
 
 def _probe_material_admission(admit: Callable[..., object]) -> str:
-    """Exercise claim-only material admission against the canonical source schema."""
-    with _runtime_probe_source_connection() as probe:
-        observation = admit(
-            probe,
-            blob_store=cast(Any, None),  # claim-only admission publishes no bytes
+    """Exercise prepared claim admission against the canonical source schema."""
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.materials import prepare_material
+
+    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+        root = Path(directory)
+        prepared = prepare_material(
+            blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
             source_uri="https://durable-change-train.invalid/material-probe",
             referrer_ref="session:durable-change-train-probe",
-            observed_at_ms=1_780_000_000_000,
         )
-        material_id = getattr(observation, "material_id", None)
-        row = probe.execute(
-            "SELECT acquisition_state FROM material_observations WHERE material_id = ?",
-            (material_id,),
-        ).fetchone()
+        with _runtime_probe_source_connection() as probe:
+            observation = admit(
+                probe,
+                prepared=prepared,
+                observed_at_ms=1_780_000_000_000,
+            )
+            material_id = getattr(observation, "material_id", None)
+            row = probe.execute(
+                "SELECT acquisition_state FROM material_observations WHERE material_id = ?",
+                (material_id,),
+            ).fetchone()
     if material_id is None or row is None or row[0] != "claimed":
         raise DurableChangeTrainError("material admission probe did not persist a claimed observation")
     return f"admitted probe material {str(material_id)[:12]} as a claimed observation"
@@ -1387,17 +1395,23 @@ def _probe_material_admission(admit: Callable[..., object]) -> str:
 
 def _probe_material_read(get: Callable[..., object]) -> str:
     """Exercise material read-back against the canonical source schema."""
-    from polylogue.storage.materials import admit_material
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+    from polylogue.storage.materials import admit_material, prepare_material
 
-    with _runtime_probe_source_connection() as probe:
-        observation = admit_material(
-            probe,
-            blob_store=cast(Any, None),
+    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+        root = Path(directory)
+        prepared = prepare_material(
+            blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
             source_uri="https://durable-change-train.invalid/material-read-probe",
             referrer_ref="session:durable-change-train-read-probe",
-            observed_at_ms=1_780_000_000_000,
         )
-        loaded = get(probe, observation.material_id)
+        with _runtime_probe_source_connection() as probe:
+            observation = admit_material(
+                probe,
+                prepared=prepared,
+                observed_at_ms=1_780_000_000_000,
+            )
+            loaded = get(probe, observation.material_id)
     if loaded is None or getattr(loaded, "source_uri", None) != observation.source_uri:
         raise DurableChangeTrainError("material read probe did not return the admitted observation")
     return f"read back probe material {observation.material_id[:12]}"

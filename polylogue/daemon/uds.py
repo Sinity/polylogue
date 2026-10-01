@@ -28,7 +28,7 @@ from polylogue.operations.daemon_protocol import (
 from polylogue.operations.mutation_transaction import MutationPrincipal
 
 if TYPE_CHECKING:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
@@ -210,7 +210,11 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
 
         with observe_peer_disconnect(self.connection) as disconnected:
             envelope = self.server.operation_runtime.call(
-                request, principal, started_at=started, client_disconnect=disconnected
+                request,
+                principal,
+                started_at=started,
+                client_disconnect=disconnected,
+                request_body_bytes=len(body),
             )
         outcome = envelope.get("outcome")
         status = 202 if outcome in {"accepted", "running", "indeterminate"} else 200

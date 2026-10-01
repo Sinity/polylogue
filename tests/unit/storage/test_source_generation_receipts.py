@@ -13,6 +13,7 @@ from polylogue.operations.daemon_ingest import _spool_source_receipt
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import (
     SourceGenerationBlocker,
+    _raw_receipt,
     source_generation_receipt_page,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -565,3 +566,63 @@ def test_receipt_cancellation_preserves_source_snapshot_and_settles_private_spoo
     assert not retained_native_sql_owners_for_lifetime(path)
     assert source.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
     unlink_spool(path)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "UPDATE raw_sessions SET revision_authority='quarantined' WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET logical_source_key='codex:other-session' WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET source_index=-1 WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET predecessor_raw_id='raw-2' WHERE raw_id='raw-2'",
+        "UPDATE raw_sessions SET predecessor_raw_id=NULL WHERE raw_id='raw-2'",
+        "UPDATE raw_sessions SET baseline_raw_id='raw-2' WHERE raw_id='raw-2'",
+    ],
+    ids=[
+        "exact",
+        "quarantined-baseline",
+        "different-session",
+        "negative-baseline",
+        "cycle",
+        "missing-predecessor",
+        "wrong-baseline",
+    ],
+)
+def test_byte_fragment_receipt_requires_the_exact_durable_baseline_chain(corruption: str | None) -> None:
+    """A failed fragment census proves completion only with its complete BYTE_PROVEN chain."""
+    source, index, _item = _connections()
+    try:
+        source.execute("UPDATE raw_sessions SET revision_authority='byte_proven' WHERE raw_id='raw-1'")
+        source.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                logical_source_key, revision_kind, source_revision, acquisition_generation,
+                revision_authority, predecessor_raw_id, baseline_raw_id
+            ) VALUES ('raw-2', 'codex-session', '/synthetic/export.json', -1, ?, 1, 2,
+                      'codex:session-1', 'append', 'revision-2', 2, 'byte_proven', 'raw-1', 'raw-1')
+            """,
+            (b"s" * 32,),
+        )
+        source.execute(
+            "INSERT INTO raw_authority_parser_census(raw_id, parser_fingerprint, status, logical_keys_json, detail) "
+            "VALUES ('raw-2', ?, 'complete', '[\"codex-session:session-1\"]', '')",
+            (raw_authority_parser_fingerprint(),),
+        )
+        source.execute(
+            "INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, "
+            "censused_at_ms, detail, revision_authority) VALUES ('raw-2', ?, 'failed', 0, 2, '', 'byte_proven')",
+            (raw_authority_parser_fingerprint(),),
+        )
+        if corruption is not None:
+            source.execute(corruption)
+        with _raw_receipt(source, index, "raw-2", check_stop=None) as receipt:
+            assert receipt is not None
+            assert receipt.parser_complete is (corruption is None)
+            assert receipt.parser_blockers == (
+                () if corruption is None else (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
+            )
+    finally:
+        source.close()
+        index.close()

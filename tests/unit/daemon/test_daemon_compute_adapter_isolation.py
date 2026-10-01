@@ -1,9 +1,9 @@
 """The shared daemon compute adapter must not survive its test.
 
-``polylogue.daemon.execution._SHARED_COMPUTE_ADAPTER`` is a process-global
+``polylogue.core.compute._SHARED_COMPUTE_ADAPTER`` is a process-global
 published once by whichever daemon owns an API server
-(``publish_daemon_compute_adapter(api_server.execution_kernel)``) and read by
-every lease-free background derivation through ``daemon_compute_adapter()``.
+(``publish_compute_adapter(api_server.execution_kernel)``) and read by
+every lease-free background derivation through ``compute_adapter()``.
 
 Process-lifetime publication is correct for a real daemon, whose adapter
 outlives every request.  It is wrong for a test process that starts and
@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import pytest
 
-import polylogue.daemon.execution as execution
+import polylogue.core.compute as execution
 
 
 def test_shared_compute_adapter_is_unpublished_before_every_test() -> None:
-    """Anti-vacuity: red if the ``reset_daemon_compute_adapter`` call is
+    """Anti-vacuity: red if the ``reset_compute_adapter`` call is
     removed from the autouse singleton-reset fixture in ``tests/conftest.py``
     *and* this file runs after any test that publishes an adapter — which is
     what ``tests/unit/daemon/test_daemon_cli.py`` does, and why that file
@@ -34,16 +34,16 @@ def test_shared_compute_adapter_is_unpublished_before_every_test() -> None:
 
 
 def test_reset_drops_the_published_adapter_and_allows_republication() -> None:
-    """``reset_daemon_compute_adapter`` must leave the global republishable."""
-    first = execution.daemon_compute_adapter()
+    """``reset_compute_adapter`` must leave the global republishable."""
+    first = execution.compute_adapter()
     assert execution._SHARED_COMPUTE_ADAPTER is first
 
-    execution.reset_daemon_compute_adapter()
+    execution.reset_compute_adapter()
     assert execution._SHARED_COMPUTE_ADAPTER is None
 
-    second = execution.daemon_compute_adapter()
+    second = execution.compute_adapter()
     assert second is not first
-    execution.reset_daemon_compute_adapter()
+    execution.reset_compute_adapter()
 
 
 @pytest.mark.uses_real_clock("joins real worker threads")
@@ -53,12 +53,12 @@ def test_reset_joins_the_workers_it_shut_down() -> None:
     Anti-vacuity: drop the join in ``BoundedComputeAdapter.close`` and the
     worker that just finished a job can still be alive when this reads it.
     """
-    adapter = execution.daemon_compute_adapter()
+    adapter = execution.compute_adapter()
     assert adapter.submit(lambda: "done").future.result(timeout=5) == "done"
     workers = tuple(adapter.executor._threads)
     assert workers
 
-    assert execution.reset_daemon_compute_adapter(join_timeout_s=5.0) == ()
+    assert execution.reset_compute_adapter(join_timeout_s=5.0) == ()
     assert not any(worker.is_alive() for worker in workers)
 
 

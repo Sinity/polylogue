@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import Executor
 from contextlib import suppress
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 from polylogue.archive.revision_authority import RawRevisionKind
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
+from polylogue.core.prepared_file import VerificationCancelledError
 from polylogue.sources.dispatch import is_jsonl_source_path
-from polylogue.sources.prepared_jsonl import PreparedJsonl, VerificationCancelledError
+from polylogue.sources.prepared_jsonl import PreparedJsonl
 from polylogue.sources.revision_backfill import (
     RetainedPreparationRetryableError,
     prepare_retained_jsonl_artifact,
@@ -80,7 +82,7 @@ def prepare_live_retained_raws(
     logical_keys: set[str],
     current_raw_id: str,
     directory: Path,
-    worker_executor: Executor,
+    worker_executor: BoundedComputeAdapter,
     index_db_path: Path | None = None,
     stop: Callable[[], bool] | None = None,
 ) -> dict[str, PreparedLiveRetainedRaw]:
@@ -121,19 +123,23 @@ def prepare_live_retained_raws(
             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
             directory.mkdir(parents=True, exist_ok=True)
             future = worker_executor.submit(
-                prepare_retained_jsonl_artifact,
-                raw_id,
-                provider.value,
-                blob_hash,
-                source_path,
-                kind.value,
-                native_id,
-                str(archive.archive_root / "blob"),
-                str(archive.source_db_path),
-                str(index_db_path if index_db_path is not None else archive.index_db_path),
-                str(directory),
-                fallback_timestamp,
-            )
+                partial(
+                    prepare_retained_jsonl_artifact,
+                    raw_id,
+                    provider.value,
+                    blob_hash,
+                    source_path,
+                    kind.value,
+                    native_id,
+                    str(archive.archive_root / "blob"),
+                    str(archive.source_db_path),
+                    str(index_db_path if index_db_path is not None else archive.index_db_path),
+                    str(directory),
+                    fallback_timestamp,
+                ),
+                admission_class="incremental-background",
+                estimated_bytes=_size,
+            ).future
             try:
                 artifact = future.result()
             except (RetainedPreparationRetryableError, OSError, ValueError):

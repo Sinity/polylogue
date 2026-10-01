@@ -1260,7 +1260,14 @@ def _normalize_through_graph(
         if evidence.duration_ms is not None:
             duration_total = (duration_total or 0) + evidence.duration_ms
 
-        event_rows.extend(_web_tool_evidence_events(evidence))
+        event_owner = MessageOwnerCoordinate(
+            stable_key=evidence.owner_stable_key,
+            position=node.position,
+            variant_index=node.variant_index,
+        )
+        event_rows.extend(
+            event.model_copy(update={"owner_coordinate": event_owner}) for event in _web_tool_evidence_events(evidence)
+        )
         if (compaction_summary := _compaction_summary_event(evidence)) is not None:
             _add_summary(graph, node.evidence_key, node.original_index, node.position, compaction_summary)
         if evidence.thinking_configuration:
@@ -1274,11 +1281,12 @@ def _normalize_through_graph(
                     event_type="model_configuration",
                     timestamp=evidence.updated_at or evidence.timestamp,
                     source_message_provider_id=evidence.native_provider_message_id,
+                    owner_coordinate=event_owner,
                     payload=payload,
                 )
             )
         if (update_event := _message_update_event(evidence)) is not None:
-            event_rows.append(update_event)
+            event_rows.append(update_event.model_copy(update={"owner_coordinate": event_owner}))
     # Compaction summaries follow the messages. The occurrences of one
     # repeated identity (a native id, or an ID-less record's synthetic key)
     # get their suffixes, and so their positions and variants, in array
@@ -1289,8 +1297,20 @@ def _normalize_through_graph(
         if (event := _compaction_summary_event(load(original_index, evidence_key))) is not None:
             _add_summary(graph, evidence_key, original_index, 2**31, event)
     for evidence_key, original_index in graph.ordered_summaries():
-        summary = _compaction_summary_event(load(original_index, evidence_key))
+        evidence = load(original_index, evidence_key)
+        summary = _compaction_summary_event(evidence)
         assert summary is not None
+        coordinate = graph.emitted_coordinate(evidence_key)
+        if coordinate is not None:
+            summary = summary.model_copy(
+                update={
+                    "owner_coordinate": MessageOwnerCoordinate(
+                        stable_key=evidence.owner_stable_key,
+                        position=coordinate[0],
+                        variant_index=coordinate[1],
+                    )
+                }
+            )
         event_rows.append(summary)
 
     if duplicate_ids:

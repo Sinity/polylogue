@@ -1,10 +1,7 @@
-"""Unified subprocess worker: decode → validate → parse → transform in one pass.
+"""Pure record worker: decode, validate, parse and lower in one pass.
 
-Runs inside ProcessPoolExecutor. Returns plain tuples for direct SQL executemany,
-avoiding Pydantic serialization overhead across the process boundary.
-
-Performance: eliminates double blob decode (was: validate decodes, then parse decodes
-the same blob again). Moves transform into subprocess for true parallelism.
+Shared bounded compute executes immutable requests. Row payloads return to
+one writer; native read handles belong to the worker that opens them.
 """
 
 from __future__ import annotations
@@ -29,6 +26,8 @@ from polylogue.archive.raw_payload.decode import (
     scan_jsonl_session_artifact,
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
 from polylogue.core.storage_faults import storage_fault_kind
 from polylogue.logging import WARNING, emit, get_logger
@@ -60,6 +59,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, PreparedSessionWrite
 
 
@@ -92,9 +92,15 @@ class SessionWritePayload:
     raw_id: str | None = None
     append_only: bool = False
     fallback_timestamp: str | None = None
-    # A parent-stage carrier may be attached after worker IPC, before writer
-    # admission. The process worker never serializes an open scratch owner.
+    # Canonical preparation attaches sealed carriers before writer admission;
+    # no SQL handle crosses the compute boundary.
     prepared_write: PreparedSessionWrite | None = None
+    prepared_artifact: PreparedJsonl | None = None
+    prepared_session_ordinal: int | None = None
+    prepared_append_skipped_messages: int = 0
+    prepared_append_noop: bool = False
+    prepared_predecessor: tuple[object, ...] | None = None
+    prepared_distinct_messages: bool | None = None
     # Row tuples and message content identities the parse worker built for a
     # full-replace write, so the writer validates them instead of hashing.
     prepared_rows: PreparedSessionRows | None = None
@@ -102,7 +108,7 @@ class SessionWritePayload:
 
 @dataclass(slots=True)
 class IngestRecordResult:
-    """Result from processing one raw record in a subprocess."""
+    """Result from processing one immutable raw-record request."""
 
     raw_id: str
     payload_provider: str | None = None
@@ -111,6 +117,7 @@ class IngestRecordResult:
     parse_error: str | None = None
     error: str | None = None
     sessions: list[SessionWritePayload] = field(default_factory=list)
+    prepared_artifact: PreparedJsonl | None = None
     source_name: str | None = None
     serialized_size_bytes: int | None = None
     schema_drift: SchemaDriftObservation | None = None
@@ -619,6 +626,7 @@ def _parse_plan_sessions(
             def counted_stream() -> Iterable[object]:
                 nonlocal valid_record_count
                 for item in _iter_json_stream(handle, stream_name):
+                    check_compute_cancelled()
                     valid_record_count += 1
                     yield item
 
@@ -632,7 +640,7 @@ def _parse_plan_sessions(
             if valid_record_count == 0:
                 raise ValueError(f"no valid JSON records in {stream_name}")
             # polylogue-9ykn: a session requires positive conversational
-            # evidence -- applied here (the subprocess decode/parse worker's
+            # evidence -- applied here (the shared decode/parse worker's
             # own chokepoint) so this ingest route can't create a
             # zero-message session even though it never touches
             # sources/live/batch.py's or revision_backfill.py's call sites.
@@ -663,9 +671,8 @@ def _enrich_parsed_sessions(
 
     Canonical raw-record ingest historically bypassed provider assembly, so
     daemon-ingested Codex sessions kept native-id titles (polylogue-ih67).
-    ``ingest_record`` (this function's caller) runs inside a
-    ProcessPoolExecutor worker (AC#4: subprocess-safe parse plans). When the
-    main-process batch orchestrator has already resolved a frozen sidecar
+    ``ingest_record`` consumes an immutable request on shared compute. When
+    the batch orchestrator has already resolved a frozen sidecar
     snapshot (``context.raw_record.sidecar_snapshot`` -- see
     ``_resolve_codex_sidecar_snapshots`` in ``ingest_batch/_core.py``), that
     snapshot is authoritative and no disk read happens here at all: an empty
@@ -770,6 +777,8 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
 
     try:
         return recover_persisted_tool_results(convo, archive_root=archive_root)
+    except DaemonOperationCancelled:
+        raise
     except Exception:
         # Recovery is a best-effort third fallback over evidence the parse
         # itself does not depend on; the un-recovered session is still a
@@ -778,6 +787,7 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
         # so a failure here durably stores a different hash than the
         # recovered path would have, and only this line says why
         # (polylogue-3r36h).
+        check_compute_cancelled()
         emit(
             "pipeline.hook_tool_response.recovery_failed",
             level=WARNING,
@@ -801,9 +811,12 @@ def _worker_prepared_rows(session: ParsedSession, *, append_only: bool) -> Prepa
 
     try:
         return prepare_session_rows(session)
+    except DaemonOperationCancelled:
+        raise
     except Exception:
         # The carrier is optional. Without it the writer lowers the session
         # itself and refuses it there, per session, under its own outcome.
+        check_compute_cancelled()
         return None
 
 
@@ -828,6 +841,7 @@ def _materialize_parsed_sessions(
 
     session_payloads: list[SessionWritePayload] = []
     for convo in parsed_sessions:
+        check_compute_cancelled()
         normalized_convo = _normalized_session(
             _with_hook_recovered_tool_results(convo, archive_root=context.archive_root),
             fallback_timestamp=context.fallback_timestamp,
@@ -849,7 +863,12 @@ def _materialize_parsed_sessions(
                     prepared_rows=_worker_prepared_rows(normalized_convo, append_only=append_only),
                 )
             )
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
+            check_compute_cancelled()
+            if isinstance(exc, DaemonOperationCancelled):
+                raise
             return _record_result(
                 context,
                 plan.payload_provider,
@@ -980,7 +999,12 @@ def _run_parse_plan(
             context,
             accepted_plan,
         )
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
+        check_compute_cancelled()
+        if isinstance(exc, DaemonOperationCancelled):
+            raise
         return _record_result(
             context,
             plan.payload_provider,
@@ -1000,7 +1024,7 @@ def _run_parse_plan(
 
 
 # ---------------------------------------------------------------------------
-# Main worker function — runs in subprocess
+# Shared pure record worker
 # ---------------------------------------------------------------------------
 
 
@@ -1028,6 +1052,7 @@ def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> 
     def spill(_field_name: str, carrier: str) -> SpilledCarrier | None:
         def write(handle: IO[bytes]) -> None:
             for chunk in iter_carrier_bytes(carrier):
+                check_compute_cancelled()
                 handle.write(chunk)
 
         try:
@@ -1058,9 +1083,9 @@ def ingest_record(
 ) -> IngestRecordResult:
     """Decode + validate + parse + transform one raw record in a single pass.
 
-    Returns DB-ready tuples, not Pydantic models. This function runs in a
-    subprocess via ProcessPoolExecutor and must be self-contained (no shared
-    state, no DB access).
+    Return typed row payloads for the writer. The immutable request carries
+    source identity and retained evidence; caller-owned SQLite connections
+    never cross this boundary.
     """
     from polylogue.archive.raw_payload import build_raw_payload_envelope
     from polylogue.paths import blob_store_root
@@ -1119,7 +1144,12 @@ def ingest_record(
             payload_provider=stored_payload_provider,
             sqlite_immutable=True,
         )
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
+        check_compute_cancelled()
+        if isinstance(exc, DaemonOperationCancelled):
+            raise
         # Spilling a capture's carriers writes to the blob store, so a full or
         # failing archive disk surfaces here; it says nothing about the input.
         fault = storage_fault_kind(exc)

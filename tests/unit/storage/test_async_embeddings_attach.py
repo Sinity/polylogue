@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, cast
@@ -210,10 +211,11 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
         monkeypatch.setattr(async_sqlite, "configure_read_connection", configure_last)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
         try:
-            with pytest.raises(ValueError) as caught:
+            with pytest.raises(BaseExceptionGroup) as caught:
                 async with backend.read_pool(size=3):
                     pytest.fail("a refused pool was published")
-            assert caught.value is primary
+            assert caught.value.exceptions[0] is primary
+            assert isinstance(caught.value.exceptions[1], OSError)
             assert readiness_probe[0]._connection is None and not readiness_probe[0]._thread.is_alive()
             assert len(close_attempts) == 3 and set(close_attempts) == set(handles)
             assert backend._read_pool is None
@@ -258,9 +260,10 @@ def test_failed_writer_configuration_keeps_actual_handle_until_backend_retiremen
         monkeypatch.setattr(async_sqlite, "configure_connection", configure)
         monkeypatch.setattr(aiosqlite.Connection, "_execute", execute_with_close_fault)
         try:
-            with pytest.raises(ValueError) as caught:
+            with pytest.raises(BaseExceptionGroup) as caught:
                 await backend.begin()
-            assert caught.value is primary
+            assert caught.value.exceptions[0] is primary
+            assert isinstance(caught.value.exceptions[1], OSError)
             conn = handles[0]
             assert backend._txn_conn is None
             assert async_sqlite._BACKEND_CONNECTIONS[id(conn)].backend is backend
@@ -412,5 +415,132 @@ def test_failed_connection_construction_drains_its_already_stopping_worker(
         assert not conn._thread.is_alive()
         assert id(conn) not in async_sqlite._BACKEND_CONNECTIONS
         await backend.close()
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.uses_real_clock("actual aiosqlite worker and last-grant descriptor retirement")
+@pytest.mark.parametrize("cancelled", ["none", "owner", "waiter"])
+def test_last_async_grant_retains_backend_and_original_cleanup_task(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, cancelled: str
+) -> None:
+    import os
+
+    from polylogue.storage.sqlite import async_sqlite
+    from polylogue.storage.sqlite.write_lease import (
+        ArchiveCustodySettlementError,
+        UnleasedWriteError,
+        async_write_lease,
+    )
+
+    real_close = os.close
+    fault = OSError("synthetic last-grant descriptor close before effect")
+
+    async def exercise() -> None:
+        loop_errors: list[dict[str, Any]] = []
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, context: loop_errors.append(context))
+        backend = async_sqlite.SQLiteBackend(workspace_env["archive_root"] / "index.db")
+        failed = asyncio.Event()
+        owners: list[Any] = []
+        connections: list[aiosqlite.Connection] = []
+        attempts: list[int] = []
+
+        async def owner_close() -> None:
+            async with async_write_lease("test.last_async_grant", archive_root=workspace_env["archive_root"]) as lease:
+                custody = lease.custody
+                assert custody is not None
+                owners.append(custody)
+                conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+                connections.append(conn)
+                lock = custody._fd
+                # End the parent's work while the actual worker's grant still
+                # holds the one physical reference used by connection cleanup.
+                lease.retire()
+                custody.close_owner()
+
+                def refuse_close(descriptor: int) -> None:
+                    if descriptor == lock:
+                        attempts.append(descriptor)
+                        failed.set()
+                        raise fault
+                    real_close(descriptor)
+
+                monkeypatch.setattr(os, "close", refuse_close)
+                await async_sqlite._close_backend_connection(conn)
+
+        closing = asyncio.create_task(owner_close())
+        settlement: asyncio.Task[None] | None = None
+        try:
+            await asyncio.wait_for(failed.wait(), 5)
+            await asyncio.sleep(0)
+            conn, custody = connections[0], owners[0]
+            assert conn._connection is None and not conn._thread.is_alive()
+            assert id(conn) in async_sqlite._BACKEND_CONNECTIONS
+            entry = async_sqlite._BACKEND_CONNECTIONS[id(conn)]
+            assert entry.cleanup_task is closing
+            assert entry.grant is not None and entry.grant.custody_retired
+            assert not closing.done()
+            with pytest.raises(UnleasedWriteError):
+                await async_sqlite._close_backend_connection(conn)
+            if cancelled == "owner":
+                closing.cancel()
+                await asyncio.sleep(0)
+                assert not closing.done()
+            assert attempts == [custody._fd]
+            settlement = asyncio.create_task(backend.close())
+            await asyncio.sleep(0)
+            assert not settlement.done()
+            assert not closing.done()
+            assert entry.cleanup_attempt is not None and not entry.cleanup_attempt.done()
+            if cancelled == "waiter":
+                settlement.cancel()
+                await asyncio.sleep(0)
+                assert not settlement.done()
+                assert not entry.cleanup_attempt.done()
+        finally:
+            monkeypatch.setattr(os, "close", real_close)
+            for custody in owners:
+                # This controlled failure occurred before effect. Retire that
+                # actual descriptor externally, then wake its original task;
+                # production never retries its possibly reused numeric slot.
+                for descriptor in tuple(custody._pending_descriptor_closes):
+                    try:
+                        real_close(descriptor)
+                    except OSError:
+                        pass
+            backend.request_sql_settlement()
+            outcome = await asyncio.gather(closing, return_exceptions=True)
+            settlement_outcome = (
+                await asyncio.gather(settlement, return_exceptions=True) if settlement is not None else []
+            )
+            await backend.close()
+
+        def assert_outcome(error: BaseException, *, interrupted: bool) -> None:
+            if interrupted:
+                assert isinstance(error, BaseExceptionGroup)
+                assert error.subgroup(asyncio.CancelledError) is not None
+                failures = error.subgroup(ArchiveCustodySettlementError)
+                assert failures is not None
+                pending = list(failures.exceptions)
+                while pending:
+                    failure = pending.pop()
+                    if isinstance(failure, BaseExceptionGroup):
+                        pending.extend(failure.exceptions)
+                    else:
+                        assert isinstance(failure, ArchiveCustodySettlementError)
+                        assert failure.failure is fault
+            else:
+                assert isinstance(error, ArchiveCustodySettlementError)
+                assert error.failure is fault
+
+        assert isinstance(outcome[0], BaseException)
+        assert_outcome(outcome[0], interrupted=cancelled == "owner")
+        assert settlement_outcome and isinstance(settlement_outcome[0], BaseException)
+        assert_outcome(settlement_outcome[0], interrupted=cancelled in {"owner", "waiter"})
+        await asyncio.sleep(0)
+        assert loop_errors == []
+        assert id(connections[0]) not in async_sqlite._BACKEND_CONNECTIONS
+        assert not owners[0]._pending_descriptor_closes
+        assert attempts == [attempts[0]]
 
     asyncio.run(exercise())

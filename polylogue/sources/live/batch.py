@@ -7,15 +7,17 @@ import contextvars
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 import uuid
 import zipfile
+from builtins import BaseExceptionGroup
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from functools import partial
 from hashlib import sha256
 from io import BytesIO
 from json import dumps as json_dumps
@@ -23,12 +25,16 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path, strong_path_classification
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactKind,
+    classify_artifact_path,
+    classify_artifact_stream,
+    strong_path_classification,
+)
 from polylogue.archive.ingest_flags import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
@@ -40,6 +46,8 @@ from polylogue.archive.revision_authority import (
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -108,7 +116,6 @@ from polylogue.sources.decoder_zip import (
 )
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
-    BUNDLE_PROVIDERS,
     ForeignOriginContentError,
     bound_location_provider,
     is_jsonl_source_path,
@@ -147,7 +154,6 @@ from polylogue.sources.live.batch_support import (
     _FullIngestResult,
     _ingest_pass_exhausted,
     _jsonl_provider_and_session_artifact,
-    _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
     classify_pre_acquisition,
@@ -164,6 +170,7 @@ from polylogue.sources.live.batch_support import (
     foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_parse_input_of_handle,
     jsonl_prefix_record_count,
     last_complete_newline_from_tail,
     sha256_range_from_path,
@@ -202,7 +209,7 @@ from polylogue.sources.live.metrics import (
     LiveFullIngestAggregate,
     split_offered_bytes,
 )
-from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
+from polylogue.sources.live.parse_prefetch import LiveParseStage, PreparedLiveSQLiteCapture, ReadSnapshot
 from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -212,7 +219,7 @@ from polylogue.sources.origin_specs import (
     frontier_kind_for_origin,
     path_declaration_refuses_session,
 )
-from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.prepared_jsonl import (
@@ -224,10 +231,9 @@ from polylogue.sources.prepared_jsonl import (
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.retained_acquisition import SourceInputRecord, iter_captured_zip_input
 from polylogue.sources.revision_backfill import (
-    _declared_non_session_artifact_classification,
+    RetainedPreparationRetryableError,
     enrich_sessions_from_archive,
     parse_retained_raw_sessions,
-    prepare_retained_jsonl_artifact,
     prepared_enrichment_dependency_state,
 )
 from polylogue.sources.source_acquisition_components import (
@@ -274,7 +280,11 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
-from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_readonly_database,
+    open_readonly_connection,
+    open_source_tier_write_connection,
+)
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -556,21 +566,6 @@ def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
 
 
-def _blob_jsonl_has_session_evidence(
-    blob_store: BlobStore,
-    blob_hash: str,
-    *,
-    provider: Provider,
-    source_path: str,
-) -> bool:
-    if not is_jsonl_source_path(source_path):
-        return False
-    try:
-        return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
-    except (OSError, ValueError):
-        return False
-
-
 def _fresh_build_admits(sessions: Iterable[Any], written: set[str] | None) -> bool:
     """Whether fresh mode is still valid for the sessions about to be written.
 
@@ -593,7 +588,7 @@ def _shard_prepared_by_raw_id(
     raw_id: str,
     parsed_by_raw_id: dict[str, ParsedSession],
     bindings: Mapping[str, PreparedSessionShardRows],
-) -> dict[str, PreparedRows | Future[PreparedRows]] | None:
+) -> dict[str, PreparedRows] | None:
     """Re-key one raw's shard binding from session identity to raw identity."""
     if not bindings:
         return None
@@ -3135,6 +3130,100 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
+        """Capture declared state exports before asking for writer custody."""
+        from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+        from polylogue.storage.sqlite.connection_profile import (
+            NativeConnectionSettlementError,
+            retained_native_sql_owners_for_lifetime,
+        )
+
+        provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        capability = database_capability_for_provider(Provider.CODEX)
+        state_paths = [
+            path
+            for path in paths
+            if provider in (Provider.CODEX, Provider.UNKNOWN)
+            and capability is not None
+            and (member := capability.member(path.name)) is not None
+            and member.disposition != "out-of-scope"
+        ]
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        captures: dict[Path, PreparedLiveSQLiteCapture | Exception] = {}
+        scratch: tempfile.TemporaryDirectory[str] | None = None
+        stage = self._parse_stage
+        owned_stage = False
+        if state_paths and stage is None:
+            staging = BlobStore(archive_root / "blob")._ensure_private_staging_root()
+            scratch = tempfile.TemporaryDirectory(prefix="live-state-", dir=staging)
+            stage = LiveParseStage(shard_directory=Path(scratch.name))
+            owned_stage = True
+        with retain_native_sql_lifetimes(*(() if scratch is None else (scratch,))):
+            try:
+                if state_paths:
+                    assert stage is not None
+                    cancelled = threading.Event()
+                    preparation = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            stage.prepare_sqlite_paths,
+                            state_paths,
+                            archive_root=archive_root,
+                            cancelled=cancelled,
+                            fallback_provider=provider,
+                            source_only=_source_tier_acquisition_required(),
+                        )
+                    )
+                    try:
+                        captures = await asyncio.shield(preparation)
+                    except asyncio.CancelledError as primary:
+                        cancelled.set()
+                        try:
+                            captures = await preparation
+                        except BaseException as failure:
+                            primary.add_note(f"live capture drain failed: {failure!r}")
+                        raise
+                return await self._ingest_full_paths_prepared(
+                    paths,
+                    source_name=source_name,
+                    heartbeat=heartbeat,
+                    attempt_id=attempt_id,
+                    max_pass_seconds=max_pass_seconds,
+                    pass_started=pass_started,
+                    captured_sqlite_by_path=captures,
+                )
+            finally:
+                failures: list[BaseException] = []
+                for capture in captures.values():
+                    if isinstance(capture, PreparedLiveSQLiteCapture):
+                        try:
+                            capture.discard()
+                        except BaseException as failure:
+                            failures.append(failure)
+                if owned_stage and stage is not None:
+                    try:
+                        stage.shutdown()
+                    except BaseException as failure:
+                        failures.append(failure)
+                if failures:
+                    raise BaseExceptionGroup("live state capture cleanup failed", failures)
+                if scratch is not None:
+                    pending = retained_native_sql_owners_for_lifetime(scratch)
+                    if pending:
+                        raise NativeConnectionSettlementError(
+                            pending[0], RuntimeError("live state scratch requires native drain")
+                        )
+                    scratch.cleanup()
+
+    async def _ingest_full_paths_prepared(
+        self,
+        paths: list[Path],
+        *,
+        source_name: str,
+        heartbeat: _FullIngestHeartbeat | None = None,
+        attempt_id: str | None = None,
+        max_pass_seconds: float | None = None,
+        pass_started: float | None = None,
+        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
+    ) -> _FullIngestResult:
         paths = _enrichment_evidence_first(
             paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         )
@@ -3209,6 +3298,7 @@ class LiveBatchProcessor:
             max_pass_seconds=max_pass_seconds,
             pass_started=pass_started,
             prepared_json_paths=prepared_json_paths,
+            captured_sqlite_by_path=captured_sqlite_by_path,
         )
         return replace(result, ordering_held=held) if held else result
 
@@ -3251,6 +3341,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
         prepared_json_paths: frozenset[str] = frozenset(),
+        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
     ) -> _FullIngestResult:
         """Acquire and write one source group; a storage fault takes its staged blobs with it.
 
@@ -3271,6 +3362,7 @@ class LiveBatchProcessor:
                 max_pass_seconds=max_pass_seconds,
                 pass_started=pass_started,
                 prepared_json_paths=prepared_json_paths,
+                captured_sqlite_by_path=captured_sqlite_by_path,
             )
         except Exception as exc:
             # Classify here, not by type: the publication flush raises a raw
@@ -3298,6 +3390,7 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
         prepared_json_paths: frozenset[str] = frozenset(),
+        captured_sqlite_by_path: Mapping[Path, PreparedLiveSQLiteCapture | Exception],
     ) -> _FullIngestResult:
         if not paths:
             return _FullIngestResult(succeeded=[], failed=[], source_payload_read_bytes=0)
@@ -3350,10 +3443,15 @@ class LiveBatchProcessor:
                 failed=list(paths),
                 source_payload_read_bytes=0,
             )
-        from polylogue.storage.blob_publication import ArchiveBlobPublisher
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher, require_published
 
         blob_store = ArchiveBlobPublisher(source_db, blob_root)
         publishers.append(blob_store)
+        publishers.extend(
+            capture.publisher
+            for capture in captured_sqlite_by_path.values()
+            if isinstance(capture, PreparedLiveSQLiteCapture)
+        )
         archive_active = self._archive_active(archive_root)
         archive_bootstrapped = not archive_active and not source_only
         if archive_bootstrapped:
@@ -3494,9 +3592,14 @@ class LiveBatchProcessor:
                 continue
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
+            captured_sqlite = captured_sqlite_by_path.get(path)
+            if isinstance(captured_sqlite, Exception):
+                raise_if_storage_fault(captured_sqlite, kinds=_snapshot_fault_kinds(captured_sqlite))
+                failed.append(path)
+                continue
             try:
-                observed_at_ns = time.time_ns()
-                stat = path.stat()
+                observed_at_ns = captured_sqlite.observed_at_ns if captured_sqlite is not None else time.time_ns()
+                stat = captured_sqlite.source_stat if captured_sqlite is not None else path.stat()
             except OSError:
                 failed.append(path)
                 continue
@@ -3506,8 +3609,12 @@ class LiveBatchProcessor:
             # file discovery accepts, so a cold build requires retention of
             # exactly the files this route retains.
             try:
-                admission = classify_pre_acquisition(
-                    path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
+                admission = (
+                    captured_sqlite.admission
+                    if captured_sqlite is not None
+                    else classify_pre_acquisition(
+                        path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
+                    )
                 )
             except RetryableSourceReadError:
                 # A database that could not be read now is retried on a
@@ -3752,70 +3859,27 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
+            elif captured_sqlite is not None:
+                snapshot = captured_sqlite.snapshot
+                if snapshot is None:
+                    raise RetainedPreparationRetryableError("accepted state capture has no logical export")
+                provider = Provider.CODEX
+                source_name = provider.value
+                blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
+                blob_publication_receipt_id = snapshot.blob_publication_receipt_id
+                source_path = snapshot.source_path
+                raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
+                raw_source_revisions[path] = snapshot.source_revision
+                raw_source_fingerprints[path] = snapshot.source_fingerprint
+                if captured_sqlite.preparation is not None:
+                    path_preparations_by_source_path[str(snapshot.source_path)] = captured_sqlite.preparation
+                source_payload_read_bytes += blob_size
             elif codex_owned_sqlite_name or (
                 fallback_provider in (Provider.CODEX, Provider.UNKNOWN)
                 and codex_member is not None
                 and codex_member.disposition != "out-of-scope"
-                and codex_state.is_in_scope_codex_sqlite_path(path)
             ):
-                # polylogue-0jf4: acquire live Codex SQLite state the same
-                # way Hermes acquires its state.db -- a consistent
-                # backup/snapshot (never a raw read of a possibly-live-locked
-                # file) into the content-addressed blob store. The filename
-                # gate keeps this cheap for the vast majority of ~/.codex
-                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
-                # then re-confirms the table shape before trusting the name.
-                #
-                # Admission needs both the Codex location and the structural
-                # re-confirmation (polylogue-bzx7h's foreign ``state_5.sqlite``
-                # classifies as ``unknown`` and is still refused here): a
-                # Codex-shaped database under another origin's root is not
-                # Codex material. Sources are canonical locations, so the
-                # ``codex-state`` watch source always resolves to CODEX.
-                provider = Provider.CODEX
-                source_name = provider.value
-                try:
-                    if heartbeat is not None:
-                        heartbeat(
-                            "full_blob_copy",
-                            current_path=path,
-                            source_payload_read_bytes=source_payload_read_bytes,
-                        )
-                    with sqlite_snapshot_failure_as_oserror():
-                        snapshot = snapshot_sqlite_to_blob(
-                            path,
-                            blob_store,
-                            heartbeat=_blob_copy_heartbeat(
-                                heartbeat,
-                                path=path,
-                                source_payload_read_bytes=source_payload_read_bytes,
-                            ),
-                        )
-                    blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
-                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = snapshot.source_path
-                    raw_sqlite_source_paths[path] = source_path
-                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
-                    raw_id = codex_state_raw_id(
-                        source_path, snapshot.source_revision, identity_path=snapshot.identity_path
-                    )
-                    raw_source_revisions[path] = snapshot.source_revision
-                    raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError as exc:
-                    # The export stages into the archive's blob area, so a
-                    # full archive refuses it for every database alike. A
-                    # read-only or corrupt report can come from the source
-                    # database itself, which stays this file's failure.
-                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
-                    failed.append(path)
-                    continue
-                source_payload_read_bytes += blob_size
-                if heartbeat is not None:
-                    heartbeat(
-                        "full_blob_copy",
-                        current_path=path,
-                        source_payload_read_bytes=source_payload_read_bytes,
-                    )
+                raise RetainedPreparationRetryableError("state acquisition requires pre-writer logical capture")
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
                 # an ad hoc parse pass. Provider detection and session/artifact
@@ -4191,13 +4255,25 @@ class LiveBatchProcessor:
                     payload_provider=provider,
                     capture_mode=acquisition_capture_mode,
                     source_name=source_name,
-                    source_path=(str(raw_sqlite_source_paths[path]) if path in raw_sqlite_source_paths else str(path)),
-                    canonical_source_path=raw_canonical_source_paths.get(path),
-                    captured_profile_key=raw_profile_keys.get(path),
+                    source_path=(
+                        str(captured_sqlite.snapshot.source_path)
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else str(raw_sqlite_source_paths.get(path, path))
+                    ),
+                    canonical_source_path=(
+                        str(captured_sqlite.snapshot.identity_path)
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else raw_canonical_source_paths.get(path)
+                    ),
+                    captured_profile_key=(
+                        captured_sqlite.snapshot.captured_profile_key
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else raw_profile_keys.get(path)
+                    ),
                     source_index=0,
                     blob_size=blob_size,
                     blob_publication_receipt_id=blob_publication_receipt_id,
-                    acquired_at=datetime.now(UTC).isoformat(),
+                    acquired_at=datetime.fromtimestamp(observed_at_ns / 1_000_000_000, UTC).isoformat(),
                     file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1_000_000_000, UTC).isoformat(),
                     captured_source_revision=raw_source_revisions.get(path, raw_id),
                     requires_complete_record_boundary=is_jsonl_source_path(str(path)),
@@ -4225,7 +4301,20 @@ class LiveBatchProcessor:
         time_budget_exceeded = acquisition_time_budget_exceeded
         if raw_records or zip_inputs:
             try:
-                blob_store.flush()
+                for publisher in publishers:
+                    publisher.flush()
+                for preparation in path_preparations_by_source_path.values():
+                    preparation.publish_blobs()
+                for member in retained_preparations_by_raw_id.values():
+                    member.artifact.publish_blobs()
+                for capture in captured_sqlite_by_path.values():
+                    if isinstance(capture, PreparedLiveSQLiteCapture) and capture.artifact is not None:
+                        if capture.snapshot is None:
+                            raise ValueError("prepared state is missing its retained acquisition")
+                        require_published(
+                            capture.publisher, capture.snapshot.blob_hash, source_path=capture.snapshot.source_path
+                        )
+                        capture.artifact.publish_blobs()
             except Exception as exc:
                 if storage_fault_kind(exc) is not None:
                     # Reservation may have committed before publication
@@ -4676,44 +4765,41 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
-                    # Source-only acquisition deliberately has no decoded
-                    # evidence with which to confirm or override a path
-                    # classification. Keep every such raw pending instead of
-                    # giving a filename-only fact/sidecar rule terminal
-                    # authority that a recovered derived tier could not undo.
-                    artifact_classification = (
-                        None
-                        if source_only
-                        else _declared_non_session_artifact_classification(
-                            provider,
-                            record.source_path,
+                    artifact_classification = None
+                    if not source_only:
+                        proof = (
+                            selected_preparation.stream_classification()
+                            if selected_preparation is not None and selected_preparation.error is None
+                            else None
                         )
-                    )
-                    session_evidence = False
-                    # A ``raw-only`` declaration is terminal: decoded shape may
-                    # outrank a ``fact`` location, but never a family whose
-                    # declaration states that content cannot decide it
-                    # (polylogue-omsw, polylogue-ximhz).
-                    if (
-                        artifact_classification is not None
-                        and not source_only
-                        and not path_declaration_refuses_session(provider, record.source_path)
-                    ):
-                        session_evidence = (
-                            _blob_jsonl_has_session_evidence(
-                                blob_store,
-                                blob_hash,
-                                provider=provider,
-                                source_path=record.source_path,
-                            )
-                            if payload is None
-                            else _parse_payload_as_session_artifact(
-                                Path(record.source_path),
-                                provider=provider,
-                                payload=payload,
-                            )
-                        )
-                    if artifact_classification is not None and not session_evidence:
+                        if proof is None and (
+                            is_jsonl_source_path(record.source_path)
+                            or Path(record.source_path).suffix.lower() == ".json"
+                        ):
+                            with ExitStack() as input_lifetime:
+                                input_handle = input_lifetime.enter_context(
+                                    BytesIO(parse_payload_bytes)
+                                    if parse_payload_bytes is not None
+                                    else blob_store.open(blob_hash)
+                                )
+                                jsonl = is_jsonl_source_path(record.source_path)
+                                accepted_input = (
+                                    input_lifetime.enter_context(
+                                        jsonl_parse_input_of_handle(input_handle, check_stop=check_compute_cancelled)
+                                    )
+                                    if jsonl
+                                    else input_handle
+                                )
+                                proof = classify_artifact_stream(
+                                    accepted_input,
+                                    provider=provider,
+                                    source_path=record.source_path,
+                                    wire_format="jsonl" if jsonl else "json",
+                                    check_stop=check_compute_cancelled,
+                                )
+                        if proof is not None and proof.proved_non_session:
+                            artifact_classification = proof.classification
+                    if artifact_classification is not None:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
@@ -4966,30 +5052,22 @@ class LiveBatchProcessor:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         if not path_preparation.positive_evidence_filtered:
                             raise RuntimeError("off-writer preparation did not filter conversational evidence")
-                        prepared_sessions = path_preparation.session_sequence()
-                        stale_enrichment = prepared_enrichment_dependency_state(
-                            archive,
-                            path_preparation,
-                            provider=path_preparation.resolved_provider or provider,
-                            source_path=record.source_path,
-                            captured_zip_coordinate=record.captured_zip_coordinate,
-                            sessions=prepared_sessions,
-                            parser_sidecars=False,
-                        )
-                        if stale_enrichment is not None:
-                            # The worker enriched against evidence this pass
-                            # has since changed (a sidecar admitted ahead of
-                            # this record). Parse and enrich here instead.
-                            emit(
-                                "live.ingest.prepared_carrier_stale",
-                                level=INFO,
-                                outcome="degraded",
-                                source_path=record.source_path,
-                                reason=f"{stale_enrichment}; parsing in the writer",
-                            )
-                            path_preparation = None
-                            cached_sessions = None
+                        if path_preparation.codex_state_kind is not None:
+                            path_preparation.verify_files(full=False)
                         else:
+                            prepared_sessions = path_preparation.session_sequence()
+                            stale_enrichment = prepared_enrichment_dependency_state(
+                                archive,
+                                path_preparation,
+                                provider=path_preparation.resolved_provider or provider,
+                                source_path=record.source_path,
+                                sessions=prepared_sessions,
+                                parser_sidecars=False,
+                            )
+                            if stale_enrichment is not None:
+                                # Publication cannot replace a stale preparation by
+                                # decoding while it owns the archive writer.
+                                raise RetainedPreparationRetryableError(stale_enrichment)
                             cached_sessions = prepared_sessions
                             if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
                                 shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
@@ -5004,7 +5082,22 @@ class LiveBatchProcessor:
                         if path_preparation is not None
                         else {}
                     )
-                    if cached_sessions is not None:
+                    if path_preparation is not None and path_preparation.codex_state_kind is not None:
+                        record_codex_state_snapshot_terminal(
+                            archive,
+                            source_raw_id,
+                            prepared_state=path_preparation,
+                            state_kind=path_preparation.codex_state_kind,
+                            source_path=record.source_path,
+                            acquired_at_ms=acquired_at_ms,
+                            censused_at_ms=acquired_at_ms,
+                            blob_hash=blob_hash,
+                        )
+                        archive.commit()
+                        result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
+                    elif cached_sessions is not None:
                         # This record's decode already ran off the writer
                         # hold: a sealed path preparation whose blob hash
                         # ``LiveParseStage.pop_path`` checked against this
@@ -5030,37 +5123,8 @@ class LiveBatchProcessor:
                             profile_identity=record.captured_profile_key,
                             immutable=True,
                         )
-                    elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
-                        blob_store.blob_path(blob_hash), immutable=True
-                    ):
-                        # Codex state dbs never become sessions of their
-                        # own: thread_state evidence (titles, spawn edges)
-                        # attaches to the EXISTING codex-session rows it
-                        # describes; goals/memories snapshots are durable raw
-                        # evidence only. Either way the raw ends terminal
-                        # here -- a snapshot has no byte frontier, so the
-                        # cursor-authority gate can only account for it
-                        # through the non-session receipt this writes.
-                        state_path = blob_store.blob_path(blob_hash)
-                        record_codex_state_snapshot_terminal(
-                            archive,
-                            source_raw_id,
-                            state_path=state_path,
-                            state_kind=codex_state.classify_codex_sqlite_path(state_path, immutable=True),
-                            source_path=record.source_path,
-                            acquired_at_ms=acquired_at_ms,
-                            censused_at_ms=acquired_at_ms,
-                            blob_hash=blob_hash,
-                        )
-                        # Source references commit promptly while the derived
-                        # index follows a bulk cadence the session-write paths
-                        # drive. This record writes no session, so nothing else
-                        # would ever commit the thread-state projection it just
-                        # recomputed.
-                        archive.commit()
-                        result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
-                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
-                        continue
+                    elif provider is Provider.CODEX and record.source_path.lower().endswith((".sqlite", ".db")):
+                        raise RetainedPreparationRetryableError("Codex state publication requires captured preparation")
                     elif is_stream_record_provider(record.source_path, str(provider)):
                         if payload is None and not partial_prefix:
                             with blob_store.open(blob_hash) as payload_handle:
@@ -5203,6 +5267,7 @@ class LiveBatchProcessor:
                                 sessions,
                                 parser_fingerprint=self._current_parser_fingerprint(),
                                 censused_at_ms=acquired_at_ms,
+                                revision_authority=None,
                             )
                             (
                                 record_session_ids,
@@ -5226,6 +5291,7 @@ class LiveBatchProcessor:
                                 fresh_build_batch=fresh_build_batch,
                                 prepared_writes=prepared_writes,
                                 retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                                current_preparation=path_preparation,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -5268,6 +5334,18 @@ class LiveBatchProcessor:
                                     current_session=session,
                                     retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
+                                attachment_views = {
+                                    raw_id: self._prepared_attachment_view(
+                                        archive,
+                                        raw_id,
+                                        acquired_at_ms=acquired_at_ms,
+                                        current_raw_id=source_raw_id,
+                                        session=parsed_by_raw_id[raw_id],
+                                        current_preparation=path_preparation,
+                                        retained=retained_preparations_by_raw_id,
+                                    )
+                                    for raw_id in plan.accepted_raw_ids
+                                }
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 index_conn = archive.index_connection
                                 prior_row = (
@@ -5302,6 +5380,12 @@ class LiveBatchProcessor:
                                             source_raw_id, parsed_by_raw_id, shard_bindings
                                         ),
                                         prepared_write=prepared_writes.get(logical_source_key),
+                                        preacquired_attachment_blobs_by_raw_id={
+                                            raw_id: view[0] for raw_id, view in attachment_views.items()
+                                        },
+                                        preacquired_attachment_refs_by_raw_id={
+                                            raw_id: view[1] for raw_id, view in attachment_views.items()
+                                        },
                                     )
                                 current_row = (
                                     index_conn.execute(
@@ -5416,6 +5500,7 @@ class LiveBatchProcessor:
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_writes=prepared_writes,
                                     retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                                    current_preparation=path_preparation,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -5423,6 +5508,7 @@ class LiveBatchProcessor:
                             sessions,
                             parser_fingerprint=self._current_parser_fingerprint(),
                             censused_at_ms=acquired_at_ms,
+                            revision_authority=None,
                         )
                         (
                             record_session_ids,
@@ -5442,6 +5528,7 @@ class LiveBatchProcessor:
                             fresh_build_batch=fresh_build_batch,
                             prepared_writes=prepared_writes,
                             retained_preparations_by_raw_id=retained_preparations_by_raw_id,
+                            current_preparation=path_preparation,
                         )
                     if raw_authority_complete:
                         result.raw_ids[_full_record_key(record)] = record_raw_id
@@ -5516,7 +5603,9 @@ class LiveBatchProcessor:
                         exc,
                         released,
                     )
-                except PreparedSessionWriteRefusedError as exc:
+                except DaemonOperationCancelled:
+                    raise
+                except (PreparedSessionWriteRefusedError, RetainedPreparationRetryableError) as exc:
                     if source_raw_id is not None:
                         result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
                     logger.info(
@@ -5656,6 +5745,40 @@ class LiveBatchProcessor:
         # the cursor the commit earned and ends the unit.
         return result
 
+    @staticmethod
+    def _prepared_attachment_view(
+        archive: Any,
+        raw_id: str,
+        *,
+        acquired_at_ms: int,
+        current_raw_id: str,
+        session: ParsedSession,
+        current_preparation: PreparedJsonl | None,
+        retained: Mapping[str, PreparedLiveRetainedRaw] | None,
+    ):
+        if raw_id == current_raw_id:
+            artifact = current_preparation
+        else:
+            member = (retained or {}).get(raw_id)
+            if member is None or not member.current(archive):
+                raise RetainedPreparationRetryableError(f"retained attachment preparation changed for {raw_id}")
+            artifact = member.artifact
+        if artifact is None:
+            raise RetainedPreparationRetryableError(f"sealed attachment preparation is absent for {raw_id}")
+        _provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        source_conn = archive._ensure_source_conn()
+        return artifact.attachment_blobs(
+            source_connection=source_conn,
+            session_id=str(
+                archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+            ),
+        ), partial(
+            artifact.iter_attachment_refs,
+            source_path=source_path,
+            acquired_at_ms=acquired_at_ms,
+            source_connection=source_conn,
+        )
+
     def _parse_raw_revision_chain(
         self,
         archive: Any,
@@ -5674,9 +5797,7 @@ class LiveBatchProcessor:
             elif member is not None and member.current(archive):
                 sessions = member.artifact.session_sequence()
             else:
-                # No carrier, or one this writer cannot publish (its evidence
-                # or index moved): the writer owns the member's replay.
-                sessions = self._parse_retained_raw_sessions(archive, raw_id)
+                raise RetainedPreparationRetryableError(f"retained raw {raw_id} lacks current sealed preparation")
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -5724,6 +5845,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: Mapping[str, Path] | None = None,
         fresh_build_batch: set[str] | None = None,
         prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+        current_preparation: PreparedJsonl | None = None,
         retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
@@ -5769,42 +5891,7 @@ class LiveBatchProcessor:
                     sequence = member.artifact.session_sequence()
                     retained_sessions_cache[raw_id] = sequence
                     return sequence
-                descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
-                if descriptor_reader is None:
-                    legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
-                    retained_sessions_cache[raw_id] = legacy
-                    return legacy
-                provider, blob_hash, source_path, kind, _size = descriptor_reader(raw_id)
-                if Path(source_path).suffix.lower() == ".json" and (
-                    provider in BUNDLE_PROVIDERS or provider is Provider.HERMES
-                ):
-                    native_id = archive.raw_native_id(raw_id) if kind is RawRevisionKind.APPEND else None
-                    artifact = prepare_retained_jsonl_artifact(
-                        raw_id,
-                        provider.value,
-                        blob_hash,
-                        source_path,
-                        kind.value,
-                        native_id,
-                        str(archive.archive_root / "blob"),
-                        str(archive.source_db_path),
-                        str(archive.index_db_path),
-                        str(archive.archive_root / "tmp" / "live-retained-prepared"),
-                        archive.raw_revision_file_mtime(raw_id),
-                    )
-                    if artifact.error is not None or artifact.sessions_path is None:
-                        artifact.discard()
-                        raise RuntimeError(artifact.error or f"retained raw {raw_id} did not prepare")
-                    try:
-                        sequence = artifact.session_sequence()
-                    except BaseException:
-                        artifact.discard()
-                        raise
-                    retained_sessions_cache[raw_id] = sequence
-                    return sequence
-                legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
-                retained_sessions_cache[raw_id] = legacy
-                return legacy
+                raise RetainedPreparationRetryableError(f"retained member {raw_id} lacks current sealed preparation")
             return cached
 
         def retained_session_for(raw_id: str, logical_source_key: str) -> ParsedSession:
@@ -5856,6 +5943,7 @@ class LiveBatchProcessor:
                             censused_at_ms=acquired_at_ms,
                             detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
                             retire_full_revision_governance=True,
+                            revision_authority=RawRevisionAuthority.QUARANTINED,
                         )
                         retired_full_revision_raw_ids.add(revision_raw_id)
                     except ActiveByteRevisionChainError:
@@ -5934,6 +6022,17 @@ class LiveBatchProcessor:
                     )
                 classification = classify_membership_revisions(revisions, existing_accepted_raw_id=accepted_head_raw_id)
                 member_fresh = _fresh_build_admits(member_sessions.values(), fresh_build_batch)
+                attachment_blobs, attachment_refs = ({}, lambda: iter(()))
+                if classification.accepted_raw_ids:
+                    attachment_blobs, attachment_refs = self._prepared_attachment_view(
+                        archive,
+                        classification.accepted_raw_ids[-1],
+                        acquired_at_ms=acquired_at_ms,
+                        current_raw_id=source_raw_id,
+                        session=member_sessions[classification.accepted_raw_ids[-1]],
+                        current_preparation=current_preparation,
+                        retained=retained_preparations_by_raw_id,
+                    )
                 with self._attached_member_shards(
                     archive, member_sessions, shard_paths_by_raw_id
                 ) as prepared_by_raw_id:
@@ -5948,6 +6047,8 @@ class LiveBatchProcessor:
                         fresh_build=member_fresh,
                         fresh_build_batch=fresh_build_batch if member_fresh else None,
                         prepared_by_raw_id=prepared_by_raw_id,
+                        preacquired_attachment_blobs=attachment_blobs,
+                        preacquired_attachment_refs=attachment_refs,
                         prepared_write=(
                             (prepared_writes or {}).get(logical_source_key)
                             if classification.accepted_raw_ids and classification.accepted_raw_ids[-1] == source_raw_id
@@ -7539,7 +7640,7 @@ class LiveBatchProcessor:
         try:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
             with (
-                closing(sqlite3.connect(source_db)) as conn,
+                closing(open_source_tier_write_connection(source_db, archive_root=archive_root)) as conn,
                 closing(open_readonly_connection(index_db)) as index_conn,
                 conn,
             ):

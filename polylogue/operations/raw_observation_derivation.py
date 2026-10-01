@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.archive.revision_authority import raw_authority_parser_fingerprint
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
     Budget,
     DerivationFrame,
@@ -21,6 +22,7 @@ from polylogue.storage.derived.raw import RawObservationDerivation, RawObservati
 
 if TYPE_CHECKING:
     from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.index_generation import IndexGeneration
 
 RAW_OBSERVATION_DOMAIN = _RAW_OBSERVATION_DOMAIN
 
@@ -60,13 +62,14 @@ def prepare_retained_non_json_artifact_worker(
 
 
 def make_raw_observation_derivation(
-    archive_root: Path, *, index_db_path: Path | None = None
+    archive_root: Path, *, index_db_path: Path | None = None, owned_generation: IndexGeneration | None = None
 ) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
     return RawObservationDerivation(
         archive_root,
         prepare_non_json_artifact=prepare_retained_non_json_artifact_worker,
         index_db_path=index_db_path,
+        owned_generation=owned_generation,
     )
 
 
@@ -162,7 +165,8 @@ def raw_observation_backlog_snapshot(
         states = adapter.inspect(frame, raw_ids)
     except FileNotFoundError as exc:
         return unavailable(str(exc))
-    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid")
+    refusals = adapter.terminal_decode_refusals(raw_ids)
+    pending_ids = tuple(raw_id for raw_id in raw_ids if states.get(raw_id) != "valid" and raw_id not in refusals)
     if not pending_ids:
         return {
             "available": True,
@@ -241,4 +245,5 @@ def converge_raw_observations(
         # certify publication. Discovery alone must not exhaust that budget.
         budget=Budget(page=min(128, limit), discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
         cursor=cursor,
+        publisher=admit_stage_write,
     )

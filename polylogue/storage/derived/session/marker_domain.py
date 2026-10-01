@@ -50,6 +50,9 @@ class SessionMarkerReplacement:
     #: Earlier child-owned candidates this batch's re-extraction re-owned.
     retired: tuple[str, ...] = ()
 
+    def close(self) -> None:
+        """The marker candidate values own no physical resources."""
+
     @property
     def key(self) -> str:
         return f"{self.stream_id}:{self.sequence}"

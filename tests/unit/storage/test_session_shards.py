@@ -201,7 +201,7 @@ def _copy_from_shard(conn: sqlite3.Connection, sessions: list[ParsedSession], sh
                 conn,
                 session,
                 content_hash=str(session_content_hash(session)),
-                prepared=bindings[_session_key(session)],
+                prepared_rows=bindings[_session_key(session)],
             )
 
 
@@ -267,7 +267,7 @@ def test_sealed_message_sink_replaces_same_raw_from_streamed_shard(
                 publication,
                 content_hash=publication.content_hash,
                 raw_id="same-acquisition",
-                prepared=prepared,
+                prepared_rows=prepared,
             )
         rows = conn.execute(
             "SELECT native_id, text FROM messages JOIN blocks USING (message_id) "
@@ -316,7 +316,7 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
                 streamed,
                 publication,
                 content_hash=publication.content_hash,
-                prepared=prepared,
+                prepared_rows=prepared,
             )
         for table, order_by in (
             ("sessions", "session_id"),
@@ -498,7 +498,7 @@ def test_stale_shard_content_hash_falls_back_to_fresh_content(tmp_path: Path) ->
                 conn,
                 mutated,
                 content_hash=str(session_content_hash(mutated)),
-                prepared=bindings[_session_key(original)],
+                prepared_rows=bindings[_session_key(original)],
             )
         envelope = archive_tier_write.read_archive_session_envelope(conn, _session_key(original))
         texts = ["".join(block.text or "" for block in message.blocks) for message in envelope.messages]

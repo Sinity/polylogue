@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SelectedSessionTarget,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.operations.session_profile_convergence import (
     make_session_profile_derivation,

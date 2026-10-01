@@ -77,7 +77,7 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepare_session_rows(session),
+            prepared_rows=prepare_session_rows(session),
         )
         rows = list(conn.execute("SELECT * FROM session_commits WHERE session_id = ?", (session_id,)))
         assert len(rows) == 1

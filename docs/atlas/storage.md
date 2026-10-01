@@ -32,12 +32,33 @@ selected path without inspecting every source row
 
 ## Write custody and connection lifetime
 
+Reference preparation supports declared configured tier symlinks by opening
+exact resolved leaves with no-follow admission. It retains the configured root
+and link incarnations and rechecks those names through writer admission and
+promotion. Recreating a link to the same leaf invalidates the old proof.
+Generation linking and Source snapshots preserve those same configured names
+and selected directory incarnations through their operation.
+
 Each outer write lease names its archive root and holds an owned, descriptor-anchored
 `.archive-write-custody.lock` before writable archive SQL begins. Nested owners
 borrow that custody; a thread receives authority through a single-use grant,
 and a task cannot acquire authority by inheriting another task's context.
 The lock file remains in place after release. Directory and lock identities
 are checked before and after acquisition; replacement is a visible refusal.
+
+Descriptor cleanup attempts every owned binding once and keeps the actual
+primary and cleanup errors. Closing the lock descriptor releases flock; it is
+never unlocked before a close that could fail without taking effect. Actual
+Linux native close errors retire the descriptor, while an ambiguous substituted
+or non-Linux failure retains the exact binding on its creator. A numeric slot
+is never blindly closed again. Failed async acquisition keeps its existing
+worker, task, context and admission alive through physical settlement; an
+explicit request reaches that same custody owner. Successful acquisition binds
+the returned custody to the loop task, whose failed cleanup likewise keeps
+that task alive until settlement. The async backend retains its original cleanup
+Task and attempt Future through last-grant retirement. Later backend or
+coordinator settlement requests wake the same custody retry and shield that
+attempt; they never start a parallel close or join the owner's application Task.
 
 An ArchiveStore retains custody while any write transaction or temporary User
 writer handle remains unsettled. Commit, rollback and close settle its actual
@@ -193,6 +214,7 @@ that shape, and this is not a general native SQLite memory bound.
 - `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (function `write_parsed_session_to_archive` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - Every producer declares its actual destination and transaction owner. Active archive writes use a durable-reference seal; an owned inactive generation defers the archive-wide proof to promotion. A genuine non-archive memory index declares its standalone transaction explicitly. Missing archive arguments or missing durable tiers do not grant standalone permission.
 - Bulk callers reuse one `IndexMutationScope` per commit window. Its disk-backed witness stores original typed lookups, re-resolves their targets before publication, and includes composed descendants affected by parent changes. Inserts, aliases and lineage changes also receive proof: unchanged message IDs alone do not establish preserved lookup or block-position semantics. Generation replacement checks the whole candidate. User/Audit JSON anchor enumeration remains global and unindexed; batching amortizes that census rather than making it independent of archive size (`polylogue/storage/sqlite/reference_seal.py`).
+- Audit preview and operation targets retain historical effect identity. The validated delete, identity-reset or excision apply may leave those exact targets absent within its authorized removal closure; it never changes their rows or digests. Suppression, excision-record and excision-request assertion target fields may likewise describe absent sessions. Ordinary User anchors in surviving rows prevent disappearance, including a duplicate of an Audit target, and every surviving reference must retain its original resolution. Exact bound excision may remove content-bearing assertion rows whose own targets lie in its declared excised session/message/block closure; its original witness retains each row and field so deleting one assertion never exempts a surviving row with the same reference. Lifecycle history remains retained. This permission is bound to the existing archive custody, creator task/thread and validated plan during apply. Retained reparse/replay and generation promotion retain normal reference proof (`polylogue/storage/sqlite/reference_seal.py`, `polylogue/operations/mutation_transaction.py`).
 - It is the parsed-session lowering choke point shared by batch ingest (`polylogue/pipeline/services/ingest_batch/_core.py`) and authoritative revision replay/reindex (`write_with_reparse_receipt` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). It is not the only mutation function in the six-tier substrate.
 
 ## Blob publication, liveness, and GC
@@ -228,8 +250,9 @@ Pending generations are restartable; a restart resumes their exact member set in
 - `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would fire during the DELETE step and permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1255-1274`).
 - A failed or unavailable liveness surface is not equivalent to zero references (`polylogue/storage/blob_liveness.py:321-340`; `polylogue/storage/blob_gc.py:9-13`).
 - A published blob may legitimately have no durable ref yet; its reservation protects that publication window (`polylogue/storage/blob_publication.py:110-150`; `polylogue/storage/sqlite/archive_tiers/source.py:730-739`).
+- Membership preparation stores accepted session output and attachment claims on the canonical sealed PreparedJsonl artifact. Publication queues the same publisher's closed-page claims before the Source transaction, then reads attachment values and references from that artifact. A private captured copy can survive collection of an unreferenced public blob; losing or changing the sealed private capture refuses publication (`polylogue/storage/ingest_governance.py`; `polylogue/sources/prepared_jsonl.py`).
 - GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`gc_generation_members` in `polylogue/storage/sqlite/archive_tiers/source.py:689-704`; `polylogue/storage/blob_gc.py:571-588`).
-- A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`backfill_historical_revision_evidence` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
+- A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`apply_prepared_revision_replay` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
 - Rebuildable `index.db` must not become authority for an irreversible durable mutation; blob GC therefore requires source-ledger and active-index checks to agree (`polylogue/storage/blob_gc.py:7-20`; `polylogue/storage/blob_liveness.py:321-359`).
 
 ## DISCREPANCIES

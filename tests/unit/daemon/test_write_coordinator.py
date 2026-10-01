@@ -14,6 +14,7 @@ import sys
 import textwrap
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -40,7 +41,11 @@ from polylogue.sources.live.cold_build import ColdBuildGeneration, active_index_
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_custody_probe import archive_custody_available
-from tests.infra.sqlite_settlement_handle import SettlementHandle
+from tests.infra.sqlite_cursor_settlement import (
+    SettlementConnection,
+    arm_settlement,
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
+)
 
 
 def test_actor_priority_classifies_bulk_ingest_below_everything_else() -> None:
@@ -973,7 +978,7 @@ def test_thread_bridge_serializes_sync_request_bodies_without_overlap(tmp_path: 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path, observer=observe))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1035,7 +1040,7 @@ def test_thread_bridge_hold_waits_for_actual_acquisition(tmp_path: Path) -> None
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path, observer=observe))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1097,7 +1102,7 @@ def test_thread_bridge_run_sync_uses_the_bridge_default_timeout(tmp_path: Path) 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1142,7 +1147,7 @@ def test_thread_bridge_run_sync_with_timeout_overrides_the_bridge_default(tmp_pa
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1424,7 +1429,7 @@ def test_gate_release_waits_for_a_delegated_body_that_outlived_its_caller(
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1516,7 +1521,7 @@ def test_unbounded_bridge_wait_ends_when_its_owner_loop_stops(tmp_path: Path) ->
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
         coordinator_holder.append(DaemonWriteCoordinator(archive_root=tmp_path))
-        loop_ready.set()
+        loop.call_soon(loop_ready.set)
         loop.run_forever()
 
     loop_thread = threading.Thread(target=run_loop, daemon=True)
@@ -1726,7 +1731,7 @@ async def test_terminal_worker_retains_all_sql_owners_until_successful_successor
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     stores: list[ArchiveStore] = []
     original_threads: list[threading.Thread] = []
 
@@ -1737,9 +1742,8 @@ async def test_terminal_worker_retains_all_sql_owners_until_successful_successor
             store._enter_mutation_lease()
             store._conn.execute("BEGIN IMMEDIATE" if position == 0 else "BEGIN")
             store._conn.execute("SELECT COUNT(*) FROM sessions")
-            handle = SettlementHandle(store._conn)
+            handle = arm_settlement(store._conn)
             handles.append(handle)
-            store._conn = handle  # type: ignore[assignment]
         for store in stores:
             try:
                 store.close()
@@ -1803,16 +1807,16 @@ async def test_terminal_worker_retains_failed_temporary_user_writer(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     stores: list[archive_module.ArchiveStore] = []
     real_open = cast(Callable[..., sqlite3.Connection], vars(archive_module)["open_connection"])
 
     def controlled_open(path: Path, *args: object, **kwargs: object) -> sqlite3.Connection:
         connection = real_open(path, *args, **kwargs)
         if path.name == "user.db":
-            handle = SettlementHandle(connection)
+            handle = arm_settlement(connection)
             handles.append(handle)
-            return handle  # type: ignore[return-value]
+            return handle
         return connection
 
     def failed_commit(*args: object, **kwargs: object) -> None:
@@ -1859,15 +1863,14 @@ async def test_terminal_worker_cleanup_survives_shutdown_waiter_cancellation(tmp
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def leave_unsettled() -> None:
         store = ArchiveStore(root, initialize=False)
         store._enter_mutation_lease()
         store._conn.execute("BEGIN IMMEDIATE")
-        handle = SettlementHandle(store._conn)
+        handle = arm_settlement(store._conn)
         handles.append(handle)
-        store._conn = handle  # type: ignore[assignment]
         store.close()
 
     try:
@@ -1916,16 +1919,15 @@ async def test_cancelled_run_sync_caller_leaves_terminal_settlement_owned(tmp_pa
     coordinator = DaemonWriteCoordinator(archive_root=root)
     ready = threading.Event()
     release = threading.Event()
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     completions: asyncio.Queue[asyncio.Task[object]] = asyncio.Queue()
 
     def operation() -> None:
         store = ArchiveStore(root, initialize=False)
         store._enter_mutation_lease()
         store._conn.execute("BEGIN IMMEDIATE")
-        handle = SettlementHandle(store._conn)
+        handle = arm_settlement(store._conn)
         handles.append(handle)
-        store._conn = handle  # type: ignore[assignment]
         ready.set()
         release.wait()
         store.close()
@@ -1967,16 +1969,16 @@ async def test_terminal_settlement_owns_direct_and_nested_async_workers(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     backends: list[async_sqlite.SQLiteBackend] = []
     writer_threads: list[threading.Thread] = []
     real_connect = async_sqlite._connect_write_thread
 
     def controlled_connect(backend: async_sqlite.SQLiteBackend, grant: object) -> sqlite3.Connection:
-        handle = SettlementHandle(real_connect(backend, grant))  # type: ignore[arg-type]
+        handle = arm_settlement(real_connect(backend, grant))  # type: ignore[arg-type]
         handle.allow_cleanup.set()
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(async_sqlite, "_connect_write_thread", controlled_connect)
 
@@ -1989,8 +1991,10 @@ async def test_terminal_settlement_owns_direct_and_nested_async_workers(
         handle.allow_cleanup.clear()
         try:
             await backend.close()
-        except OSError:
-            pass  # Ordinary callers may log/discard the failed cleanup.
+        except BaseExceptionGroup as refused:
+            assert len(refused.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in refused.exceptions)
+            # Discarding an outcome cannot discard its physical owner.
 
     def nested_operation() -> None:
         delegation = delegate_write_lease()
@@ -2102,7 +2106,7 @@ async def test_terminal_worker_fork_refuses_before_inherited_mutex_or_sql(tmp_pa
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     stores: list[ArchiveStore] = []
 
     def leave_unsettled() -> None:
@@ -2110,9 +2114,8 @@ async def test_terminal_worker_fork_refuses_before_inherited_mutex_or_sql(tmp_pa
         stores.append(store)
         store._enter_mutation_lease()
         store._conn.execute("BEGIN IMMEDIATE")
-        handle = SettlementHandle(store._conn)
+        handle = arm_settlement(store._conn)
         handles.append(handle)
-        store._conn = handle  # type: ignore[assignment]
         store.close()
 
     child_pid: int | None = None
@@ -2194,23 +2197,23 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     real_sqlite_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
 
-    class FailedConfigurationHandle(SettlementHandle):
-        def execute(self, *args: object, **kwargs: object) -> object:
+    from typing import Any
+
+    class FailedConfigurationHandle(SettlementConnection):
+        def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
             raise OSError("synthetic profile setup failure")
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        connection = (
-            real_sqlite_connect(*args, **kwargs)
-            if factory_name == "initialize_archive_database"
-            else real_sqlite_connect(root / "source.db")
+        connection = real_sqlite_connect(*args, **{**kwargs, "factory": FailedConfigurationHandle})
+        sqlite3.Connection.execute(
+            connection, "BEGIN" if factory_name == "open_readonly_connection" else "BEGIN IMMEDIATE"
         )
-        connection.execute("BEGIN IMMEDIATE")
-        handle = FailedConfigurationHandle(connection)
+        handle = arm_settlement(connection)
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     if factory_name == "initialize_archive_database":
         monkeypatch.setattr(sqlite3, "connect", controlled_connect)
@@ -2220,7 +2223,7 @@ async def test_native_factory_failure_keeps_actual_connection_until_terminal_cle
     def leave_unsettled() -> None:
         try:
             if factory_name == "initialize_archive_database":
-                bootstrap.initialize_archive_database(root / "fresh-source.db", ArchiveTier.SOURCE, page_size=4096)
+                bootstrap.initialize_archive_database(root / "fresh-index.db", ArchiveTier.INDEX, page_size=4096)
                 return
             factory = getattr(connection_profile, factory_name)
             if factory_name == "open_isolated_write_connection":
@@ -2266,13 +2269,13 @@ async def test_cached_connection_settles_after_context_and_retains_failed_close(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(real_connect(*args, **kwargs))
+        handle = arm_settlement(real_connect(*args, **kwargs))
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(cached, "connect_measured", controlled_connect)
 
@@ -2331,15 +2334,15 @@ async def test_verified_leaf_is_retained_with_failed_native_close(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     leaves: list[audit_leaf.VerifiedAuditLeaf] = []
     real_connect = cast(Callable[..., sqlite3.Connection], sqlite3.connect)
     real_enter = audit_leaf.VerifiedAuditLeaf.__enter__
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(real_connect(*args, **kwargs))
+        handle = arm_settlement(real_connect(*args, **kwargs))
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     def remember_leaf(leaf: audit_leaf.VerifiedAuditLeaf) -> audit_leaf.VerifiedAuditLeaf:
         result = real_enter(leaf)
@@ -2392,15 +2395,15 @@ async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(real_connect(*args, **kwargs))
+        handle = arm_settlement(real_connect(*args, **kwargs))
         if handles:
             handle.allow_cleanup.set()
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     monkeypatch.setattr(cached, "connect_measured", controlled_connect)
 
@@ -2442,7 +2445,7 @@ async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
     root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
     configured = 0
     actual_configure = async_sqlite.configure_read_connection
 
@@ -2453,9 +2456,8 @@ async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
         if configured == 2:
 
             def install() -> None:
-                handle = SettlementHandle(connection._connection)  # type: ignore[attr-defined]
+                handle = arm_settlement(connection._connection)  # type: ignore[attr-defined]
                 handles.append(handle)
-                connection._connection = handle  # type: ignore[attr-defined]
 
             await connection._execute(install)  # type: ignore[attr-defined]
 
@@ -2467,8 +2469,9 @@ async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
             async with backend.read_connection() as connection:
                 await connection.execute("BEGIN")
                 await connection.execute("SELECT COUNT(*) FROM sessions")
-        except OSError:
-            pass
+        except BaseExceptionGroup as refused:
+            assert len(refused.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in refused.exceptions)
 
     called = False
 
@@ -2495,3 +2498,176 @@ async def test_admitted_reader_failed_close_remains_in_terminal_writer_census(
         for handle in handles:
             handle.allow_cleanup.set()
         assert await coordinator.shutdown(timeout=30.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("last grant returns physical custody on actual creator worker")
+async def test_last_worker_grant_failure_retains_terminal_worker_and_submission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import Future
+
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    real_close = os.close
+    entered, release = threading.Event(), threading.Event()
+    physical: Future[None] = Future()
+    threads: list[threading.Thread] = []
+    attempts: list[threading.Thread] = []
+
+    async with async_write_lease("test.last_worker_grant", archive_root=tmp_path) as lease:
+        custody = lease.custody
+        assert custody is not None
+        lock = custody._fd
+
+        def refuse_close(descriptor: int) -> None:
+            if descriptor == lock:
+                attempts.append(threading.current_thread())
+                raise OSError("synthetic worker descriptor close before effect")
+            real_close(descriptor)
+
+        def operation() -> None:
+            entered.set()
+            release.wait()
+
+        def submit(function: Callable[[], None]) -> Future[None]:
+            def run() -> None:
+                try:
+                    function()
+                except BaseException as error:
+                    physical.set_exception(error)
+                else:
+                    physical.set_result(None)
+
+            thread = threading.Thread(target=run, name="test-last-grant-creator")
+            threads.append(thread)
+            thread.start()
+            assert entered.wait(5)
+            # Actual owner retirement leaves the executing worker's grant as
+            # the last reference. Its complete() must not erase new cleanup.
+            lease.retire()
+            custody.close_owner()
+            monkeypatch.setattr(os, "close", refuse_close)
+            release.set()
+            return physical
+
+        dispatch = write_coordinator_module._WorkerDispatch(submit, lambda: ())
+        try:
+            with pytest.raises(DaemonWriterSettlementError):
+                await write_coordinator_module._run_writer_worker(coordinator, dispatch, operation, "test.last_grant")
+            assert not physical.done()
+            assert threads[0].is_alive()
+            assert custody._descriptor_cleanup_thread is threads[0]
+            assert coordinator._retained_workers()
+            assert not archive_custody_available(tmp_path)
+            assert attempts == [threads[0]]
+        finally:
+            monkeypatch.setattr(os, "close", real_close)
+            release.set()
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                real_close(descriptor)
+            if coordinator._retained_workers():
+                await coordinator._settle_terminal_workers()
+            for thread in threads:
+                await asyncio.to_thread(thread.join)
+        assert physical.done()
+        physical.result()
+        assert not coordinator._retained_workers()
+        assert custody._fd == -1
+        assert attempts == [threads[0]]
+    assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("explicit coordinator retry wakes original async cleanup task")
+@pytest.mark.parametrize("cancelled_waiter", [False, True])
+async def test_coordinator_second_settlement_retries_original_last_grant_cleanup(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, cancelled_waiter: bool
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import async_sqlite
+    from polylogue.storage.sqlite.write_lease import current_write_lease
+
+    root = workspace_env["archive_root"]
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    backend = async_sqlite.SQLiteBackend(root / "index.db")
+    real_close = os.close
+    failed = asyncio.Event()
+    custodies = []
+    connections = []
+    original_failure = OSError("synthetic first worker close refusal")
+    descriptor_failure = OSError("synthetic later grant close before effect")
+    attempts = []
+
+    async def operation() -> None:
+        lease = current_write_lease()
+        assert lease is not None and lease.custody is not None
+        custodies.append(lease.custody)
+        conn = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+        connections.append(conn)
+        execute = conn._execute
+        first = True
+
+        async def refuse_first_close(function: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal first
+            if first and getattr(function, "__name__", None) == "close_raw":
+                first = False
+                raise original_failure
+            return await execute(function, *args, **kwargs)  # type: ignore[no-untyped-call]
+
+        monkeypatch.setattr(conn, "_execute", refuse_first_close)
+        with pytest.raises(OSError) as caught:
+            await async_sqlite._close_backend_connection(conn)
+        assert caught.value is original_failure
+
+    with pytest.raises(DaemonWriterSettlementError):
+        await coordinator.run("test.async_last_grant", operation)
+    custody = custodies[0]
+    lock = custody._fd
+
+    def refuse_descriptor(descriptor: int) -> None:
+        if descriptor == lock:
+            attempts.append(threading.current_thread())
+            failed.set()
+            raise descriptor_failure
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "close", refuse_descriptor)
+    first = asyncio.create_task(coordinator._settle_terminal_workers())
+    second = None
+    try:
+        await asyncio.wait_for(failed.wait(), 5)
+        original = coordinator._terminal_async_attempt
+        assert original is not None and not original.done()
+        entry = async_sqlite._BACKEND_CONNECTIONS[id(connections[0])]
+        assert entry.cleanup_task is original
+        assert entry.cleanup_attempt is not None and not entry.cleanup_attempt.done()
+        if cancelled_waiter:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+            await asyncio.sleep(0)
+            second.cancel()
+            await asyncio.sleep(0)
+            assert not original.done()
+            assert not entry.cleanup_attempt.done()
+        monkeypatch.setattr(os, "close", real_close)
+        real_close(lock)
+        if second is None:
+            second = asyncio.create_task(coordinator._settle_terminal_workers())
+        else:
+            backend.request_sql_settlement()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+        assert isinstance(outcomes[0], BaseException)
+        assert isinstance(outcomes[1], asyncio.CancelledError if cancelled_waiter else BaseException)
+        assert original.done()
+        assert attempts == [threading.current_thread()]
+        assert id(connections[0]) not in async_sqlite._BACKEND_CONNECTIONS
+        assert not coordinator._retained_async_backends()
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        for descriptor in tuple(custody._pending_descriptor_closes):
+            real_close(descriptor)
+        backend.request_sql_settlement()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+        assert await coordinator.shutdown(timeout=1.0)

@@ -19,10 +19,11 @@ import os
 import select
 import sqlite3
 import threading
-from collections.abc import Callable
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -46,6 +47,9 @@ from polylogue.storage.sqlite.write_lease import (
     require_write_lease,
     write_lease,
     write_lease_enforced,
+)
+from tests.infra.sqlite_cursor_settlement import (
+    native_settlement_connections,  # noqa: F401  # Pytest fixture discovery.
 )
 
 
@@ -319,7 +323,7 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import arm_settlement
 
     root = tmp_path / "archive"
     root.mkdir()
@@ -329,15 +333,17 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
     archive._enter_mutation_lease()
     archive._conn.execute("BEGIN IMMEDIATE")
     archive._conn.execute("CREATE TABLE close_probe (value INTEGER)")
-    vector = SettlementHandle(connect_measured(":memory:"))
-    vector.connection.execute("BEGIN")
-    archive.operation_vector_connection = vector  # type: ignore[assignment]
+    vector = arm_settlement(connect_measured(":memory:"))
+    vector.execute("BEGIN")
+    archive.operation_vector_connection = vector
     try:
         with pytest.raises(ArchiveStoreSettlementError) as failure:
             archive.close()
         assert failure.value.store is archive
         assert isinstance(failure.value.failure, NativeConnectionSettlementError)
-        assert isinstance(failure.value.failure.failure, OSError)
+        assert isinstance(failure.value.failure.failure, BaseExceptionGroup)
+        assert len(failure.value.failure.failure.exceptions) == 2
+        assert all(isinstance(error, OSError) for error in failure.value.failure.failure.exceptions)
         assert current_write_lease() is not None
         vector.allow_cleanup.set()
         archive.close()
@@ -401,7 +407,7 @@ def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled
             finally:
                 finished.set()
 
-        contender = threading.Thread(target=competing_writer, context=contextvars.Context())
+        contender = threading.Thread(target=contextvars.Context().run, args=(competing_writer,))
         contender.start()
         assert not acquired.wait(0.05)
         assert not contender_failures
@@ -498,79 +504,43 @@ def test_archive_insight_rebuild_uses_store_mutation_admission(tmp_path: Path) -
 
 @pytest.mark.uses_real_clock("raw connection cleanup runs on its actual aiosqlite worker")
 def test_async_writer_grant_is_retained_until_worker_connection_closes(
-    monkeypatch: pytest.MonkeyPatch,
+    workspace_env: dict[str, Path],
 ) -> None:
-    """A failed aiosqlite close cannot retire the grant protecting its worker."""
-
-    class FakeGrant:
-        completed = False
-
-        def complete(self) -> None:
-            self.completed = True
-
-    class RawConnection:
-        fail_close = True
-        worker: threading.Thread | None = None
-
-        def set_progress_handler(self, callback: object, steps: int) -> None:
-            assert threading.current_thread() is self.worker
-            assert callback is None and steps == 0
-
-        def rollback(self) -> None:
-            assert threading.current_thread() is self.worker
-
-        def close(self) -> None:
-            assert threading.current_thread() is self.worker
-            if self.fail_close:
-                raise OSError("synthetic worker close failure")
-
-    import aiosqlite
-
+    """The actual worker and grant stay owned through native close failure."""
     from polylogue.storage.sqlite import async_sqlite
-
-    backend = cast(async_sqlite.SQLiteBackend, object())
-    raw = RawConnection()
-
-    def connect() -> RawConnection:
-        raw.worker = threading.current_thread()
-        return raw
-
-    connection = aiosqlite.Connection(connect, iter_chunk_size=64)  # type: ignore[arg-type]
-    grant = FakeGrant()
+    from polylogue.storage.sqlite.write_lease import async_write_lease
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     async def scenario() -> None:
-        monkeypatch.setitem(
-            async_sqlite._BACKEND_CONNECTIONS,
-            id(connection),
-            async_sqlite._BackendConnectionOwner(
-                backend,
-                connection,
-                threading.current_thread(),
-                asyncio.current_task(),
-                os.getpid(),
-                grant,  # type: ignore[arg-type]
-            ),
-        )
-        _ = await connection
-        try:
-            with pytest.raises(OSError, match="synthetic worker close failure"):
+        root = workspace_env["archive_root"]
+        backend = async_sqlite.SQLiteBackend(root / "index.db")
+        async with async_write_lease("test.worker-close", archive_root=root):
+            connection = await async_sqlite._open_configured_backend_connection(backend, read_only=True)
+            entry = async_sqlite._BACKEND_CONNECTIONS[id(connection)]
+            grant = entry.grant
+            assert grant is not None
+            raw = cast(
+                SettlementConnection,
+                await connection._execute(lambda: arm_settlement(connection._conn)),  # type: ignore[no-untyped-call]
+            )
+            try:
+                with pytest.raises(BaseExceptionGroup) as refused:
+                    await async_sqlite._close_backend_connection(connection, rollback=True)
+                assert len(refused.value.exceptions) == 2
+                assert all(isinstance(error, OSError) for error in refused.value.exceptions)
+                assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
+                assert not grant.custody_retired
+                assert connection._connection is raw and connection._running
+                assert connection._thread.is_alive()
+                raw.allow_cleanup.set()
                 await async_sqlite._close_backend_connection(connection, rollback=True)
-            assert id(connection) in async_sqlite._BACKEND_CONNECTIONS
-            assert not grant.completed
-            assert cast(object, connection._connection) is raw
-            assert connection._running
-            assert connection._thread.is_alive()
-            raw.fail_close = False
-            await async_sqlite._close_backend_connection(connection, rollback=True)
-            assert id(connection) not in async_sqlite._BACKEND_CONNECTIONS
-            assert grant.completed
-            assert connection._connection is None
-            connection._thread.join()
-            assert not connection._thread.is_alive()
-        finally:
-            if connection._running:
-                raw.fail_close = False
-                await connection.close()
+                assert id(connection) not in async_sqlite._BACKEND_CONNECTIONS
+                assert grant.custody_retired
+                assert connection._connection is None and not connection._thread.is_alive()
+                assert all(thread is raw.owner for _operation, thread in raw.calls)
+            finally:
+                raw.allow_cleanup.set()
+                await backend.close()
 
     asyncio.run(scenario())
 
@@ -1839,16 +1809,18 @@ def test_adoption_cleanup_retires_every_grant_and_preserves_body_failure(
     with write_lease("test.adoption_cleanup", archive_root=tmp_path):
         delegation = delegate_write_lease()
         monkeypatch.setattr(WriteLeaseThreadGrant, "revoke", fail_after_first_retirement)
-        with pytest.raises(ValueError) as caught:
+        primary = ValueError("synthetic body failure")
+        with pytest.raises(BaseExceptionGroup) as caught:
             with adopt_write_lease(delegation):
                 grants.extend([grant_write_lease_thread(), grant_write_lease_thread()])
-                raise ValueError("synthetic body failure")
+                raise primary
         assert len(grants) == 2
         assert all(not grant._custody_held for grant in grants)
         assert all(grant._revoked for grant in grants)
         assert delegation.settled
         assert not delegation.adopted
-        assert any("cleanup also failed" in note for note in caught.value.__notes__)
+        assert caught.value.exceptions[0] is primary
+        assert isinstance(caught.value.exceptions[1], OSError)
         assert not archive_custody_available(tmp_path)
     assert archive_custody_available(tmp_path)
 
@@ -1903,16 +1875,16 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
     from polylogue.storage.sqlite.archive_tiers import bootstrap
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from tests.infra.archive_custody_probe import archive_custody_available
-    from tests.infra.sqlite_settlement_handle import SettlementHandle
+    from tests.infra.sqlite_cursor_settlement import SettlementConnection, arm_settlement
 
     initialize_active_archive_root(tmp_path)
     actual_open = profiles.open_daemon_connection
-    handles: list[SettlementHandle] = []
+    handles: list[SettlementConnection] = []
 
     def open_connection(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = SettlementHandle(actual_open(*args, **kwargs))  # type: ignore[arg-type]
+        handle = arm_settlement(actual_open(*args, **kwargs))  # type: ignore[arg-type]
         handles.append(handle)
-        return handle  # type: ignore[return-value]
+        return handle
 
     def materialize(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
         assert tier is ArchiveTier.OPS
@@ -1928,7 +1900,7 @@ def test_initialized_tier_further_schema_sql_retains_failed_actual_close(
                 bootstrap.open_initialized_tier_connection(tmp_path / "ops.db", ArchiveTier.OPS, archive_root=tmp_path)
             owner = refused.value.owner
             assert cast(object, owner.connection) is handles[0]
-            assert handles[0].connection.in_transaction
+            assert handles[0].in_transaction
         assert not archive_custody_available(tmp_path)
         handles[0].allow_cleanup.set()
         owner.close()
@@ -1969,3 +1941,320 @@ async def test_coordinator_lease_observation_rejects_inherited_child_task(tmp_pa
     finally:
         await coordinator.shutdown(timeout=1.0)
     assert not coordinator_write_lease_active()
+
+
+@pytest.mark.parametrize("failed_binding", ["lock", "directory", "both"])
+def test_custody_ambiguous_close_retains_exact_binding_without_numeric_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_binding: str
+) -> None:
+    from polylogue.core.sql_settlement import retained_native_sql_owners
+    from polylogue.storage.sqlite import connection_profile  # noqa: F401 - registers the existing census
+    from polylogue.storage.sqlite.write_lease import ArchiveCustodySettlementError
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    real_close = os.close
+    attempts: list[int] = []
+    primary = ValueError("synthetic body failure")
+    with pytest.raises(BaseExceptionGroup) as caught:
+        with write_lease("test.ambiguous_custody", archive_root=tmp_path) as lease:
+            custody = lease.custody
+            assert custody is not None
+            lock, directory = custody._fd, custody._directory_fd
+            failing = (
+                {lock}
+                if failed_binding == "lock"
+                else {directory}
+                if failed_binding == "directory"
+                else {lock, directory}
+            )
+
+            def fail_before_close(descriptor: int) -> None:
+                if descriptor in (lock, directory):
+                    attempts.append(descriptor)
+                if descriptor in failing:
+                    raise OSError("synthetic close before effect")
+                real_close(descriptor)
+
+            monkeypatch.setattr(os, "close", fail_before_close)
+            raise primary
+    try:
+        assert caught.value.exceptions[0] is primary
+        assert attempts == [lock, directory]
+        assert custody in retained_native_sql_owners()
+        assert custody.held == (lock in failing)
+        if lock in failing:
+            assert not archive_custody_available(tmp_path)
+        before_retry = list(attempts)
+        with pytest.raises((ArchiveCustodySettlementError, BaseExceptionGroup)):
+            custody.close()
+        assert attempts == before_retry
+        with pytest.raises(UnleasedWriteError):
+            with write_lease("test.must_not_restart", archive_root=tmp_path):
+                pytest.fail("unresolved custody admitted new work")
+    finally:
+        # Controlled failures occurred before effect. Settle those actual
+        # retained bindings even if a behavioral assertion failed.
+        monkeypatch.setattr(os, "close", real_close)
+        assert custody is not None
+        for descriptor in tuple(custody._pending_descriptor_closes):
+            real_close(descriptor)
+        custody.close()
+    assert custody not in retained_native_sql_owners()
+    assert archive_custody_available(tmp_path)
+
+
+def test_custody_acquisition_failure_retains_partial_directory_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite import write_lease as lease_module
+    from polylogue.storage.sqlite.write_lease import ArchiveCustodySettlementError
+
+    real_open, real_close = os.open, os.close
+    selected: list[int] = []
+    primary = OSError("synthetic lock open failure")
+
+    def open_descriptor(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if path == lease_module.ARCHIVE_WRITE_CUSTODY_LOCK_NAME:
+            raise primary
+        descriptor = real_open(path, flags, *args, **kwargs)
+        selected.append(descriptor)
+        return descriptor
+
+    def fail_close(descriptor: int) -> None:
+        if descriptor in selected:
+            raise OSError("synthetic directory close before effect")
+        real_close(descriptor)
+
+    monkeypatch.setattr(os, "open", open_descriptor)
+    monkeypatch.setattr(os, "close", fail_close)
+    try:
+        with pytest.raises(BaseExceptionGroup) as caught:
+            lease_module._acquire_archive_write_custody(tmp_path)
+        assert caught.value.exceptions[0] is primary
+        cleanup = caught.value.exceptions[1]
+        assert isinstance(cleanup, ArchiveCustodySettlementError)
+        owner = cleanup.owner
+        assert owner._fd == -1
+        assert owner._directory_fd == selected[0]
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        with lease_module._CUSTODY_REGISTRY_LOCK:
+            retained = tuple(custody for custody in lease_module._CUSTODIES if custody.archive_root == tmp_path)
+        for custody in retained:
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                real_close(descriptor)
+            custody.close()
+    assert owner._directory_fd == -1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+@pytest.mark.parametrize("constructor_fault", [False, True])
+async def test_failed_async_acquisition_retains_original_worker_until_exact_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool, constructor_fault: bool
+) -> None:
+    from polylogue.storage.sqlite import write_lease as leases
+
+    real_open, real_close, real_fstat = os.open, os.close, os.fstat
+    selected: list[int] = []
+    primary = OSError("synthetic async custody construction failure")
+    construction_failed = False
+    cleanup_attempted = threading.Event()
+    attempts: list[threading.Thread] = []
+
+    def open_descriptor(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        if not constructor_fault and path == leases.ARCHIVE_WRITE_CUSTODY_LOCK_NAME:
+            raise primary
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == tmp_path:
+            selected.append(descriptor)
+        return descriptor
+
+    def close_before_effect(descriptor: int) -> None:
+        if descriptor in selected:
+            attempts.append(threading.current_thread())
+            cleanup_attempted.set()
+            raise OSError("synthetic async directory close before effect")
+        real_close(descriptor)
+
+    def fail_initial_fstat(descriptor: int) -> os.stat_result:
+        nonlocal construction_failed
+        if constructor_fault and descriptor in selected and not construction_failed:
+            construction_failed = True
+            raise primary
+        return real_fstat(descriptor)
+
+    monkeypatch.setattr(os, "open", open_descriptor)
+    monkeypatch.setattr(os, "close", close_before_effect)
+    monkeypatch.setattr(os, "fstat", fail_initial_fstat)
+
+    async def acquire() -> None:
+        async with async_write_lease("test.async_failed_acquisition", archive_root=tmp_path):
+            pytest.fail("failed acquisition admitted a writer")
+
+    task = asyncio.create_task(acquire())
+    owner = None
+    try:
+        assert await asyncio.to_thread(cleanup_attempted.wait, 30)
+        with leases._CUSTODY_REGISTRY_LOCK:
+            owner = next(custody for custody in leases._CUSTODIES if custody.archive_root == tmp_path)
+        original_worker = attempts[0]
+        assert owner._descriptor_cleanup_thread is original_worker
+        assert not task.done()
+        if cancelled:
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+    finally:
+        monkeypatch.setattr(os, "close", real_close)
+        with leases._CUSTODY_REGISTRY_LOCK:
+            retained = tuple(custody for custody in leases._CUSTODIES if custody.archive_root == tmp_path)
+        for custody in retained:
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                real_close(descriptor)
+            custody.request_sql_settlement()
+        outcome = await asyncio.gather(task, return_exceptions=True)
+    assert owner is not None
+    assert isinstance(outcome[0], BaseExceptionGroup)
+    assert original_worker is owner._descriptor_cleanup_thread or owner._descriptor_cleanup_thread is None
+    assert attempts == [original_worker]
+    assert owner._directory_fd == -1
+    assert owner not in leases._CUSTODIES
+    assert primary in tuple(_exception_graph(outcome[0]))
+
+
+def _exception_graph(error: BaseException) -> Iterator[BaseException]:
+    yield error
+    if isinstance(error, BaseExceptionGroup):
+        for child in error.exceptions:
+            yield from _exception_graph(child)
+
+
+@pytest.mark.asyncio
+async def test_transferred_async_custody_cleanup_keeps_original_loop_task_live(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.infra.archive_custody_probe import archive_custody_available
+
+    actual_close = os.close
+    cleanup_started = asyncio.Event()
+    owners = []
+    attempts: list[threading.Thread] = []
+    primary = ValueError("synthetic async body failure")
+
+    async def operation() -> None:
+        async with async_write_lease("test.loop_cleanup", archive_root=tmp_path) as lease:
+            owner = lease.custody
+            assert owner is not None
+            owners.append(owner)
+            descriptor = owner._fd
+
+            def fail_close(value: int) -> None:
+                if value == descriptor:
+                    attempts.append(threading.current_thread())
+                    cleanup_started.set()
+                    raise OSError("synthetic loop-owned close before effect")
+                actual_close(value)
+
+            monkeypatch.setattr(os, "close", fail_close)
+            raise primary
+
+    task = asyncio.create_task(operation())
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), 30)
+        owner = owners[0]
+        assert owner.owner_task is task
+        assert owner._descriptor_cleanup_task is task
+        assert not task.done()
+        assert not archive_custody_available(tmp_path)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        monkeypatch.setattr(os, "close", actual_close)
+        for owner in owners:
+            for descriptor in tuple(owner._pending_descriptor_closes):
+                actual_close(descriptor)
+            owner.request_sql_settlement()
+        outcome = await asyncio.gather(task, return_exceptions=True)
+    assert isinstance(outcome[0], BaseExceptionGroup)
+    assert primary in tuple(_exception_graph(outcome[0]))
+    assert any(isinstance(error, asyncio.CancelledError) for error in _exception_graph(outcome[0]))
+    assert attempts == [threading.current_thread()]
+    assert owner._fd == -1
+    assert archive_custody_available(tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_daemon_acquisition_physical_drain_keeps_gate_before_next_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+    from polylogue.storage.sqlite import write_lease as leases
+
+    actual_open, actual_close = os.open, os.close
+    failed_cleanup = threading.Event()
+    queued = asyncio.Event()
+    selected: list[int] = []
+    first = True
+
+    def open_descriptor(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal first
+        if first and path == leases.ARCHIVE_WRITE_CUSTODY_LOCK_NAME:
+            first = False
+            raise OSError("synthetic initial daemon lock opening failure")
+        descriptor = actual_open(path, flags, *args, **kwargs)
+        if path == tmp_path and first:
+            selected.append(descriptor)
+        return descriptor
+
+    def close_before_effect(descriptor: int) -> None:
+        if descriptor in selected:
+            failed_cleanup.set()
+            raise OSError("synthetic daemon directory close before effect")
+        actual_close(descriptor)
+
+    def observed(event: Any) -> None:
+        if event.actor == "test.daemon.next" and event.phase == "queued":
+            queued.set()
+
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path, observer=observed)
+    monkeypatch.setattr(os, "open", open_descriptor)
+    monkeypatch.setattr(os, "close", close_before_effect)
+    ran: list[str] = []
+
+    async def refused_operation() -> None:
+        ran.append("refused")
+
+    async def next_operation() -> None:
+        ran.append("next")
+
+    initial = asyncio.create_task(coordinator.run("test.daemon.initial", refused_operation))
+    successor = None
+    try:
+        assert await asyncio.to_thread(failed_cleanup.wait, 30)
+        with leases._CUSTODY_REGISTRY_LOCK:
+            owner = next(custody for custody in leases._CUSTODIES if custody.archive_root == tmp_path)
+        successor = asyncio.create_task(coordinator.run("test.daemon.next", next_operation))
+        await asyncio.wait_for(queued.wait(), 30)
+        assert not initial.done()
+        assert not successor.done()
+        assert coordinator.snapshot().active_actor == "test.daemon.initial"
+        assert ran == []
+    finally:
+        monkeypatch.setattr(os, "close", actual_close)
+        with leases._CUSTODY_REGISTRY_LOCK:
+            retained = tuple(custody for custody in leases._CUSTODIES if custody.archive_root == tmp_path)
+        for custody in retained:
+            for descriptor in tuple(custody._pending_descriptor_closes):
+                actual_close(descriptor)
+            custody.request_sql_settlement()
+        outcome = await asyncio.gather(initial, return_exceptions=True)
+        if successor is not None:
+            await successor
+        assert await coordinator.shutdown(timeout=1.0)
+    assert isinstance(outcome[0], BaseExceptionGroup)
+    assert ran == ["next"]
+    assert owner not in leases._CUSTODIES

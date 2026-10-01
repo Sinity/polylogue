@@ -15,6 +15,9 @@ here for existing callers that already pay the ``polylogue.api`` cost.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
+import sys
 import threading
 from collections.abc import Awaitable, Coroutine
 from typing import TypeVar
@@ -41,23 +44,34 @@ def run_coroutine_sync(coro: Awaitable[T]) -> T:
     global could be left pointing at a loop whose thread had stopped driving it,
     so ``run_coroutine_threadsafe`` scheduled work that never ran and
     ``future.result()`` blocked forever (observed hanging the full test suite).
-    A fresh thread + ``asyncio.run`` per call has no shared state, so it cannot
-    be poisoned by prior calls or test ordering; the cost (one thread spawn per
-    sync-bridge call, ~once per CLI invocation) is negligible.
+    The caller joins that physical thread. When it holds a compute reservation,
+    the bridge borrows that exact reservation and cancellation mailbox, so a
+    nested pure unit cannot submit-and-wait onto the saturated adapter. Native
+    SQL created by the bridge settles in its owning coroutine Task before the
+    loop or thread retires.
     """
     wrapper: Coroutine[object, object, T] = _await(coro)
+    compute = sys.modules.get("polylogue.core.compute")
+    borrow = compute.capture_compute_bridge() if compute is not None else contextlib.nullcontext
+
+    async def joined() -> T:
+        # Settle inside the physical coroutine Task, before asyncio.run retires
+        # it. Only newly created owners belong to this nested bridge unit.
+        with borrow():
+            return await wrapper
 
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(wrapper)
+        return asyncio.run(joined())
 
+    submitter_context = contextvars.copy_context()
     result: list[T] = []
     error: list[BaseException] = []
 
     def _runner() -> None:
         try:
-            result.append(asyncio.run(wrapper))
+            result.append(submitter_context.run(asyncio.run, joined()))
         except BaseException as exc:
             error.append(exc)
 

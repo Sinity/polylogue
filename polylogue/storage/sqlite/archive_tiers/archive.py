@@ -21,7 +21,6 @@ import threading
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from concurrent.futures import Future
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -110,6 +109,7 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
+    RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
 )
@@ -1366,8 +1366,11 @@ class ArchiveStore:
             with ExitStack() as stack:
                 if destination is not None:
                     if prepared_seal is not None:
-                        raise RuntimeError("inactive Index construction cannot borrow an active archive seal")
-                    scope = stack.enter_context(destination.mutation_scope(self._conn))
+                        if prepared_seal.destination != destination:
+                            raise RuntimeError("inactive Index preparation must name this exact owned destination")
+                        scope = stack.enter_context(prepared_seal.mutation_scope(self._conn))
+                    else:
+                        scope = stack.enter_context(destination.mutation_scope(self._conn))
                 else:
                     seal = prepared_seal
                     if seal is None:
@@ -2372,7 +2375,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None,
         stage_timing_prefix: str,
         manage_transaction: bool,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
         bulk_build: bool = False,
@@ -2956,6 +2959,7 @@ class ArchiveStore:
         *,
         parser_fingerprint: str,
         censused_at_ms: int,
+        revision_authority: RawRevisionAuthority | None,
         detail: str = "",
         retire_full_revision_governance: bool = False,
         projections: Sequence[SessionRevisionProjection] | None = None,
@@ -2972,6 +2976,7 @@ class ArchiveStore:
             retire_full_revision_governance=retire_full_revision_governance,
             projections=projections,
             manage_transaction=manage_transaction,
+            revision_authority=revision_authority,
         )
 
     def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
@@ -3063,10 +3068,11 @@ class ArchiveStore:
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
         skip_already_applied: bool = False,
-        prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
+        prepared_by_raw_id: dict[str, PreparedRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
-        preacquired_attachment_blobs_by_raw_id: Mapping[str, dict[Any, tuple[bytes | None, int, str]]] | None = None,
-        preacquired_attachment_refs_by_raw_id: Mapping[str, tuple[ArchiveSourceBlobRef, ...]] | None = None,
+        preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]]
+        | None = None,
+        preacquired_attachment_refs_by_raw_id: Mapping[str, Callable[[], Iterable[ArchiveSourceBlobRef]]] | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
         prepared_pending_session: ParsedSession | None = None,
         prepared_aggregate_rows: PreparedRows | None = None,
@@ -3115,8 +3121,8 @@ class ArchiveStore:
         bulk_build: bool = False,
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
-        preacquired_attachment_refs: tuple[ArchiveSourceBlobRef, ...] | None = None,
+        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
+        preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
         prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
         prepared_write: PreparedSessionWrite | None = None,
@@ -3206,7 +3212,7 @@ class ArchiveStore:
         stage_timings_s: dict[str, float] | None,
         stage_timing_prefix: str,
         manage_transaction: bool,
-        preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]],
+        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]],
         finalize_raw_parse: bool,
         revision_authoritative: bool = False,
         bulk_fts: bool = False,
@@ -6431,6 +6437,12 @@ class ArchiveStore:
 
             seal = PreparedIndexMutation(self.index_db_path, archive_root=self._write_lease_archive_root)
             with seal, seal.mutation_scope(conn) as mutation_scope:
+                from polylogue.storage.sqlite.write_lease import permitted_session_removals
+
+                if set(resolved_session_ids).issubset(
+                    permitted_session_removals(archive_root=self._write_lease_archive_root)
+                ):
+                    mutation_scope.authorize_session_removal(resolved_session_ids)
                 try:
                     for session_id in resolved_session_ids:
                         mutation_scope.note_deleted_session(session_id)

@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Sequence
+from contextlib import closing
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from polylogue.storage.sqlite.agent_thread_state import (
     SpawnRecord,
@@ -66,3 +69,23 @@ def seed_thread_titles(
 ) -> None:
     """Project curated thread titles alone."""
     seed_thread_state(conn, threads=titles, **kwargs)  # type: ignore[arg-type]
+
+
+def codex_state_export(threads: Sequence[tuple[str, str]]) -> bytes:
+    """Build a declared logical state export from neutral thread/title pairs."""
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    with TemporaryDirectory(prefix="synthetic-state-") as directory:
+        source = Path(directory) / "state_5.sqlite"
+        with closing(sqlite3.connect(source)) as conn:
+            conn.executescript(
+                "CREATE TABLE threads (id TEXT, title TEXT, cwd TEXT, created_at_ms INTEGER, "
+                "updated_at_ms INTEGER, source TEXT, model TEXT, agent_nickname TEXT, agent_role TEXT, archived INTEGER);"
+                "CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);"
+            )
+            conn.executemany(
+                "INSERT INTO threads VALUES (?, ?, '/repo', 1000, 2000, 'cli', 'synthetic', NULL, NULL, 0)", threads
+            )
+            conn.commit()
+        return logical_export_bytes(source, scope=member_export_scope(source))

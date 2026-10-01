@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, RawRevisionAuthority
 from polylogue.core.errors import SchemaSkew
 from polylogue.storage.archive_readiness import (
     CLAUDE_WORKFLOW_STAGE_NAME,
@@ -255,6 +255,7 @@ def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session
             [],
             parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=1,
+            revision_authority=None,
         )
 
     parser_census = cast(
@@ -554,6 +555,7 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
             parser_fingerprint=raw_authority_parser_fingerprint(),
             censused_at_ms=0,
             detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+            revision_authority=RawRevisionAuthority.BYTE_PROVEN,
         )
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)

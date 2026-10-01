@@ -262,7 +262,7 @@ async def test_a_transient_refusal_retries_the_claimed_run(
     pinned identity fails the moved generation as ``archive_identity_stale``,
     and cleaning up through the saturated admission class escapes the retry.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
 
@@ -456,7 +456,7 @@ async def test_a_retry_after_this_attempts_materialization_still_completes(
     retry, or count this attempt's own re-publication as unchanged, and the
     retry sees its own sessions as a dead attempt's and finalizes indeterminate.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
@@ -527,7 +527,7 @@ async def test_a_transient_refusal_of_a_fresh_ingest_stays_redrivable(
     Anti-vacuity (Codex P1, #5717): fence it as ``refused`` like a permanent
     failure and discovery excludes the stopped request, so it never materializes.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     archive_root, source = _archive(tmp_path)
     original = IngestExecution.archive_write
@@ -781,7 +781,7 @@ async def test_profile_receipts_survive_a_transient_retry(tmp_path: Path, monkey
     Anti-vacuity (Codex P1, #5717): reconverge on the retry and the published
     profiles come back ``already_satisfied``, conflicting with persisted pages.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
@@ -837,7 +837,7 @@ async def test_a_refusal_before_authority_loads_leaves_no_running_attempt(
     authority is unloaded leaves the attempt ``running`` under this live
     process, which no owner reclaims.
     """
-    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.core.compute import DaemonBackpressureError
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 
     archive_root, source = _archive(tmp_path)

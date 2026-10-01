@@ -214,7 +214,16 @@ class TestSessionExcisionActuator:
         assert plan.context["source_marker_inputs_accepted"] == 0
         assert plan.context["marker_input_digests"] == [marker.payload_sha256]
 
-        receipt = actuator.apply(plan, args)
+        executor = OperationExecutor(archive_root=archive_root)
+        authorization = executor.authorize(
+            actuator,
+            plan,
+            actor="user:test",
+            role="write",
+            capability="archive.excise_session",
+            confirmation_strength="confirm_flag",
+        )
+        receipt = executor.execute(actuator, plan, authorization, args)
         domain_receipt = cast("dict[str, object]", receipt.domain_receipt)
         counts = cast("dict[str, int]", domain_receipt["counts"])
         assert counts["source_marker_inputs_pending"] == 1
@@ -246,21 +255,16 @@ class TestSessionDeleteActuator:
         """The real delete actuator reaches the gateway after index mutation.
 
         Anti-vacuity: bypassing ``ArchiveStore.delete_sessions``' gateway
-        commit leaves this cache/deferred-effect observation empty even though
+        commit leaves this cache invalidation observation empty even though
         the session row was deleted.
         """
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         session_id = _seed_archive_session(archive_root, native_id="delete-effects")
         invalidated: list[bool] = []
-        deferred: list[tuple[str, bool]] = []
 
         monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
         monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: invalidated.append(True))
-        monkeypatch.setattr(
-            "polylogue.archive.write_effects.DEFERRED_EFFECT_QUEUE.enqueue",
-            lambda effect, ctx: deferred.append((effect.name, ctx.conn.in_transaction)),
-        )
 
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             actuator = SessionDeleteActuator()
@@ -276,7 +280,6 @@ class TestSessionDeleteActuator:
         assert invalidated == [True]
         # F614: the invalidation is part of the admitted writer transaction, so
         # there is no independent deferred writer left to race the coordinator.
-        assert deferred == []
 
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
@@ -2754,3 +2757,66 @@ def test_seam_keeps_a_recreated_tier_and_clears_sidecars_of_a_vanished_one(tmp_p
     assert not index_db.with_name("index.db-wal").exists()
     assert ops_db.read_bytes() == b"recreated after the preview"
     assert ops_db.with_name("ops.db-wal").exists()
+
+
+@pytest.mark.parametrize("user_reference", ["none", "deleted_target_assertion", "surviving_evidence"])
+def test_audited_excision_recovery_keeps_exact_removal_authority(tmp_path: Path, user_reference: str) -> None:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.mutation_transaction import ReplayHandles, resolve_interrupted_operation
+    from polylogue.storage.sqlite.write_lease import permitted_session_removals, write_lease
+
+    session_id = _seed_archive_session(tmp_path, native_id="recorded-excision-recovery")
+    args = SessionExcisionArgs(tmp_path, session_id, "recorded reason", "user:recorded", False)
+    binding = runtime_operation_binding(SessionExcisionActuator())
+    principal = MutationPrincipal("user:recorded", frozenset({"archive.excise_session"}), "api", "write")
+    executor = OperationExecutor.for_archive_root(tmp_path)
+    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
+    authorization = executor.authorize_bound(binding, preview, principal)
+    started = executor.begin_bound(binding, preview, authorization, args)
+    assert started.operation_id is not None
+    audit = AuditRepository.for_archive_root(tmp_path)
+    operations = audit.nonterminal_operations_overlapping(started.plan.target_refs)
+    operation = next(item for item in operations if item.operation_id == started.operation_id)
+    if user_reference != "none":
+        from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+        survivor = _seed_archive_session(tmp_path, native_id="recovery-survivor")
+        with sqlite3.connect(tmp_path / "user.db") as user:
+            upsert_assertion(
+                user,
+                assertion_id="recovery-protection",
+                target_ref=f"session:{survivor if user_reference == 'surviving_evidence' else session_id}",
+                kind=AssertionKind.NOTE,
+                value={"body": "Retained content"},
+                author_ref="user:local",
+                author_kind="user",
+                evidence_refs=(f"session:{session_id}",),
+                now_ms=1,
+            )
+    handles = ReplayHandles(tmp_path)
+    try:
+        # Exercise the actual recorded custom recovery wrapper. The fixture
+        # selects its begun operation explicitly; it does not fake process death.
+        resolution = resolve_interrupted_operation(audit, handles, operation)
+        refused = user_reference == "surviving_evidence"
+        assert resolution.outcome == ("replay-failed" if refused else "complete")
+        if refused:
+            assert "ReferenceSealError" in resolution.detail
+        else:
+            assert resolution.receipt is not None and resolution.receipt.affected_count == 1
+        assert audit.operation_plan(started.operation_id).plan_hash == started.plan.plan_hash
+        with write_lease("test.recovery-terminal-permission", archive_root=tmp_path):
+            assert permitted_session_removals(archive_root=tmp_path) == frozenset()
+    finally:
+        handles.close()
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        exists = index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    assert (exists is not None) is (user_reference == "surviving_evidence")
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        assertion = user.execute(
+            "SELECT evidence_refs_json FROM assertions WHERE assertion_id = ?", ("recovery-protection",)
+        ).fetchone()
+    if user_reference == "surviving_evidence":
+        assert assertion is not None and json.loads(assertion[0]) == [f"session:{session_id}"]
+    else:
+        assert assertion is None

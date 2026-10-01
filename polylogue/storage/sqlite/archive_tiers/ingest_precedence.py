@@ -79,7 +79,7 @@ def should_skip_stale_replace(
     conversation -- without an accepted head, and this function's ordinary
     timestamp comparison (not content-subset awareness) decided the
     outcome. Recomputing revision membership under current code
-    (``backfill_historical_revision_evidence``) resolves that case correctly
+    (``apply_prepared_revision_replay``) resolves that case correctly
     upstream of this function.
 
     An implausibly far-future *stored* timestamp is not freshness evidence
@@ -210,7 +210,7 @@ def revision_authority_refuses_write(
       winning raw attempting to (re)establish its own content, not a
       competing/losing raw trying to overwrite the winner (polylogue-buq8/
       i415/lkos: ``raw_revision_heads`` can be populated by a bookkeeping-
-      only backfill pass -- e.g. ``backfill_historical_revision_evidence``
+      only backfill pass -- e.g. ``apply_prepared_revision_replay``
       recomputing authority for pre-governance sessions -- that records
       *which* raw is authoritative without re-running message extraction
       against it. Before this fix, that left a session's original,

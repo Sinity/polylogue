@@ -30,15 +30,8 @@ Anti-vacuity: ``test_finished_build_comparison_rejects_a_diverged_or_indebted_ar
 executes both mutations a hollow comparator would survive -- one unresolved
 convergence-debt row and one deleted ``blocks`` row.
 
-The replacement arm's measured elapsed time was once dominated by
-``spill_prefetch.decode_concurrent`` rather than by its own work: the AUTO
-pipeline-decode prefetcher blocked for a full 30 s SQLite busy timeout on its
-first reparse inside the owned-generation bulk-build route (0.10 s with
-``pipeline_decode=False``, same output). polylogue-cz17d fixed that at the
-source -- a prefetch worker no longer opens a handle to an EXCLUSIVE-locked
-owned generation. Both arms still run the production default and this module
-still encodes no timing tolerance, so a regression re-appears as elapsed time
-in the receipt rather than being hidden by a bound.
+Both arms use the production retained-parse route and encode no timing
+tolerance. Runtime measurements remain separate from output equivalence.
 """
 
 from __future__ import annotations
@@ -152,7 +145,7 @@ class _ArmRun:
 
 
 def test_replay_prefetch_counts_are_separate_from_stage_durations(tmp_path: Path) -> None:
-    with revision_backfill._ParsedSessionSpill(tmp_path, max_cached_payload_bytes=None) as spill:
+    with revision_backfill._ParsedSessionSpill(tmp_path) as spill:
         prefetcher = revision_backfill._ReplaySpillPrefetcher(
             spill,
             archive_root=tmp_path,
@@ -176,9 +169,9 @@ def test_replay_prefetch_counts_are_separate_from_stage_durations(tmp_path: Path
 
 def test_replay_enrichment_counts_are_request_local() -> None:
     @revision_backfill._capture_replay_enrichment_degradations
-    def replay_probe() -> revision_backfill.RevisionBackfillResult:
+    def replay_probe() -> revision_backfill.PreparedRevisionReplayResult:
         revision_backfill._count_enrichment_degradation("probe")
-        return revision_backfill.RevisionBackfillResult(0, 0, 0, 0, 0, 0)
+        return revision_backfill.PreparedRevisionReplayResult(0, 0, 0, 0, 0, 0)
 
     first = replay_probe()
     second = replay_probe()

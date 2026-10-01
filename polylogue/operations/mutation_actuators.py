@@ -169,7 +169,8 @@ class SessionExcisionActuator(ConvergentReplay):
         from polylogue.security.excision import plan_session_excision
 
         plan = plan_session_excision(args.archive_root, args.session_id, cascade_lineage=args.cascade_lineage)
-        target_refs = ((make_target_ref("session", args.session_id),) if plan.found else ()) + tuple(
+        already_excised = not plan.found and _excision_recorded(args.archive_root, args.session_id)
+        target_refs = ((make_target_ref("session", args.session_id),) if plan.found or already_excised else ()) + tuple(
             make_target_ref("session", sid) for sid in plan.lineage_dependent_session_ids
         )
         return build_plan(
@@ -182,6 +183,7 @@ class SessionExcisionActuator(ConvergentReplay):
                 "session_id": args.session_id,
                 "actor": args.actor,
                 "found": plan.found,
+                "already_excised": already_excised,
                 "reason": args.reason,
                 "cascade_lineage": args.cascade_lineage,
                 "lineage_dependent_session_ids": list(plan.lineage_dependent_session_ids),
@@ -194,10 +196,23 @@ class SessionExcisionActuator(ConvergentReplay):
     def apply(self, plan: MutationPlan, args: SessionExcisionArgs) -> MutationReceipt:
         from polylogue.security.excision import (
             ExcisionBlobReferenceUnknownError,
+            ExcisionReceipt,
             LineageDependentsError,
             apply_session_excision,
         )
 
+        if not plan.context.get("found") and plan.context.get("already_excised"):
+            return MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="already_satisfied",
+                target_refs=plan.target_refs,
+                affected_count=0,
+                detail="excision_recorded",
+                receipt_ref=None,
+                applied_at=plan.prepared_at,
+                domain_receipt=ExcisionReceipt(session_id=args.session_id, found=False).as_dict(),
+            )
         if not plan.context.get("found"):
             return MutationReceipt(
                 operation=self.operation,
@@ -228,6 +243,13 @@ class SessionExcisionActuator(ConvergentReplay):
                 detail=str(exc),
                 receipt_ref=None,
                 applied_at=plan.prepared_at,
+                domain_receipt={
+                    "refusal_kind": (
+                        "lineage_dependents_unresolved"
+                        if isinstance(exc, LineageDependentsError)
+                        else "blob_references_undecided"
+                    )
+                },
             )
         # Excision writes its durable user.db record before it drops the
         # rebuildable index row, and ``found`` is read from that index. A

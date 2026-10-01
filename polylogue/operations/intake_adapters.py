@@ -1620,7 +1620,8 @@ class RawMaterializationDiscovery:
             return ()
         self._queue_evidence_dependents(page)
         statuses = adapter.inspect(frame, page)
-        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        refusals = adapter.terminal_decode_refusals(page)
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals)
 
     def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         """Serve at most ``limit`` transcripts of the queued project scans.
@@ -1653,7 +1654,8 @@ class RawMaterializationDiscovery:
         if not page:
             return ()
         statuses = adapter.inspect(frame, tuple(page))
-        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+        refusals = adapter.terminal_decode_refusals(tuple(page))
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals)
 
     def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
         """Queue a scan of the project each newly admitted session index describes."""
@@ -1693,7 +1695,10 @@ class RawMaterializationDiscovery:
             selected: tuple[str, ...] = ()
             if page:
                 statuses = adapter.inspect(frame, page)
-                selected = tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+                refusals = adapter.terminal_decode_refusals(page)
+                selected = tuple(
+                    raw_id for raw_id in page if statuses.get(raw_id) != "valid" and raw_id not in refusals
+                )
             if not selected:
                 self._advance_sweep(next_cursor)
                 return ()

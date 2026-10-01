@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -94,12 +96,12 @@ class _SelectedSessionAdapter(Protocol):
 
 
 if TYPE_CHECKING:
-    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 
 class _DerivationAdmission:
-    """Bridge one short publish from a compute worker to the daemon writer."""
+    """Admit publication on the preparation's existing compute worker."""
 
     def __init__(self, bridge: DaemonWriteThreadBridge, *, loop_thread_id: int) -> None:
         self._bridge = bridge
@@ -108,9 +110,19 @@ class _DerivationAdmission:
     def __call__(self, domain: str, publish: Callable[[], bool]) -> bool:
         if threading.get_ident() == self._loop_thread_id:
             raise RuntimeError("derivation publish was invoked on the daemon event loop thread")
-        # The bridge owns the coordinator until the transaction really returns;
-        # a caller-side timeout must not admit a second archive writer.
-        return self._bridge.run_sync_with_timeout(f"derivation.{domain}", None, publish)
+        from polylogue.core.compute import capture_compute_bridge
+        from polylogue.core.write_lease import adopt_write_lease
+
+        # Preparation observers remain on their creator. The joined cleanup
+        # boundary preserves those entry handles and settles publication's new
+        # native owners before the delegated writer gate can be released.
+        settle_publication = capture_compute_bridge()
+        with (
+            self._bridge.hold(f"derivation.{domain}") as delegation,
+            adopt_write_lease(delegation),
+            settle_publication(),
+        ):
+            return publish()
 
 
 class DerivationConvergenceOwner:
@@ -220,8 +232,8 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
 
     Composition supplies the already-constructed converger and its one
     session-profile adapter.  This owner deliberately does not construct a
-    pool or a writer: it borrows the process adapter and bridges only each
-    short publication back to the daemon's coordinator.
+    pool or a writer: it borrows the process adapter and adopts coordinator
+    admission for each publication on the preparation's creator worker.
     """
 
     async def converge_selected(
@@ -628,195 +640,210 @@ def _converge_selected_session_parts_sync(
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"compute: {exc}"))
                 break
-            prepared_binding = replacement.input_binding if target.expected == "required" else None
+            publication_started = False
             try:
-                before_publication = _selected_session_facts(adapter, frame, target.session_id)
-            except Exception as exc:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "failed",
-                        before,
-                        input_binding=prepared_binding,
-                        reason=f"pre-publication inspection: {exc}",
+                prepared_binding = replacement.input_binding if target.expected == "required" else None
+                try:
+                    before_publication = _selected_session_facts(adapter, frame, target.session_id)
+                except Exception as exc:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "failed",
+                            before,
+                            input_binding=prepared_binding,
+                            reason=f"pre-publication inspection: {exc}",
+                        )
                     )
-                )
-                break
-            if (moved := _selected_disposition_moved(target, before_publication)) is not None:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before_publication,
-                        input_binding=prepared_binding,
-                        reason=moved,
+                    break
+                if (moved := _selected_disposition_moved(target, before_publication)) is not None:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before_publication,
+                            input_binding=prepared_binding,
+                            reason=moved,
+                        )
                     )
-                )
-                break
-            if _selected_satisfied(target, before_publication):
-                outcomes.append(_selected_outcome(target, "already_satisfied", before_publication))
-                break
-            if target.expected == "required" and before_publication.input_binding != prepared_binding:
+                    break
+                if _selected_satisfied(target, before_publication):
+                    outcomes.append(_selected_outcome(target, "already_satisfied", before_publication))
+                    break
+                if target.expected == "required" and before_publication.input_binding != prepared_binding:
+                    if attempt == MAX_SELECTED_BINDING_RETRIES:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "pending",
+                                before_publication,
+                                input_binding=prepared_binding,
+                                reason="binding_moved",
+                            )
+                        )
+                        break
+                    before = before_publication
+                    continue
+                # Do not admit the bridge after a stop request. A stop received
+                # while the bridge is running is settled below before this worker
+                # returns, because publication and its cleanup remain on this worker.
+                if stop_requested() is not None:
+                    return tuple(outcomes)
+                if not _selected_recipe_is_current(adapter, frame, expected_recipe):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before_publication,
+                            input_binding=prepared_binding,
+                            reason="selected part recipe changed before publication",
+                        )
+                    )
+                    break
+                if not _selected_frame_is_current(adapter, frame):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before,
+                            input_binding=prepared_binding,
+                            reason="selected part generation changed before publication",
+                        )
+                    )
+                    break
+                held_at_admission: list[str] = []
+
+                def publish_unless_held(
+                    replacement: ReplacementLike = replacement,
+                    target: SelectedSessionTarget = target,
+                    held_at_admission: list[str] = held_at_admission,
+                ) -> bool:
+                    nonlocal publication_started
+                    # Re-decide the barrier inside the writer admission: compute
+                    # ran outside it, so a newer unpublished revision may have been
+                    # staged since the pre-compute check.
+                    if barrier is not None and target.expected == "required":
+                        try:
+                            waiting = target.session_id in barrier((target.session_id,))
+                        except Exception as exc:
+                            held_at_admission.append(f"publication barrier unreadable: {exc}")
+                            return False
+                        if waiting:
+                            held_at_admission.append("awaits primary publication")
+                            return False
+                    publication_started = True
+                    return adapter.publish(frame, replacement)
+
+                try:
+                    accepted = admission("session_profile", publish_unless_held)
+                except Exception as exc:
+                    # polylogue-ylh7v: session-profile publication is one index
+                    # transaction with one outcome. The partial-commit branch this
+                    # used to carry existed only for marker lowering, which ran a
+                    # second, non-atomic user-tier transaction behind an
+                    # already-committed index write. Markers are their own domain
+                    # now (``storage/derived/session/marker_domain.py``), so a
+                    # failed publication here failed, full stop.
+                    outcomes.append(
+                        _selected_outcome(
+                            target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
+                        )
+                    )
+                    break
+                if held_at_admission:
+                    outcomes.append(
+                        _selected_outcome(
+                            target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
+                        )
+                    )
+                    break
+                if not _selected_frame_is_current(adapter, frame):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason="selected part generation changed after publication",
+                        )
+                    )
+                    break
+                try:
+                    after = _selected_session_facts(adapter, frame, target.session_id)
+                except Exception as exc:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "unknown",
+                            None,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason=f"post-publication certification unavailable: {exc}",
+                        )
+                    )
+                    break
+                if (moved := _selected_disposition_moved(target, after)) is not None:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason=moved,
+                        )
+                    )
+                    break
+                if _selected_satisfied(target, after):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "published" if accepted else "already_satisfied",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                        )
+                    )
+                    break
+                if accepted:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "failed",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason="publication returned success without output certification",
+                        )
+                    )
+                    break
+                refused_publication = refused_publication or after.input_binding == prepared_binding
                 if attempt == MAX_SELECTED_BINDING_RETRIES:
                     outcomes.append(
                         _selected_outcome(
                             target,
                             "pending",
-                            before_publication,
+                            after,
                             input_binding=prepared_binding,
-                            reason="binding_moved",
+                            # An unchanged binding means the publisher refused the
+                            # prepared output, not that its input moved.
+                            reason="publication_refused" if refused_publication else "binding_moved",
                         )
                     )
                     break
-                before = before_publication
-                continue
-            # Do not admit the bridge after a stop request. A stop received
-            # while the bridge is running is settled below before this worker
-            # returns, because ``run_sync_with_timeout`` is synchronous here.
-            if stop_requested() is not None:
-                return tuple(outcomes)
-            if not _selected_recipe_is_current(adapter, frame, expected_recipe):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before_publication,
-                        input_binding=prepared_binding,
-                        reason="selected part recipe changed before publication",
-                    )
-                )
-                break
-            if not _selected_frame_is_current(adapter, frame):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before,
-                        input_binding=prepared_binding,
-                        reason="selected part generation changed before publication",
-                    )
-                )
-                break
-            held_at_admission: list[str] = []
-
-            def publish_unless_held(
-                replacement: ReplacementLike = replacement,
-                target: SelectedSessionTarget = target,
-                held_at_admission: list[str] = held_at_admission,
-            ) -> bool:
-                # Re-decide the barrier inside the writer admission: compute
-                # ran outside it, so a newer unpublished revision may have been
-                # staged since the pre-compute check.
-                if barrier is not None and target.expected == "required":
+                before = after
+            finally:
+                if not publication_started:
+                    primary = sys.exception()
                     try:
-                        waiting = target.session_id in barrier((target.session_id,))
-                    except Exception as exc:
-                        held_at_admission.append(f"publication barrier unreadable: {exc}")
-                        return False
-                    if waiting:
-                        held_at_admission.append("awaits primary publication")
-                        return False
-                return adapter.publish(frame, replacement)
-
-            try:
-                accepted = admission("session_profile", publish_unless_held)
-            except Exception as exc:
-                # polylogue-ylh7v: session-profile publication is one index
-                # transaction with one outcome. The partial-commit branch this
-                # used to carry existed only for marker lowering, which ran a
-                # second, non-atomic user-tier transaction behind an
-                # already-committed index write. Markers are their own domain
-                # now (``storage/derived/session/marker_domain.py``), so a
-                # failed publication here failed, full stop.
-                outcomes.append(
-                    _selected_outcome(
-                        target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
-                    )
-                )
-                break
-            if held_at_admission:
-                outcomes.append(
-                    _selected_outcome(
-                        target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
-                    )
-                )
-                break
-            if not _selected_frame_is_current(adapter, frame):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason="selected part generation changed after publication",
-                    )
-                )
-                break
-            try:
-                after = _selected_session_facts(adapter, frame, target.session_id)
-            except Exception as exc:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "unknown",
-                        None,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason=f"post-publication certification unavailable: {exc}",
-                    )
-                )
-                break
-            if (moved := _selected_disposition_moved(target, after)) is not None:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason=moved,
-                    )
-                )
-                break
-            if _selected_satisfied(target, after):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "published" if accepted else "already_satisfied",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                    )
-                )
-                break
-            if accepted:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "failed",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason="publication returned success without output certification",
-                    )
-                )
-                break
-            refused_publication = refused_publication or after.input_binding == prepared_binding
-            if attempt == MAX_SELECTED_BINDING_RETRIES:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "pending",
-                        after,
-                        input_binding=prepared_binding,
-                        # An unchanged binding means the publisher refused the
-                        # prepared output, not that its input moved.
-                        reason="publication_refused" if refused_publication else "binding_moved",
-                    )
-                )
-                break
-            before = after
+                        replacement.close()
+                    except BaseException as cleanup:
+                        if primary is not None:
+                            raise BaseExceptionGroup(
+                                "selected publication abandonment and cleanup failed", [primary, cleanup]
+                            ) from primary
+                        raise
     return tuple(outcomes)
 
 

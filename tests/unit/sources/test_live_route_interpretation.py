@@ -554,24 +554,14 @@ def test_live_append_keeps_the_chain_cost_across_a_model_switch(tmp_path: Path) 
     assert (header, models) == _session_usage(whole_root)
 
 
-def test_broken_pool_restart_after_shutdown_creates_no_new_pool(tmp_path: Path) -> None:
-    """A pool broken during shutdown is not replaced by a fresh one.
+def test_stage_shutdown_retains_shared_compute_owner(tmp_path: Path) -> None:
+    from polylogue.core.compute import compute_adapter
 
-    Anti-vacuity: drop the ``_closing`` guard in
-    ``_restart_broken_process_pool`` and a new executor replaces the stopped
-    one, able to seal carriers after cleanup.
-    """
-    from concurrent.futures import ProcessPoolExecutor
-
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
-    try:
-        executor = stage._executor
-        assert isinstance(executor, ProcessPoolExecutor)
-        stage._closing = True
-        stage._restart_broken_process_pool()
-        assert stage._executor is executor
-    finally:
-        stage.shutdown()
+    adapter = compute_adapter()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    assert stage._executor is adapter
+    stage.shutdown()
+    assert adapter.submit(lambda: "still-open").future.result(timeout=2) == "still-open"
 
 
 def test_live_append_keeps_origin_provenance_for_an_equal_heuristic_title(tmp_path: Path) -> None:

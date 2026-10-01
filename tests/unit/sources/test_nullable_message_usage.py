@@ -79,7 +79,7 @@ def test_unknown_and_measured_zero_survive_prepared_write_and_public_message(tmp
             conn,
             session,
             content_hash=str(session_content_hash(session)),
-            prepared=prepare_session_rows(session),
+            prepared_rows=prepare_session_rows(session),
         )
         rows = conn.execute(
             "SELECT message_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
