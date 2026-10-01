@@ -10,6 +10,8 @@ from io import BufferedReader, BytesIO, RawIOBase, StringIO
 from pathlib import Path
 from typing import IO, TypeAlias
 
+from polylogue.core.compute_cancel import check_compute_cancelled
+
 RawLineStream: TypeAlias = IO[bytes] | IO[str]
 
 
@@ -32,6 +34,7 @@ class _TextBytes(RawIOBase):
         return True
 
     def readinto(self, buffer: object) -> int:
+        check_compute_cancelled()
         if self.check_stop is not None:
             self.check_stop()
         view = memoryview(buffer)  # type: ignore[arg-type]
@@ -117,6 +120,7 @@ class _DiskBytes(RawIOBase):
         view = memoryview(buffer)  # type: ignore[arg-type]
         copied = 0
         while copied < len(view) and self.position < self.size:
+            check_compute_cancelled()
             if self.check_stop is not None:
                 self.check_stop()
             cursor = self.connection.execute(
@@ -165,6 +169,7 @@ def rewindable_byte_stream(
         conn.execute("CREATE TABLE chunks(offset INTEGER PRIMARY KEY, payload BLOB NOT NULL)")
         size = 0
         while True:
+            check_compute_cancelled()
             if check_stop is not None:
                 check_stop()
             chunk = stream.read(65536)

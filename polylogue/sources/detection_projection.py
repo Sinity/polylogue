@@ -19,6 +19,7 @@ from typing import BinaryIO, Literal, Protocol
 
 import ijson
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
@@ -62,6 +63,7 @@ class _ObservedLine:
         self.callback_failure: BaseException | None = None
 
     def read(self, size: int = -1) -> bytes:
+        check_compute_cancelled()
         if self.check_stop is not None:
             try:
                 self.check_stop()
@@ -91,6 +93,7 @@ class _DetectionText(io.RawIOBase):
         return True
 
     def readinto(self, buffer: object) -> int:
+        check_compute_cancelled()
         if self.check_stop is not None:
             try:
                 self.check_stop()
@@ -99,6 +102,7 @@ class _DetectionText(io.RawIOBase):
                 raise
         view = memoryview(buffer)  # type: ignore[arg-type]
         while not self.pending and not self.ended:
+            check_compute_cancelled()
             chunk = self.handle.read(1024 * 1024)
             self.ended = not chunk
             text = self.decoder.decode(chunk, final=self.ended)

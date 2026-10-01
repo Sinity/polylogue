@@ -23,6 +23,7 @@ from polylogue.archive.artifact_taxonomy.support import (
     path_only_sidecar_reason,
     record_carries_provider_envelope,
 )
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
@@ -649,6 +650,7 @@ def _classify_artifact_records(
         return ArtifactStreamClassification(classification, proved, count)
 
     for value in records:
+        check_compute_cancelled()
         if check_stop is not None:
             check_stop()
         count += 1

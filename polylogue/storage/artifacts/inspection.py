@@ -27,6 +27,7 @@ from polylogue.archive.raw_payload.decode import (
     JSONLSessionArtifactScan,
     scan_jsonl_session_artifact,
 )
+from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.observation import derive_bundle_scope, schema_cluster_id
@@ -441,6 +442,8 @@ def inspect_raw_artifact(record: RawSessionRecord, *, blob_store: BlobStore | No
             first_observed_at=observed_at,
             last_observed_at=observed_at,
         )
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         path_classification = classify_artifact_path(record.source_path, provider=provider_token or "")
         artifact_kind = (
