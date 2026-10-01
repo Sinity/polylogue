@@ -271,3 +271,52 @@ def test_unbound_archive_fallback_measures_every_count_in_one_snapshot(
     assert payload["message_indexable_count"] == payload["message_indexed_count"] == committed_before
     assert payload["coverage_pct"] == 100.0
     assert payload["messages_ready"] is True
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", r"cannot read 'C:\Users\private space\例.json'"]
+)
+def test_returned_fts_failure_stays_unavailable_and_private_on_minimal_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    from unittest.mock import patch
+
+    from polylogue.daemon import fts_status, status_snapshot
+
+    index = tmp_path / "index.db"
+    index.touch()
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError(diagnostic)
+
+    monkeypatch.setattr(fts_status, "open_readonly_connection", fail)
+    # This test examines the returned failed-acquisition payload, after the
+    # real collector has finished; deadline behavior has its own contract tests.
+    import threading
+
+    from polylogue.operations import status_protocol
+
+    registry = fts_status._fts_readiness_registry(index)
+    target_spec = registry.specs[0]
+    completed = threading.Event()
+    run_collector = status_protocol._run_collector
+
+    def observe_completion(spec: object, attempt: object) -> None:
+        run_collector(spec, attempt)  # type: ignore[arg-type]
+        if spec is target_spec:
+            completed.set()
+
+    monkeypatch.setattr(status_protocol, "_run_collector", observe_completion)
+    registry.request_refresh("fts_readiness")
+    completed.wait()
+    direct = fts_status.fts_readiness_info(index)
+    with patch.object(status_snapshot, "resolve_active_index_path", lambda *_a, **_k: index):
+        published = status_snapshot._minimal_status_payload()["fts_readiness"]
+    assert isinstance(published, dict)
+    for payload in (direct, published):
+        assert payload["inspection_state"] == "unavailable", payload
+        assert payload["messages_ready"] is False
+        assert payload["coverage_pct"] is None
+        error = str(payload["unavailable_reason"])
+        assert "[redacted]" in error
+        assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))

@@ -8,7 +8,6 @@ watch sources.  The latter means convergence family attribution is honestly
 
 from __future__ import annotations
 
-import re
 import sqlite3
 from collections import Counter
 from datetime import UTC, datetime
@@ -16,6 +15,7 @@ from datetime import UTC, datetime
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.core.sqlite_introspection import relation_exists
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle_from_connection
 from polylogue.storage.tier_access import capture_sqlite_read
 
@@ -38,7 +38,6 @@ _REQUIRED_CONVERGENCE_DEBT_COLUMNS = frozenset(
         "updated_at_ms",
     )
 )
-_PATH_REDACTION_RE = re.compile(r"/(?:[a-zA-Z0-9._\-]+/)*[a-zA-Z0-9._\-]+")
 
 
 def _require_reader_schema(schema: str) -> None:
@@ -74,7 +73,10 @@ def ops_workload_status_from_connection(
         return result.value
     if not isinstance(result, Unavailable):
         raise AssertionError("ops workload reader produced an unsupported evidence state")
-    return {"available": False, "reason": f"ops workload status unavailable: {result.detail or result.reason}"}
+    return {
+        "available": False,
+        "reason": redact_status_error(f"ops workload status unavailable: {result.detail or result.reason}"),
+    }
 
 
 def _ops_workload_status_from_present_connection(
@@ -213,7 +215,10 @@ def convergence_status_from_connection(
         return result.value
     if not isinstance(result, Unavailable):
         raise AssertionError("convergence reader produced an unsupported evidence state")
-    return {**unavailable, "error": f"convergence debt status unavailable: {result.detail or result.reason}"}
+    return {
+        **unavailable,
+        "error": redact_status_error(f"convergence debt status unavailable: {result.detail or result.reason}"),
+    }
 
 
 def _convergence_status_from_present_connection(
@@ -270,7 +275,7 @@ def _convergence_status_from_present_connection(
                     "last_failed_at": datetime.fromtimestamp(updated_at_ms / 1000, tz=UTC).isoformat(),
                     "next_retry_at": row[7],
                     "retry_due": retry_due,
-                    "last_error": row[6],
+                    "last_error": redact_status_error(row[6]) if row[6] is not None else None,
                 }
             )
     stage_summaries = [
@@ -360,7 +365,7 @@ def raw_failure_status_from_connection(
     return {
         **unavailable,
         "raw_failure_lifecycle_reason": (
-            f"could not read source.db raw failure relations: {result.detail or result.reason}"
+            redact_status_error(f"could not read source.db raw failure relations: {result.detail or result.reason}")
         ),
     }
 
@@ -382,7 +387,12 @@ def _raw_failure_status_from_present_connection(
         return {**unavailable, "raw_failure_lifecycle_reason": "source reader must use its main schema"}
     lifecycle = read_raw_failure_lifecycle_from_connection(conn, sample_limit=sample_limit)
     if not lifecycle.available:
-        return {**unavailable, "raw_failure_lifecycle_reason": lifecycle.reason}
+        return {
+            **unavailable,
+            "raw_failure_lifecycle_reason": (
+                redact_status_error(lifecycle.reason) if lifecycle.reason is not None else None
+            ),
+        }
     sample_ids = [str(sample["raw_id"]) for sample in lifecycle.samples if sample.get("raw_id") is not None]
     rows_by_id: dict[str, sqlite3.Row | tuple[object, ...]] = {}
     if sample_ids:
@@ -432,7 +442,7 @@ def _raw_failure_status_from_present_connection(
             {
                 "failure_kind": kind,
                 "provider_hint": None if row[1] is None else str(row[1]),
-                "redacted_error": _redact_file_paths(parse_error or validation_error),
+                "redacted_error": redact_status_error(parse_error or validation_error),
                 "lifecycle": sample.get("lifecycle"),
             }
         )
@@ -463,20 +473,3 @@ def _retry_due(value: object, *, now: datetime) -> bool:
     except ValueError:
         return True
     return parsed.replace(tzinfo=UTC) <= now if parsed.tzinfo is None else parsed <= now
-
-
-def _redact_file_paths(value: str) -> str:
-    """Preserve the public raw-failure sample privacy rule without daemon imports."""
-
-    def replace(match: re.Match[str]) -> str:
-        start = match.start()
-        if start == 0:
-            return "[redacted]"
-        previous = value[start - 1]
-        if previous.isalnum() or previous in (".", ":"):
-            return match.group(0)
-        if "://" in value[max(0, start - 16) : start + 1]:
-            return match.group(0)
-        return "[redacted]"
-
-    return _PATH_REDACTION_RE.sub(replace, value)

@@ -34,6 +34,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from polylogue.config import PolylogueConfig
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.paths import archive_root
@@ -155,7 +156,7 @@ def _check_daemon_liveness_fast() -> HealthAlert:
             check_name="daemon_liveness",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"liveness check failed: {exc}",
+            message=redact_status_error(f"liveness check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("daemon_liveness", False),
         )
@@ -204,7 +205,7 @@ def _check_heartbeat_staleness_fast() -> HealthAlert:
             check_name="heartbeat_staleness",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"heartbeat staleness check failed: {exc}",
+            message=redact_status_error(f"heartbeat staleness check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("heartbeat_staleness", False),
         )
@@ -252,7 +253,7 @@ def _check_disk_space_fast() -> HealthAlert:
             check_name="disk_space",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"disk check failed: {exc}",
+            message=redact_status_error(f"disk check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("disk_space", False),
         )
@@ -296,7 +297,7 @@ def _check_wal_size_fast() -> HealthAlert:
             check_name="wal_size",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"WAL check failed: {exc}",
+            message=redact_status_error(f"WAL check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("wal_size", False),
         )
@@ -352,7 +353,7 @@ def _check_source_availability_fast(*, sources: Sequence[Any] | None = None) -> 
             check_name="source_availability",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"source availability check failed: {exc}",
+            message=redact_status_error(f"source availability check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("source_availability", False),
         )
@@ -489,7 +490,7 @@ def _check_schema_version_fast() -> HealthAlert:
             check_name="schema_version",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"schema version check failed: {exc}",
+            message=redact_status_error(f"schema version check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("schema_version", False),
         )
@@ -557,7 +558,7 @@ def _check_hook_flow_fast() -> HealthAlert:
             check_name="hook_flow",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"hook flow check failed: {exc}",
+            message=redact_status_error(f"hook flow check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("hook_flow", False),
         )
@@ -588,7 +589,7 @@ def _check_health_tier_coverage_fast() -> HealthAlert:
             check_name="health_tier_coverage",
             tier=HealthTier.FAST,
             severity=HealthSeverity.ERROR,
-            message=f"could not resolve configured health tiers: {exc}",
+            message=redact_status_error(f"could not resolve configured health tiers: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("health_tier_coverage", False),
         )
@@ -664,7 +665,9 @@ def _check_fts_readiness_medium() -> HealthAlert:
         if inspection_state in {"refreshing", "timed_out", "unavailable", "degraded"}:
             severity = HealthSeverity.ERROR
             detail = payload.get("unavailable_reason")
-            message = f"FTS readiness {inspection_state}" + (f": {detail}" if isinstance(detail, str) else "")
+            message = f"FTS readiness {inspection_state}" + (
+                f": {redact_status_error(detail)}" if isinstance(detail, str) else ""
+            )
         elif not surfaces:
             severity = HealthSeverity.ERROR
             message = "FTS readiness could not be proven"
@@ -693,7 +696,7 @@ def _check_fts_readiness_medium() -> HealthAlert:
             check_name="fts_readiness",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"FTS check failed: {exc}",
+            message=redact_status_error(f"FTS check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("fts_readiness", False),
         )
@@ -709,7 +712,9 @@ def _check_raw_failures_medium() -> HealthAlert:
         lifecycle_available = info.get("raw_failure_lifecycle_available") is True
         lifecycle_state = info.get("raw_failure_lifecycle_state")
         if not lifecycle_available or lifecycle_state not in {"healthy", "degraded", "blocked"}:
-            reason = str(info.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+            reason = redact_status_error(
+                str(info.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
+            )
             return HealthAlert(
                 check_name="raw_failures",
                 tier=HealthTier.MEDIUM,
@@ -720,7 +725,9 @@ def _check_raw_failures_medium() -> HealthAlert:
             )
         if lifecycle_state == "blocked":
             unexplained = info.get("unexplained_failures")
-            reason = str(info.get("raw_failure_lifecycle_reason") or f"{unexplained or 0} unexplained raw failures")
+            reason = redact_status_error(
+                str(info.get("raw_failure_lifecycle_reason") or f"{unexplained or 0} unexplained raw failures")
+            )
             return HealthAlert(
                 check_name="raw_failures",
                 tier=HealthTier.MEDIUM,
@@ -776,7 +783,7 @@ def _check_raw_failures_medium() -> HealthAlert:
             check_name="raw_failures",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"raw failure check failed: {exc}",
+            message=redact_status_error(f"raw failure check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("raw_failures", False),
         )
@@ -876,7 +883,7 @@ def _check_capture_coverage_medium() -> HealthAlert:
             check_name="capture_coverage",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"capture coverage check failed: {exc}",
+            message=redact_status_error(f"capture coverage check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("capture_coverage", False),
         )
@@ -911,7 +918,7 @@ def _check_stale_ingest_attempts_medium() -> HealthAlert:
             check_name="stale_ingest_attempts",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"ingest attempt check failed: {exc}",
+            message=redact_status_error(f"ingest attempt check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("stale_ingest_attempts", False),
         )
@@ -929,7 +936,7 @@ def _check_insight_freshness_medium() -> HealthAlert:
 
         info = _insight_freshness_info()
         if info.get("checked") is False:
-            reason = str(info.get("reason") or "insight freshness is unavailable")
+            reason = redact_status_error(str(info.get("reason") or "insight freshness is unavailable"))
             return HealthAlert(
                 check_name="insight_freshness",
                 tier=HealthTier.MEDIUM,
@@ -972,7 +979,7 @@ def _check_insight_freshness_medium() -> HealthAlert:
             check_name="insight_freshness",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"insight freshness check failed: {exc}",
+            message=redact_status_error(f"insight freshness check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("insight_freshness", False),
         )
@@ -999,7 +1006,7 @@ def _check_schema_drift_medium() -> HealthAlert:
                 check_name="schema_drift",
                 tier=HealthTier.MEDIUM,
                 severity=HealthSeverity.OK,
-                message=f"format drift sentinel unavailable: {drift.get('reason', 'unknown')}",
+                message=f"format drift sentinel unavailable: {redact_status_error(drift.get('reason', 'unknown'))}",
                 checked_at=now,
                 consecutive_failures=_record_failure("schema_drift", True),
             )
@@ -1038,7 +1045,7 @@ def _check_schema_drift_medium() -> HealthAlert:
             check_name="schema_drift",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"format drift check failed: {exc}",
+            message=redact_status_error(f"format drift check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("schema_drift", False),
         )
@@ -1070,7 +1077,7 @@ def _check_repeated_stage_failures_medium() -> HealthAlert:
             check_name="repeated_stage_failures",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"ingest attempt history unreadable: {exc}",
+            message=redact_status_error(f"ingest attempt history unreadable: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("repeated_stage_failures", False),
         )
@@ -1135,7 +1142,7 @@ def _check_secret_scan_sweep_medium() -> HealthAlert:
             check_name="secret_scan_sweep",
             tier=HealthTier.MEDIUM,
             severity=HealthSeverity.ERROR,
-            message=f"secret scan sweep status unavailable: {exc}",
+            message=redact_status_error(f"secret scan sweep status unavailable: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("secret_scan_sweep", False),
         )
@@ -1208,7 +1215,7 @@ def _repeated_stage_failure_alert(
         if error_row:
             phase = error_row[0] or "unknown"
             error_text = error_row[1] or ""
-            error_hint = f" (phase={phase}: {str(error_text)[:80]})"
+            error_hint = f" (phase={phase}: {redact_status_error(str(error_text)[:80])[:80]})"
         severity = HealthSeverity.ERROR
         message = f"{failed_recent}/{total_recent} recent attempts failed{error_hint}"
 
@@ -1265,7 +1272,7 @@ def _check_convergence_debt_medium() -> list[HealthAlert]:
                 check_name="convergence_debt",
                 tier=HealthTier.MEDIUM,
                 severity=HealthSeverity.ERROR,
-                message=f"convergence debt check failed: {exc}",
+                message=redact_status_error(f"convergence debt check failed: {exc}"),
                 checked_at=now,
                 consecutive_failures=_record_failure("convergence_debt", False),
             )
@@ -1333,7 +1340,7 @@ def _check_cursor_lag_medium() -> list[HealthAlert]:
                 check_name="cursor_lag",
                 tier=HealthTier.MEDIUM,
                 severity=HealthSeverity.ERROR,
-                message=f"cursor lag check failed: {exc}",
+                message=redact_status_error(f"cursor lag check failed: {exc}"),
                 checked_at=now,
                 consecutive_failures=_record_failure("cursor_lag", False),
             )
@@ -1442,7 +1449,7 @@ def _check_cursor_lag_anomaly_layer(
                 check_name="cursor_lag_anomaly",
                 tier=HealthTier.MEDIUM,
                 severity=HealthSeverity.ERROR,
-                message=f"cursor lag anomaly check failed: {exc}",
+                message=redact_status_error(f"cursor lag anomaly check failed: {exc}"),
                 checked_at=now,
                 consecutive_failures=_record_failure("cursor_lag_anomaly", False),
             )
@@ -1554,7 +1561,7 @@ def _check_db_integrity_expensive() -> HealthAlert:
                 message = "database integrity ok"
             else:
                 severity = HealthSeverity.CRITICAL
-                message = f"database integrity errors: {'; '.join(str(r[0]) for r in results[:5])}"
+                message = f"database integrity errors: {'; '.join(redact_status_error(str(r[0])) for r in results[:5])}"
             return HealthAlert(
                 check_name="db_integrity",
                 tier=HealthTier.EXPENSIVE,
@@ -1570,7 +1577,7 @@ def _check_db_integrity_expensive() -> HealthAlert:
             check_name="db_integrity",
             tier=HealthTier.EXPENSIVE,
             severity=HealthSeverity.ERROR,
-            message=f"integrity check failed: {exc}",
+            message=redact_status_error(f"integrity check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("db_integrity", False),
         )
@@ -1598,7 +1605,7 @@ def _check_blob_integrity_expensive() -> list[HealthAlert]:
                 check_name="blob_integrity",
                 tier=HealthTier.EXPENSIVE,
                 severity=HealthSeverity.ERROR,
-                message=f"blob integrity check failed: {exc}",
+                message=redact_status_error(f"blob integrity check failed: {exc}"),
                 checked_at=now,
                 consecutive_failures=_record_failure("blob_integrity", False),
             )
@@ -1652,7 +1659,7 @@ def _check_blob_reference_debt_expensive() -> list[HealthAlert]:
                 check_name="blob_reference_debt",
                 tier=HealthTier.EXPENSIVE,
                 severity=HealthSeverity.ERROR,
-                message=f"blob reference debt check failed: {exc}",
+                message=redact_status_error(f"blob reference debt check failed: {exc}"),
                 checked_at=now,
                 consecutive_failures=_record_failure("blob_reference_debt", False),
             )
@@ -1714,7 +1721,7 @@ def _check_embedding_coverage_expensive() -> HealthAlert:
             check_name="embedding_coverage",
             tier=HealthTier.EXPENSIVE,
             severity=HealthSeverity.ERROR,
-            message=f"embedding coverage check failed: {exc}",
+            message=redact_status_error(f"embedding coverage check failed: {exc}"),
             checked_at=now,
             consecutive_failures=_record_failure("embedding_coverage", False),
         )
