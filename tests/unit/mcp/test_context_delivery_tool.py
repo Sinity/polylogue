@@ -220,3 +220,32 @@ class TestContextToolListsReceiptSummaries:
             )
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
+
+
+@pytest.mark.parametrize("fault", ["missing", "corrupt"])
+@pytest.mark.parametrize("lookup", ["get", "list"])
+async def test_context_receipt_routes_refuse_unavailable_user_authority(
+    tmp_path: Path, fault: str, lookup: str
+) -> None:
+    """Returning not_found or an empty list when the user tier fails makes this red."""
+    from polylogue.mcp.server import build_server
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root):
+        pass
+    server = cast(MCPServerUnderTest, build_server())
+    context_fn = server._tool_manager._tools["context"].fn
+    with installed_runtime_services(root):
+        user = root / "user.db"
+        if fault == "missing":
+            user.unlink()
+        else:
+            user.write_bytes(b"not sqlite")
+        kwargs = {"result_ref": "context-snapshot:absent"} if lookup == "get" else {}
+        payload = json.loads(
+            await invoke_surface_async(context_fn, intent="lookup", recipient_ref="agent:neutral", **kwargs)
+        )
+    assert payload["is_error"] is True
+    assert payload["code"] == "archive_tier_unavailable"
+    assert user.exists() is (fault != "missing")

@@ -1638,6 +1638,9 @@ class _VectorSpy:
         del origin
         self.upsert_calls.append((session_id, messages))
 
+    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+        raise AssertionError("this fixture does not perform retained-session reads")
+
 
 class TestRepositoryVectorAsyncBoundary:
     async def test_search_similar_offloads_vector_query(
@@ -1734,15 +1737,14 @@ class TestInfraTagAssignment:
     async def test_tag_assignment_roundtrip_and_counts(
         self,
         spec: TagAssignmentSpec,
-        empty_archive_template: Path,
     ) -> None:
         """Strategy-generated tags are retrievable and counted consistently."""
         from tests.infra.archive_scenarios import archive_for_scenario_db, native_session_id_for
-        from tests.infra.archive_templates import clone_archive_template
+        from tests.infra.archive_templates import bootstrap_ready_archive_root
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             archive_root = Path(tmp_dir) / "archive"
-            clone_archive_template(empty_archive_template, archive_root)
+            bootstrap_ready_archive_root(archive_root)
             db_path = archive_root / "index.db"
             seed_session_graph(db_path, spec.sessions)
 

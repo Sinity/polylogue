@@ -151,6 +151,12 @@ MAINTENANCE_COMMAND_DECLARATIONS: Final[tuple[MaintenanceCommandDeclaration, ...
         "Inspect archive backup boundaries without copying data.",
     ),
     _command(
+        "restore-verified-backup",
+        "_restore_verified_backup",
+        "restore_verified_backup_command",
+        "Restore an authenticated backup into a fresh archive root.",
+    ),
+    _command(
         "assertion-export",
         "_assertion_export",
         "assertion_export_command",

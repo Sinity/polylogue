@@ -279,6 +279,10 @@ has, not a window-specific gap.
 | `lane` | Retrieval lane | `lane:dialogue` |
 | `lineage` | Sessions sharing topology with a seed | `lineage:id:<session>` |
 
+Existing-session similarity (`near:id:<ref>`) reads retained vectors without Voyage acquisition credentials. Text semantic queries require a new query embedding and therefore still require an API key. Unavailable vector storage produces typed uncertainty rather than certifying an empty answer.
+
+Python callers supplying a SQLite snapshot provider use an archive-owned handle returned by `open_vector_read_snapshot`; `from_vector_read_snapshot` consumes the index identity recorded when that handle was pinned. The owner records its creating thread at admission, and the caller retains the handle lifetime. Raw connections without this owner proof are refused, and an API read requesting a different or replaced index is refused before hydration. Existing-session similarity checks seed existence on that same handle: an absent seed raises `SessionNotFoundError`, while a present seed with no retained vectors returns a measured zero count.
+
 Field values support quoted strings and in-field alternatives:
 
 ```bash

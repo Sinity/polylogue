@@ -432,6 +432,14 @@
     ]
   },
   {
+    "file": "polylogue/storage/sqlite/migration_runner.py",
+    "tiers": [
+      "source",
+      "user",
+      "audit"
+    ]
+  },
+  {
     "file": "polylogue/storage/sqlite/queries/_bulk_replace.py",
     "tiers": []
   },

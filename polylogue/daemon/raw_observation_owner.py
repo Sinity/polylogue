@@ -50,9 +50,9 @@ class RawObservationConvergenceOwner:
         if not raw_id:
             raise ValueError("raw observation id must be non-empty")
         async with self._converge_lock:
-            from polylogue.daemon.write_coordinator import daemon_write_lease_active
+            from polylogue.core.write_lease import coordinator_write_lease_active
 
-            if daemon_write_lease_active():
+            if coordinator_write_lease_active():
                 raise RuntimeError("raw observation convergence must start after the daemon writer lease is released")
             self._require_source_frontier_authority(raw_id)
             frame = raw_observation_frame(

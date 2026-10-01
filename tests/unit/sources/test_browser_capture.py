@@ -14,6 +14,8 @@ from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import write_capture_envelope
 from polylogue.config import Source, get_config
 from polylogue.core.enums import BlockType, Provider, TitleSource
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
+from polylogue.pipeline.ids import _message_owner_coordinate
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -26,6 +28,7 @@ from polylogue.sources.parsers.browser_capture import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
+    NativeCaptureIdentityMismatchError,
     _merge_envelope_attachments,
 )
 from polylogue.sources.parsers.browser_capture import (
@@ -33,6 +36,67 @@ from polylogue.sources.parsers.browser_capture import (
 )
 from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
+from tests.infra.daemon_operations import daemon_serving_archive
+
+
+def test_native_codex_capture_preserves_ordinary_parser_semantics() -> None:
+    records = [
+        json.loads(line)
+        for line in (Path(__file__).parents[2] / "fixtures" / "corpus-program-codex-native.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    native = parse_payload(Provider.CODEX, records, "native")[0]
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session["provider"] = "codex"
+    session["provider_session_id"] = native.provider_session_id
+    session["turns"] = [{"provider_turn_id": "placeholder", "role": "user", "text": "DOM projection"}]
+    payload["raw_provider_payload"] = records
+    captured = parse_browser_capture(payload, "capture")
+    assert captured.messages == native.messages
+    assert captured.parent_session_provider_id == native.parent_session_provider_id
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in captured.ingest_flags
+    assert DOM_FALLBACK_INGEST_FLAG not in captured.ingest_flags
+    schema = BrowserCaptureEnvelope.model_json_schema()
+    assert any(shape.get("type") == "array" for shape in schema["properties"]["raw_provider_payload"]["anyOf"])
+
+
+@pytest.mark.parametrize("raw", [[], ["wrong"], [{"unrecognized": "record"}], {"mapping": {}}])
+def test_native_codex_capture_refuses_unsupported_records(raw: object) -> None:
+    payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider"] = "codex"
+    payload["raw_provider_payload"] = raw
+    with pytest.raises(ValueError):
+        parse_browser_capture(payload, "capture")
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI])
+def test_native_capture_refuses_foreign_declared_session_identity(provider: Provider) -> None:
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session["provider"] = provider.value
+    session["provider_session_id"] = "different-declared-session"
+    fixture_root = Path(__file__).parents[2] / "fixtures"
+    if provider is Provider.CODEX:
+        raw: object = [
+            json.loads(line) for line in (fixture_root / "corpus-program-codex-native.jsonl").read_text().splitlines()
+        ]
+    else:
+        fixture = (
+            "chatgpt/native-conversation-v1.json"
+            if provider is Provider.CHATGPT
+            else "origin-capability/claude-ai-export.json"
+        )
+        raw = json.loads((fixture_root / fixture).read_text())
+    native = parse_payload(provider, raw, "native")[0]
+    assert native.messages
+    assert native.provider_session_id != session["provider_session_id"]
+    payload["raw_provider_payload"] = raw
+    with pytest.raises(NativeCaptureIdentityMismatchError) as refused:
+        parse_browser_capture(payload, "capture")
+    assert refused.value.expected_session_id == "different-declared-session"
+    assert refused.value.actual_session_id == native.provider_session_id
 
 
 def _capture_payload() -> dict[str, object]:
@@ -74,6 +138,64 @@ def _capture_payload() -> dict[str, object]:
             ],
         },
     }
+
+
+@pytest.mark.parametrize("provider", [Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI])
+@pytest.mark.parametrize("witness", ["valid", "missing", "negative", "outside", "role", "text"])
+def test_native_attachment_without_provider_id_requires_matching_retained_turn(
+    provider: Provider, witness: str
+) -> None:
+    """Guessing an owner or discarding its private coordinate makes this fail."""
+    fixture_root = Path(__file__).parents[2] / "fixtures"
+    if provider is Provider.CODEX:
+        raw: object = [
+            json.loads(line) for line in (fixture_root / "corpus-program-codex-native.jsonl").read_text().splitlines()
+        ]
+    else:
+        fixture = (
+            "chatgpt/native-conversation-v1.json"
+            if provider is Provider.CHATGPT
+            else "origin-capability/claude-ai-export.json"
+        )
+        raw = json.loads((fixture_root / fixture).read_text())
+    native = parse_payload(provider, raw, "native")[0]
+    ordinal, message = next((i, m) for i, m in enumerate(native.messages) if m.role is Role.USER)
+    turn: dict[str, object] = {
+        "provider_turn_id": "",
+        "ordinal": ordinal,
+        "role": message.role.value,
+        "text": message.text,
+        "attachments": [{"provider_attachment_id": "owned", "name": "fixture.txt", "inline_base64": "Ynl0ZXM="}],
+    }
+    if witness == "missing":
+        turn.pop("ordinal")
+    elif witness == "negative":
+        turn["ordinal"] = -1
+    elif witness == "outside":
+        turn["ordinal"] = len(native.messages)
+    elif witness == "role":
+        turn["role"] = "assistant"
+    elif witness == "text":
+        turn["text"] = "Different authored content"
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session.update(provider=provider.value, provider_session_id=native.provider_session_id, turns=[turn], model=None)
+    payload["raw_provider_payload"] = raw
+    if witness == "missing":
+        # Refuse before a canonical dump can turn a default zero into evidence.
+        with pytest.raises(ValueError):
+            BrowserCaptureEnvelope.model_validate(payload)
+    elif witness != "valid":
+        with pytest.raises(MessageOwnerAmbiguityError):
+            parse_browser_capture(payload, "capture")
+    else:
+        retained = BrowserCaptureEnvelope.model_validate(payload).model_dump(mode="json")
+        captured = parse_browser_capture(retained, "retained")
+        assert captured.messages == native.messages
+        attachment = next(a for a in captured.attachments if a.provider_attachment_id == "owned")
+        assert attachment.message_provider_id == (message.provider_message_id or None)
+        assert attachment.owner_coordinate == _message_owner_coordinate(message, ordinal)
+        assert attachment.inline_bytes == b"bytes"
 
 
 def test_browser_capture_detects_inner_provider() -> None:
@@ -210,6 +332,7 @@ def test_browser_capture_does_not_launder_capture_time_as_provider_update() -> N
 
 def test_native_chatgpt_title_merge_does_not_launder_capture_time() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     session_payload = payload["session"]
     assert isinstance(session_payload, dict)
     session_payload["updated_at"] = "2026-04-24T00:00:01+00:00"
@@ -320,6 +443,7 @@ def test_claude_browser_capture_rejects_malformed_content_base64() -> None:
 
 def test_browser_capture_prefers_raw_chatgpt_payload_when_present() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["raw_provider_payload"] = {
         "id": "native-conv",
         "title": "Native ChatGPT title",
@@ -502,6 +626,7 @@ def test_browser_capture_raw_chatgpt_payload_matches_direct_import_identity() ->
         },
     }
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["raw_provider_payload"] = raw_payload
 
     direct_session = parse_payload(Provider.CHATGPT, raw_payload, "direct-fallback")[0]
@@ -762,7 +887,7 @@ def test_browser_capture_prefers_raw_claude_ai_payload_when_present() -> None:
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -802,7 +927,7 @@ def test_browser_capture_raw_claude_ai_uses_content_when_text_empty() -> None:
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -842,7 +967,7 @@ def test_browser_capture_raw_claude_ai_attachment_content_stays_acquirable() -> 
     session = payload["session"]
     assert isinstance(session, dict)
     session["provider"] = "claude-ai"
-    session["provider_session_id"] = "claude-conv-123"
+    session["provider_session_id"] = "claude-native-conv"
     payload["raw_provider_payload"] = {
         "uuid": "claude-native-conv",
         "name": "Native Claude title",
@@ -987,8 +1112,9 @@ async def test_browser_capture_receiver_artifact_lands_in_archive(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     # The archive ingest path persists the captured session into the archive
     # ``index.db`` ``sessions`` table: ``origin`` carries the source family
@@ -1054,8 +1180,9 @@ async def test_browser_capture_embedded_attachments_are_acquired_in_archive(
     blob_store = BlobStore(config.archive_root / "blob")
     config.sources = [Source(name="browser-capture", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1179,8 +1306,9 @@ async def test_browser_capture_raw_payload_coalesces_with_chatgpt_export(
     ]
     sources = export_first_sources if source_order == "export-first" else list(reversed(export_first_sources))
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1265,8 +1393,9 @@ async def test_browser_capture_raw_payload_coalesces_with_claude_ai_export(
         Source(name="browser-capture", path=artifact),
     ]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
@@ -1296,6 +1425,7 @@ def test_native_payload_delegation_keeps_envelope_acquired_assets() -> None:
     import base64 as _b64
 
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["session"]["attachments"] = [  # type: ignore[index]
         {
             "provider_attachment_id": "sandbox:native-a1:/mnt/data/kit.zip",
@@ -1344,6 +1474,7 @@ def test_native_payload_delegation_keeps_envelope_acquired_assets() -> None:
 
 def test_native_payload_delegation_without_envelope_attachments_is_unchanged() -> None:
     payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider_session_id"] = "native-conv"
     payload["session"]["attachments"] = []  # type: ignore[index]
     for turn in payload["session"]["turns"]:  # type: ignore[index]
         turn.pop("attachments", None)
@@ -1534,13 +1665,15 @@ async def test_browser_capture_tool_turn_blocks_land_in_archive_with_consistent_
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(
-            "SELECT block_type, tool_id, tool_name, text FROM blocks "
-            "WHERE block_type IN ('tool_use', 'tool_result') ORDER BY position"
+            "SELECT b.block_type, b.tool_id, b.tool_name, b.text FROM blocks AS b "
+            "JOIN messages AS m ON m.message_id = b.message_id "
+            "WHERE b.block_type IN ('tool_use', 'tool_result') ORDER BY m.position, m.variant_index, b.position"
         ).fetchall()
 
     assert [dict(row) for row in rows] == [
@@ -1634,8 +1767,9 @@ async def test_browser_capture_block_metadata_lands_in_archive_session_events(
     config = get_config()
     config.sources = [Source(name="inbox", path=artifact)]
 
-    async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
-        await polylogue.parse_sources(config.sources)
+    with daemon_serving_archive(config.archive_root, session_derivation=True):
+        async with Polylogue(archive_root=config.archive_root, db_path=config.db_path) as polylogue:
+            await polylogue.parse_sources(config.sources)
 
     with open_index_db(config.archive_root / "index.db") as conn:
         rows = conn.execute(

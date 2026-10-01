@@ -52,6 +52,7 @@ from polylogue.core.types import (
     require_literal,
 )
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
@@ -823,6 +824,7 @@ def _bound_daemon_run_id() -> str | None:
 
 def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
     """Open the best-effort route-observation writer for ``ops_db``."""
+    assert_population_admitted(ops_db)
     conn = sqlite3.connect(ops_db, timeout=_CONNECT_TIMEOUT_S)
     try:
         conn.execute(f"PRAGMA synchronous = {_OBSERVATION_SYNCHRONOUS}")

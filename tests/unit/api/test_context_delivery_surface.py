@@ -274,3 +274,26 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
     assert records
     assert records[0].row.source == "archive-context"
     assert records[0].row.execution_context_ref.startswith("sha256:")
+
+
+async def test_context_delivery_decode_failure_refuses_instead_of_absence(
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+) -> None:
+    root = tmp_path / "archive"
+    _seed(root, provider_session_id="neutral", text="neutral delivery")
+    with facade_daemon_writer(root):
+        async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+            receipt = await poly.compile_and_record_context(
+                recipient_ref="agent:neutral",
+                delivered_by_ref="user:local",
+                boundary="explicit-recall",
+                query="neutral",
+                max_sessions=1,
+            )
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE context_deliveries SET metadata_json = '[]'")
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+        with pytest.raises(ArchiveTierUnavailableError):
+            await poly.get_context_delivery(receipt.snapshot_ref, recipient_ref="agent:neutral")
+        with pytest.raises(ArchiveTierUnavailableError):
+            await poly.list_context_deliveries(recipient_ref="agent:neutral")

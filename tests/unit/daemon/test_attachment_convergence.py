@@ -6,7 +6,7 @@ import hashlib
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -1005,6 +1005,29 @@ def _run_passes(tmp_path: Path, passes: int) -> type[_CountingDriveClient]:
     return client
 
 
+def _ordinary_attachment_status(root: Path) -> dict[str, object]:
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(root) as pinned:
+        payload = execute_read_operation(
+            "status",
+            {},
+            archive=pinned.archive,
+            serving_identity="daemon",
+            dependencies=DaemonReadDependencies(status_now_ms=1_700_000_000_000),
+            read_view=pinned.read_view,
+        )
+    components = cast(dict[str, object], payload["component_readiness"])
+    component = cast(dict[str, object], components["attachments"])
+    if component["state"] == "degraded":
+        assert payload["ok"] is False
+        guard = cast(dict[str, dict[str, object]], payload["claim_guard"])
+        assert guard["converged"]["value"] is False
+        assert guard["converged"]["reason"] == component["summary"]
+    return component
+
+
 def test_contested_only_identity_is_not_complete_and_never_re_executes(tmp_path: Path) -> None:
     """polylogue-xfw1t: a contested reference is reported, not retried forever.
 
@@ -1017,6 +1040,10 @@ def test_contested_only_identity_is_not_complete_and_never_re_executes(tmp_path:
     client = _run_passes(tmp_path, passes=3)
     assert client.constructed == 0
     assert client.downloads == []
+    component = _ordinary_attachment_status(tmp_path)
+    assert component["state"] == "degraded"
+    assert component["scope"] == "owed_drive_references"
+    assert component["counts"] == {"unresolved_identity": 1}
 
     source = sqlite3.connect(tmp_path / "source.db")
     result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
@@ -1044,6 +1071,9 @@ def test_mixed_set_fetches_resolvable_work_once_and_stays_incomplete(tmp_path: P
     client = _run_passes(tmp_path, passes=3)
     assert client.downloads == ["drive-file-resolvable"]
     assert client.constructed == 1
+    component = _ordinary_attachment_status(tmp_path)
+    assert component["state"] == "degraded"
+    assert component["counts"] == {"unresolved_identity": 1}
 
     source = sqlite3.connect(tmp_path / "source.db")
     result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
@@ -1074,3 +1104,37 @@ def test_terminal_absence_stays_distinct_from_contested_identity(tmp_path: Path)
     assert index.execute("SELECT acquisition_status FROM attachments").fetchone()[0] == "unavailable"
     index.close()
     source.close()
+
+
+@pytest.mark.parametrize("disposition", ["resolved", "terminal", "empty", "unavailable"])
+def test_ordinary_attachment_status_distinguishes_zero_from_unavailable(
+    tmp_path: Path,
+    disposition: str,
+) -> None:
+    """Mutation: hide contested identity, or swallow a failed count as zero."""
+    index, ref_id = _seed_contested(tmp_path, with_resolvable=False)
+    if disposition == "resolved":
+        index.execute(
+            "DELETE FROM attachment_native_ids WHERE ref_id = ? AND native_id = 'drive-file-contested-z'", (ref_id,)
+        )
+    elif disposition == "terminal":
+        index.execute("UPDATE attachments SET acquisition_status = 'unavailable'")
+    elif disposition == "empty":
+        index.execute("DELETE FROM attachment_refs")
+    else:
+        index.execute("DROP TABLE attachment_native_ids")
+    index.commit()
+    if disposition == "unavailable":
+        from polylogue.operations.daemon_status import _attachment_component
+
+        component = cast(dict[str, object], _attachment_component(index).to_dict())
+        index.close()
+        from polylogue.core.errors import SchemaVersionMismatchError
+
+        with pytest.raises(SchemaVersionMismatchError):
+            _ordinary_attachment_status(tmp_path)
+    else:
+        index.close()
+        component = _ordinary_attachment_status(tmp_path)
+    assert component["state"] == ("unknown" if disposition == "unavailable" else "ready")
+    assert component["counts"] == ({} if disposition == "unavailable" else {"unresolved_identity": 0})

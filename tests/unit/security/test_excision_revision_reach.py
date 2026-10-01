@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _LOGICAL_KEY = "codex-session:multi-revision"
 
@@ -47,7 +48,7 @@ def _seed_two_revisions(archive_root: Path) -> tuple[str, str, str, bytes, bytes
     # Excision opens the archive to drop the index session; that needs the
     # archive format marker a real root carries.
     initialize_active_archive_root(archive_root)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     baseline_payload = b'{"event": "first"}\n'

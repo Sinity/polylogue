@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -67,6 +68,7 @@ def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest
     assert _daemon_status_fingerprint(index) != before
 
 
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -1172,6 +1174,7 @@ def test_daemon_status_preserves_lost_source_evidence(monkeypatch: pytest.Monkey
 def test_daemon_status_payload_maps_component_readiness(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     db.touch()
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     with (
         patch("polylogue.daemon.status._active_status_db_path", return_value=db),
@@ -2113,7 +2116,10 @@ def test_build_daemon_status_detects_broken_append_head_blocks_converged(tmp_pat
         ArchiveTier.OPS,
         ArchiveTier.AUDIT,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     source_path = tmp_path / "session.jsonl"
     source_path.write_text("{}\n", encoding="utf-8")
@@ -2220,7 +2226,7 @@ def test_zero_head_unavailable_ops_semantics_and_no_direct_status_route(tmp_path
     from polylogue.config import Config
     from polylogue.daemon.status import RawMaterializationReadiness, _raw_frontier_integrity_info
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     readiness = RawMaterializationReadiness(available=True)
 
@@ -2542,7 +2548,7 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
         conn.commit()
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
-        readiness = status_module._fts_readiness_info()
+        readiness = completed_fts_readiness(archive_db, status_module._fts_readiness_info)
 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True, readiness
@@ -2571,7 +2577,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):
-        readiness = status_module._fts_readiness_info()
+        readiness = completed_fts_readiness(archive_db, status_module._fts_readiness_info)
 
     assert readiness["indexed_surface"] == "messages_fts"
     assert readiness["messages_ready"] is True, readiness
@@ -2613,8 +2619,8 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
         conn.execute("DELETE FROM messages_fts WHERE rowid = ?", (rowid,))
         conn.commit()
 
-    structural = fts_readiness_info(db_path)
-    exact = fts_readiness_info(db_path, exact=True)
+    structural = completed_fts_readiness(db_path, lambda: fts_readiness_info(db_path))
+    exact = completed_fts_readiness(db_path, lambda: fts_readiness_info(db_path, exact=True))
 
     assert structural["messages_ready"] is False
     assert exact["messages_ready"] is False

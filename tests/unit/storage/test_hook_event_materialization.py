@@ -12,11 +12,10 @@ import pytest
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.raw_admission import plan_raw_admission
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.artifacts import save_artifact_observation
 from polylogue.storage.sqlite.queries.raw_writes import execute_raw_admission_plan_async
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.storage_records import raw_admission_request
 
 
@@ -26,7 +25,7 @@ async def test_hook_artifact_materializes_event_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     store = BlobStore(tmp_path / "blobs")
     payload = "\n".join(
         json.dumps(

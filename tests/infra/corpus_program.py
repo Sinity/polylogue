@@ -10,22 +10,36 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
 
 if TYPE_CHECKING:
+    from polylogue.daemon.convergence import FileState
     from polylogue.pipeline.services.parsing_models import ParseResult
+    from polylogue.pipeline.stage_models import AcquireResult
 
 
 class CorpusProgramError(ValueError):
     """Invalid corpus program or artifact reference."""
+
+
+class CorpusAcquisitionRejectedError(CorpusProgramError):
+    """A corpus effect acquired no evidence; the reference run cannot advance."""
+
+    def __init__(self, artifact_id: str, result: AcquireResult) -> None:
+        self.artifact_id = artifact_id
+        self.result = result
+        super().__init__(
+            f"acquisition rejected: {artifact_id}; counts={result.counts}; diagnostics={result.diagnostics}"
+        )
 
 
 class CorpusRuntimeCrashedError(RuntimeError):
@@ -388,6 +402,10 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
             output.append(line)
             continue
         if isinstance(value, dict):
+            if value.get("type") == "session_meta" and isinstance(value.get("payload"), dict):
+                value["payload"]["forked_from_id"] = parent_session_id
+            elif value.get("id") == parent_session_id and value.get("timestamp") and not value.get("type"):
+                value["forked_from_id"] = parent_session_id
             for container in (value, value.get("payload")):
                 if not isinstance(container, dict):
                     continue
@@ -395,8 +413,6 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
                     if container.get(key) == parent_session_id:
                         container[key] = new_session_id
                         changed = True
-                if container.get("type") == "session_meta":
-                    container["parent_id"] = parent_session_id
             encoded = _canonical_json(value).encode("utf-8")
             output.append(encoded + (b"\n" if line.endswith(b"\n") else b""))
         else:
@@ -649,7 +665,7 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
     artifact = st.builds(
         RawArtifact,
         artifact_id=st.sampled_from(ids),
-        payload=st.binary(max_size=96),
+        payload=st.text(alphabet="abcdef", min_size=1).map(lambda text: _codex_transcript("session", "message", text)),
         source_path=st.sampled_from(tuple(f"sources/{artifact_id}.jsonl" for artifact_id in ids)),
     )
     return st.one_of(
@@ -658,13 +674,15 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
             Append,
             operation_id=st.text("op", min_size=2, max_size=8),
             artifact_id=st.sampled_from(ids),
-            payload_delta=st.binary(max_size=32),
+            payload_delta=st.text(alphabet="abcdef", min_size=1).map(lambda text: _codex_turn("appended", text)),
         ),
         st.builds(
             Replace,
             operation_id=st.text("op", min_size=2, max_size=8),
             artifact_id=st.sampled_from(ids),
-            payload=st.binary(max_size=96),
+            payload=st.text(alphabet="abcdef", min_size=1).map(
+                lambda text: _codex_transcript("session", "replacement", text)
+            ),
         ),
         st.builds(
             Duplicate,
@@ -699,13 +717,46 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
                 provider=st.just("codex"),
                 event_type=st.just("session.created"),
                 session_native_id=st.text("session", min_size=4, max_size=12),
-                payload=st.binary(max_size=64),
+                payload=st.just(b"{}"),
             ),
         ),
         st.builds(Crash, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Restart, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Converge, operation_id=st.text("op", min_size=2, max_size=8)),
     )
+
+
+def _codex_turn(message_id: str, text: str) -> bytes:
+    return (
+        _canonical_json(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": message_id,
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _codex_transcript(session_id: str, message_id: str, text: str) -> bytes:
+    header = (
+        _canonical_json(
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": session_id,
+                    "timestamp": "2025-01-01T00:00:00Z",
+                },
+            }
+        )
+        + "\n"
+    )
+    return header.encode("utf-8") + _codex_turn(message_id, text)
 
 
 def corpus_program_strategy(*, max_operations: int = 8) -> Any:
@@ -728,7 +779,11 @@ def corpus_program_strategy(*, max_operations: int = 8) -> Any:
                     operation_id,
                     RawArtifact(
                         artifact_id="artifact-0",
-                        payload=draw(st.binary(max_size=96)),
+                        payload=_codex_transcript(
+                            "session-0",
+                            "message-0",
+                            draw(st.text(alphabet=st.characters(categories=("L", "N")), min_size=1, max_size=96)),
+                        ),
                         source_path="sources/artifact-0.jsonl",
                         metadata={"session_id": "session-0"},
                     ),
@@ -740,9 +795,26 @@ def corpus_program_strategy(*, max_operations: int = 8) -> Any:
                 choices = ["append", "replace", "duplicate", "fork", "attach", "hook", "crash", "converge"]
                 choice = draw(st.sampled_from(choices))
                 if choice == "append":
-                    operation = Append(operation_id, draw(st.sampled_from(artifact_ids)), draw(st.binary(max_size=32)))
+                    operation = Append(
+                        operation_id,
+                        draw(st.sampled_from(artifact_ids)),
+                        _codex_turn(
+                            f"message-{step}",
+                            draw(st.text(alphabet=st.characters(categories=("L", "N")), min_size=1, max_size=96)),
+                        ),
+                    )
                 elif choice == "replace":
-                    operation = Replace(operation_id, draw(st.sampled_from(artifact_ids)), draw(st.binary(max_size=96)))
+                    artifact_id = draw(st.sampled_from(artifact_ids))
+                    session_id = str(state.artifact(artifact_id).metadata["session_id"])
+                    operation = Replace(
+                        operation_id,
+                        artifact_id,
+                        _codex_transcript(
+                            session_id,
+                            f"message-{step}",
+                            draw(st.text(alphabet=st.characters(categories=("L", "N")), min_size=1, max_size=96)),
+                        ),
+                    )
                 elif choice == "duplicate":
                     new_artifact_id = f"artifact-{len(state.artifacts)}"
                     operation = Duplicate(operation_id, draw(st.sampled_from(artifact_ids)), new_artifact_id)
@@ -806,6 +878,28 @@ def corpus_program_schedule_strategy(operation_ids: Sequence[str]) -> Any:
     return st.permutations(ids)
 
 
+class CorpusConvergenceResult(TypedDict):
+    parse: ParseResult
+    convergence: dict[Path, FileState]
+
+
+class CorpusConvergenceRejectedError(CorpusProgramError):
+    """Parsing or daemon stages did not establish convergence."""
+
+    def __init__(self, result: ParseResult | CorpusConvergenceResult) -> None:
+        self.result = result
+        diagnostic: object
+        if isinstance(result, dict):
+            diagnostic = [
+                (path.name, state.error_count, state.pending_stages)
+                for path, state in result["convergence"].items()
+                if state.error_count or not state.converged
+            ]
+        else:
+            diagnostic = result.parse_failures
+        super().__init__(f"convergence rejected: {diagnostic}")
+
+
 class ProductionCorpusRuntime:
     """Adapter from corpus operations to the live archive production seams."""
 
@@ -814,6 +908,8 @@ class ProductionCorpusRuntime:
         self.source_root = self.archive_root / "corpus-program-sources"
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
+        self._raw_ids_by_wire: dict[tuple[str, bytes], tuple[str, ...]] = {}
+        self._raw_ids_by_source_revision: dict[tuple[str, Path, bytes], tuple[str, ...]] = {}
         self._crashed = False
         self.last_results: list[object] = []
 
@@ -821,7 +917,7 @@ class ProductionCorpusRuntime:
         if self._crashed:
             raise CorpusRuntimeCrashedError("runtime is crashed; apply Restart before the next effect")
 
-    def acquire(self, artifact: RawArtifact) -> object:
+    def acquire(self, artifact: RawArtifact) -> AcquireResult:
         self._ensure_running()
         from polylogue.config import Source
         from polylogue.pipeline.services.acquisition import AcquisitionService
@@ -835,19 +931,32 @@ class ProductionCorpusRuntime:
         path.write_bytes(wire_payload)
         source_name = "browser-capture" if artifact.attachments else artifact.source_name
 
-        async def run() -> object:
+        async def run() -> AcquireResult:
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
             try:
                 result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
-                self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids)
+                self.last_results.append(result)
+                wire_hash = hashlib.sha256(wire_payload).digest()
+                wire_key = (source_name, wire_hash)
+                source_revision = (source_name, path, wire_hash)
+                # Prefer the exact acquisition coordinate on a skipped
+                # reacquisition. Equal bytes at another path can have their
+                # own raw identity; wire evidence remains valid for a newly
+                # observed duplicate whose admission reports only a skip.
+                known_ids = self._raw_ids_by_source_revision.get(source_revision) or self._raw_ids_by_wire.get(
+                    wire_key, ()
+                )
+                if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
+                    raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
+                self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
+                self._raw_ids_by_wire[wire_key] = self._raw_ids[artifact.artifact_id]
+                self._raw_ids_by_source_revision[source_revision] = self._raw_ids[artifact.artifact_id]
                 self._source_paths[artifact.artifact_id] = path
                 return result
             finally:
                 await backend.close()
 
-        result = asyncio.run(run())
-        self.last_results.append(result)
-        return result
+        return asyncio.run(run())
 
     def emit_hook(self, hook: HookArtifact) -> object:
         self._ensure_running()
@@ -887,7 +996,7 @@ class ProductionCorpusRuntime:
         self._crashed = False
         return None
 
-    def converge(self) -> object:
+    def converge(self) -> CorpusConvergenceResult:
         self._ensure_running()
         from polylogue.config import Config
         from polylogue.daemon.convergence import DaemonConverger
@@ -919,25 +1028,78 @@ class ProductionCorpusRuntime:
                 await backend.close()
 
         parse_result = asyncio.run(parse())
+        if parse_result.parse_failures:
+            self.last_results.append(parse_result)
+            raise CorpusConvergenceRejectedError(parse_result)
         converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
         states = {path: converger.converge_file(path) for path in paths}
-        result = {"parse": parse_result, "convergence": states}
+        result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
+        if any(state.error_count or not state.converged for state in states.values()):
+            raise CorpusConvergenceRejectedError(result)
         return result
 
 
 def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     """Encode corpus attachments through the existing browser-capture route."""
-    from polylogue.core.enums import Provider
+    from polylogue.core.enums import Provider, TitleSource
 
     provider = Provider.from_string(artifact.source_name)
-    session_id = artifact.metadata.get("session_id")
-    if not isinstance(session_id, str) or not session_id:
-        session_id = artifact.artifact_id
-    attachment_payload = [
+    if provider not in {Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI}:
+        raise CorpusProgramError("Attach requires a provider with native capture payload support")
+    from polylogue.browser_capture.models import BrowserCaptureBlock
+    from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+    from polylogue.sources.parsers.base_support import derive_attachment_provenance
+
+    try:
+        try:
+            payload = json.loads(artifact.payload)
+        except json.JSONDecodeError:
+            payload = [json.loads(line) for line in artifact.payload.splitlines() if line.strip()]
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CorpusProgramError("Attach refused: transcript is not JSON or JSONL") from exc
+    sessions = parse_payload(provider, payload, artifact.artifact_id, source_path=artifact.source_path)
+    sessions = require_positive_conversational_evidence(
+        sessions,
+        provider=provider,
+        source_path=artifact.source_path,
+    )
+    if len(sessions) != 1:
+        raise CorpusProgramError("Attach requires exactly one parsed session")
+    parsed = sessions[0]
+    if not parsed.messages:
+        raise CorpusProgramError("Attach requires authored turns")
+    session_id = parsed.provider_session_id
+    turns = [
+        {
+            "provider_turn_id": message.provider_message_id or "",
+            "role": message.role.value,
+            "text": message.text,
+            "timestamp": message.timestamp,
+            "parent_turn_id": message.parent_message_provider_id,
+            "ordinal": ordinal,
+            "blocks": [
+                BrowserCaptureBlock.model_validate(block.model_dump()).model_dump(mode="json")
+                for block in message.blocks
+            ],
+        }
+        for ordinal, message in enumerate(parsed.messages)
+    ]
+    attachment_ordinal = next(
+        (
+            ordinal
+            for ordinal, message in enumerate(parsed.messages)
+            if derive_attachment_provenance(message.role, message.provider_message_id)[0] is not None
+        ),
+        None,
+    )
+    if attachment_ordinal is None:
+        raise CorpusProgramError("Attach requires a message with supported attachment provenance")
+    turns[attachment_ordinal]["attachments"] = [
         {
             "provider_attachment_id": attachment.attachment_id,
             "name": attachment.name,
+            "message_provider_id": parsed.messages[attachment_ordinal].provider_message_id or None,
             "mime_type": attachment.mime_type,
             "size_bytes": len(attachment.payload),
             "inline_base64": _b64(attachment.payload),
@@ -959,20 +1121,19 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
         "session": {
             "provider": provider.value,
             "provider_session_id": session_id,
-            "title": artifact.artifact_id,
-            "turns": [
-                {
-                    "provider_turn_id": f"{session_id}:corpus",
-                    "role": "user",
-                    "text": f"Corpus artifact {artifact.artifact_id}",
-                    "ordinal": 0,
-                    "attachments": attachment_payload,
-                }
-            ],
+            "session_kind": parsed.session_kind.value,
+            "title": parsed.title if parsed.title_source is TitleSource.ORIGIN else None,
+            "title_source": "provider" if parsed.title_source is TitleSource.ORIGIN else None,
+            "turns": turns,
         },
-        "provider_meta": {"original_payload_b64": _b64(artifact.payload)},
     }
-    return _canonical_json(envelope).encode("utf-8")
+    if provider.value == "codex":
+        envelope["raw_provider_payload"] = payload if isinstance(payload, list) else [payload]
+    elif provider.value in {"chatgpt", "claude-ai"}:
+        envelope["raw_provider_payload"] = payload
+    # Native mapping order supplies parser positions. Canonical key sorting
+    # here would change authored ordering while adding unrelated evidence.
+    return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
 
 
 def _normalized_hook_envelope(hook: HookArtifact, provider: Any) -> dict[str, object]:
@@ -1002,6 +1163,9 @@ __all__ = [
     "CorpusOperation",
     "CorpusProgram",
     "CorpusProgramError",
+    "CorpusAcquisitionRejectedError",
+    "CorpusConvergenceResult",
+    "CorpusConvergenceRejectedError",
     "CorpusRun",
     "CorpusRuntimeCrashed",
     "CorpusRuntimeCrashedError",

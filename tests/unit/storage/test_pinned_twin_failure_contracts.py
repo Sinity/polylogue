@@ -28,8 +28,7 @@ from polylogue.storage.raw_retention import (
     RawRetentionSafetyError,
     _ops_cursor_byte_offsets_from_connection,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_pinned_schema_drift_reports_unavailable_when_the_ops_reader_fails() -> None:
@@ -110,7 +109,7 @@ def test_pinned_raw_failure_status_degrades_when_the_source_reader_fails(tmp_pat
             return getattr(self._conn, name)
 
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
 
     with closing(sqlite3.connect(source_db)) as conn:
         status = raw_failure_status_from_connection(_BusyOnQuarantineCount(conn))  # type: ignore[arg-type]

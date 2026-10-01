@@ -97,53 +97,11 @@ def completed_total_time_samples(conn: sqlite3.Connection) -> list[float]:
     eligible rows.
     """
 
-    has_table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_attempt'"
-    ).fetchone()
-    if has_table is None:
-        return []
-    # ``live_ingest_attempt`` itself does not record a single
-    # ``total_time_s`` column — that aggregate only appears on the
-    # per-attempt latest ``live_ingest_stage_event``. For the historical
-    # baseline we approximate per-attempt total time as the wall-clock
-    # span between ``started_at`` and ``completed_at`` (in seconds),
-    # which matches what an operator sees in the recent-attempt rollup.
     rows = conn.execute(
-        """
-        SELECT started_at, completed_at
-        FROM live_ingest_attempt
-        WHERE status = 'completed'
-          AND started_at IS NOT NULL
-          AND completed_at IS NOT NULL
-        """
+        "SELECT started_at_ms, finished_at_ms FROM ingest_attempts "
+        "WHERE status = 'completed' AND finished_at_ms IS NOT NULL"
     ).fetchall()
-    durations: list[float] = []
-    for row in rows:
-        started_at = row[0]
-        completed_at = row[1]
-        if not isinstance(started_at, str) or not isinstance(completed_at, str):
-            continue
-        duration = _iso_span_seconds(started_at, completed_at)
-        if duration is not None and duration > 0.0:
-            durations.append(duration)
-    return durations
-
-
-def _iso_span_seconds(start_iso: str, end_iso: str) -> float | None:
-    """Return ``end - start`` in seconds, or ``None`` if unparseable."""
-
-    from datetime import UTC, datetime
-
-    try:
-        started = datetime.fromisoformat(start_iso)
-        ended = datetime.fromisoformat(end_iso)
-    except ValueError:
-        return None
-    if started.tzinfo is None:
-        started = started.replace(tzinfo=UTC)
-    if ended.tzinfo is None:
-        ended = ended.replace(tzinfo=UTC)
-    return max(0.0, (ended.astimezone(UTC) - started.astimezone(UTC)).total_seconds())
+    return [(int(row[1]) - int(row[0])) / 1000.0 for row in rows if int(row[1]) > int(row[0])]
 
 
 def compute_slow_threshold_s(

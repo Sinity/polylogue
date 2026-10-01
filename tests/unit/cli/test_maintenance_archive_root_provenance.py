@@ -52,7 +52,6 @@ def test_maintenance_status_prints_env_archive_root_provenance(
 def test_maintenance_status_prints_user_config_archive_root_provenance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    empty_archive_template: Path,
 ) -> None:
     """Without an env override, the banner names the user config file, not "env"."""
     monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
@@ -63,12 +62,9 @@ def test_maintenance_status_prints_user_config_archive_root_provenance(
 
     archive_root = tmp_path / "toml-configured-archive"
     archive_root.mkdir(parents=True, exist_ok=True)
-    import subprocess
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
 
-    subprocess.run(
-        ["cp", "-a", "--reflink=auto", f"{empty_archive_template}/.", str(archive_root)],
-        check=True,
-    )
+    bootstrap_ready_archive_root(archive_root)
     user_toml = tmp_path / "user.toml"
     user_toml.write_text(f'[archive]\nroot = "{archive_root.as_posix()}"\n', encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(user_toml))
@@ -85,7 +81,6 @@ def test_maintenance_status_prints_user_config_archive_root_provenance(
 def test_maintenance_banner_names_the_root_the_command_will_actually_touch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    empty_archive_template: Path,
 ) -> None:
     """The cloud sentinel must not make the banner understate the blast radius.
 
@@ -110,12 +105,9 @@ def test_maintenance_banner_names_the_root_the_command_will_actually_touch(
 
     archive_root = tmp_path / "toml-configured-archive"
     archive_root.mkdir(parents=True, exist_ok=True)
-    import subprocess
+    from tests.infra.archive_templates import bootstrap_ready_archive_root
 
-    subprocess.run(
-        ["cp", "-a", "--reflink=auto", f"{empty_archive_template}/.", str(archive_root)],
-        check=True,
-    )
+    bootstrap_ready_archive_root(archive_root)
     user_toml = tmp_path / "user.toml"
     user_toml.write_text(f'[archive]\nroot = "{archive_root.as_posix()}"\n', encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(user_toml))

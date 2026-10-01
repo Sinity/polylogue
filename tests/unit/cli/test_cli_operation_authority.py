@@ -198,6 +198,19 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ),
     ("reset-identity", ("ops", "reset", "--session", _SESSION_ID, "--yes"), "mutation.identity-reset"),
     ("backup", ("ops", "backup", "--output-dir", "./backup-matrix"), "maintenance.backup"),
+    (
+        "restore-verified-backup",
+        (
+            "ops",
+            "maintenance",
+            "restore-verified-backup",
+            "--backup-dir",
+            str(_IMPORTABLE_EXPORT.parent),
+            "--destination",
+            "./restore-matrix",
+        ),
+        "maintenance.restore_verified_backup",
+    ),
     ("embed-backfill", ("ops", "embed", "backfill", "--yes"), "maintenance.embeddings.backfill"),
     ("scan-secrets", ("ops", "scan-secrets", "--session", _SESSION_ID), "maintenance.secret_scan"),
     (
@@ -236,7 +249,7 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
             "--schema-id",
             "seed.activity",
             "--schema-version",
-            "1",
+            "2",
             "--target-ref",
             f"session:{_SESSION_ID}",
             "--source-result-ref",

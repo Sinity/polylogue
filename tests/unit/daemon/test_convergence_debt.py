@@ -28,6 +28,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.prepared_session import write_prepared_session
 from tests.infra.replay_lineage import LineageGraph, LineageNode, codex_lineage_payload, seed_lineage_graph
 
@@ -228,7 +229,7 @@ def test_hook_paste_debt_is_retried_for_its_session_and_cleared(tmp_path: Path) 
     index_db = root / "index.db"
     source_db = root / "source.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
 
     hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
     session_id = "codex-session:hook-native"

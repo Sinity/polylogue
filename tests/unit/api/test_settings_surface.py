@@ -15,7 +15,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue import Polylogue
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.user_settings_write import set_user_setting
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -86,10 +89,85 @@ async def test_the_facade_exposes_no_setting_writer(tmp_path: Path) -> None:
         assert not hasattr(poly, "set_setting")
 
 
-async def test_get_setting_returns_none_when_user_tier_missing(tmp_path: Path) -> None:
+async def test_settings_refuse_missing_user_authority(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     _init_tiers(archive_root, with_user=False)
 
     async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
-        assert await poly.get_setting("subscription_tier") is None
-        assert await poly.list_settings() == []
+        with pytest.raises(ArchiveTierUnavailableError):
+            await poly.get_setting("subscription_tier")
+        with pytest.raises(ArchiveTierUnavailableError):
+            await poly.list_settings()
+
+
+@pytest.mark.parametrize(
+    "route,tier",
+    [
+        ("get_setting", "user"),
+        ("list_settings", "user"),
+        ("get_context_delivery", "user"),
+        ("list_context_deliveries", "user"),
+        ("list_context_injection_ledger", "ops"),
+        ("correlate_hermes_context_deliveries", "source"),
+        ("correlate_hermes_context_deliveries", "user"),
+    ],
+)
+@pytest.mark.parametrize("fault", ["missing", "corrupt", "missing_table"])
+async def test_facade_required_authority_faults_are_typed(
+    tmp_path: Path,
+    route: str,
+    tier: str,
+    fault: str,
+) -> None:
+    """Mutation: return the route's empty value on a read fault and this fails."""
+    root = tmp_path / "archive"
+    _init_tiers(root)
+    path = root / f"{tier}.db"
+    if fault == "missing":
+        path.unlink()
+    elif fault == "corrupt":
+        path.write_bytes(b"invalid sqlite")
+    else:
+        table = {
+            "get_setting": "user_settings",
+            "list_settings": "user_settings",
+            "get_context_delivery": "context_deliveries",
+            "list_context_deliveries": "context_deliveries",
+            "list_context_injection_ledger": "context_injection_ledger",
+            "correlate_hermes_context_deliveries": "raw_hook_events" if tier == "source" else "context_deliveries",
+        }[route]
+        with sqlite3.connect(path) as conn:
+            conn.execute(f'DROP TABLE "{table}"')
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+        kwargs = {
+            "get_setting": {"setting_key": "subscription_tier"},
+            "get_context_delivery": {"snapshot_ref": "context-snapshot:missing", "recipient_ref": "agent:neutral"},
+            "correlate_hermes_context_deliveries": {"hermes_session_native_id": "neutral-session"},
+        }.get(route, {})
+        with pytest.raises(ArchiveTierUnavailableError) as refusal:
+            await getattr(poly, route)(**kwargs)
+        assert refusal.value.tier == tier
+    assert path.exists() is (fault != "missing")
+
+
+async def test_empty_context_authority_remains_measured_absence(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _init_tiers(root)
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+        assert await poly.get_context_delivery("context-snapshot:missing", recipient_ref="agent:neutral") is None
+        assert await poly.list_context_deliveries() == []
+        assert await poly.list_context_injection_ledger() == []
+        assert await poly.correlate_hermes_context_deliveries("neutral-session") == ()
+
+
+@pytest.mark.parametrize("route", ["get_setting", "list_settings"])
+async def test_settings_refuse_uninspectable_stored_value(tmp_path: Path, route: str) -> None:
+    root = tmp_path / "archive"
+    _init_tiers(root)
+    _seed_setting(root, "subscription_tier", "max_5x")
+    with sqlite3.connect(root / "user.db") as conn:
+        conn.execute("UPDATE user_settings SET value_json = 'invalid json'")
+    async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
+        kwargs = {"setting_key": "subscription_tier"} if route == "get_setting" else {}
+        with pytest.raises(ArchiveTierUnavailableError):
+            await getattr(poly, route)(**kwargs)

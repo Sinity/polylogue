@@ -17,6 +17,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -116,7 +117,7 @@ def test_page_selection_repairs_missing_cursor_from_archive_source_row(tmp_path:
     cursor = CursorStore(tmp_path / "ops.db")
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         # Reconciliation (#2710) now re-verifies the archived blob hash
@@ -162,9 +163,7 @@ def test_page_selection_repairs_missing_cursor_from_archive_source_row(tmp_path:
 
 
 def test_page_selection_does_not_repair_cursor_from_archive_row_with_missing_blob(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     root = tmp_path / "src"
     root.mkdir()
@@ -173,7 +172,7 @@ def test_page_selection_does_not_repair_cursor_from_archive_row_with_missing_blo
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
     cursor = CursorStore(tmp_path / "ops.db")
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
             conn,
@@ -207,7 +206,7 @@ def test_page_selection_reconciles_browser_capture_cursor_from_archive_origin(tm
     cursor = CursorStore(tmp_path / "ops.db")
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         # Reconciliation (#2710) now re-verifies the archived blob hash
@@ -277,7 +276,7 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
     stat = source.stat()
     old_content_digest = hashlib.sha256(old_content).hexdigest()
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(
@@ -454,7 +453,7 @@ def test_page_selection_demotes_hot_skip_cursor_when_index_holds_no_sessions(tmp
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _seed_parsed_source_raw(conn, path=healthy, native_id="healthy", raw_id="raw-healthy")
@@ -487,7 +486,7 @@ def test_page_selection_trusts_hot_skip_cursor_when_index_corroborates_it(tmp_pa
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _seed_parsed_source_raw(conn, path=healthy, native_id="healthy", raw_id="raw-healthy")
@@ -529,7 +528,7 @@ def test_page_selection_replays_missing_raw_when_index_has_another_session(tmp_p
 
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
     with sqlite3.connect(source_db) as conn:
         _seed_parsed_source_raw(conn, path=indexed, native_id="indexed", raw_id="raw-indexed")

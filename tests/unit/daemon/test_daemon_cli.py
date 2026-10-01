@@ -40,6 +40,7 @@ from polylogue.storage.derived.raw import RawObservationScope
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
@@ -186,7 +187,10 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     inspect_raw_authority_frontier(
         Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[], db_path=tmp_path / "index.db")
     )
@@ -242,7 +246,10 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
@@ -283,7 +290,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
 
 
 def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
     with (
@@ -306,7 +313,10 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
         ("audit.db", ArchiveTier.AUDIT),
         ("ops.db", ArchiveTier.OPS),
     ):
-        initialize_archive_database(tmp_path / filename, tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / filename)
+        else:
+            initialize_archive_database(tmp_path / filename, tier)
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
@@ -3400,12 +3410,12 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     """
     from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.enums import Provider
+    from polylogue.core.write_lease import coordinator_write_lease_active
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import (
         DaemonWriteCoordinator,
         DaemonWriteThreadBridge,
-        daemon_write_lease_active,
     )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from tests.infra.archive_templates import bootstrap_archive_root
@@ -3454,7 +3464,7 @@ def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
         release = threading.Event()
 
         def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
-            assert not daemon_write_lease_active()
+            assert not coordinator_write_lease_active()
             started.set()
             assert release.wait(timeout=2.0)
             return original_compute(frame, key)
@@ -4836,30 +4846,24 @@ async def test_browser_host_child_is_terminated_when_its_service_is_cancelled(
 
 
 @pytest.mark.asyncio
-async def test_full_profile_names_missing_source_tier_without_starting_raw_service(tmp_path: Path) -> None:
-    """An existing archive missing source.db reports the failed prerequisite.
-
-    Removing the composition root's prerequisite resolution starts raw work
-    or leaves its state pending. A newly empty archive follows the separate
-    first-acquisition path and is covered by the live intake tests.
-    """
+async def test_established_missing_source_refuses_before_starting_services(tmp_path: Path) -> None:
+    """Lost Source custody never becomes a newly created empty acquisition tier."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import _check_schema_version_fast
-    from polylogue.daemon.services import ServiceProfile, ServiceState
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.migration_runner import DurableChangeTrainError
 
     archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    # This is a partial archive whose index was initialized before any raw
-    # tier existed. Deleting source.db from a completed six-tier bootstrap
-    # instead invalidates its authenticated durable bootstrap receipt.
-    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
+    initialize_active_archive_root(archive_root)
+    (archive_root / "source.db").unlink()
+    retained = {name: (archive_root / name).read_bytes() for name in ("user.db", "audit.db")}
     with contextlib.ExitStack() as stack:
         _daemon_startup_stubs(stack, daemon_cli, archive_root)
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", _check_schema_version_fast))
         supervisors = _capture_supervisor(stack, daemon_cli)
-        task = asyncio.create_task(
-            daemon_cli.run_daemon_services(
+        with pytest.raises(DurableChangeTrainError):
+            await daemon_cli.run_daemon_services(
                 sources=(),
                 enable_watch=True,
                 enable_browser_capture=False,
@@ -4868,26 +4872,9 @@ async def test_full_profile_names_missing_source_tier_without_starting_raw_servi
                 enable_api=False,
                 service_profile=ServiceProfile.PRODUCTION,
             )
-        )
-        try:
-            async with asyncio.timeout(5):
-                while not supervisors:
-                    if task.done():
-                        await task
-                    await asyncio.sleep(0.01)
-            supervisor = supervisors[0]
-            assert supervisor.state("raw_observation_convergence") is ServiceState.UNAVAILABLE
-            assert supervisor.state("fair_intake") is ServiceState.UNAVAILABLE
-            assert not supervisor.is_schedulable("raw_observation_convergence")
-            assert not supervisor.is_schedulable("fair_intake")
-            observation = supervisor.board.get_or_unavailable("raw_materialization")
-            assert observation.state.value == "unavailable"
-            assert observation.reason == "source.db is absent"
-        finally:
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, timeout=10)
-    assert not [task for task in supervisors[0].tasks if not task.done()]
+    assert not supervisors
+    assert not (archive_root / "source.db").exists()
+    assert {name: (archive_root / name).read_bytes() for name in retained} == retained
 
 
 @pytest.mark.asyncio
@@ -5161,3 +5148,63 @@ def test_session_profile_audit_resumes_the_promoted_audit_each_tick(monkeypatch:
 
     asyncio.run(exercise())
     assert budgets == [daemon_cli._SESSION_PROFILE_BACKLOG_SECONDS]
+
+
+@pytest.mark.asyncio
+async def test_no_watch_fresh_audit_fault_returns_to_its_periodic_cadence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed no-watch startup service must yield after one unavailable audit pass."""
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.periodic import PeriodicRunner
+    from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+    archive_root = tmp_path / "fresh"
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    tick_finished = asyncio.Event()
+    delays: list[float] = []
+    calls = 0
+
+    async def scheduled_wait(delay: float) -> None:
+        delays.append(delay)
+        tick_finished.set()
+        await asyncio.Event().wait()
+
+    runner = PeriodicRunner(jitter_ratio=0, sleep=scheduled_wait)
+    monkeypatch.setattr(daemon_cli, "daemon_periodic_runner", lambda: runner)
+    profiles = compose_session_profile_callback(
+        archive_root,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        now=lambda: 0.0,
+    )
+    real_pass = profiles.audit_pass
+    assert real_pass is not None
+    failures: list[DerivationReport] = []
+
+    async def audit(deadline: float) -> DerivationReport | None:
+        nonlocal calls
+        calls += 1
+        assert calls == 1, "bootstrap fault repeated before the next periodic tick"
+        report = await real_pass(deadline)
+        assert report is not None
+        failures.append(report)
+        return report
+
+    profiles = dataclasses.replace(profiles, audit_pass=audit)
+    task = asyncio.create_task(daemon_cli._periodic_session_profile_audit(profiles, watcher_registered=None))
+    try:
+        await tick_finished.wait()
+        state = runner.state("session_profile_audit")
+        assert state is not None and state.runs == 1 and state.failures == 0
+        assert calls == 1 and failures[0].failed == 1
+        assert profiles.audit_pending()
+        assert delays == [daemon_cli._SESSION_PROFILE_AUDIT_INTERVAL_SECONDS]
+        assert not archive_root.exists()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)

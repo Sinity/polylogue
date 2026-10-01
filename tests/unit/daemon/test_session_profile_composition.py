@@ -6,9 +6,10 @@ import asyncio
 import json
 import sqlite3
 import time
+from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import aiosqlite
 import pytest
@@ -530,6 +531,7 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
             frame=cast(DerivationFrame, frame),
             counts={Outcome.PENDING: 1} if pending else {Outcome.DONE: 1},
             cursor=PassCursor({domain: DomainCursor(phase=DiscoveryPhase.DONE)}),
+            cursor_unsettled_domains=frozenset({domain}) if pending else frozenset(),
         )
 
     monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", fake_converge)
@@ -568,3 +570,247 @@ async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_unreadable_bootstrap_audit_returns_one_fault_and_retries_after_schema_exists(tmp_path: Path) -> None:
+    """Actual SQLite discovery failure cannot be retried inside one backlog call."""
+    archive_root = tmp_path / "fresh"
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            archive_root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        real_pass = composed.audit_pass
+        assert real_pass is not None
+        audit_calls = 0
+
+        async def observe(deadline: float) -> DerivationReport | None:
+            nonlocal audit_calls
+            audit_calls += 1
+            assert audit_calls == 1, "unchanged unavailable output was acquired again in the same tick"
+            return await real_pass(deadline)
+
+        report = await replace(composed, audit_pass=observe).converge_backlog(600.0)
+        assert report.failed == 1
+        assert report.outcomes[0].key.domain == SESSION_SUMMARY_DOMAIN
+        assert report.outcomes[0].key.key == "*"
+        assert composed.audit_pending()
+        assert not archive_root.exists(), "failed read discovery must not create an archive"
+
+        recovered = seed_partial_convergence_archive(archive_root, target_hot=False)
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        with closing(sqlite3.connect(recovered.index_db)) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] > 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["discovery", "swept", "pending"])
+async def test_faulted_or_unchanged_audit_retains_owed_domains_and_serves_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """Cursor progress, rather than changing counts, bounds same-tick retries."""
+    from polylogue.daemon.convergence import SessionProfileConvergenceOwner
+    from polylogue.daemon.derivation import DiscoveryPhase, DomainCursor, PassCursor
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    visited: list[str] = []
+    blocked = True
+
+    async def converge(self: object, frame: DerivationFrame, **kwargs: object) -> DerivationReport:
+        if frame.profile_demand_only:
+            assert "domains" not in kwargs
+            return DerivationReport(frame)
+        (domain,) = cast(tuple[str, ...], kwargs["domains"])
+        visited.append(domain)
+        # This refuses an immediate repeat, so the old loop fails without a
+        # sleep or a performance threshold. Count changes cannot justify it.
+        assert len(visited) <= 5
+        faulted = blocked and domain == SESSION_SUMMARY_DOMAIN
+        outcome = Outcome.PENDING if faulted and failure == "pending" else Outcome.FAILED if faulted else Outcome.DONE
+        phase = DiscoveryPhase.REQUIRED if faulted and failure == "discovery" else DiscoveryPhase.DONE
+        return DerivationReport(
+            frame,
+            counts={outcome: len(visited)},
+            cursor=PassCursor({domain: DomainCursor(phase)}),
+            cursor_unsettled_domains=frozenset({domain}) if faulted and phase is DiscoveryPhase.DONE else frozenset(),
+        )
+
+    monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", converge)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        await composed.converge_backlog(600.0)
+        assert visited == [SESSION_SUMMARY_DOMAIN]
+        await composed.converge_backlog(600.0)
+        assert visited == [
+            SESSION_SUMMARY_DOMAIN,
+            SESSION_USAGE_ROLLUP_DOMAIN,
+            SESSION_PROFILE_DOMAIN,
+            SESSION_MARKER_DOMAIN,
+            SESSION_SUMMARY_DOMAIN,
+        ]
+        assert composed.audit_pending()
+        blocked = False
+        visited.clear()
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        assert set(visited) == {
+            SESSION_SUMMARY_DOMAIN,
+            SESSION_USAGE_ROLLUP_DOMAIN,
+            SESSION_PROFILE_DOMAIN,
+            SESSION_MARKER_DOMAIN,
+        }
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_backlog_cursor_progress_is_bound_to_the_generation_it_walked() -> None:
+    """An equal cursor on a new declared generation is new work, not an unchanged retry."""
+    from polylogue.daemon.derivation import DiscoveryPhase, DomainCursor, PassCursor
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+
+    old_frame = DerivationFrame("/synthetic/archive", "index-generation:old")
+    cursor = PassCursor({SESSION_SUMMARY_DOMAIN: DomainCursor(DiscoveryPhase.DONE)})
+    initial = DerivationReport(old_frame)
+    reports = [
+        DerivationReport(old_frame, counts={Outcome.PENDING: 1}, cursor=cursor),
+        DerivationReport(
+            replace(old_frame, source_revision="index-generation:new"), counts={Outcome.PENDING: 1}, cursor=cursor
+        ),
+    ]
+    consumed: list[str] = []
+
+    async def demand(_scope: object) -> DerivationReport:
+        return initial
+
+    async def promoted() -> DerivationReport:
+        return initial
+
+    async def audit(_deadline: float) -> DerivationReport | None:
+        if not reports:
+            consumed.append("drained")
+            return None
+        report = reports.pop(0)
+        consumed.append(report.frame.source_revision)
+        return report
+
+    profiles = ComposedSessionProfiles(demand, promoted, cast(Any, None), audit_pass=audit)
+    await profiles.converge_backlog(600.0)
+    assert consumed == ["index-generation:old", "index-generation:new", "drained"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["fault", "pending"])
+async def test_rotating_unsettled_sweeps_reach_every_domain_tail_and_retry_the_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    """The real kernel keeps all four advancing cursors across bounded rotations."""
+    from tests.infra.audit_derivation import install_audit_derivations
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapters = install_audit_derivations(monkeypatch, failure)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        reports: list[DerivationReport] = []
+        real_pass = composed.audit_pass
+        assert real_pass is not None
+
+        async def observe(deadline: float) -> DerivationReport | None:
+            report = await real_pass(deadline)
+            if report is not None:
+                reports.append(report)
+            return report
+
+        composed = replace(composed, audit_pass=observe)
+        # Each faulted prefix rotates once; each pending sweep yields at its
+        # terminal tail. Eight scheduled ticks cover four prefixes and tails.
+        for _ in range(8):
+            await composed.converge_backlog(600.0)
+        assert all(adapter.keys[-1] in adapter.inspected for adapter in adapters)
+        assert composed.audit_pending(), "a healthy tail must not certify its unsettled prefix"
+        assert any(report.failed if failure == "fault" else report.pending for report in reports)
+        before = [adapter.pages for adapter in adapters]
+        for adapter in adapters:
+            adapter.failure = None
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        assert all(adapter.pages > previous for adapter, previous in zip(adapters, before, strict=True))
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_new_generation_resets_unsettled_sweep_facts_and_restarts_the_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old partial fault cannot keep a new generation owed or skip its prefix."""
+    from polylogue.daemon import session_profile_composition as composition
+    from tests.infra.audit_derivation import install_audit_derivations
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    adapters = install_audit_derivations(monkeypatch, "fault")
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        report = await composed.converge_backlog(600.0)
+        assert report.failed == 1
+        assert not report.cursor.position(SESSION_SUMMARY_DOMAIN).swept
+        first = adapters[0].prefix_inspections
+        for adapter in adapters:
+            adapter.failure = None
+        real_frame = make_session_profile_frame
+
+        def new_frame(*args: Any, **kwargs: Any) -> DerivationFrame:
+            frame = real_frame(*args, **kwargs)
+            return replace(frame, source_revision=frame.source_revision + ":new-generation")
+
+        monkeypatch.setattr(composition, "make_session_profile_frame", new_frame)
+        await composed.converge_backlog(600.0)
+        assert not composed.audit_pending()
+        assert adapters[0].prefix_inspections > first
+        assert all(adapter.keys[-1] in adapter.inspected for adapter in adapters)
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+def test_promotion_report_retains_each_domains_consumed_unsettled_evidence() -> None:
+    from polylogue.daemon.session_profile_composition import _merge_reports
+
+    frame = DerivationFrame("/synthetic/archive", "generation")
+    first = DerivationReport(frame, cursor_unsettled_domains=frozenset({SESSION_SUMMARY_DOMAIN}))
+    second = DerivationReport(frame, cursor_unsettled_domains=frozenset({SESSION_MARKER_DOMAIN}))
+    assert _merge_reports(first, second).cursor_unsettled_domains == frozenset(
+        {SESSION_SUMMARY_DOMAIN, SESSION_MARKER_DOMAIN}
+    )

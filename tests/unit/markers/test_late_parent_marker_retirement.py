@@ -32,6 +32,7 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _PREFIX_MARKER = "::note: shared prefix lesson"
 _TAIL_MARKER = "::note: child tail lesson"
@@ -205,7 +206,7 @@ def test_retirement_delivered_before_the_child_carrier_still_holds(tmp_path: Pat
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     child_candidate = candidates_for_block("codex-session:child:c1", "codex-session:child:c1:0", _PREFIX_MARKER)[0]
     child_record = asdict(child_candidate)

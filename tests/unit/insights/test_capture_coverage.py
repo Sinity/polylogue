@@ -21,6 +21,7 @@ from polylogue.analysis.capture_coverage import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 NOW_MS = 2_000_000_000_000
 GRACE_MS = 15 * 60 * 1000
@@ -29,7 +30,7 @@ GRACE_MS = 15 * 60 * 1000
 @pytest.fixture
 def archive(tmp_path: Path) -> Path:
     root = tmp_path / "archive"
-    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(root / "source.db")
     initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
     return root
 

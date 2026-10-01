@@ -6,7 +6,7 @@ import sqlite3
 from contextlib import closing
 from http import HTTPStatus
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,6 +14,8 @@ import pytest
 from polylogue.daemon.metrics import handle_metrics
 from polylogue.operations import daemon_metrics as metrics
 from polylogue.operations.storage_io_observation import IoPhaseObservation, StorageIoObservation
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _scrape(db: Path) -> str:
@@ -210,7 +212,7 @@ def test_ops_debt_without_attempt_ledger_does_not_invent_attempt_zeros(tmp_path:
             """
         )
     body = _scrape(tmp_path / "index.db")
-    assert 'polylogue_convergence_debt_count{stage="materialize",status="failed"} 1' in body
+    assert 'polylogue_convergence_debt_count{stage="materialize",status="failed"} 1' not in body
     assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 0' in body
     assert "polylogue_live_ingest_attempts_total{status=" not in body
     assert "polylogue_live_ingest_attempts_in_flight 0" not in body
@@ -234,14 +236,15 @@ def test_ops_only_openability_probe_uses_a_closed_query_only_reader(
     from polylogue.storage.sqlite import connection_profile
 
     ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
     with closing(sqlite3.connect(ops_db)) as conn:
         conn.execute("CREATE TABLE sentinel (value INTEGER)")
         conn.commit()
     opened: list[sqlite3.Connection] = []
     original_open = connection_profile.open_readonly_connection
 
-    def observe_open(path: str | Path, *, validate_schema: bool = True) -> sqlite3.Connection:
-        conn = original_open(path, validate_schema=validate_schema)
+    def observe_open(path: str | Path, *, validate_schema: bool = True, **kwargs: Any) -> sqlite3.Connection:
+        conn = original_open(path, validate_schema=validate_schema, **kwargs)
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
         with pytest.raises(sqlite3.DatabaseError):
             conn.execute("INSERT INTO sentinel VALUES (1)")
@@ -249,7 +252,7 @@ def test_ops_only_openability_probe_uses_a_closed_query_only_reader(
         return conn
 
     monkeypatch.setattr(connection_profile, "open_readonly_connection", observe_open)
-    assert metrics._format_ops_only_metrics([], ops_db) is None
+    assert metrics._format_ops_only_metrics([], ops_db) is True
     assert opened
     for conn in opened:
         with pytest.raises(sqlite3.ProgrammingError):
@@ -264,10 +267,7 @@ def test_ops_only_missing_tier_is_not_created(tmp_path: Path) -> None:
 
 
 def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -> None:
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            "CREATE TABLE ingest_attempts (status TEXT NOT NULL, started_at_ms INTEGER, finished_at_ms INTEGER)"
-        )
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     body = _scrape(tmp_path / "index.db")
     assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 1' in body
     assert 'polylogue_live_ingest_attempts_total{status="completed"} 0' in body
@@ -306,7 +306,7 @@ def test_process_collection_failure_isolated(monkeypatch: pytest.MonkeyPatch, tm
         ("_archive_latest_embedding_run_state", None, "latest_embedding_run_unreadable"),
     ],
 )
-def test_tier_query_fault_retains_fallback_and_closes_reader(
+def test_tier_query_fault_is_visible_and_closes_reader(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reader_name: str, fallback: object, reason: str
 ) -> None:
     """Removing typed refusal, its diagnostic or finally-close makes this red."""
@@ -321,7 +321,11 @@ def test_tier_query_fault_retains_fallback_and_closes_reader(
     events: list[dict[str, object]] = []
     monkeypatch.setattr(metrics, "emit", lambda _event, **fields: events.append(fields))
     try:
-        assert getattr(metrics, reader_name)(database) == fallback
+        if reader_name == "_archive_latest_embedding_run_state":
+            assert getattr(metrics, reader_name)(database) == fallback
+        else:
+            with pytest.raises(sqlite3.OperationalError):
+                getattr(metrics, reader_name)(database)
         assert len(events) == 1
         assert events[0]["reason"] == reason
         assert events[0]["outcome"] == "degraded"

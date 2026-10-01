@@ -31,7 +31,6 @@ from polylogue.storage.sqlite.archive_tiers import bootstrap as tier_bootstrap
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
     initialize_active_archive_root,
-    initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -56,7 +55,7 @@ def test_durable_tier_stamps_the_version_its_readers_compare_against(tmp_path: P
     with the expectation the tier spec and the readiness probe both publish.
     """
     path = tmp_path / ARCHIVE_TIER_SPECS[tier].filename
-    initialize_archive_database(path, tier)
+    initialize_active_archive_root(tmp_path)
 
     with sqlite3.connect(path) as conn:
         stamped = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -93,68 +92,35 @@ def test_durable_tier_module_declares_no_second_version(tier: ArchiveTier) -> No
     )
 
 
-def test_fresh_archive_born_above_the_floor_admits_its_own_format_marker(
+def test_runtime_target_without_a_declared_train_refuses_after_baseline_birth(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A durable tier target above the floor must not refuse a freshly written marker.
+    """An untrained runtime target cannot invent that version's fresh schema."""
+    from polylogue.core.errors import SchemaSkew
 
-    The floor is the lower bound of a lineage that is meant to evolve forward by
-    numbered migrations -- ``DURABLE_MIGRATION_ADOPTION_FLOORS`` starts a future
-    train directly above it. The format marker records the durable version each
-    tier was *born* at, so once a migration raises the runtime's durable target
-    every newly bootstrapped archive is born above the floor.
-
-    Anti-vacuity: pinning the marker's durable ``tier_versions`` to
-    ``ARCHIVE_FORMAT_FLOOR_VERSION`` exactly, instead of treating it as a lower
-    bound, makes this fresh archive refuse the marker it just wrote with
-    "archive format marker has an incomplete six-tier floor".
-    """
     advanced = dict(ARCHIVE_VERSION_BY_TIER)
-    advanced[ArchiveTier.SOURCE] = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
-    advanced[ArchiveTier.USER] = ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] + 1
+    advanced[ArchiveTier.USER] += 1
     monkeypatch.setattr(tier_bootstrap, "ARCHIVE_VERSION_BY_TIER", advanced)
-    monkeypatch.setattr(archive_plan, "ARCHIVE_VERSION_BY_TIER", advanced)
-
-    initialize_active_archive_root(tmp_path)
-
-    marker = json.loads((tmp_path / ".polylogue-format.json").read_text(encoding="utf-8"))
-    assert marker["floor_version"] == ARCHIVE_FORMAT_FLOOR_VERSION
-    assert marker["tier_versions"]["source"] == advanced[ArchiveTier.SOURCE]
-    assert marker["tier_versions"]["user"] == advanced[ArchiveTier.USER]
-    for tier in DURABLE_TIERS:
-        with sqlite3.connect(tmp_path / ARCHIVE_TIER_SPECS[tier].filename) as conn:
-            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == advanced[tier]
-
-    archive_plan.assert_archive_format_lineage(tmp_path)
+    with pytest.raises(SchemaSkew) as refused:
+        initialize_active_archive_root(tmp_path)
+    assert refused.value.tier == "user"
+    marker = json.loads((tmp_path / ".polylogue-format.json").read_text())
+    assert set(marker["tier_versions"].values()) == {1}
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
 
 
-def test_a_transplanted_tier_at_the_birth_version_is_still_refused_above_the_floor(
+def test_transplanted_baseline_tier_is_refused_by_its_immutable_birth_fingerprint(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Birth-version fingerprint evidence must survive the lineage moving forward.
+    from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive
 
-    The marker's ``durable_schema_fingerprints`` describe each tier at the
-    version it was born at. Binding that check to the floor rather than to the
-    recorded birth version would silently switch it off for every archive born
-    above the floor, readmitting exactly the foreign-lineage file the marker
-    exists to reject.
-
-    Anti-vacuity: restoring ``version == ARCHIVE_FORMAT_FLOOR_VERSION`` as the
-    fingerprint condition makes this transplanted tier pass admission.
-    """
-    advanced = dict(ARCHIVE_VERSION_BY_TIER)
-    advanced[ArchiveTier.SOURCE] = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1
-    monkeypatch.setattr(tier_bootstrap, "ARCHIVE_VERSION_BY_TIER", advanced)
-    monkeypatch.setattr(archive_plan, "ARCHIVE_VERSION_BY_TIER", advanced)
-
-    initialize_active_archive_root(tmp_path)
+    bootstrap_baseline_archive(tmp_path, monkeypatch)
     archive_plan.assert_archive_format_lineage(tmp_path)
-
     source_path = tmp_path / "source.db"
     source_path.unlink()
     with sqlite3.connect(source_path) as foreign:
         foreign.execute("CREATE TABLE foreign_lineage (id INTEGER PRIMARY KEY) STRICT")
-        foreign.execute(f"PRAGMA user_version = {advanced[ArchiveTier.SOURCE]}")
-
+        foreign.execute("PRAGMA user_version = 1")
     with pytest.raises(RuntimeError, match="is not part of polylogue.archive-format.v5"):
         archive_plan.assert_archive_format_lineage(tmp_path)

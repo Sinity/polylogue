@@ -27,9 +27,8 @@ from polylogue.daemon.status import (
     raw_failure_info_for_root,
 )
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 class TestRawFailureSampleModel:
@@ -85,6 +84,7 @@ class TestRawFailureSampleModel:
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
+                    "terminal_missing_source_coordinates",
                 }
             )
             == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
@@ -207,7 +207,7 @@ def _seed_archive_raw_session(
     """
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     with sqlite3.connect(source_db) as conn:
         conn.execute(
             """
@@ -241,7 +241,7 @@ class TestRawFailureInfoProducesTypedSamples:
     def test_raw_failure_info_reads_archive_file_set_from_archive_tiers(self, tmp_path: Path) -> None:
         index_db = tmp_path / "index.db"
         archive_db = tmp_path / "source.db"
-        initialize_archive_database(archive_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(archive_db)
         with sqlite3.connect(archive_db) as conn:
             conn.execute(
                 """
@@ -807,7 +807,7 @@ class TestRawFailureInfoProducesTypedSamples:
     def test_daemon_status_uses_the_lifecycle_sample_rows(self, tmp_path: Path) -> None:
         """Status must retain classified rows selected ahead of newer unexplained rows."""
         source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         with sqlite3.connect(source_db) as conn:
             conn.executemany(
                 """
@@ -871,7 +871,7 @@ class TestRawFailureInfoProducesTypedSamples:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         with sqlite3.connect(source_db) as conn:
             conn.executemany(
                 """
@@ -915,7 +915,7 @@ class TestRawFailureInfoProducesTypedSamples:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         with sqlite3.connect(source_db) as conn:
             conn.executemany(
                 """
@@ -987,7 +987,7 @@ class TestRawFailureInfoProducesTypedSamples:
             assert "no raw failures" not in rendered
 
     def test_status_reports_healthy_zero_failure_lifecycle_for_valid_source(self, tmp_path: Path) -> None:
-        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(tmp_path / "source.db")
 
         with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
             info = raw_failure_info_for_root(tmp_path)
@@ -1001,7 +1001,7 @@ class TestRawFailureInfoProducesTypedSamples:
     def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
         """Lifecycle counts cover every failed raw without bulk-fetching rows."""
         source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         rows = []
         with sqlite3.connect(source_db) as conn:
             for index in range(120):
@@ -1100,7 +1100,7 @@ class TestRawFailureInfoProducesTypedSamples:
         assert len(cast(list[RawFailureSample], info["samples"])) == 50
 
     def test_raw_failure_info_empty_when_no_failures(self, tmp_path: Path) -> None:
-        initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(tmp_path / "source.db")
 
         with patch("polylogue.daemon.status.archive_root", return_value=tmp_path):
             info = _raw_failure_info()

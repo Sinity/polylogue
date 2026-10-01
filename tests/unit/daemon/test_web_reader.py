@@ -166,7 +166,7 @@ def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path, monkeyp
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
     # Any version but the runtime's; a literal stops meaning "mismatch" when
     # the counter itself is reset (it restarted at 1 with the fresh-v1 archive).
@@ -464,6 +464,7 @@ def _running_server_without_seed(
 from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
 from polylogue.surfaces.outcome import decide_outcome
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _SEED_SPECS = [
     ("claude-code", "c1", "m-c1", "Claude Code session about authentication"),

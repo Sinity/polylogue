@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -36,19 +38,61 @@ def _file_digest(path: Path) -> str:
 
 
 @pytest.fixture
-def stale_index_root(workspace_env: dict[str, Path]) -> Path:
+def stale_index_root(workspace_env: dict[str, Path]) -> Iterator[Path]:
     root = workspace_env["archive_root"]
-    # A one-version-old index can hit a declared in-place fast-forward delta;
-    # this mode exists for the SEMANTIC_REPARSE distance (rebuild required),
-    # so age the index far enough that no fast-forward chain covers it —
-    # v46 is the live pre-818fy generation, a known rebuild-only distance.
-    _set_user_version(root / "index.db", 46)
-    return root
+    conn = sqlite3.connect(root / "index.db")
+    try:
+        assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
+        changed = conn.execute(
+            "UPDATE schema_identity SET identity = ? WHERE tier = 'index'", ("synthetic-stale-index",)
+        )
+        assert changed.rowcount == 1
+        conn.commit()
+        assert (
+            conn.execute("SELECT identity FROM schema_identity WHERE tier='index'").fetchone()[0]
+            == "synthetic-stale-index"
+        )
+        yield root
+    finally:
+        conn.close()
 
 
 def test_ordinary_writer_open_refuses_stale_index(stale_index_root: Path) -> None:
-    with pytest.raises(RuntimeError, match="schema version"):
+    files = (stale_index_root / "index.db", stale_index_root / "index.db-wal")
+    before = {str(path): path.read_bytes() for path in files if path.exists()}
+    with pytest.raises(SchemaSkew) as refused:
         ArchiveStore.open_existing(stale_index_root, read_only=False)
+    assert refused.value.tier == "index"
+    assert {str(path): path.read_bytes() for path in files if path.exists()} == before
+
+
+def test_session_delete_refuses_identity_changed_after_store_open(workspace_env: dict[str, Path]) -> None:
+    """The delete connection must admit its own current identity before DDL."""
+    root = workspace_env["archive_root"]
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        conn = sqlite3.connect(root / "index.db")
+        try:
+            conn.execute(
+                "INSERT INTO sessions(native_id, origin, content_hash) "
+                "VALUES ('retained', 'codex-session', zeroblob(32))"
+            )
+            changed = conn.execute(
+                "UPDATE schema_identity SET identity=? WHERE tier='index'", ("synthetic-stale-index",)
+            )
+            assert changed.rowcount == 1
+            conn.commit()
+            assert (
+                conn.execute("SELECT identity FROM schema_identity WHERE tier='index'").fetchone()[0]
+                == "synthetic-stale-index"
+            )
+            files = (root / "index.db", root / "index.db-wal")
+            before = {str(path): path.read_bytes() for path in files if path.exists()}
+            with pytest.raises(SchemaSkew):
+                archive.delete_sessions(("codex-session:retained",))
+            assert conn.execute("SELECT COUNT(*) FROM sessions WHERE native_id='retained'").fetchone()[0] == 1
+            assert {str(path): path.read_bytes() for path in files if path.exists()} == before
+        finally:
+            conn.close()
 
 
 def test_source_tier_acquisition_opens_and_admits_raw(stale_index_root: Path) -> None:
@@ -93,5 +137,6 @@ def test_source_tier_acquisition_index_access_raises(stale_index_root: Path) -> 
 def test_source_tier_acquisition_refuses_stale_durable_tier(workspace_env: dict[str, Path]) -> None:
     root = workspace_env["archive_root"]
     _set_user_version(root / "source.db", archive_tier_spec(ArchiveTier.SOURCE).version + 1)
-    with pytest.raises(RuntimeError, match="durable tier source.db"):
+    with pytest.raises(SchemaSkew) as refusal:
         ArchiveStore.open_source_tier_acquisition(root)
+    assert refusal.value.tier == "source"

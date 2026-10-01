@@ -253,7 +253,14 @@ class DaemonSupervisor:
                 f"daemon service {name!r} started before its dependencies: {', '.join(sorted(unresolved))}"
             )
 
-        task = asyncio.create_task(self._run(spec, factory()), name=f"{TASK_NAME_PREFIX}{name}")
+        task = asyncio.create_task(self._run(spec, factory), name=f"{TASK_NAME_PREFIX}{name}")
+
+        def settle_cancelled(done: asyncio.Task[None]) -> None:
+            # A task cancelled before its first step never enters _run.
+            if done.cancelled():
+                self._settle(spec, ServiceState.STOPPED, reason="cancelled")
+
+        task.add_done_callback(settle_cancelled)
         self._tasks[name] = task
         self._resolve(spec, ServiceState.RUNNING)
         return task
@@ -309,10 +316,12 @@ class DaemonSupervisor:
             return
         await asyncio.gather(*self._tasks.values())
 
-    async def _run(self, spec: DaemonServiceSpec, coro: Coroutine[Any, Any, None]) -> None:
+    async def _run(self, spec: DaemonServiceSpec, factory: Callable[[], Coroutine[Any, Any, None]]) -> None:
         self._publish(spec, ServiceState.RUNNING)
         try:
-            await coro
+            # Do not acquire a service coroutine before this owned task runs:
+            # cancellation before the first step must leave no unawaited child.
+            await factory()
         except asyncio.CancelledError:
             self._settle(spec, ServiceState.STOPPED, reason="cancelled")
             raise

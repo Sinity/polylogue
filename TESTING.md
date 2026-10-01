@@ -198,7 +198,13 @@ reports in the event stream.
 or after a run, inspect its step directory — `progress.json`, `selection.json`,
 `summary.json`, `events.jsonl`, `output.log` — for selected/deselected node
 IDs, collection duration, slowest setup/call/teardown phases, and captured
-output.
+output. The plugin binds event destinations and run/worker identity at session
+start. An in-process nested pytest session gets separate artifacts and restores
+the surrounding session's destinations and ledger on exit. Direct hook tests
+load a separate module instance so they cannot reset the managed session.
+Tests whose production work progresses through cancellable phases can explicitly
+use `@pytest.mark.timeout(0)` to keep cancellation with the managed run instead
+of failing valid work at the suite's fixed per-test deadline.
 
 Optional lane and benchmark commands remain discoverable
 through `devtools --help`; pytest and the concrete commands are the behavioral

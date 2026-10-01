@@ -20,6 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.infra.daemon_operations import DaemonOperationStack, cli_daemon_archive
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def test_reset_session_resolution_uses_readonly_database_boundary(
@@ -395,7 +396,7 @@ class TestResetCommandDeletion:
             archive_root / "ops.db",
         ]
         user_db = archive_root / "user.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         for path in [*rebuildable, user_db]:
             path.write_text("test database", encoding="utf-8")
         return source_db, rebuildable, user_db

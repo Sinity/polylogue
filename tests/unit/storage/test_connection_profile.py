@@ -473,3 +473,20 @@ def test_writers_refuse_an_uninitialized_durable_tier(
             pass
     assert raised.value.tier == tier.value
     assert raised.value.found == 0
+
+
+def test_pending_population_blocks_literal_bytes_and_uri_connection_paths(tmp_path: Path) -> None:
+    import os
+
+    from polylogue.storage.sqlite.managed_connection import sqlite_connection
+    from polylogue.storage.sqlite.population_admission import POPULATION_PENDING, ArchivePopulationPendingError
+
+    root = tmp_path / "pending archive"
+    root.mkdir()
+    (root / POPULATION_PENDING).write_text('{"fixture":"unfinished"}')
+    database = root / "source.db"
+    for path, uri in ((os.fsencode(database), False), (database.as_uri() + "?mode=rwc", True)):
+        with pytest.raises(ArchivePopulationPendingError):
+            with sqlite_connection(path, uri=uri):
+                pytest.fail("a literal filesystem or URI path bypassed pending admission")
+    assert not database.exists()

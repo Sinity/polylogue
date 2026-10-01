@@ -197,6 +197,10 @@ def test_vector_snapshot_requirement_uses_the_canonical_cli_lowering() -> None:
     assert requires_vector_snapshot("cli.query", {"params": {"query": ("semantic words",), "semantic": True}})
     assert requires_vector_snapshot("cli.query", {"params": {"query": ("hello",), "retrieval_lane": "hybrid"}})
     assert not requires_vector_snapshot("facets", {"params": {"query": "near:hello"}})
+    assert not requires_vector_snapshot(
+        "cli.query", {"params": {"query": ("hello",), "retrieval_lane": "hybrid"}}, acquisition_enabled=False
+    )
+    assert requires_vector_snapshot("cli.query", {"params": {"query": ("near:id:seed",)}}, acquisition_enabled=False)
 
 
 def test_vector_binding_uses_only_explicit_resolved_config_values() -> None:
@@ -212,15 +216,12 @@ def test_vector_binding_uses_only_explicit_resolved_config_values() -> None:
 
     assert binding is not None
     assert (binding.voyage_key, binding.model, binding.dimension) == ("test-voyage-key", "voyage-3-lite", 512)
-    assert (
-        vector_binding_from_config(
-            cast(
-                Config,
-                _VectorConfig(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024),
-            )
-        )
-        is None
+    retained_binding = vector_binding_from_config(
+        cast(Config, _VectorConfig(index_config=None, embedding_model="voyage-4-lite", embedding_dimension=1024))
     )
+    assert retained_binding is not None
+    assert retained_binding.voyage_key is None
+    assert retained_binding.model == "voyage-4-lite"
 
 
 def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_path: Path) -> None:
@@ -761,3 +762,54 @@ def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Pat
     first_items = cast("list[dict[str, object]]", first["items"])
     second_items = cast("list[dict[str, object]]", second["items"])
     assert first_items[0]["message_id"] != second_items[0]["message_id"]
+
+
+@pytest.mark.parametrize("lane", ["semantic", "hybrid"])
+def test_keyless_text_search_with_retained_binding_remains_disabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, lane: str
+) -> None:
+    """Retained-vector binding must not turn unavailable acquisition into failure."""
+    from unittest.mock import MagicMock
+
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+    from polylogue.operations.daemon_reads import VectorReadBinding
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from tests.infra.vector_archive import seed_vector_archive
+
+    seed_vector_archive(
+        tmp_path,
+        [("seed", "m1", "Synthetic needle prose with retained embeddings.", [1.0] + [0.0] * 1023)],
+        model="voyage-4-lite",
+    )
+    binding = VectorReadBinding(voyage_key=None, model="voyage-4-lite", dimension=1024)
+    acquisition = MagicMock(side_effect=AssertionError("keyless text must not call acquisition"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", acquisition)
+    connection = open_vector_read_snapshot(
+        embeddings_path=tmp_path / "embeddings.db", index_path=tmp_path / "index.db", recipe=binding.recipe
+    )
+    try:
+        assert connection.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] == 1
+        with open_operation_read(tmp_path) as pinned:
+
+            def execute() -> object:
+                return execute_read_operation(
+                    "cli.query",
+                    {"params": {"query": ("needle",), "retrieval_lane": lane}},
+                    archive=pinned.archive,
+                    serving_identity="daemon",
+                    dependencies=DaemonReadDependencies(vector_binding=binding, vector_connection=connection),
+                )
+
+            if lane == "semantic":
+                with pytest.raises(EmbeddingRetrievalNotReadyError) as refusal:
+                    execute()
+                assert refusal.value.readiness_status == "disabled"
+            else:
+                result = cast(_SearchResult, execute())
+                assert result["outcome"]["state"] == "degraded"
+                assert result["unavailable_lanes"] == ["vector"]
+                assert result["failed_lanes"] == []
+    finally:
+        connection.close()
+    acquisition.assert_not_called()

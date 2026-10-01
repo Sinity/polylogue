@@ -4782,6 +4782,44 @@ def test_retained_replay_refuses_a_malformed_middle_record_with_a_terminal_censu
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [b"{", b'{"title": "cut", "mapping": {"n": {"id": "n", "message": '],
+    ids=["opening-brace", "truncated-mapping"],
+)
+def test_retained_replay_settles_an_undecodable_json_document_as_terminal(tmp_path: Path, payload: bytes) -> None:
+    """A known-provider JSON document that does not decode gets the JSONL record's terminal outcome.
+
+    Anti-vacuity: only a JSONL record's decode failure was terminal
+    (polylogue-6r7wv). The document's census receipt was ``failed``, which
+    ``uncensused_historical_revision_raw_ids`` re-selects on every pass.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=payload,
+            source_path=str(tmp_path / "exports" / "conversation.json"),
+            acquired_at_ms=1,
+        )
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        (status,) = conn.execute(
+            "SELECT status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        artifact_kinds = {
+            str(row[0]) for row in conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,))
+        }
+    assert status == "complete"
+    assert RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value in artifact_kinds
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        ((_raw, _index, terminal, _rowid),) = archive.raw_membership_census_rows([raw_id])
+    assert terminal is True
+
+
 @pytest.mark.parametrize("route", ["bytes", "stream"])
 def test_retained_replay_parses_the_complete_prefix_before_an_unterminated_tail(tmp_path: Path, route: str) -> None:
     """An unterminated final line is an append in progress, not a corrupt record.

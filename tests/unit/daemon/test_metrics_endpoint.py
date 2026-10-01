@@ -12,9 +12,8 @@ Pins:
    discovery skeleton with zero values rather than 5xx-ing.
 4. **Unauthenticated** — same posture as ``/healthz/*``; scrapers do
    not carry credentials.
-5. **State observation** — counts derived from ``live_ingest_attempt``,
-   ``live_convergence_debt``, and FTS triggers round-trip through the
-   exposition format.
+5. **State observation** — current ingest and debt counts come from ops.db;
+   index FTS trigger state remains visible when ops is unavailable.
 """
 
 from __future__ import annotations
@@ -42,6 +41,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 pytestmark = pytest.mark.uses_real_clock(
     "Metrics endpoint test records a live rebuild-ingest heartbeat timestamp; production readiness and metrics intentionally compare it against the host clock."
@@ -241,7 +241,10 @@ class TestFormatMetricsExpositionShape:
     def test_archive_storage_metrics_report_archive_file_sets(self, tmp_path: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
             if spec.tier is not ArchiveTier.EMBEDDINGS:
-                initialize_archive_database(tmp_path / spec.filename, spec.tier)
+                if spec.tier is ArchiveTier.SOURCE:
+                    initialize_runtime_source_fixture(tmp_path / spec.filename)
+                else:
+                    initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "embeddings.db") as conn:
             conn.execute(f"PRAGMA user_version = {EMBEDDINGS_SCHEMA_VERSION}")
             conn.commit()
@@ -313,7 +316,10 @@ class TestFormatMetricsExpositionShape:
 
     def test_archive_storage_metrics_gate_runtime_readiness_on_schema_match(self, tmp_path: Path) -> None:
         for spec in ARCHIVE_TIER_SPECS.values():
-            initialize_archive_database(tmp_path / spec.filename, spec.tier)
+            if spec.tier is ArchiveTier.SOURCE:
+                initialize_runtime_source_fixture(tmp_path / spec.filename)
+            else:
+                initialize_archive_database(tmp_path / spec.filename, spec.tier)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
@@ -344,24 +350,6 @@ class TestFormatMetricsReadsArchiveState:
         try:
             conn.executescript(
                 """
-                CREATE TABLE live_ingest_attempt (
-                    attempt_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    started_at TEXT,
-                    updated_at TEXT,
-                    convergence_time_s REAL,
-                    stale_cursor_write_count INTEGER DEFAULT 0,
-                    rss_current_mb REAL,
-                    cgroup_memory_current_mb REAL,
-                    cgroup_memory_file_mb REAL,
-                    cgroup_memory_inactive_file_mb REAL,
-                    source_paths_json TEXT
-                );
-                CREATE TABLE live_convergence_debt (
-                    debt_id TEXT PRIMARY KEY,
-                    stage TEXT NOT NULL,
-                    status TEXT NOT NULL
-                );
                 CREATE TABLE blocks (
                     block_id TEXT PRIMARY KEY,
                     message_id TEXT NOT NULL,
@@ -399,32 +387,6 @@ class TestFormatMetricsReadsArchiveState:
                 """
             )
             conn.executemany(
-                """
-                INSERT INTO live_ingest_attempt (
-                    attempt_id, status, started_at, updated_at, convergence_time_s,
-                    stale_cursor_write_count, rss_current_mb, cgroup_memory_current_mb,
-                    cgroup_memory_file_mb, cgroup_memory_inactive_file_mb
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    ("a1", "completed", "2026-05-01T00:00:00Z", "2026-05-01T00:00:00Z", 1.5, 0, 40.0, 80.0, 20.0, 10.0),
-                    ("a2", "completed", "2026-05-01T00:00:01Z", "2026-05-01T00:00:01Z", 2.5, 1, 42.0, 82.0, 21.0, 11.0),
-                    ("a3", "failed", "2026-05-01T00:00:02Z", "2026-05-01T00:00:02Z", None, 0, 43.0, 83.0, 22.0, 12.0),
-                    ("a4", "running", "2026-05-01T00:00:03Z", "2026-05-01T00:00:03Z", None, 0, 44.0, 84.0, 23.0, 13.0),
-                ],
-            )
-            conn.executemany(
-                "INSERT INTO live_convergence_debt (debt_id, stage, status) VALUES (?, ?, ?)",
-                [
-                    ("d1", "parse", "failed"),
-                    ("d2", "parse", "failed"),
-                    ("d3", "convergence", "failed"),
-                    ("d5", "convergence", "deferred"),
-                    ("d4", "convergence", "resolved"),  # filtered
-                ],
-            )
-            conn.executemany(
                 "INSERT INTO sessions (session_id, message_count) VALUES (?, ?)",
                 [("conv-embedded", 1), ("conv-pending", 1), ("conv-missing-status", 1)],
             )
@@ -457,6 +419,55 @@ class TestFormatMetricsReadsArchiveState:
         return db
 
     @staticmethod
+    def _seed_ops(ops_db: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.ops_write import (
+            add_convergence_debt,
+            record_daemon_stage_event,
+            record_ingest_attempt,
+        )
+
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+        with sqlite3.connect(ops_db) as conn:
+            for attempt_id, status, started_at_ms, finished_at_ms in (
+                ("a1", "completed", 1_770_000_000_000, 1_770_000_001_500),
+                ("a2", "completed", 1_770_000_010_000, 1_770_000_012_500),
+                ("a3", "failed", 1_770_000_020_000, 1_770_000_021_000),
+                ("a4", "running", 1_770_000_030_000, None),
+            ):
+                record_ingest_attempt(
+                    conn,
+                    attempt_id=attempt_id,
+                    status=status,
+                    started_at_ms=started_at_ms,
+                    finished_at_ms=finished_at_ms,
+                )
+            for debt_id, stage, status in (
+                ("d1", "parse", "failed"),
+                ("d2", "parse", "failed"),
+                ("d3", "convergence", "failed"),
+                ("d4", "convergence", "deferred"),
+            ):
+                add_convergence_debt(
+                    conn,
+                    stage=stage,
+                    target_type="session_id",
+                    target_id=debt_id,
+                    status=status,
+                    attempts=1,
+                    created_at_ms=1_770_000_000_000,
+                )
+            record_daemon_stage_event(
+                conn,
+                attempt_id="a4",
+                stage="full_parse",
+                status="running",
+                observed_at_ms=1_770_000_030_000,
+                payload={"rss_current_mb": 44.0, "cgroup_memory_current_mb": 84.0},
+                event_id="stage-a4",
+            )
+            conn.commit()
+
+    @staticmethod
     def _seed_catchup_run(ops_db: Path) -> None:
         """Seed an embedding catch-up run into the archive ops tier.
 
@@ -485,27 +496,34 @@ class TestFormatMetricsReadsArchiveState:
             conn.commit()
 
     def test_attempt_counts_round_trip(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
+        db = self._make_db(tmp_path)
+        self._seed_ops(tmp_path / "ops.db")
+        body = format_metrics(db)
         assert 'polylogue_live_ingest_attempts_total{status="completed"} 2' in body
         assert 'polylogue_live_ingest_attempts_total{status="failed"} 1' in body
         assert 'polylogue_live_ingest_attempts_total{status="running"} 1' in body
         assert "polylogue_live_ingest_attempts_in_flight 1" in body
-        assert "polylogue_stale_cursor_writes_total 1" in body
+        assert "polylogue_stale_cursor_writes_total 0" not in body
+        assert 'polylogue_probe_unmeasured{probe="stale_cursor_writes_total"} 1' in body
 
     def test_duration_quantiles(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
+        db = self._make_db(tmp_path)
+        self._seed_ops(tmp_path / "ops.db")
+        body = format_metrics(db)
         # Two completed durations: 1.5 and 2.5.
         assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="min"} 1.5' in body
         assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="max"} 2.5' in body
         assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="mean"} 2.0' in body
 
     def test_convergence_debt_grouped_by_stage(self, tmp_path: Path) -> None:
-        body = format_metrics(self._make_db(tmp_path))
+        db = self._make_db(tmp_path)
+        self._seed_ops(tmp_path / "ops.db")
+        body = format_metrics(db)
         assert 'polylogue_convergence_debt_count{stage="convergence",status="failed"} 1' in body
         assert 'polylogue_convergence_debt_count{stage="convergence",status="deferred"} 1' in body
         assert 'polylogue_convergence_debt_count{stage="parse",status="failed"} 2' in body
 
-    def test_convergence_debt_prefers_archive_ops(self, tmp_path: Path) -> None:
+    def test_convergence_debt_reads_archive_ops(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import add_convergence_debt
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -544,9 +562,49 @@ class TestFormatMetricsReadsArchiveState:
 
         assert 'polylogue_convergence_debt_count{stage="session_profile",status="failed"} 2' in body
         assert 'polylogue_convergence_debt_count{stage="session_profile",status="deferred"} 1' in body
-        assert 'polylogue_convergence_debt_count{stage="parse"}' not in body
 
-    def test_live_ingest_metrics_prefer_archive_ops_when_present(self, tmp_path: Path) -> None:
+    def test_retired_index_telemetry_cannot_supply_current_ops_metrics(self, tmp_path: Path) -> None:
+        """A populated retired table cannot turn unavailable or empty ops into positive current state.
+
+        Anti-vacuity: restoring any index fallback publishes the sentinel attempt,
+        duration, debt, or memory values on at least one of these scrapes.
+        """
+        db = self._make_db(tmp_path)
+        with sqlite3.connect(db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE live_ingest_attempt (
+                    attempt_id TEXT PRIMARY KEY, status TEXT, started_at TEXT,
+                    updated_at TEXT, convergence_time_s REAL,
+                    rss_current_mb REAL, storage_route TEXT
+                );
+                CREATE TABLE live_convergence_debt (
+                    debt_id TEXT PRIMARY KEY, stage TEXT, status TEXT
+                );
+                INSERT INTO live_ingest_attempt VALUES
+                    ('retired', 'completed', '2026-05-01', '2026-05-01', 99.0, 999.0, 'archive_full');
+                INSERT INTO live_convergence_debt VALUES ('retired', 'retired_stage', 'failed');
+                """
+            )
+
+        missing_ops = format_metrics(db)
+        assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 0' in missing_ops
+        assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 1' in missing_ops
+        assert 'polylogue_fts_trigger_present{trigger="messages_fts_ai"} 1' in missing_ops
+        assert 'polylogue_live_ingest_attempts_total{status="completed"} 1' not in missing_ops
+        assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="min"} 99.0' not in missing_ops
+        assert 'polylogue_convergence_debt_count{stage="retired_stage",status="failed"} 1' not in missing_ops
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"} 999.0' not in missing_ops
+
+        initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+        empty_ops = format_metrics(db)
+        assert 'polylogue_daemon_metrics_collection_available{group="ops_attempts"} 1' in empty_ops
+        assert 'polylogue_live_ingest_attempts_total{status="completed"} 0' in empty_ops
+        assert "polylogue_convergence_debt_count 0" in empty_ops
+        assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="min"}' not in empty_ops
+        assert 'polylogue_live_ingest_memory_mebibytes{kind="rss_current"}' not in empty_ops
+
+    def test_live_ingest_metrics_read_archive_ops_when_present(self, tmp_path: Path) -> None:
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event, record_ingest_attempt
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -896,7 +954,7 @@ class TestFormatMetricsReadsArchiveState:
         index_db = tmp_path / "index.db"
         source_db = tmp_path / "source.db"
         initialize_archive_database(index_db, ArchiveTier.INDEX)
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db)
         with sqlite3.connect(index_db) as conn:
             conn.executemany(
                 """

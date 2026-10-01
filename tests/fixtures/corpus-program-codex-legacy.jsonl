@@ -1,0 +1,2 @@
+{"id":"legacy-parent","timestamp":"2025-01-01T00:00:00Z"}
+{"type":"message","id":"legacy-message","role":"user","content":[{"type":"input_text","text":"An authored legacy turn"}]}

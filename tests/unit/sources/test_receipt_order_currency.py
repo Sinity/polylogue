@@ -17,14 +17,13 @@ import pytest
 from polylogue.core.enums import Provider
 from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.retained_replay import replay_retained_components
 from tests.infra.thread_state import codex_state_export
 
@@ -87,7 +86,7 @@ def test_artifact_carrier_follows_receipt_order_across_a_clock_rollback(tmp_path
     was observed after it."""
     source_db = tmp_path / "source.db"
     source_path = str(tmp_path / "journal.jsonl")
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     origin = "claude-code-session"
 
     def _artifact(reason: str, observed_at_ms: int) -> ArchiveSourceArtifact:

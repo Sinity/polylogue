@@ -34,14 +34,32 @@ from typing import Literal, cast, get_args
 
 from polylogue.core.digest import RECEIPT, canonical_bytes, nfc
 from polylogue.core.json import loads as json_loads
-from polylogue.core.refs import ObjectRef, ObjectRefKind
+from polylogue.core.refs import ObjectRef, ObjectRefKind, normalize_object_ref_text
+
+AnnotationTargetKind = ObjectRefKind | Literal["phase", "work_event"]
+RETIRED_ANNOTATION_TARGET_KINDS = frozenset({"phase", "work_event"})
+ANNOTATION_TARGET_KINDS = frozenset(get_args(ObjectRefKind)) | RETIRED_ANNOTATION_TARGET_KINDS
+
+
+def normalize_annotation_target_ref(value: str) -> str:
+    """Decode a provenance target without authorizing its live resolution.
+
+    The two retired grains retain the opaque colon-form identity they had when
+    written. New target operations still use the live ObjectRef boundary.
+    """
+    kind, separator, identity = value.partition(":")
+    if kind in RETIRED_ANNOTATION_TARGET_KINDS:
+        if not separator or not identity or identity.endswith(":"):
+            raise ValueError("annotation provenance target must use 'kind:id' form")
+        return value
+    return normalize_object_ref_text(value)
+
 
 AnnotationFieldType = Literal["string", "integer", "number", "boolean", "enum"]
 AnnotationEvidencePolicy = Literal["none", "optional", "required"]
 AnnotationSchemaStatus = Literal["draft", "active", "deprecated"]
 ANNOTATION_SCHEMA_DEFINITION_FORMAT = "polylogue.annotation-schema/v1"
 
-_OBJECT_REF_KINDS: frozenset[str] = frozenset(get_args(ObjectRefKind))
 _ANNOTATION_FIELD_TYPES: frozenset[str] = frozenset(get_args(AnnotationFieldType))
 _ANNOTATION_EVIDENCE_POLICIES: frozenset[str] = frozenset(get_args(AnnotationEvidencePolicy))
 _ANNOTATION_SCHEMA_STATUSES: frozenset[str] = frozenset(get_args(AnnotationSchemaStatus))
@@ -269,7 +287,7 @@ class AnnotationSchema:
     version: int
     title: str
     fields: tuple[AnnotationField, ...]
-    target_ref_kinds: tuple[ObjectRefKind, ...]
+    target_ref_kinds: tuple[AnnotationTargetKind, ...]
     description: str = ""
     abstain_field: str | None = None
     evidence_policy: AnnotationEvidencePolicy = "required"
@@ -326,7 +344,7 @@ class AnnotationSchema:
             self,
             "target_ref_kinds",
             cast(
-                tuple[ObjectRefKind, ...],
+                tuple[AnnotationTargetKind, ...],
                 _nfc_string_tuple(
                     self.target_ref_kinds,
                     context=f"schema {self.schema_id!r} target_ref_kinds",
@@ -350,7 +368,7 @@ class AnnotationSchema:
             raise AnnotationSchemaError(f"schema {self.schema_id!r} declares duplicate field names: {field_names}")
         if not self.target_ref_kinds:
             raise AnnotationSchemaError(f"schema {self.schema_id!r} declares no target_ref_kinds")
-        unknown_kinds = [kind for kind in self.target_ref_kinds if kind not in _OBJECT_REF_KINDS]
+        unknown_kinds = [kind for kind in self.target_ref_kinds if kind not in ANNOTATION_TARGET_KINDS]
         if unknown_kinds:
             raise AnnotationSchemaError(f"schema {self.schema_id!r} declares unknown target_ref_kinds: {unknown_kinds}")
         if self.abstain_field is not None:
@@ -389,6 +407,12 @@ class AnnotationSchema:
         except ValueError:
             return False
         return parsed.kind in self.target_ref_kinds
+
+    def require_live_targets(self) -> None:
+        """Refuse new registration of a definition declaring retired operations."""
+        retired = sorted(set(self.target_ref_kinds) & RETIRED_ANNOTATION_TARGET_KINDS)
+        if retired:
+            raise AnnotationSchemaError(f"schema {self.qualified_id!r} declares retired target operations: {retired}")
 
     def definition_document(self) -> dict[str, object]:
         """Return the complete construct definition in stable JSON-compatible form."""
@@ -460,7 +484,7 @@ class AnnotationSchema:
             version=_require_int(document["version"], context="annotation schema version"),
             title=_require_string(document["title"], context="annotation schema title"),
             fields=tuple(AnnotationField.from_definition_document(entry) for entry in raw_fields),
-            target_ref_kinds=cast(tuple[ObjectRefKind, ...], tuple(raw_target_kinds)),
+            target_ref_kinds=cast(tuple[AnnotationTargetKind, ...], tuple(raw_target_kinds)),
             description=_require_string(document["description"], context="annotation schema description"),
             abstain_field=abstain_field,
             evidence_policy=cast(
@@ -546,6 +570,7 @@ class AnnotationSchemaRegistry:
     def register(self, schema: AnnotationSchema) -> AnnotationSchema:
         """Register *schema*. Canonical retries return the existing definition."""
 
+        schema.require_live_targets()
         existing = self._schemas.get(schema.qualified_id)
         if existing is not None:
             if (
@@ -732,7 +757,7 @@ DELEGATION_DISCOURSE_SCHEMA = register_annotation_schema(
 SEED_ACTIVITY_SCHEMA = register_annotation_schema(
     AnnotationSchema(
         schema_id="seed.activity",
-        version=1,
+        version=2,
         title="Activity",
         description=(
             "Primary activity at an explicit session or structural segment grain. "
@@ -785,7 +810,7 @@ SEED_ACTIVITY_SCHEMA = register_annotation_schema(
 SEED_GOAL_EVENT_SCHEMA = register_annotation_schema(
     AnnotationSchema(
         schema_id="seed.goal-event",
-        version=1,
+        version=2,
         title="Prospective goal event",
         description=(
             "Actor-declared prospective goal events. This construct never infers abandonment or unresolved state; "
@@ -864,7 +889,7 @@ SEED_GOAL_EVENT_SCHEMA = register_annotation_schema(
 SEED_OUTCOME_EVIDENCE_SCHEMA = register_annotation_schema(
     AnnotationSchema(
         schema_id="seed.outcome-evidence",
-        version=1,
+        version=2,
         title="Outcome evidence",
         description=(
             "Observed outcome evidence, kept distinct from prospective goal events. Structural, rule-derived, "
@@ -940,7 +965,7 @@ SEED_OUTCOME_EVIDENCE_SCHEMA = register_annotation_schema(
 SEED_KNOWLEDGE_ARTIFACT_SCHEMA = register_annotation_schema(
     AnnotationSchema(
         schema_id="seed.knowledge-artifact",
-        version=1,
+        version=2,
         title="Knowledge artifact",
         description=(
             "Evidence-linked decisions, lessons, preferences, fact candidates/established facts under a named "
@@ -1007,7 +1032,7 @@ SEED_KNOWLEDGE_ARTIFACT_SCHEMA = register_annotation_schema(
 SEED_REUSABILITY_SCHEMA = register_annotation_schema(
     AnnotationSchema(
         schema_id="seed.reusability",
-        version=1,
+        version=2,
         title="Reusability judgment",
         description="Purpose-specific snippet, recipe, or demo reusability judgment.",
         fields=(

@@ -32,6 +32,7 @@ from polylogue.schemas.operator.schema_inference import (
 )
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.storage.archive_identity import ArchiveLocation
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.schema_access import schema_properties, schema_property, schema_values
 from tests.infra.workload_artifacts import SeededArchiveArtifact, clone_seeded_archive
 
@@ -408,10 +409,7 @@ class TestLogicalHeadsOnly:
     def _seed_two_revisions(self, source_db_path: Path) -> None:
         import sqlite3
 
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-        initialize_archive_database(source_db_path, ArchiveTier.SOURCE)
+        initialize_runtime_source_fixture(source_db_path)
         conn = sqlite3.connect(source_db_path)
         try:
             conn.execute(

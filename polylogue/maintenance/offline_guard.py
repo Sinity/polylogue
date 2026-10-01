@@ -202,9 +202,9 @@ def hold_daemon_start_exclusion(archive_root: Path) -> Iterator[None]:
 
 def offline_writer_block_reason(config: Config) -> str | None:
     """Return the concrete writer that makes a strictly offline operation unsafe."""
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.core.write_lease import coordinator_write_lease_active
 
-    if daemon_write_lease_active():
+    if coordinator_write_lease_active():
         return "a daemon writer lease is active"
     daemon_pid = running_daemon_pid(config)
     if daemon_pid is not None:
@@ -224,9 +224,9 @@ def offline_maintenance_block_reason(
     # A daemon-owned writer is already serialized against every other archive
     # mutation.  Treat it as the online equivalent of the offline exclusion
     # boundary instead of rejecting the daemon's own convergence work.
-    from polylogue.daemon.write_coordinator import daemon_write_lease_active
+    from polylogue.core.write_lease import coordinator_write_lease_active
 
-    if daemon_write_lease_active():
+    if coordinator_write_lease_active():
         return None
     daemon_pid = running_daemon_pid(config)
     if daemon_pid is None:

@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.session_profiles import write_session_profile
 
 
@@ -40,7 +41,7 @@ def _seed_minimal_archive(db: Path, source: Path) -> str:
     root = db.parent
     index_db = root / "index.db"
     source_db = root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     source_conn = sqlite3.connect(source_db)
@@ -523,7 +524,10 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
         ArchiveTier.USER,
         ArchiveTier.OPS,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -707,7 +711,10 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
 def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     payload = probe(db, exact_table_counts=True)
 
@@ -734,7 +741,10 @@ def test_daemon_workload_probe_reports_layout_ready_for_complete_archive(tmp_pat
 def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     # The fresh format (#5551) starts every tier at user_version 1, so a
     # mismatch needs a version other than the current one.
     with sqlite3.connect(db) as conn:
@@ -790,7 +800,10 @@ def test_daemon_workload_probe_reports_archive_source_path_churn(tmp_path: Path)
         ArchiveTier.INDEX,
         ArchiveTier.OPS,
     ):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -862,7 +875,10 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
     source_path = tmp_path / "unmaterialized.jsonl"
     source_path.write_text('{"sessionId":"native-1"}\n', encoding="utf-8")
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             """
@@ -890,7 +906,10 @@ def test_daemon_workload_probe_reports_raw_materialization_debt(tmp_path: Path) 
 def test_daemon_workload_probe_reports_weighted_raw_replay_backlog(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
     blob_store = BlobStore(tmp_path / "blob")
     small_hash, small_size = blob_store.write_from_bytes(b"small")
     large_hash, large_size = blob_store.write_from_bytes(b"L" * 4096)
@@ -951,7 +970,10 @@ def test_daemon_workload_probe_does_not_block_on_informational_raw_debt(
 ) -> None:
     db = tmp_path / "index.db"
     for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX):
-        initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+        if tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
 
     def fake_archive_debt_list(**_kwargs: object) -> object:
         return SimpleNamespace(totals=SimpleNamespace(actionable=0, total=3))
@@ -1001,8 +1023,8 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert payload["boundary_table_count_mode"] == "exact"
     assert payload["archive_tiers"]["table_count_mode"] == "exact"
     locations = payload["observability_locations"]
-    assert locations["logical_tables"]["live_ingest_attempt"]["tier"] == "ops"
-    assert locations["logical_tables"]["live_ingest_attempt"]["physical_table"] == "ingest_attempts"
+    assert locations["logical_tables"]["ingest_attempts"]["tier"] == "ops"
+    assert locations["logical_tables"]["ingest_attempts"]["physical_table"] == "ingest_attempts"
     assert locations["logical_tables"]["raw_sessions"]["tier"] == "source"
     assert locations["logical_tables"]["sessions"]["tier"] == "index"
 
@@ -1012,7 +1034,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert counts["sessions"] == 1
     assert counts["messages_fts_docsize"] >= 0
     assert "messages_fts_data" not in counts
-    assert counts["live_ingest_attempt"] == -1
+    assert "live_ingest_attempt" not in counts
     assert counts["ingest_attempts"] == 1
 
     index_counts = payload["archive_tiers"]["tiers"]["index"]["table_counts"]
@@ -1125,12 +1147,57 @@ def test_probe_reports_unavailable_authoritative_convergence_ledger(tmp_path: Pa
     payload = probe(db)
 
     debt = payload["convergence_debt"]
+    assert payload["ok"] is False
+    assert payload["recent_attempts"] is None
+    assert payload["attempt_counts"] is None
+    assert payload["storage_route_counts"] is None
+    assert payload["cursor_lag_baselines"] is None
+    assert payload["daemon_resource_signal"] is None
     assert debt["available"] is False
     assert str(debt["error"]).startswith("convergence debt status unavailable:")
-    assert debt["failed_count"] == 0
-    assert debt["deferred_count"] == 0
-    assert debt["unresolved_count"] == 0
+    assert debt["failed_count"] is None
+    assert debt["deferred_count"] is None
+    assert debt["unresolved_count"] is None
     assert debt["by_stage"] == []
+
+
+def test_probe_ignores_retired_index_attempts_when_ops_is_empty(tmp_path: Path) -> None:
+    """An empty canonical tier stays empty even when retired telemetry has rows.
+
+    Anti-vacuity: restoring the index fallback populates recent attempts and
+    attempt counts from the deliberately conflicting retired row.
+    """
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE live_ingest_attempt (
+                attempt_id TEXT, started_at TEXT, updated_at TEXT, completed_at TEXT,
+                status TEXT, phase TEXT, queued_file_count INTEGER,
+                needed_file_count INTEGER, succeeded_file_count INTEGER,
+                failed_file_count INTEGER, input_bytes INTEGER,
+                source_payload_read_bytes INTEGER, cursor_fingerprint_read_bytes INTEGER,
+                parse_time_s REAL, convergence_time_s REAL,
+                stale_cursor_write_count INTEGER, source_paths_json TEXT,
+                storage_route TEXT, rss_current_mb REAL
+            );
+            INSERT INTO live_ingest_attempt VALUES (
+                'retired', '2026-01-01', '2026-01-01', '2026-01-01',
+                'completed', 'done', 1, 1, 1, 0, 10, 10, 0, 1.0, 1.0,
+                0, '[]', 'archive_full', 999.0
+            );
+            """
+        )
+
+    payload = probe(db)
+
+    assert payload["ok"] is True
+    assert payload["recent_attempts"] == []
+    assert payload["attempt_counts"]["total"] == 0
+    assert sum(payload["storage_route_counts"].values()) == 0
+    assert payload["daemon_resource_signal"] == {"available": False}
 
 
 def test_probe_reads_ops_cursor_lag_baselines(tmp_path: Path) -> None:

@@ -176,7 +176,7 @@ def _seed_cursor(
     source: Path,
     *,
     observed_size: int,
-    offset: int,
+    offset: int | None,
     failures: int = 0,
     excluded: bool = False,
     error: str | None = None,
@@ -586,7 +586,7 @@ def test_growing_nonexcluded_source_is_active_before_idle(tmp_path: Path) -> Non
 
 def test_existing_source_without_cursor_is_active(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    root.mkdir()
+    _create_schema(root)
     source = _source(root, size=64)
 
     projection = project_named_source_freshness(root, source, now=_NOW)
@@ -601,7 +601,7 @@ def test_existing_source_without_cursor_is_active(tmp_path: Path) -> None:
 
 def test_source_without_filesystem_or_archive_evidence_is_unseen(tmp_path: Path) -> None:
     root = tmp_path / "archive"
-    root.mkdir()
+    _create_schema(root)
     source = root / "codex" / "never-seen.jsonl"
 
     projection = project_named_source_freshness(root, source, now=_NOW)
@@ -1208,3 +1208,80 @@ def test_exact_attempt_lookup_is_indexed_under_the_shipped_ops_schema(tmp_path: 
         unindexed.receipt.unsafe_scan_rejections
     )
     assert unindexed.retry.reason is None
+
+
+def test_empty_canonical_cursor_ignores_retired_index_progress(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=100)
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute("CREATE TABLE live_cursor(source_path TEXT PRIMARY KEY, byte_offset INTEGER)")
+        conn.execute("INSERT INTO live_cursor VALUES (?, 100)", (str(source),))
+    result = project_named_source_freshness(root, source, now=_NOW)
+    assert result.cursor.present is False
+    assert result.cursor.source == "ops.db"
+    assert result.operational_reason is NamedSourceOperationalReason.CURSOR_MISSING
+
+
+@pytest.mark.parametrize(
+    "offset,pending,reason",
+    [
+        (None, None, NamedSourceOperationalReason.CURSOR_UNKNOWN),
+        (25, 75, NamedSourceOperationalReason.PENDING_BYTES),
+        (100, 0, NamedSourceOperationalReason.CAUGHT_UP),
+    ],
+)
+def test_cursor_progress_requires_known_offset(
+    tmp_path: Path, offset: int | None, pending: int | None, reason: NamedSourceOperationalReason
+) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=100)
+    _seed_cursor(root, source, observed_size=100, offset=offset)
+    result = project_named_source_freshness(root, source, now=_NOW)
+    assert result.cursor.pending_bytes == pending
+    assert result.operational_reason is reason
+    if offset is None:
+        assert result.operational_state is NamedSourceOperationalState.DEGRADED
+
+
+@pytest.mark.parametrize(
+    "shape,accepted", [("anonymous", False), ("keyed", True), ("mismatch", False), ("explicit", True)]
+)
+def test_cursor_export_binds_exact_source_only(tmp_path: Path, shape: str, accepted: bool) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=100)
+    (root / "ops.db").unlink()
+    row = {"byte_offset": 100, "stat_size": 100}
+    payload = (
+        {str(source): row}
+        if shape == "keyed"
+        else [
+            dict(
+                row,
+                **(
+                    {"source_path": str(source)}
+                    if shape == "explicit"
+                    else {"source_path": str(tmp_path / "different")}
+                    if shape == "mismatch"
+                    else {}
+                ),
+            )
+        ]
+    )
+    export = tmp_path / "cursor.json"
+    export.write_text(json.dumps(payload))
+    result = project_named_source_freshness(root, source, now=_NOW, cursor_export=export)
+    assert result.cursor.present is accepted
+    assert result.cursor.source == ("cursor-export" if accepted else "ops.db")
+
+
+def test_unavailable_ops_cursor_is_not_absence(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=100)
+    (root / "ops.db").unlink()
+    result = project_named_source_freshness(root, source, now=_NOW)
+    assert result.cursor.state == "unavailable"
+    assert result.operational_reason is NamedSourceOperationalReason.CURSOR_UNAVAILABLE

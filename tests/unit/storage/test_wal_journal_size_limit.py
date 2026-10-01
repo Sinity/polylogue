@@ -38,6 +38,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_daemon_connection,
     open_readonly_connection,
 )
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 
 def _pragma_int(conn: sqlite3.Connection, name: str) -> int:
@@ -54,7 +55,10 @@ def test_index_connection_rejects_stale_attached_tier(tmp_path: Path, tier: Arch
     attachment path validates only ``index.db``.
     """
     for archive_tier in (ArchiveTier.INDEX, tier):
-        initialize_archive_database(tmp_path / f"{archive_tier.value}.db", archive_tier)
+        if archive_tier is ArchiveTier.SOURCE:
+            initialize_runtime_source_fixture(tmp_path / f"{archive_tier.value}.db")
+        else:
+            initialize_archive_database(tmp_path / f"{archive_tier.value}.db", archive_tier)
     sibling = tmp_path / f"{tier.value}.db"
     with sqlite3.connect(sibling) as conn:
         conn.execute("PRAGMA user_version = 999999")

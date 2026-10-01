@@ -23,7 +23,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -79,7 +79,7 @@ if TYPE_CHECKING:
 # Part of the artifact key, so a change to the manifest's shape or to what
 # sealing guarantees gives published artifacts a distinct identity instead of
 # leaving two code versions to overwrite each other's tree at one key.
-_ARTIFACT_PROTOCOL_VERSION = 5
+_ARTIFACT_PROTOCOL_VERSION = 6
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -680,6 +680,10 @@ def build_immutable_tree(
             probe = _ConstructionProbe.start()
             try:
                 builder(staging)
+                # The outer publication owns this private builder output.
+                # Finalize SQLite before inventory, then write the manifest
+                # before sealing. Standalone templates have their own seal.
+                _sqlite_integrity(staging)
                 files = _archive_files(staging)
                 manifest = {
                     "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
@@ -688,7 +692,7 @@ def build_immutable_tree(
                     "resources": _measure_resources(staging, files, probe=probe).to_payload(),
                 }
                 (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
-                _publish_sealed_staging(staging, final_root)
+                _publish_sealed_staging(staging, final_root, probe=probe)
             except Exception:
                 _remove_tree(staging)
                 raise
@@ -717,47 +721,128 @@ def _describe_file_set_mismatch(
     return " ".join((summarize("missing", missing), summarize("extra", extra), summarize("changed", changed)))
 
 
-_DURABLE_BOOTSTRAP_RELATIVE = ".maintenance-state/durable-change-trains/.bootstrap"
-
-
-def rebind_durable_identity(destination: Path) -> None:
-    """Re-record the durable-change-train bootstrap marker for a cloned tree.
-
-    The committed marker no longer names the archive root path or the durable
-    inodes (polylogue-ifb4l), so a faithful clone of an archive carries a
-    marker its own content already corroborates and this rewrite reproduces the
-    same bytes. It is retained because it is the one route that re-establishes
-    the marker for a tree assembled by something other than bootstrap, and it
-    keeps clone equivalence independent of how the marker was produced.
-    """
-    marker = destination / _DURABLE_BOOTSTRAP_RELATIVE
-    if not _is_regular(marker):
-        return
-    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-    _safe_unlink(marker)
-    _record_fresh_durable_bootstrap(destination)
+def _assert_authenticated_source_files(root: Path, files: tuple[tuple[str, int, str], ...]) -> None:
+    """Keep source snapshots and their retained provenance bound to the manifest."""
+    expected = {path: (size, digest) for path, size, digest in files}
+    actual = {path: (size, digest) for path, size, digest in _manifest_file_entries(_archive_files(root))}
+    if actual != expected:
+        raise ValueError("fixture source changed during authenticated population")
 
 
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
     """Clone an immutable tree while pinning its publication capability."""
     with _shared_artifact_read_locks(artifact.root):
-        return _clone_immutable_tree_unlocked(artifact, destination)
+        return _clone_immutable_tree_unlocked(
+            artifact,
+            destination,
+            source_manifest_id=artifact.manifest_id,
+            retained_artifact_reference=False,
+            retain_manifest=False,
+        )
 
 
-def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
+def _clone_immutable_tree_unlocked(
+    artifact: ImmutableTreeArtifact,
+    destination: Path,
+    *,
+    source_manifest_id: str,
+    retained_artifact_reference: bool,
+    retain_manifest: bool,
+    authenticate_copy: Callable[[Path, frozenset[str]], None] | None = None,
+) -> SeededArchiveClone:
     """Clone an immutable tree into a private writable root."""
+    _assert_no_symlinks(artifact.root)
+    _assert_no_symlink_ancestors(destination.parent)
+    if destination.resolve(strict=False) == artifact.root.resolve(strict=True):
+        raise ValueError("clone source and destination are the same")
     if _is_symlink_node(destination):
         raise ValueError(f"clone destination is a symlink: {destination}")
     if destination.exists():
-        if not destination.is_dir():
+        before = destination.lstat()
+        if not stat.S_ISDIR(before.st_mode):
             raise ValueError(f"clone destination is not a directory: {destination}")
-        _remove_tree(destination)
-    _assert_no_symlink_ancestors(destination.parent)
+        if any(destination.iterdir()):
+            raise ValueError(f"clone destination is not empty: {destination}")
+        current = destination.lstat()
+        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("clone destination reservation changed")
+        destination.rmdir()
     _mkdir_pinned(destination.parent)
+    # Exclusive creation refuses a competing creator; no existing directory
+    # can become this attempt's destination merely because it is now present.
+    destination.mkdir(mode=0o700)
+    reserved = destination.lstat()
+    identity = (reserved.st_dev, reserved.st_ino)
+
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_MARKER_NAME
+    from polylogue.storage.sqlite.population_admission import _admit_population_destination
+
+    if (artifact.root / ARCHIVE_FORMAT_MARKER_NAME).is_file():
+        with _admit_population_destination(destination, source_manifest_id=source_manifest_id, root_identity=identity):
+            return _clone_into_reserved_destination(
+                artifact,
+                destination,
+                identity,
+                source_manifest_id=source_manifest_id,
+                retained_artifact_reference=retained_artifact_reference,
+                retain_manifest=retain_manifest,
+                authenticate_copy=authenticate_copy,
+                protected_names=frozenset({".archive-population.pending", ".archive-ownership.lock", "daemon.pid"}),
+            )
+    return _clone_into_reserved_destination(
+        artifact,
+        destination,
+        identity,
+        source_manifest_id=source_manifest_id,
+        retained_artifact_reference=retained_artifact_reference,
+        retain_manifest=retain_manifest,
+        authenticate_copy=authenticate_copy,
+        protected_names=frozenset(),
+    )
+
+
+def _clone_into_reserved_destination(
+    artifact: ImmutableTreeArtifact,
+    destination: Path,
+    identity: tuple[int, int],
+    *,
+    protected_names: frozenset[str],
+    source_manifest_id: str,
+    retained_artifact_reference: bool,
+    retain_manifest: bool,
+    authenticate_copy: Callable[[Path, frozenset[str]], None] | None,
+) -> SeededArchiveClone:
+    """Copy only into the exact reserved inode; preserve its admission authority."""
+
+    def assert_reserved() -> None:
+        _assert_no_symlink_ancestors(destination.parent)
+        current = destination.lstat()
+        if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+            raise ValueError("clone destination reservation changed")
+
+    def clear_reserved(*, remove_root: bool = False) -> None:
+        assert_reserved()
+        destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+        for entry in destination.iterdir():
+            if entry.name in protected_names:
+                continue
+            if entry.is_dir() and not entry.is_symlink():
+                _remove_tree(entry)
+            else:
+                entry.unlink()
+        assert_reserved()
+        if remove_root:
+            destination.rmdir()
+
     try:
         subprocess.run(
-            ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
+            [
+                "cp",
+                "-a",
+                "--reflink=always",
+                *(str(path) for path in sorted(artifact.root.iterdir()) if path.name not in protected_names),
+                str(destination),
+            ],
             check=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -765,31 +850,83 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
         )
         method = "reflink"
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        _remove_tree(destination)
-        _copy_tree(artifact.root, destination)
+        clear_reserved()
+        _copy_tree(artifact.root, destination, reserved_identity=identity, skip_root_names=protected_names)
         method = "copy"
+    assert_reserved()
     _assert_no_symlinks(destination)
     source_files = _manifest_file_entries(artifact.files or _archive_files(artifact.root))
-    expected = {path: (size, digest) for path, size, digest in source_files}
+    expected = {path: (size, digest) for path, size, digest in source_files if path not in protected_names}
     actual = {
         str(path.relative_to(destination)): (_safe_stat(path).st_size, _sha256(path))
         for path in _pinned_paths(destination)
-        if _is_regular(path) and not _is_reserved_root_file(path, destination)
+        if _is_regular(path)
+        and not _is_reserved_root_file(path, destination)
+        and str(path.relative_to(destination)) not in protected_names
     }
     if actual != expected:
-        _remove_tree(destination)
+        if not protected_names:
+            clear_reserved(remove_root=True)
         raise ValueError(
             "immutable fixture clone failed authenticated file-set validation "
             f"({_describe_file_set_mismatch(expected, actual)})"
         )
+    copied_literals = set(expected)
+    for name in ("manifest.json", ".build.lock"):
+        if _is_regular(artifact.root / name):
+            copied_literals.add(name)
+    for relative in copied_literals:
+        original = _safe_stat(artifact.root / relative)
+        copied = _safe_stat(destination / relative)
+        if (original.st_dev, original.st_ino) == (copied.st_dev, copied.st_ino):
+            if not protected_names:
+                clear_reserved(remove_root=True)
+            raise ValueError(f"clone file inode was not detached: {relative}")
+        if relative == "manifest.json" and _sha256(artifact.root / relative) != _sha256(destination / relative):
+            if not protected_names:
+                clear_reserved(remove_root=True)
+            raise ValueError("clone manifest bytes mismatch")
+    if authenticate_copy is not None:
+        authenticate_copy(destination, protected_names)
     for path in destination.rglob("*"):
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    rebind_durable_identity(destination)
-    if _safe_exists(destination / "manifest.json"):
+    from polylogue.storage.sqlite.archive_population import populate_authenticated_archive
+
+    try:
+        proof = populate_authenticated_archive(
+            artifact.root,
+            destination,
+            source_manifest_id=source_manifest_id,
+            source_files=source_files,
+            retained_artifact_reference=retained_artifact_reference,
+            validate_source_files=lambda: _assert_authenticated_source_files(artifact.root, source_files),
+        )
+        changed = proof.replaced_paths if proof is not None else frozenset()
+        actual = {
+            str(path.relative_to(destination)): (_safe_stat(path).st_size, _sha256(path))
+            for path in _pinned_paths(destination)
+            if _is_regular(path)
+            and not _is_reserved_root_file(path, destination)
+            and str(path.relative_to(destination)) not in changed
+            and str(path.relative_to(destination)) not in protected_names
+        }
+        if actual != {path: value for path, value in expected.items() if path not in changed}:
+            if not protected_names:
+                clear_reserved(remove_root=True)
+            raise ValueError("immutable fixture population changed an unowned file")
+    except BaseException:
+        # A failed durable population is explicit pending evidence. Ordinary
+        # fixture admission refuses it; never erase that custody as copy debris.
+        if not protected_names and not _safe_exists(destination / ".archive-population.pending"):
+            clear_reserved(remove_root=True)
+        raise
+    if authenticate_copy is not None:
+        authenticate_copy(destination, changed | protected_names)
+    if not retain_manifest and _safe_exists(destination / "manifest.json"):
         _safe_unlink(destination / "manifest.json")
-    return SeededArchiveClone(destination, artifact.manifest_id, method)
+    return SeededArchiveClone(destination, source_manifest_id, method)
 
 
 @dataclass(frozen=True)
@@ -1239,6 +1376,10 @@ def _open_pinned_dir(path: Path, *, allow_missing: bool = False) -> int:
             except FileNotFoundError:
                 if allow_missing:
                     return fd
+                raise
+            except NotADirectoryError:
+                if stat.S_ISLNK(os.stat(part, dir_fd=fd, follow_symlinks=False).st_mode):
+                    raise ValueError(f"symlink ancestor is not allowed: {path}") from None
                 raise
             os.close(fd)
             fd = next_fd
@@ -2793,7 +2934,7 @@ def _rename_sealed(source: Path, destination: Path) -> None:
                 pass
 
 
-def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
+def _publish_sealed_staging(staging: Path, final_root: Path, *, probe: _ConstructionProbe) -> None:
     """Seal, atomically hand off, then leave no writable final on failure.
 
     The source tree is sealed before the first rename attempt. Some filesystems
@@ -2814,7 +2955,83 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
             # rename within the final directory's parent (the same-parent
             # operation remains atomic without reopening either tree).
             handoff = final_root.parent / f".{final_root.name}.{uuid.uuid4().hex}.handoff"
-            _copy_tree(staging, handoff)
+            # The same reserved clone owner fences the actual handoff before
+            # copying, while the final artifact remains atomically unpublished.
+            if (staging / "manifest.json").is_file():
+                with os.fdopen(
+                    _open_no_follow(staging / "manifest.json", os.O_RDONLY), "r", encoding="utf-8"
+                ) as handle:
+                    payload = json.load(handle)
+                entries = _manifest_file_entries(tuple(payload["files"]))
+                _assert_authenticated_source_files(staging, entries)
+                changed: frozenset[str] = frozenset()
+
+                def authenticate(target: Path, ignored: frozenset[str]) -> None:
+                    nonlocal changed
+                    changed = ignored
+                    expected = {path: (size, digest) for path, size, digest in entries if path not in ignored}
+                    actual = {
+                        path: (size, digest)
+                        for path, size, digest in _manifest_file_entries(_archive_files(target))
+                        if path not in ignored
+                    }
+                    if actual != expected:
+                        raise ValueError("publication population changed an unowned file")
+
+                if "facts" in payload:
+                    source_manifest = _read_manifest(staging / "manifest.json")
+                    source_manifest_id = source_manifest.manifest_id
+                    tree = ImmutableTreeArtifact(
+                        staging, source_manifest_id, source_manifest.files, source_manifest.resources
+                    )
+                else:
+                    tree = ImmutableTreeArtifact(
+                        staging,
+                        str(payload["key"]),
+                        tuple(payload["files"]),
+                        ArtifactResourceMeasurement(**payload["resources"]),
+                    )
+                    source_manifest_id = tree.manifest_id
+                _clone_immutable_tree_unlocked(
+                    tree,
+                    handoff,
+                    source_manifest_id=source_manifest_id,
+                    retained_artifact_reference=False,
+                    retain_manifest=True,
+                    authenticate_copy=authenticate,
+                )
+                from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_MARKER_NAME
+
+                if (staging / ARCHIVE_FORMAT_MARKER_NAME).is_file():
+                    # Destination train admission opens Source in WAL mode.
+                    # Its connections have drained when population returns;
+                    # collapse that private destination before measuring and
+                    # sealing it for ordinary mode=ro frontier readers.
+                    _sqlite_integrity(handoff)
+                    unchanged = tuple(entry for entry in entries if entry[0] not in changed)
+                    expected = {path: (size, digest) for path, size, digest in unchanged}
+                    actual = {
+                        path: (size, digest)
+                        for path, size, digest in _manifest_file_entries(_archive_files(handoff))
+                        if path not in changed
+                    }
+                    if actual != expected:
+                        raise ValueError(
+                            "publication population changed files outside its authenticated proof"
+                        ) from None
+                    files = _archive_files(handoff)
+                    resources = _measure_resources(handoff, files, probe=probe, measure_rows="facts" in payload)
+                    if "facts" in payload:
+                        manifest = replace(_read_manifest(staging / "manifest.json"), files=files, resources=resources)
+                        payload = manifest.to_payload()
+                    else:
+                        payload["files"] = files
+                        payload["resources"] = resources.to_payload()
+                    _write_private_text(
+                        handoff / "manifest.json", json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n"
+                    )
+            else:
+                _copy_tree(staging, handoff)
             # Seal the handoff before it can be renamed.  A killed copy can
             # leave only a private handoff; final visibility is one rename of
             # an already sealed tree, never a writable directory.
@@ -2827,7 +3044,7 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
     except Exception:
         if _safe_exists(final_root):
             _remove_tree(final_root)
-        if handoff is not None and _safe_exists(handoff):
+        if handoff is not None and _safe_exists(handoff) and not _safe_exists(handoff / ".archive-population.pending"):
             _remove_tree(handoff)
         if _safe_exists(staging):
             _remove_tree(staging)
@@ -3146,7 +3363,7 @@ def _build_seeded_archive_inner(
                     staging / "manifest.json",
                     json.dumps(manifest.to_payload(), sort_keys=True, ensure_ascii=False, indent=2) + "\n",
                 )
-                _publish_sealed_staging(staging, final_root)
+                _publish_sealed_staging(staging, final_root, probe=probe)
                 break
             except sqlite3.OperationalError as exc:
                 # Same-process zombie-connection lock (polylogue-lbgc): a
@@ -3181,7 +3398,13 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
-def _copy_tree(source: Path, destination: Path) -> None:
+def _copy_tree(
+    source: Path,
+    destination: Path,
+    *,
+    reserved_identity: tuple[int, int] | None = None,
+    skip_root_names: frozenset[str] = frozenset(),
+) -> None:
     """Copy a tree through pinned directory descriptors, never shutil/pathname walks."""
     src_fd = _open_pinned_dir(source)
     try:
@@ -3198,9 +3421,16 @@ def _copy_tree(source: Path, destination: Path) -> None:
     dst_fd = -1
     try:
         os.fchmod(dst_parent, original_parent_mode | stat.S_IWUSR)
-        os.mkdir(dst_leaf, 0o700, dir_fd=dst_parent)
+        if reserved_identity is None:
+            os.mkdir(dst_leaf, 0o700, dir_fd=dst_parent)
         dst_fd = os.open(dst_leaf, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=dst_parent)
+        if reserved_identity is not None:
+            held = os.fstat(dst_fd)
+            if (held.st_dev, held.st_ino) != reserved_identity or set(os.listdir(dst_fd)) - skip_root_names:
+                raise ValueError("copy destination reservation changed or is not empty")
     except BaseException:
+        if dst_fd >= 0:
+            os.close(dst_fd)
         with contextlib.suppress(OSError):
             os.fchmod(dst_parent, original_parent_mode)
         os.close(dst_parent)
@@ -3208,9 +3438,11 @@ def _copy_tree(source: Path, destination: Path) -> None:
         raise
     try:
 
-        def copy_dir(src: int, dst: int) -> None:
+        def copy_dir(src: int, dst: int, *, root: bool = False) -> None:
             with os.scandir(src) as entries:
                 for entry in entries:
+                    if root and entry.name in skip_root_names:
+                        continue
                     info = entry.stat(follow_symlinks=False)
                     if stat.S_ISLNK(info.st_mode):
                         raise ValueError(f"cannot copy symlink node: {entry.name}")
@@ -3255,7 +3487,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
                     else:
                         raise ValueError(f"unsupported cache node: {entry.name}")
 
-        copy_dir(src_fd, dst_fd)
+        copy_dir(src_fd, dst_fd, root=True)
     finally:
         os.close(src_fd)
         os.close(dst_fd)
@@ -3394,77 +3626,37 @@ def acquire_query_only_seeded_archive(
 
 
 def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> SeededArchiveClone:
-    """Create an authenticated private clone with a clone-scoped capability.
-
-    Only the returned clone root is pinned and shared-locked.  Ancestor
-    directories remain entirely caller-owned, so closing one clone cannot
-    restore modes or release locks belonging to a sibling.
-    """
+    """Clone through the same reserved owner, retaining seeded manifest proof."""
     with _shared_seeded_artifact_read_locks(artifact):
         _assert_no_symlinks(artifact.root)
         disk_manifest = _read_manifest(artifact.root / "manifest.json")
         if disk_manifest != artifact.manifest:
             raise ValueError("published artifact manifest changed before clone")
-        if _is_symlink_node(destination):
-            _safe_unlink(destination)
-        _remove_tree(destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        method = "reflink"
+        tree = ImmutableTreeArtifact(
+            artifact.root, disk_manifest.manifest_id, disk_manifest.files, disk_manifest.resources
+        )
+
+        def authenticate(destination: Path, ignored: frozenset[str]) -> None:
+            _authenticate_clone_copy(artifact, destination, disk_manifest, ignored_relatives=ignored)
+
+        result = _clone_immutable_tree_unlocked(
+            tree,
+            destination,
+            source_manifest_id=disk_manifest.manifest_id,
+            retained_artifact_reference=True,
+            retain_manifest=True,
+            authenticate_copy=authenticate,
+        )
+        integrity_fd = _open_pinned_dir(destination)
         try:
-            subprocess.run(
-                ["cp", "-a", "--reflink=always", str(artifact.root), str(destination)],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=30,
-            )
-        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            _remove_tree(destination)
-            try:
-                _copy_tree(artifact.root, destination)
-            except BaseException:
-                with contextlib.suppress(BaseException):
-                    _remove_tree(destination)
-                raise
-            method = "copy"
-        integrity_fd = -1
-        try:
-            _assert_no_symlinks(destination)
-            # Authenticate inode detachment before chmodding the writable
-            # clone. A hostile hardlink would otherwise receive the write bit
-            # through the destination path and mutate the source inode.
-            _authenticate_clone_copy(
-                artifact,
-                destination,
-                disk_manifest,
-                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
-            )
-            for path in _pinned_paths(destination):
-                _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
-            _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-            rebind_durable_identity(destination)
-            integrity_fd = _open_pinned_dir(destination)
             fcntl.flock(integrity_fd, fcntl.LOCK_SH)
-            _authenticate_clone_copy(
-                artifact,
-                destination,
-                disk_manifest,
-                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
-            )
         except BaseException:
-            if integrity_fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(integrity_fd)
-            # Cleanup is deliberately best-effort, but never touches the
-            # source tree.  _remove_tree unlinks residue without chmodding
-            # regular files, preserving source modes for hardlink failures.
-            with contextlib.suppress(BaseException):
-                _remove_tree(destination)
+            os.close(integrity_fd)
             raise
         return SeededArchiveClone(
             root=destination,
-            source_manifest_id=disk_manifest.manifest_id,
-            clone_method=method,
+            source_manifest_id=result.source_manifest_id,
+            clone_method=result.clone_method,
             _integrity_fd=integrity_fd,
         )
 
@@ -3483,7 +3675,6 @@ __all__ = [
     "acquire_query_only_seeded_archive",
     "build_immutable_tree",
     "clone_immutable_tree",
-    "rebind_durable_identity",
     "seal_fixture_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",

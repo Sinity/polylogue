@@ -171,9 +171,9 @@ class DerivationConvergenceOwner:
         domains: Sequence[str] | None = None,
         estimated_bytes: int = 0,
     ) -> DerivationReport:
-        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+        from polylogue.core.write_lease import coordinator_write_lease_active
 
-        if daemon_write_lease_active():
+        if coordinator_write_lease_active():
             raise RuntimeError("derivation convergence must start after the daemon writer lease is released")
         loop = asyncio.get_running_loop()
         admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
@@ -267,9 +267,9 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
         expected_recipe: str,
         stop_requested: Callable[[], str | None],
     ) -> tuple[SelectedSessionOutcome, ...]:
-        from polylogue.daemon.write_coordinator import daemon_write_lease_active
+        from polylogue.core.write_lease import coordinator_write_lease_active
 
-        if daemon_write_lease_active():
+        if coordinator_write_lease_active():
             raise RuntimeError("selected session convergence must start after the daemon writer lease is released")
         candidate = self._converger._derivation_adapter("session_profile")
         if not callable(getattr(candidate, "selected_part_facts", None)):

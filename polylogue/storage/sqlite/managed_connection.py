@@ -23,6 +23,9 @@ __all__ = ["sqlite_connection"]
 @contextmanager
 def sqlite_connection(*args: Any, **kwargs: Any) -> Iterator[sqlite3.Connection]:
     """Open a ``sqlite3`` connection, commit or roll back, then always close."""
+    from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+    assert_population_admitted(args[0] if args else kwargs["database"])
     connection = sqlite3.connect(*args, **kwargs)
     try:
         with connection:

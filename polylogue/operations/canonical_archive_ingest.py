@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.parsing_models import ParseResult
+from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 _ONE_SHOT_MARKER = ".one-shot-ingest-owner"
 
@@ -297,6 +298,7 @@ def admit_one_shot_root(root: Path) -> None:
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError, resident_daemon_pid
     from polylogue.storage.archive_identity import resolve_active_index_path
 
+    assert_population_admitted(root)
     pid = resident_daemon_pid(root)
     if pid is not None:
         raise ArchiveWriterOwnershipError(
@@ -340,6 +342,7 @@ def admit_one_shot_root(root: Path) -> None:
         if not db_path.exists():
             continue
         try:
+            assert_population_admitted(db_path)
             with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
                 present = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
                 if present and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():

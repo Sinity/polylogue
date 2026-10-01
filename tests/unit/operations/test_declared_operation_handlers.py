@@ -47,9 +47,19 @@ def test_unresolvable_handler_is_refused() -> None:
         spec.authority,
         spec.fallback,
         capability=spec.capability,
+        deadline_s=spec.deadline_s,
         request_model=spec.request_model,
         result_model=spec.result_model,
         handler="execute_insights_rebuild_operation",
     )
     with pytest.raises(RuntimeError, match="does not exist on"):
         resolve_operation_handler(broken)
+
+
+def test_restore_declared_generic_handler_refuses_pinned_mutation_dispatch() -> None:
+    """Pointing the registry at the async staged function breaks this four-argument route."""
+    spec = daemon_operation_spec("maintenance.restore_verified_backup")
+    assert spec is not None
+    handler = resolve_operation_handler(spec)
+    with pytest.raises(RuntimeError):
+        handler(None, None, None, None)

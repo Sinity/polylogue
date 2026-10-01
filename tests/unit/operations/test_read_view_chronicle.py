@@ -295,18 +295,12 @@ def test_a_null_chronicle_limit_is_the_default_page() -> None:
     assert plan.limit == 5
 
 
-def test_clients_send_the_scan_deadline_for_a_scan_shaped_chronicle() -> None:
-    """The client-side deadline follows the request's shape, as the runtime's does.
+def test_chronicle_scan_classification_does_not_impose_an_execution_deadline() -> None:
+    """The scan keeps separate admission capacity while both read shapes stay unbounded."""
+    from polylogue.operations.daemon_protocol import daemon_operation_spec
+    from polylogue.operations.daemon_reads import read_is_archive_scan
 
-    Anti-vacuity (Codex P2, #5695): fill an omitted deadline from the spec
-    alone and a count-sorted chronicle still carries two seconds, so the
-    runtime's scan deadline never takes effect.
-    """
-    from polylogue.cli.operation_kernel import OperationRequest, _declared_deadline_s
-    from polylogue.daemon_client import _request_deadline_s
-    from polylogue.operations.daemon_reads import READ_SCAN_DEADLINE_S
-
-    scan = {"params": {"sort": "messages"}}
-    assert _request_deadline_s("read.chronicle", scan) == READ_SCAN_DEADLINE_S
-    assert _declared_deadline_s(OperationRequest("read.chronicle", scan)) == READ_SCAN_DEADLINE_S
-    assert _request_deadline_s("read.chronicle", {"params": {"sort": "date"}}) == 2.0
+    assert read_is_archive_scan("read.chronicle", {"params": {"sort": "messages"}})
+    assert not read_is_archive_scan("read.chronicle", {"params": {"sort": "date"}})
+    spec = daemon_operation_spec("read.chronicle")
+    assert spec is not None and spec.deadline_s is None

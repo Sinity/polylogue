@@ -41,6 +41,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 _NATIVE_ID = "session-under-excision"
@@ -54,7 +55,7 @@ def _seed_archive(tmp_path: Path) -> tuple[str, str]:
     initialize_active_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     blob_store = BlobStore(tmp_path / "blob")
@@ -153,7 +154,7 @@ def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: P
     ``declared`` assertion below catches.
     """
     source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(source_db)
     conn = _source_conn(tmp_path)
     try:
         audit = audit_session_carriers(conn)
@@ -327,7 +328,7 @@ def test_raw_existence_journal_is_declared_as_excised(tmp_path: Path) -> None:
     is rejected as an undeclared session carrier; declare any other reach and
     the final assertion fails.
     """
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
+    initialize_runtime_source_fixture(tmp_path / "source.db")
     with _source_conn(tmp_path) as conn:
         audit = audit_session_carriers(conn)
     assert audit.ok

@@ -19,49 +19,20 @@ def _seed_cursor(
     *,
     rows: list[tuple[str, int, int, int, int, str]],
 ) -> None:
-    """Insert ``live_cursor`` rows: ``(source_path, byte_size, byte_offset,
-    failure_count, excluded, updated_at_iso)``.
-
-    Uses the minimal column set the projection reads; other columns default.
-    """
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute(
-            """
-            CREATE TABLE live_cursor (
-                source_path TEXT PRIMARY KEY,
-                byte_size INTEGER NOT NULL,
-                byte_offset INTEGER NOT NULL DEFAULT 0,
-                last_complete_newline INTEGER NOT NULL DEFAULT 0,
-                record_count INTEGER NOT NULL DEFAULT 0,
-                last_record_ts TEXT,
-                parser_fingerprint TEXT,
-                content_fingerprint TEXT,
-                tail_hash TEXT,
-                source_name TEXT,
-                st_dev INTEGER,
-                st_ino INTEGER,
-                mtime_ns INTEGER,
-                source_generation INTEGER NOT NULL DEFAULT 0,
-                failure_count INTEGER NOT NULL DEFAULT 0,
-                next_retry_at TEXT,
-                excluded INTEGER NOT NULL DEFAULT 0,
-                updated_at TEXT NOT NULL
+    """Seed current ops cursors through the production owner."""
+    ops_db = db_path.with_name("ops.db")
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for path, size, offset, failures, excluded, updated in rows:
+            upsert_ingest_cursor(
+                conn,
+                source_path=path,
+                stat_size=size,
+                byte_offset=offset,
+                failure_count=failures,
+                excluded=bool(excluded),
+                updated_at_ms=int(datetime.fromisoformat(updated).timestamp() * 1000),
             )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO live_cursor (source_path, byte_size, byte_offset,
-                                     failure_count, excluded, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            rows,
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def test_cursor_lag_summary_returns_empty_when_db_missing(tmp_path: Path) -> None:
@@ -69,6 +40,7 @@ def test_cursor_lag_summary_returns_empty_when_db_missing(tmp_path: Path) -> Non
     assert summary.tracked_file_count == 0
     assert summary.stuck_file_count == 0
     assert summary.family_summaries == []
+    assert summary.available is False
 
 
 def test_cursor_lag_summary_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:
@@ -142,12 +114,9 @@ def test_cursor_lag_summary_decorates_ops_tier_baseline_from_archive_tiers(tmp_p
 def test_cursor_lag_summary_prefers_archive_ops_when_both_exist(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     now = datetime(2026, 5, 18, 12, 0, 0, tzinfo=UTC)
-    _seed_cursor(
-        db,
-        rows=[
-            ("/legacy/stuck.jsonl", 2_000, 500, 0, 0, (now - timedelta(seconds=300)).isoformat()),
-        ],
-    )
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE live_cursor (source_path TEXT, byte_size INTEGER, byte_offset INTEGER)")
+        conn.execute("INSERT INTO live_cursor VALUES ('/legacy/stuck.jsonl', 2000, 500)")
     ops_db = db.with_name("ops.db")
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
@@ -428,5 +397,23 @@ def test_cursor_lag_read_failure_remains_unavailable_and_private(
     payload = cursor_lag_summary_info(index).model_dump()
     assert payload["available"] is False
     error = payload["unavailable_reason"]
-    assert "[redacted]" in error
+    if ops_available:
+        assert "[redacted]" in error
+    else:
+        assert error == "ops cursor ledger unavailable"
     assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))
+
+
+def test_unknown_offset_is_degraded_not_idle(tmp_path: Path) -> None:
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_ingest_cursor(
+            conn, source_path="/neutral/source.jsonl", stat_size=100, byte_offset=None, updated_at_ms=1_700_000_000_000
+        )
+    result = cursor_lag_summary_info(tmp_path / "index.db")
+    assert result.available
+    assert result.degraded_file_count == 1
+    assert result.idle_file_count == 0
+    assert result.degraded[0].byte_offset is None
+    assert result.degraded[0].degradation_reason == "cursor-unknown"
