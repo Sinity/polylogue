@@ -309,7 +309,7 @@ class PreparedIndexPromotion:
         except BaseException as close_error:
             if exc is None:
                 raise
-            exc.add_note(f"promotion proof cleanup also failed: {close_error}")
+            raise close_error from exc
 
 
 class RebuildLeaseUnavailableError(RuntimeError):
@@ -1803,8 +1803,8 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
                 validate_schema=False,
             )
         except NativeConnectionSettlementError as cleanup:
-            cleanup.owner.anchored_descriptors += (fd,)
-            fd = -1
+            owned_fd, fd = fd, -1
+            cleanup.owner.retain_anchored_descriptor(owned_fd)
             raise
         owned_fd, fd = fd, -1
         owner = NativeSQLCustodyOwner(conn, anchored_descriptors=(owned_fd,))
@@ -1818,13 +1818,12 @@ def _open_source_snapshot(archive_root: Path) -> Iterator[sqlite3.Connection]:
     finally:
         if fd >= 0:
             settlement_primary = sys.exception()
-            try:
-                os.close(fd)
-            except OSError as cleanup:
-                if settlement_primary is not None:
-                    settlement_primary.add_note(f"source descriptor cleanup also failed: {type(cleanup).__name__}")
-                else:
-                    raise
+            owned_fd, fd = fd, -1
+            cleanup_owner = NativeSQLCustodyOwner(None, anchored_descriptors=(owned_fd,))
+            if settlement_primary is not None:
+                _close_failed_native_construction(cleanup_owner, settlement_primary)
+            else:
+                cleanup_owner.close()
 
 
 def source_revision_snapshot(archive_root: Path) -> str:
@@ -1989,7 +1988,7 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
         if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
             raise RuntimeError(f"{label} changed during descriptor validation: {path}")
         consumed_fd, reopened_fd = reopened_fd, -1
-        os.close(consumed_fd)
+        NativeSQLCustodyOwner(None, anchored_descriptors=(consumed_fd,)).close()
         alias = descriptor_alias_path(fd)
         if alias is None:
             raise RuntimeError(f"no validated descriptor alias for {label}: {path}")
@@ -2006,17 +2005,13 @@ def _checkpoint_truncate(path: Path, *, label: str, archive_root: Path) -> None:
     finally:
         settlement_primary = sys.exception()
         descriptors = tuple(descriptor for descriptor in (reopened_fd, fd) if descriptor >= 0)
-        failure = None
-        for descriptor in descriptors:
-            try:
-                os.close(descriptor)
-            except OSError as error:
-                failure = failure or error
-        if failure is not None:
+        reopened_fd = fd = -1
+        if descriptors:
+            cleanup_owner = NativeSQLCustodyOwner(None, anchored_descriptors=descriptors)
             if settlement_primary is not None:
-                settlement_primary.add_note(f"checkpoint descriptor cleanup also failed: {type(failure).__name__}")
+                _close_failed_native_construction(cleanup_owner, settlement_primary)
             else:
-                raise failure
+                cleanup_owner.close()
     if int(checkpoint[0]) != 0:
         raise RuntimeError(f"{label} WAL checkpoint failed: {checkpoint!r}")
 

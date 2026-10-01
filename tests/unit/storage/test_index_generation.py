@@ -1640,3 +1640,33 @@ def test_generation_native_failed_close_retains_selected_descriptor_and_sql(
             handle.allow_cleanup.set()
         if owner is not None:
             owner.close()
+
+
+def test_source_snapshot_failed_construction_exposes_ambiguous_descriptor_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage import index_generation as generations
+    from polylogue.storage.sqlite import connection_profile as profiles
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+    from tests.infra.descriptor_close_fault import DescriptorCloseFault
+
+    _archive(tmp_path)
+    monkeypatch.setattr(generations, "descriptor_alias_path", lambda descriptor: None)
+    fault = DescriptorCloseFault(lambda descriptor: True)
+    monkeypatch.setattr(profiles, "os", fault)
+    with pytest.raises(NativeConnectionSettlementError) as refused:
+        with generations._open_source_snapshot(tmp_path):
+            raise AssertionError("failed admission cannot yield a source connection")
+    owner = refused.value.owner
+    assert isinstance(refused.value.__cause__, RuntimeError)
+    assert owner.connection is None
+    assert len(owner.anchored_descriptors) == 1
+    descriptor = owner.anchored_descriptors[0]
+    try:
+        assert os.fstat(descriptor).st_ino == (tmp_path / "source.db").stat().st_ino
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert fault.attempts == [descriptor]
+    finally:
+        os.close(descriptor)
+        owner.close()

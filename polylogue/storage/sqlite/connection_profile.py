@@ -18,10 +18,12 @@ thread-local cached connection used by the async runtime, use the factories in
 from __future__ import annotations
 
 import asyncio
+import errno
 import math
 import os
 import re
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -29,7 +31,7 @@ from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from types import TracebackType
+from types import BuiltinFunctionType, TracebackType
 from typing import TYPE_CHECKING, Literal, Self
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -176,7 +178,7 @@ class NativeSQLCustodyOwner:
 
     def __init__(
         self,
-        connection: sqlite3.Connection,
+        connection: sqlite3.Connection | None,
         *,
         leaf: VerifiedAuditLeaf | None = None,
         cache_entry: tuple[dict[str, NativeSQLCustodyOwner], str] | None = None,
@@ -195,6 +197,8 @@ class NativeSQLCustodyOwner:
         self.leaf = leaf
         self.cache_entry = cache_entry
         self.anchored_descriptors = anchored_descriptors
+        self._descriptor_bindings: dict[int, tuple[int, int]] = {}
+        self._pending_descriptor_closes: dict[int, BaseException] = {}
         self.frame = frame
         if frame is not None:
             frame._sql_owner = self
@@ -214,9 +218,37 @@ class NativeSQLCustodyOwner:
             if self.custody is not None:
                 self.custody.retain_sql_owner(self)
                 self.custody.assert_namespace()
+            for descriptor in anchored_descriptors:
+                metadata = os.fstat(descriptor)
+                self._descriptor_bindings[descriptor] = (metadata.st_dev, metadata.st_ino)
         except BaseException as primary:
             _close_failed_native_construction(self, primary)
             raise
+
+    def retain_anchored_descriptor(self, descriptor: int) -> None:
+        """Attach a constructor's selected descriptor before returning its failure."""
+        self._require_owner()
+        self.anchored_descriptors += (descriptor,)
+        try:
+            metadata = os.fstat(descriptor)
+        except BaseException as error:
+            raise NativeConnectionSettlementError(self, error) from error
+        self._descriptor_bindings[descriptor] = (metadata.st_dev, metadata.st_ino)
+
+    def _descriptor_binding_retired(self, descriptor: int) -> bool:
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        previous = self._descriptor_bindings.get(descriptor)
+        # A different file proves this numeric slot was replaced. An equal
+        # inode does NOT prove the original open-file-description survives.
+        return previous is not None and previous != (metadata.st_dev, metadata.st_ino)
+
+    def _forget_descriptor(self, descriptor: int) -> None:
+        self.anchored_descriptors = tuple(value for value in self.anchored_descriptors if value != descriptor)
+        self._descriptor_bindings.pop(descriptor, None)
+        self._pending_descriptor_closes.pop(descriptor, None)
 
     def _require_owner(self) -> None:
         if self.pid != os.getpid():
@@ -344,27 +376,50 @@ class NativeSQLCustodyOwner:
             cache, key = cache_entry
             if cache.get(key) is self:
                 del cache[key]
-        descriptors, self.anchored_descriptors = self.anchored_descriptors, ()
-        for descriptor in descriptors:
+        for descriptor in tuple(self.anchored_descriptors):
+            pending = self._pending_descriptor_closes.get(descriptor)
+            if pending is not None:
+                if self._descriptor_binding_retired(descriptor):
+                    self._forget_descriptor(descriptor)
+                else:
+                    # An ambiguous close is never retried by numeric slot.
+                    # Keep creator custody until original settlement is proven.
+                    failure = failure or pending
+                continue
+            close_descriptor = os.close
+            native_linux_close = (
+                sys.platform == "linux"
+                and isinstance(close_descriptor, BuiltinFunctionType)
+                and close_descriptor.__module__ == "posix"
+            )
             try:
-                os.close(descriptor)
+                close_descriptor(descriptor)
             except BaseException as error:
                 failure = failure or error
-        if self.leaf is not None:
+                # Linux's actual close syscall releases the descriptor before
+                # reporting an OSError. A substituted/non-Linux closer has no
+                # such guarantee; preserve ambiguity without an inode-only
+                # claim about open-file-description identity.
+                self._pending_descriptor_closes[descriptor] = error
+                if (native_linux_close and isinstance(error, OSError)) or self._descriptor_binding_retired(descriptor):
+                    self._forget_descriptor(descriptor)
+            else:
+                self._forget_descriptor(descriptor)
+        if self.leaf is not None and not self.anchored_descriptors:
             try:
                 self.leaf.close()
             except BaseException as error:
                 failure = failure or error
             else:
                 self.leaf = None
-        if self.scratch_directory is not None:
+        if self.scratch_directory is not None and not self.anchored_descriptors:
             try:
                 self.scratch_directory.cleanup()
             except BaseException as error:
                 failure = failure or error
             else:
                 self.scratch_directory = None
-        resources_settled = self.leaf is None and self.scratch_directory is None
+        resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
         if resources_settled and self.custody is not None:
             try:
                 self.custody.release_sql_owner(self)
@@ -389,7 +444,7 @@ def _close_failed_native_construction(owner: NativeSQLCustodyOwner, primary: Bas
     except NativeConnectionSettlementError as cleanup:
         raise cleanup from primary
     except BaseException as cleanup:
-        primary.add_note(f"native connection cleanup also failed: {type(cleanup).__name__}")
+        raise cleanup from primary
 
 
 SCRATCH_SYNCHRONOUS_ENV = "POLYLOGUE_SQLITE_SYNCHRONOUS"
