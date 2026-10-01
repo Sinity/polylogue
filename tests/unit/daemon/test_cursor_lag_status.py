@@ -6,6 +6,8 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from polylogue.daemon.cursor_lag_status import cursor_lag_summary_info
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import record_cursor_lag_sample, upsert_ingest_cursor
@@ -403,3 +405,28 @@ def test_unreadable_ops_ledger_is_unmeasured_even_with_a_legacy_index_fallback(t
 
     assert summary.available is False
     assert summary.unavailable_reason is not None
+
+
+@pytest.mark.parametrize("ops_available", [False, True])
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", r"cannot read 'C:\Users\private space\例.json'"]
+)
+def test_cursor_lag_read_failure_remains_unavailable_and_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ops_available: bool, diagnostic: str
+) -> None:
+    from polylogue.daemon import cursor_lag_status
+
+    index = tmp_path / "index.db"
+    index.touch()
+    if ops_available:
+        (tmp_path / "ops.db").touch()
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError(diagnostic)
+
+    monkeypatch.setattr(cursor_lag_status, "open_readonly_connection", fail)
+    payload = cursor_lag_summary_info(index).model_dump()
+    assert payload["available"] is False
+    error = payload["unavailable_reason"]
+    assert "[redacted]" in error
+    assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))

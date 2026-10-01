@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,3 +284,87 @@ def test_cold_build_eta_counts_only_matching_applied_raw_revisions(
 
     generation._accepted_progress_weights = NoWarmLookup(generation._accepted_progress_weights)
     assert generation.accepted_progress[0] == 2
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", r"cannot read 'C:\Users\private space\例.json'"]
+)
+def test_catchup_projection_conceals_event_halt_and_settlement_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    from polylogue.daemon import catchup_status
+    from polylogue.daemon.status import DaemonStatus
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    ops = tmp_path / "ops.db"
+    initialize_archive_database(ops, ArchiveTier.OPS)
+    with closing(sqlite3.connect(ops)) as conn:
+        conn.execute(
+            "INSERT INTO daemon_stage_events(event_id, attempt_id, stage, status, observed_at_ms, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "event",
+                "attempt",
+                "parse",
+                "failed",
+                1000,
+                json.dumps({"error": diagnostic, "current_path": "relative/session.json"}),
+            ),
+        )
+        conn.commit()
+    HaltRegistry(tmp_path).halt(
+        unit_id(UnitKind.SOURCE, "synthetic"), reason=HaltReason.TERMINAL_REFUSAL, message=diagnostic, frame="frame"
+    )
+    monkeypatch.setattr(
+        catchup_status,
+        "_cold_build_settlement_provider",
+        lambda: ("candidate", "blocked", "capacity_unavailable", diagnostic, 1, None),
+    )
+    catchup = catchup_status_info(tmp_path / "index.db", latest_attempt=None, convergence=SimpleNamespace(), ops_db=ops)
+    payload = DaemonStatus(catchup=catchup).model_dump()["catchup"]
+    assert payload["recent_events"][0]["status"] == "failed"
+    assert payload["recent_events"][0]["current_path"] == "relative/session.json"
+    assert payload["halted_sources"][0]["code"] == HaltReason.TERMINAL_REFUSAL.value
+    assert payload["cold_build_settlement_reason"] == "capacity_unavailable"
+    for error in (
+        payload["recent_events"][0]["error"],
+        payload["halted_sources"][0]["message"],
+        payload["cold_build_settlement_last_error"],
+    ):
+        assert "[redacted]" in error
+        assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", r"cannot read 'C:\Users\private space\例.json'"]
+)
+def test_catchup_process_halt_and_failed_cumulative_acquisition_conceal_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, diagnostic: str
+) -> None:
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_source_halt, set_source_halt
+    from polylogue.daemon import catchup_status
+
+    ops = tmp_path / "ops.db"
+    ops.touch()
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise sqlite3.OperationalError(diagnostic)
+
+    monkeypatch.setattr(catchup_status, "open_readonly_connection", fail)
+    set_source_halt(
+        "synthetic-process", DegradedReason(code="derived_unavailable", message=diagnostic, derived_only=True)
+    )
+    try:
+        payload = catchup_status_info(
+            tmp_path / "index.db", latest_attempt=None, convergence=SimpleNamespace(), ops_db=ops
+        ).model_dump()
+    finally:
+        clear_source_halt("synthetic-process")
+    assert payload["cumulative_available"] is False
+    assert payload["cumulative_succeeded_file_count"] is None
+    source = next(entry for entry in payload["halted_sources"] if entry["source_name"] == "synthetic-process")
+    assert source["code"] == "derived_unavailable"
+    assert source["derived_only"] is True
+    for error in (source["message"], payload["cumulative_unavailable_reason"]):
+        assert "[redacted]" in error
+        assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))

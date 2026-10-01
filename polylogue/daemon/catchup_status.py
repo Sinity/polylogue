@@ -11,13 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.payload_coercion import optional_str as _optional_str
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_float as _row_float
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.sqlite_introspection import table_exists
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -50,6 +51,11 @@ class CatchupStageEvent(BaseModel):
     current_path: str | None = None
     error: str | None = None
 
+    @field_validator("error")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
+
 
 class HaltedSourceStatus(BaseModel):
     """One source whose ingest is stopped until the daemon restarts."""
@@ -59,6 +65,11 @@ class HaltedSourceStatus(BaseModel):
     message: str
     derived_only: bool = False
     observed_at: str
+
+    @field_validator("message")
+    @classmethod
+    def _redact_diagnostic(cls, value: str) -> str:
+        return redact_status_error(value)
 
 
 class CatchupStatus(BaseModel):
@@ -136,6 +147,11 @@ class CatchupStatus(BaseModel):
     #: source's backlog on purpose, not idling.
     halted_sources: list[HaltedSourceStatus] = Field(default_factory=list)
     recent_events: list[CatchupStageEvent] = Field(default_factory=list)
+
+    @field_validator("cold_build_settlement_last_error", "cumulative_unavailable_reason")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
 
 
 def _catchup_status(**fields: object) -> CatchupStatus:
@@ -601,7 +617,7 @@ def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[Catch
             reason="live_stage_events_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         return []
     return [_catchup_stage_event_from_row(row) for row in rows]
@@ -637,7 +653,7 @@ def _archive_recent_stage_events(ops_db: Path) -> list[CatchupStageEvent]:
             reason="archive_stage_events_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         return []
     return [_archive_catchup_stage_event_from_row(row) for row in rows]

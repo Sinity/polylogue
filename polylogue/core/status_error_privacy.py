@@ -11,10 +11,10 @@ from urllib.parse import urlsplit
 # Match only at the start of a scheme token. Failed searches do not retry at
 # every character of a long token. A local path consumes its tail before URL
 # recognition can inspect a substring of that path.
-_URL = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>]+")
+_URL = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*://[^\s\"'<>\\]+")
 # In unstructured prose these separators can introduce a local path as well
 # as belong to a URI. Without producer-owned URL evidence, conceal that suffix.
-_URL_LOCAL_SUFFIX = re.compile(r"[,;|:=()\[\]{}](?=/)")
+_URL_LOCAL_SUFFIX = re.compile(r"[,;|:=()\[\]{}](?=/|\\|[A-Za-z]:[/\\])")
 _DIAGNOSTIC_START = " \t\"'([{=:;"
 _DIAGNOSTIC_END = " \t\"')]}=:;"
 
@@ -74,14 +74,14 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
             except ValueError:
                 pass
             authority_start = value.index("://", position, match.end()) + 3
-            local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_start, match.end())
+            local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_start, min(len(value), match.end() + 1))
             # A validated bracketed IP authority owns its closing bracket.
             # An invalid whole token can still have an independently valid
             # network prefix before a diagnostic bracket and local-path tail.
             if url is not None and local_suffix is not None:
                 authority_end = authority_start + len(url.netloc)
                 if local_suffix.start() < authority_end and local_suffix.group() == "]":
-                    local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_end, match.end())
+                    local_suffix = _URL_LOCAL_SUFFIX.search(value, authority_end, min(len(value), match.end() + 1))
             url_end = local_suffix.start() if local_suffix is not None else match.end()
             if local_suffix is not None:
                 url = None
@@ -95,7 +95,13 @@ def redact_status_error(value: object, *, relative_path_spans: Sequence[tuple[in
                 parts.append(value[position:url_end])
                 position = url_end
                 continue
-        if character == "/":
+        drive_path = (
+            character.isascii()
+            and character.isalpha()
+            and value[position + 1 : position + 2] == ":"
+            and value[position + 2 : position + 3] in {"/", "\\"}
+        )
+        if character in {"/", "\\"} or drive_path:
             # Unquoted text has no filename terminator. Inside a quoted
             # diagnostic, only its enclosing (unescaped) quote terminates it.
             end = position + 1

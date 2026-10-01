@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.payload_coercion import row_int as _row_int
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
 from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.fts.fts_lifecycle import FtsInvariantSnapshot, FtsSurfaceInvariant, fts_invariant_snapshot_sync
@@ -202,7 +203,7 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
             reason="archive_readiness_unreadable",
             path=index_db,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         # The readiness query failed: nothing here was measured.  Every
         # sibling key already reports the not-ready value (polylogue-bu47u:
@@ -255,7 +256,7 @@ def _unreadable_fts_readiness(reason: str) -> dict[str, object]:
         "coverage_pct": None,
         "coverage_exact": False,
         "inspection_state": "unavailable",
-        "unavailable_reason": reason,
+        "unavailable_reason": redact_status_error(reason),
         "surfaces": {},
     }
 
@@ -297,7 +298,7 @@ def _collect_fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, 
             reason="readiness_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         unreadable_reason = f"{type(exc).__name__}: {exc}"
     # The handler records why the read failed; the payload is named once and
@@ -317,7 +318,7 @@ def _not_measured_readiness(state: str, *, error: str | None = None) -> dict[str
         "message_indexable_count": None,
         "coverage_pct": None,
         "coverage_exact": False,
-        "unavailable_reason": error or f"FTS readiness inspection {state}",
+        "unavailable_reason": redact_status_error(error) if error else f"FTS readiness inspection {state}",
         "surfaces": {},
     }
 

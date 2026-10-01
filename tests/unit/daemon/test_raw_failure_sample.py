@@ -1173,6 +1173,11 @@ class TestRawFailureSampleRedactionPattern:
     "path",
     [
         "/opt/synthetic space/leaf.json",
+        r"C:\Users\private space\leaf.json",
+        "C:/Users/private space/leaf.json",
+        r"\\server\share\private\leaf.json",
+        r"\private space\leaf.json",
+        r"prefixC:\Users\private\leaf.json",
         "/opt/例/leaf.json",
         "prefix/opt/private/leaf.json",
         "/opt/private/O'Reilly.json",
@@ -1223,6 +1228,9 @@ def test_status_failure_producers_conceal_complete_path_tails(tmp_path: Path, pa
                 "Reilly",
                 "host.example",
                 "secret",
+                "Users",
+                "server",
+                "share",
             )
         )
 
@@ -1381,3 +1389,24 @@ def test_unambiguous_network_url_punctuation_retains_exact_text(url: str) -> Non
 def test_relative_declarations_refuse_every_platform_anchor(path: str) -> None:
     with pytest.raises(ValidationError):
         RawFailureSample(failure_kind="parse_error", relative_path_spans=((0, len(path)),), redacted_error=path)
+
+
+@pytest.mark.parametrize(
+    "path", [r"C:\Users\private\leaf.json", r"\\server\share\private\leaf.json", r"\private\leaf.json"]
+)
+@pytest.mark.parametrize("separator", [",", ";", "|", ":", "=", "(", ")", "[", "]", "{", "}", "<", ">", "'", '"', " "])
+def test_url_exemptions_do_not_absorb_adjacent_windows_paths(path: str, separator: str) -> None:
+    url = "https://api.example.test/v1/data"
+    sample = RawFailureSample(failure_kind="parse_error", redacted_error=f"failed {url}{separator}{path}")
+    assert url in sample.redacted_error
+    assert "[redacted]" in sample.redacted_error
+    assert all(
+        fragment not in sample.redacted_error for fragment in ("C:", "Users", "server", "share", "private", "leaf.json")
+    )
+
+
+def test_declared_windows_relative_path_retains_its_exact_span() -> None:
+    diagnostic = r"Missing module: src\file.py not found"
+    sample = RawFailureSample(failure_kind="parse_error", relative_path_spans=((16, 27),), redacted_error=diagnostic)
+    assert sample.redacted_error == diagnostic
+    assert "relative_path_spans" not in sample.model_dump()

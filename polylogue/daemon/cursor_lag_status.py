@@ -33,10 +33,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.payload_coercion import required_str as _required_str
 from polylogue.core.payload_coercion import row_int as _row_int
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.core.timestamps import iso_from_epoch_ms
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -122,6 +123,11 @@ class CursorLagSummary(BaseModel):
     stuck: list[CursorLagItem] = Field(default_factory=list)
     degraded: list[CursorLagItem] = Field(default_factory=list)
 
+    @field_validator("unavailable_reason")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
+
 
 _STUCK_SAMPLE_LIMIT = 10
 """Bound the per-summary list of stuck items so the projection stays small."""
@@ -188,7 +194,7 @@ def _read_live_cursor_rows(dbf: Path) -> list[sqlite3.Row | tuple[object, ...]] 
             reason="summary_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     try:
@@ -213,7 +219,7 @@ def _read_live_cursor_rows(dbf: Path) -> list[sqlite3.Row | tuple[object, ...]] 
             reason="summary_unreadable",
             path=dbf,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         raise _CursorLedgerReadError(f"cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     finally:
@@ -232,7 +238,7 @@ def _read_ingest_cursor_rows(ops_db: Path) -> list[sqlite3.Row | tuple[object, .
             reason="ops_archive_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     try:
@@ -264,7 +270,7 @@ def _read_ingest_cursor_rows(ops_db: Path) -> list[sqlite3.Row | tuple[object, .
             reason="ops_archive_unreadable",
             path=ops_db,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         raise _CursorLedgerReadError(f"ops cursor ledger unreadable: {type(exc).__name__}: {exc}") from exc
     finally:
@@ -349,7 +355,7 @@ def _decorate_with_baselines(
             outcome="degraded",
             reason="baseline_decoration_failed",
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         return summary
 

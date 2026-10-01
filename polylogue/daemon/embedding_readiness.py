@@ -7,8 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import polylogue.config as polylogue_config
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.logging import WARNING, emit
-from polylogue.storage.embeddings.status_payload import embedding_status_payload
+from polylogue.storage.embeddings.status_payload import EmbeddingCatchupRunPayload, embedding_status_payload
 
 
 def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str, dimension: int) -> dict[str, object]:
@@ -34,6 +35,13 @@ def _defaults(*, enabled: bool, config_enabled: bool, has_key: bool, model: str,
         "embedding_latest_catchup_run": None,
         "embedding_latest_material_catchup_run": None,
     }
+
+
+def _private_run(run: EmbeddingCatchupRunPayload | None) -> EmbeddingCatchupRunPayload | None:
+    if run is None:
+        return None
+    reason = run["stop_reason"]
+    return {**run, "stop_reason": redact_status_error(reason) if reason is not None else None}
 
 
 def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str, object]:
@@ -75,7 +83,7 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
             reason="readiness_unreadable",
             path=db_file,
             error_type=type(exc).__name__,
-            error_detail=str(exc),
+            error_detail=redact_status_error(str(exc)),
         )
         return _defaults(
             enabled=enabled,
@@ -102,10 +110,13 @@ def embedding_readiness_info(db_file: Path, *, detail: bool = False) -> dict[str
         "embedding_failure_count": payload["failure_count"],
         "embedding_terminal_failure_count": payload["terminal_failure_count"],
         "embedding_retryable_failure_count": payload["retryable_failure_count"],
-        "embedding_failure_details": payload["failure_details"],
+        "embedding_failure_details": [
+            {**detail, "error_message": redact_status_error(detail["error_message"])}
+            for detail in payload["failure_details"]
+        ],
         "embedding_estimated_cost_usd": payload["total_estimated_cost_usd"],
-        "embedding_latest_catchup_run": payload["latest_catchup_run"],
-        "embedding_latest_material_catchup_run": payload["latest_material_catchup_run"],
+        "embedding_latest_catchup_run": _private_run(payload["latest_catchup_run"]),
+        "embedding_latest_material_catchup_run": _private_run(payload["latest_material_catchup_run"]),
     }
 
 

@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 import polylogue.logging as plog
 from polylogue.config import PolylogueConfig
@@ -138,7 +141,7 @@ _READINESS_PENDING_TEXT_2 = "authored prose for the second pending readiness mes
 _READINESS_ERROR_TEXT = "authored prose for the failed readiness session message, long enough"
 
 
-def _seed_archive_embedding_readiness_db(path: Path) -> None:
+def _seed_archive_embedding_readiness_db(path: Path, *, error_message: str = "voyage timeout") -> None:
     """Build a real index.db + embeddings.db pair for readiness reads.
 
     ``codex-session:complete`` is embedded through the real
@@ -263,7 +266,7 @@ def _seed_archive_embedding_readiness_db(path: Path) -> None:
             provider="voyage",
             model="voyage-4",
             error_class="provider_timeout",
-            error_message="voyage timeout",
+            error_message=error_message,
             retryable=True,
             occurred_at_ms=1_767_225_700_000,
             attempt=error_attempt,
@@ -515,3 +518,44 @@ def test_readiness_query_failure_logs_instead_of_looking_like_a_clean_archive(
     assert failures[0]["level"] == "warning"
     assert failures[0]["error_type"] == "OperationalError"
     assert "database is locked" in str(failures[0]["error_detail"])
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", r"cannot read 'C:\Users\private space\例.json'"]
+)
+def test_embedding_readiness_projects_retained_failure_and_run_diagnostics(tmp_path: Path, diagnostic: str) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    index = tmp_path / "index.db"
+    _seed_archive_embedding_readiness_db(index, error_message=diagnostic)
+    ops = tmp_path / "ops.db"
+    initialize_archive_database(ops, ArchiveTier.OPS)
+    with closing(sqlite3.connect(ops)) as conn:
+        upsert_embedding_catchup_run(
+            conn,
+            run_id="failed-run",
+            started_at_ms=1000,
+            finished_at_ms=2000,
+            status="failed",
+            error_count=1,
+            error_message=diagnostic,
+        )
+        conn.commit()
+    with patch("polylogue.config.load_polylogue_config", return_value=_config()):
+        payload = embedding_readiness_info(index, detail=True)
+    details = payload["embedding_failure_details"]
+    assert isinstance(details, list)
+    assert details[0]["error_class"] == "provider_timeout"
+    assert details[0]["lifecycle_state"] == "retryable"
+    errors = [details[0]["error_message"]]
+    for key in ("embedding_latest_catchup_run", "embedding_latest_material_catchup_run"):
+        run = payload[key]
+        assert isinstance(run, dict)
+        assert run["status"] == "failed"
+        assert run["error_count"] == 1
+        errors.append(run["stop_reason"])
+    for error in errors:
+        assert "[redacted]" in error
+        assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))
