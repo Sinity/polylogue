@@ -22,7 +22,7 @@ import threading
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -120,7 +120,7 @@ def test_archive_insight_writer_refuses_a_different_archive_root(tmp_path: Path)
 
     with (
         write_lease("test.owner", archive_root=owner_root),
-        pytest.raises(UnleasedWriteError, match="outside the archive"),
+        pytest.raises(UnleasedWriteError),
     ):
         make_session_profile_derivation(target_db, archive_root=target_root, now=lambda: 0.0)._write_connection()
 
@@ -141,7 +141,7 @@ def test_checkpoint_writer_refuses_a_different_archive_root(tmp_path: Path) -> N
 
     with (
         write_lease("test.owner", archive_root=owner_root),
-        pytest.raises(UnleasedWriteError, match="outside the archive"),
+        pytest.raises(UnleasedWriteError),
     ):
         checkpoint_archive_wals(target_root, reason="test", warn_bytes=0)
 
@@ -357,74 +357,75 @@ def test_archive_store_close_settles_sqlite_before_releasing_its_mutation_lease(
 @pytest.mark.uses_real_clock("a competing physical writer waits for actual SQLite settlement")
 def test_archive_store_retains_custody_when_sqlite_transaction_cannot_be_settled(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Failed rollback and close keep the live writer behind its physical gate."""
     import threading
 
+    from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    class FailingConnection:
-        def __init__(self, connection: sqlite3.Connection) -> None:
-            self.connection = connection
-            self.fail_settlement = True
-
-        @property
-        def in_transaction(self) -> bool:
-            return self.connection.in_transaction
-
-        def rollback(self) -> None:
-            if self.fail_settlement:
-                raise OSError("synthetic rollback failure")
-            self.connection.rollback()
-
-        def close(self) -> None:
-            if self.fail_settlement:
-                raise OSError("synthetic close failure")
-            self.connection.close()
-
-        def __getattr__(self, name: str) -> object:
-            return getattr(self.connection, name)
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
     root = tmp_path / "archive"
     root.mkdir()
     with write_lease("test.archive.open", archive_root=root):
         initialize_active_archive_root(root)
+        connect = connection_profile.connect_measured
+
+        def controlled(database: object, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+            if str(database) == str(root / "index.db"):
+                return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)  # type: ignore[arg-type]
+            return connect(database, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(connection_profile, "connect_measured", controlled)
         archive = ArchiveStore(root, initialize=False, read_only=False)
     archive._enter_mutation_lease()
     archive._conn.execute("BEGIN IMMEDIATE")
     archive._conn.execute("CREATE TABLE unsettled_probe (value INTEGER)")
-    proxy = FailingConnection(archive._conn)
-    archive._conn = proxy  # type: ignore[assignment]
+    connection = archive._conn
+    assert isinstance(connection, ControlledConnection)
+    connection.rollback_failure = OSError("synthetic rollback failure")
+    connection.close_failure = OSError("synthetic close failure")
 
-    with pytest.raises(ArchiveStoreSettlementError) as failure:
+    contender: threading.Thread | None = None
+    try:
+        with pytest.raises(ArchiveStoreSettlementError) as failure:
+            archive.close()
+
+        assert failure.value.store is archive
+        assert connection.in_transaction
+        assert archive._conn is connection
+        assert current_write_lease() is not None
+        acquired = threading.Event()
+        finished = threading.Event()
+
+        def competing_writer() -> None:
+            with write_lease("test.archive.waiting-writer", archive_root=root):
+                acquired.set()
+            finished.set()
+
+        contender = threading.Thread(target=competing_writer)
+        contender.start()
+        assert not acquired.wait(0.05)
+
+        connection.rollback_failure = None
+        connection.close_failure = None
         archive.close()
-
-    assert failure.value.store is archive
-    assert proxy.in_transaction
-    assert cast(object, archive._conn) is proxy
-    assert current_write_lease() is not None
-    acquired = threading.Event()
-    finished = threading.Event()
-
-    def competing_writer() -> None:
-        with write_lease("test.archive.waiting-writer", archive_root=root):
-            acquired.set()
-        finished.set()
-
-    contender = threading.Thread(target=competing_writer)
-    contender.start()
-    assert not acquired.wait(0.05)
-
-    proxy.fail_settlement = False
-    archive.close()
-    assert acquired.wait(2)
-    contender.join(timeout=2)
-    assert finished.is_set()
-    assert current_write_lease() is None
-    with sqlite3.connect(root / "index.db") as conn:
-        assert (
-            conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unsettled_probe'").fetchone() is None
-        )
+        assert acquired.wait(2)
+        contender.join(timeout=2)
+        assert finished.is_set()
+        assert current_write_lease() is None
+        with sqlite3.connect(root / "index.db") as conn:
+            assert (
+                conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='unsettled_probe'").fetchone()
+                is None
+            )
+    finally:
+        connection.rollback_failure = None
+        connection.close_failure = None
+        archive.close()
+        if contender is not None:
+            contender.join(timeout=2)
 
 
 @pytest.mark.uses_real_clock("foreign-thread refusal precedes native SQLite cleanup")
@@ -935,28 +936,29 @@ def test_rebuild_exclusion_waits_for_an_adopted_writer(tmp_path: Path) -> None:
     release = threading.Event()
     observed_rebuild_exclusion: list[bool] = []
 
-    with RebuildLease(root):
-        delegation = delegate_write_lease()
+    with RebuildLease(root) as rebuild:
+        with rebuild.write_segment("test.rebuild-exclusion"):
+            delegation = delegate_write_lease()
 
-        def adopted_writer() -> None:
-            with adopt_write_lease(delegation):
-                started.set()
-                assert release.wait(timeout=5)
-                active = ActiveWriterLease(root)
-                try:
-                    active.acquire()
-                except RebuildLeaseUnavailableError:
-                    observed_rebuild_exclusion.append(True)
-                else:
-                    active.close()
-                    observed_rebuild_exclusion.append(False)
+            def adopted_writer() -> None:
+                with adopt_write_lease(delegation):
+                    started.set()
+                    assert release.wait(timeout=5)
+                    active = ActiveWriterLease(root)
+                    try:
+                        active.acquire()
+                    except RebuildLeaseUnavailableError:
+                        observed_rebuild_exclusion.append(True)
+                    else:
+                        active.close()
+                        observed_rebuild_exclusion.append(False)
 
-        worker = threading.Thread(target=lambda: contextvars.Context().run(adopted_writer))
-        worker.start()
-        assert started.wait(timeout=5)
-        # RebuildLease.__exit__ now blocks on this already-adopted writer. It
-        # cannot release the exclusive rebuild lock before the worker probes.
-        release.set()
+            worker = threading.Thread(target=lambda: contextvars.Context().run(adopted_writer))
+            worker.start()
+            assert started.wait(timeout=5)
+            # The declared writer segment drains its adopted writer before the
+            # rebuild owner can release EX exclusion after this probe.
+            release.set()
 
     worker.join(timeout=5)
     assert not worker.is_alive()

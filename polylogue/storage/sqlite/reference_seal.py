@@ -1228,7 +1228,6 @@ class IndexMutationDestination:
 @contextmanager
 def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutationScope]:
     token = _ACTIVE_MUTATION_SCOPE.set(scope)
-    failure: BaseException | None = None
     try:
         _check_reference_cancellation()
         scope.conn.execute("BEGIN IMMEDIATE")
@@ -1236,24 +1235,18 @@ def _owned_index_transaction(scope: IndexMutationScope) -> Iterator[IndexMutatio
         if scope._active and not scope._committed:
             scope.commit()
     except BaseException as primary:
-        failure = primary
-        try:
-            if scope.conn.in_transaction:
-                scope.conn.set_progress_handler(None, 0)
-                scope.conn.rollback()
-        except BaseException as rollback_error:
-            primary.add_note(f"Index transaction rollback also failed: {rollback_error}")
+        if not scope._cleanup_started:
+            try:
+                scope.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("Index mutation and scope cleanup failed", [primary, cleanup]) from primary
         raise
     finally:
         try:
             # commit/rollback already made their single cleanup attempt. An
             # unsuccessful attempt stays retained for an explicit owner retry.
-            if scope._active:
+            if not scope._cleanup_started:
                 scope.close()
-        except BaseException as cleanup_error:
-            if failure is None:
-                raise
-            raise BaseExceptionGroup("Index mutation and scope cleanup failed", [failure, cleanup_error]) from failure
         finally:
             _ACTIVE_MUTATION_SCOPE.reset(token)
 
@@ -1270,6 +1263,8 @@ class IndexMutationScope:
     owner_task: object | None = field(default_factory=_current_task)
     _active: bool = True
     _committed: bool = False
+    _cleanup_started: bool = False
+    _rollback_required: bool = True
     _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -1303,6 +1298,13 @@ class IndexMutationScope:
                 # for explicit retry, without re-closing it during unwinding.
                 self._user_owner = failure.owner
                 self._active = False
+                self._cleanup_started = True
+                try:
+                    self._rollback_index()
+                except BaseException as rollback:
+                    raise BaseExceptionGroup(
+                        "User construction cleanup and Index rollback failed", [failure, rollback]
+                    ) from failure
                 raise
         owner = self._user_owner
         custody = current_sql_custody()
@@ -1380,14 +1382,33 @@ class IndexMutationScope:
         self.conn.commit()
         self._committed = True
         self._active = False
+        self._rollback_required = False
+        self._cleanup_started = True
         self._close_suppression_reader()
 
+    @property
+    def settled(self) -> bool:
+        return not self._rollback_required and self._user_owner is None
+
     def rollback(self) -> None:
-        self.require_connection(self.conn)
-        self.conn.set_progress_handler(None, 0)
-        self.conn.rollback()
-        self._active = False
-        self._close_suppression_reader()
+        self.close()
+
+    def _rollback_index(self) -> None:
+        failures: list[BaseException] = []
+        try:
+            self.conn.set_progress_handler(None, 0)
+        except BaseException as failure:
+            failures.append(failure)
+        try:
+            self.conn.rollback()
+        except BaseException as failure:
+            failures.append(failure)
+        else:
+            self._rollback_required = False
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Index rollback failed", failures)
 
     def close(self) -> None:
         if os.getpid() != self.owner_pid or threading.current_thread() is not self.owner_thread:
@@ -1396,11 +1417,22 @@ class IndexMutationScope:
             not isinstance(self.owner_task, asyncio.Task) or not self.owner_task.done()
         ):
             raise ReferenceSealError("Index scope cleanup belongs to another task")
-        if self._active and self.conn.in_transaction:
-            self.conn.set_progress_handler(None, 0)
-            self.conn.rollback()
         self._active = False
-        self._close_suppression_reader()
+        self._cleanup_started = True
+        failures: list[BaseException] = []
+        if self._rollback_required:
+            try:
+                self._rollback_index()
+            except BaseException as failure:
+                failures.append(failure)
+        try:
+            self._close_suppression_reader()
+        except BaseException as failure:
+            failures.append(failure)
+        if len(failures) == 1:
+            raise failures[0]
+        if failures:
+            raise BaseExceptionGroup("Index and User scope cleanup failed", failures)
 
 
 def current_index_mutation_scope() -> IndexMutationScope | None:

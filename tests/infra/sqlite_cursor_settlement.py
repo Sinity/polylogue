@@ -4,6 +4,8 @@ import sqlite3
 import threading
 from typing import Any
 
+from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
 
 class ControlledCursor(sqlite3.Cursor):
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -24,6 +26,32 @@ class ControlledCursor(sqlite3.Cursor):
 class UnhashableCursor(ControlledCursor):
     def __eq__(self, other: object) -> bool:
         return isinstance(other, UnhashableCursor)
+
+
+class ControlledConnection(_MeasuredConnection):
+    """Inject terminal faults on the actual connection registered by its owner."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.creator = threading.current_thread()
+        self.rollback_failure: BaseException | None = None
+        self.close_failure: BaseException | None = None
+        self.rollback_attempts = 0
+        self.close_attempts = 0
+
+    def rollback(self) -> None:
+        assert threading.current_thread() is self.creator
+        self.rollback_attempts += 1
+        if self.rollback_failure is not None:
+            raise self.rollback_failure
+        super().rollback()
+
+    def close(self) -> None:
+        assert threading.current_thread() is self.creator
+        self.close_attempts += 1
+        if self.close_failure is not None:
+            raise self.close_failure
+        super().close()
 
 
 class BackupCursorFault:

@@ -1366,17 +1366,12 @@ def raw_membership_retired_full_revision_siblings(
             SELECT m.raw_id
             FROM raw_session_memberships AS m
             JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-            JOIN raw_sessions AS r ON r.raw_id = m.raw_id
             WHERE m.logical_source_key = ?
-              AND (
-                  c.revision_authority = ?
-                  OR r.revision_authority = ?
-              )
+              AND c.revision_authority = ?
             ORDER BY m.raw_id
             """,
             (
                 logical_source_key,
-                RawRevisionAuthority.QUARANTINED.value,
                 RawRevisionAuthority.QUARANTINED.value,
             ),
         )
@@ -3399,10 +3394,10 @@ def apply_raw_revision_replay(
     ``manage_transaction=False`` batches this cohort's index.db writes
     and terminal source.db parse-state markers into the caller's open
     transaction/pending-state instead of committing them immediately
-    (polylogue-oikv). If the caller has not opened an index transaction yet,
-    this function starts one and deliberately leaves it open; the caller must
-    call ``commit()`` (or ``rollback()`` on failure) itself, exactly once per
-    batch, after every cohort in the batch has been applied. ``commit()`` always
+    (polylogue-oikv). The caller must already own an
+    ``IndexMutationScope`` and call
+    ``commit()`` (or ``rollback()`` on failure) exactly once per batch, after
+    every cohort in the batch has been applied. ``commit()`` always
     commits the index connection before flushing pending source markers
     (``_flush_pending_raw_parse_states``), so the "index commits, then
     source terminal markers commit" ordering invariant now holds at
@@ -3448,6 +3443,14 @@ def apply_raw_revision_replay(
     and legitimately need every historical position rewritten, and they
     run far less often than a live append).
     """
+
+    if not manage_transaction:
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+        scope = current_index_mutation_scope()
+        if scope is None:
+            raise RuntimeError("batched retained replay requires the caller's live Index mutation scope")
+        scope.require_connection(store._conn)
     if not plan.accepted_raw_ids:
         raise ValueError("cannot apply a revision plan without an accepted chain")
     from polylogue.sources.dispatch import merge_parsed_session_chunks
@@ -3509,16 +3512,8 @@ def apply_raw_revision_replay(
     if not _is_frozen_candidate(store):
         for raw_id, refs in attachment_refs_by_raw_id.items():
             write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
-    if not manage_transaction and not store._conn.in_transaction:
-        # The reparse receipt is written immediately before its session rows.
-        # SAVEPOINT alone is not enough here: with no outer transaction SQLite
-        # releases the savepoint as a commit, so a later session-write failure
-        # would leave the accepted head advertising content that never landed.
-        # Establish the batch-owned boundary before either write and leave its
-        # disposition to the caller.
-        store._conn.execute("BEGIN")
     session_ids: set[str] = set()
-    with store._conn if manage_transaction else nullcontext():
+    with store.index_mutation_scope() if manage_transaction else nullcontext():
         existing_head = store._conn.execute(
             """SELECT session_id, accepted_raw_id, accepted_source_revision,
                       accepted_content_hash, accepted_frontier_kind, accepted_frontier
@@ -3921,6 +3916,14 @@ def apply_raw_membership_classification(
     its broader bulk-generation-build lifecycle (polylogue-v6i3); default
     ``False``.
     """
+
+    if not manage_transaction:
+        from polylogue.storage.sqlite.reference_seal import current_index_mutation_scope
+
+        scope = current_index_mutation_scope()
+        if scope is None:
+            raise RuntimeError("batched retained replay requires the caller's live Index mutation scope")
+        scope.require_connection(store._conn)
     conn = store._ensure_source_conn()
     decided_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     decisions = membership_decisions_for_classification(classification)
@@ -3967,7 +3970,7 @@ def apply_raw_membership_classification(
         )
         if not _is_frozen_candidate(store):
             write_source_blob_refs(conn, accepted_raw_id, refs)
-        with store._conn if manage_transaction else nullcontext():
+        with store.index_mutation_scope() if manage_transaction else nullcontext():
             existing_head = store._conn.execute(
                 """
                 SELECT accepted_raw_id, accepted_content_hash, accepted_frontier_kind, session_id,

@@ -224,6 +224,10 @@ def test_rebinding_releases_the_frame_and_sees_later_commits(index_db: Path) -> 
 
 def test_generation_identity_moves_when_the_pointer_is_swapped(index_db: Path, tmp_path: Path) -> None:
     replacement = tmp_path / "replacement.db"
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(replacement, ArchiveTier.INDEX)
     conn = sqlite3.connect(replacement)
     try:
         conn.execute("CREATE TABLE rows_ (position INTEGER PRIMARY KEY, body TEXT NOT NULL)")
