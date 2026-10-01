@@ -24,8 +24,7 @@ from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
-    durable_authority_logical_keys,
-    parser_census_is_complete,
+    parser_census_identity_measurement,
     raw_authority_parser_fingerprint,
 )
 from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
@@ -42,7 +41,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 from polylogue.storage.raw_authority import (
     build_raw_replay_plan,
-    parser_census_logical_keys,
+    iter_parser_census_logical_keys,
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
@@ -433,19 +432,10 @@ class RawObservationDerivation:
             if retry is None:
                 return "valid"
         membership = conn.execute("SELECT * FROM raw_membership_census WHERE raw_id = ?", (key,)).fetchone()
-        members = conn.execute(
-            "SELECT logical_source_key, decision FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-            (key,),
-        ).fetchall()
         if census is None:
             return "missing"
         if census["parser_fingerprint"] != self.recipe_version or census["status"] != "complete":
             return "stale"
-        expected = durable_authority_logical_keys(
-            raw_logical_key=raw["logical_source_key"],
-            revision_kind=raw["revision_kind"],
-            membership_logical_keys=(row[0] for row in members),
-        )
         non_session = (
             conn.execute(
                 "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND parse_as_session = 0 LIMIT 1",
@@ -453,66 +443,104 @@ class RawObservationDerivation:
             ).fetchone()
             is not None
         )
-        if not parser_census_is_complete(
-            recorded_keys=parser_census_logical_keys(census["logical_keys_json"]),
-            durable_keys=expected,
-            typed_non_session=non_session,
-            parser_confirmed_non_session=membership is not None
-            and membership["status"] == "non_session"
-            and membership["parser_fingerprint"] == self.recipe_version,
-            byte_governed_fragment=raw["source_index"] < 0
-            and membership is not None
-            and membership["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value,
+        member_count = 0
+
+        def member_keys(rows: sqlite3.Cursor) -> Iterator[object]:
+            nonlocal member_count
+            for row in rows:
+                member_count += 1
+                yield row[0]
+
+        with (
+            closing(
+                conn.execute(
+                    "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id=? ORDER BY logical_source_key",
+                    (key,),
+                )
+            ) as members,
+            parser_census_identity_measurement(
+                raw_logical_key=raw["logical_source_key"],
+                revision_kind=raw["revision_kind"],
+                membership_logical_keys=member_keys(members),
+                observed_logical_keys=iter_parser_census_logical_keys(census["logical_keys_json"]),
+                observed_are_receipt=True,
+            ) as measured,
         ):
-            return "stale"
-        if membership is not None and membership["status"] == "complete" and membership["member_count"] != len(members):
-            return "stale"
-        owned = {
-            str(row[0]) for row in conn.execute("SELECT session_id FROM index_tier.sessions WHERE raw_id = ?", (key,))
-        }
-        if owned - set(expected or ()):
-            return "excess"
-        if not expected:
-            return "valid"
-        decisions = {str(row[0]): row[1] for row in members}
-        for logical_key in expected:
-            if logical_key in decisions and decisions[logical_key] in {"ambiguous", "deferred"}:
-                continue
-            if logical_key in decisions and decisions[logical_key] is None:
-                return "missing"
-            application = conn.execute(
-                """SELECT 1 FROM index_tier.raw_revision_applications
-                WHERE raw_id = ? AND logical_source_key = ?
-                  AND decision IN ('selected_baseline', 'applied_append', 'superseded', 'reparse_reaffirmation')
-                LIMIT 1""",
-                (key, logical_key),
-            ).fetchone()
-            if application is None:
-                return "missing"
-            output = conn.execute(
-                """SELECT s.origin, s.parser_fingerprint, s.lowering_fingerprint, s.session_id, s.native_id,
-                       b.evidence_key, accepted.source_path AS accepted_source_path
-                FROM index_tier.raw_revision_heads h JOIN index_tier.sessions s
-                  ON s.session_id = h.session_id AND s.raw_id = h.accepted_raw_id
-                 AND s.content_hash = h.accepted_content_hash
-                LEFT JOIN index_tier.session_enrichment_bindings b ON b.session_id = s.session_id
-                LEFT JOIN raw_sessions accepted ON accepted.raw_id = h.accepted_raw_id
-                WHERE h.logical_source_key = ?""",
-                (logical_key,),
-            ).fetchone()
-            if output is None:
-                return "missing"
-            if (
-                output["parser_fingerprint"] != parser_fingerprint_for_origin(Origin(output["origin"]))
-                or output["lowering_fingerprint"] != lowering_fingerprint()
+            if not measured.complete(
+                typed_non_session=non_session,
+                parser_confirmed_non_session=membership is not None
+                and membership["status"] == "non_session"
+                and membership["parser_fingerprint"] == self.recipe_version,
+                byte_governed_fragment=raw["source_index"] < 0
+                and membership is not None
+                and membership["revision_authority"] == RawRevisionAuthority.BYTE_PROVEN.value,
             ):
                 return "stale"
-            # The binding was written from the accepted head's raw; a
-            # superseded sibling from another directory reads different
-            # evidence and could never match it, so compare the head's own.
-            evidence_path = output["accepted_source_path"] or raw["source_path"]
-            if self._enrichment_evidence_moved(conn, evidence_path, output):
+            if (
+                membership is not None
+                and membership["status"] == "complete"
+                and membership["member_count"] != member_count
+            ):
                 return "stale"
+            with closing(conn.execute("SELECT session_id FROM index_tier.sessions WHERE raw_id=?", (key,))) as owned:
+                for row in owned:
+                    with closing(
+                        measured.connection.execute(
+                            "SELECT 1 FROM census_identity WHERE kind=1 AND logical_key=?", (str(row[0]),)
+                        )
+                    ) as identity:
+                        if identity.fetchone() is None:
+                            return "excess"
+            if not measured.observed_count:
+                return "valid"
+            with closing(measured.iter_durable_bindings()) as bindings:
+                for logical_key, source_key in bindings:
+                    decision = None
+                    if source_key is not None:
+                        with closing(
+                            conn.execute(
+                                "SELECT decision FROM raw_session_memberships WHERE raw_id=? AND logical_source_key=?",
+                                (key, source_key),
+                            )
+                        ) as rows:
+                            decision = rows.fetchone()
+                    if decision is not None and decision[0] in {"ambiguous", "deferred"}:
+                        continue
+                    if decision is not None and decision[0] is None:
+                        return "missing"
+                    application = conn.execute(
+                        """SELECT 1 FROM index_tier.raw_revision_applications
+                        WHERE raw_id = ? AND logical_source_key = ?
+                          AND decision IN ('selected_baseline', 'applied_append', 'superseded', 'reparse_reaffirmation')
+                        LIMIT 1""",
+                        (key, logical_key),
+                    ).fetchone()
+                    if application is None:
+                        return "missing"
+                    output = conn.execute(
+                        """SELECT s.origin, s.parser_fingerprint, s.lowering_fingerprint, s.session_id, s.native_id,
+                               b.evidence_key, accepted.source_path AS accepted_source_path
+                        FROM index_tier.raw_revision_heads h JOIN index_tier.sessions s
+                          ON s.session_id = h.session_id AND s.raw_id = h.accepted_raw_id
+                         AND s.content_hash = h.accepted_content_hash
+                        LEFT JOIN index_tier.session_enrichment_bindings b ON b.session_id = s.session_id
+                        LEFT JOIN raw_sessions accepted ON accepted.raw_id = h.accepted_raw_id
+                        WHERE h.logical_source_key = ?""",
+                        (logical_key,),
+                    ).fetchone()
+                    if output is None:
+                        return "missing"
+                    if (
+                        output["parser_fingerprint"] != parser_fingerprint_for_origin(Origin(output["origin"]))
+                        or output["lowering_fingerprint"] != lowering_fingerprint()
+                    ):
+                        return "stale"
+                    # The binding was written from the accepted head's raw; a
+                    # superseded sibling from another directory reads different
+                    # evidence and could never match it, so compare the head's own.
+                    evidence_path = output["accepted_source_path"] or raw["source_path"]
+                    if self._enrichment_evidence_moved(conn, evidence_path, output):
+                        return "stale"
         from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
 
         component, _logical_keys = expand_raw_membership_selection_sync(conn, [key])

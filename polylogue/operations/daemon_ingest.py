@@ -294,20 +294,9 @@ def _spool_source_receipt(
                     )
                 ) as raw_receipts:
                     for raw in raw_receipts:
-                        raw_count += 1
-                        unresolved_count += not raw.complete
-                        complete &= raw.complete
-                        spool.execute(
-                            "INSERT INTO item_raws VALUES (?, ?, ?)",
-                            (item.source_item_id, raw.raw_id, int(raw.complete)),
-                        )
-                        spool.execute(
-                            "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
-                            "complete=MIN(complete, excluded.complete), "
-                            "parser_complete=MIN(parser_complete, excluded.parser_complete)",
-                            (raw.raw_id, int(raw.complete), int(raw.parser_complete)),
-                        )
+                        raw_complete = raw.parser_complete
                         for logical in raw.logicals:
+                            raw_complete &= logical.complete
                             if check_stop is not None:
                                 check_stop()
                             spool.execute(
@@ -315,6 +304,19 @@ def _spool_source_receipt(
                                 "complete=MIN(complete, excluded.complete)",
                                 (logical.logical_source_key, logical.expected_session_id, int(logical.complete)),
                             )
+                        raw_count += 1
+                        unresolved_count += not raw_complete
+                        complete &= raw_complete
+                        spool.execute(
+                            "INSERT INTO item_raws VALUES (?, ?, ?)",
+                            (item.source_item_id, raw.raw_id, int(raw_complete)),
+                        )
+                        spool.execute(
+                            "INSERT INTO raws VALUES (?, ?, ?) ON CONFLICT(raw_id) DO UPDATE SET "
+                            "complete=MIN(complete, excluded.complete), "
+                            "parser_complete=MIN(parser_complete, excluded.parser_complete)",
+                            (raw.raw_id, int(raw_complete), int(raw.parser_complete)),
+                        )
                 spool.execute(
                     "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)",
                     (

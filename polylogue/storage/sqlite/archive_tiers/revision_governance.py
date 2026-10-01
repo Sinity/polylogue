@@ -96,12 +96,11 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import sqlite3
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, closing, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -122,9 +121,8 @@ from polylogue.archive.revision_authority import (
     append_source_revision,
     canonical_authority_logical_key,
     classify_historical_full_revision_streams,
-    durable_authority_logical_keys,
     is_work_event_raw_id,
-    parser_census_is_complete,
+    parser_census_identity_measurement,
     raw_authority_parser_fingerprint,
     revision_authority_for_census_detail,
 )
@@ -2631,75 +2629,6 @@ def replace_raw_membership_census(
         record_current_parser_source_census(conn, raw_id, parser_sessions=sessions)
 
 
-def _file_backed_parser_census_keys(
-    conn: sqlite3.Connection,
-    raw_id: str,
-    raw_logical_key: object,
-    revision_kind: object,
-    parser_sessions: Sequence[ParsedSession],
-) -> tuple[bool, bool, int, str]:
-    """Compare parser and durable identities without a Python cohort-sized set."""
-    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
-
-    with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
-        scratch.execute("PRAGMA cache_size = -2048")
-        scratch.execute("PRAGMA temp_store = FILE")
-        scratch.execute(
-            "CREATE TABLE census_identity (kind INTEGER NOT NULL, logical_key TEXT NOT NULL, "
-            "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
-        )
-        durable_valid = True
-        for (value,) in conn.execute(
-            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-            (raw_id,),
-        ):
-            try:
-                key = canonical_authority_logical_key(str(value))
-            except ValueError:
-                durable_valid = False
-                break
-            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
-        if (
-            durable_valid
-            and raw_logical_key is not None
-            and str(revision_kind) != RawRevisionKind.UNKNOWN.value
-            and not str(raw_logical_key).startswith("pending-raw:")
-        ):
-            try:
-                key = canonical_authority_logical_key(str(raw_logical_key))
-            except ValueError:
-                durable_valid = False
-            else:
-                scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (1, ?)", (key,))
-
-        iter_ids = getattr(parser_sessions, "iter_session_ids", None)
-        if callable(iter_ids):
-            parser_keys: Iterator[str] = iter_ids()
-        else:
-            parser_keys = (f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions)
-        for parser_key in parser_keys:
-            key = canonical_authority_logical_key(parser_key)
-            scratch.execute("INSERT OR IGNORE INTO census_identity VALUES (0, ?)", (key,))
-        scratch.commit()
-        observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind = 0").fetchone()[0])
-        differs = scratch.execute(
-            "SELECT 1 FROM census_identity AS observed "
-            "WHERE observed.kind = 0 AND NOT EXISTS ("
-            "SELECT 1 FROM census_identity AS durable "
-            "WHERE durable.kind = 1 AND durable.logical_key = observed.logical_key) "
-            "UNION ALL "
-            "SELECT 1 FROM census_identity AS durable "
-            "WHERE durable.kind = 1 AND NOT EXISTS ("
-            "SELECT 1 FROM census_identity AS observed "
-            "WHERE observed.kind = 0 AND observed.logical_key = durable.logical_key) LIMIT 1"
-        ).fetchone()
-        logical_keys_json = scratch.execute(
-            "SELECT json_group_array(logical_key) FROM ("
-            "SELECT logical_key FROM census_identity WHERE kind = 0 ORDER BY logical_key)"
-        ).fetchone()[0]
-        return durable_valid, differs is None, observed_count, str(logical_keys_json or "[]")
-
-
 def record_current_parser_source_census(
     conn: sqlite3.Connection,
     raw_id: str,
@@ -2765,32 +2694,6 @@ def record_current_parser_source_census(
         """,
         (raw_id, raw_authority_parser_fingerprint()),
     ).fetchone()
-    if parser_sessions is not None:
-        durable_valid, identities_match, observed_count, observed_keys_json = _file_backed_parser_census_keys(
-            conn,
-            raw_id,
-            raw[0],
-            raw[1],
-            parser_sessions,
-        )
-        durable_keys = None
-    else:
-        membership_keys = [
-            str(row[0])
-            for row in conn.execute(
-                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-                (raw_id,),
-            )
-        ]
-        durable_keys = durable_authority_logical_keys(
-            raw_logical_key=raw[0],
-            revision_kind=raw[1],
-            membership_logical_keys=membership_keys,
-        )
-        durable_valid = durable_keys is not None
-        identities_match = False
-        observed_count = 0
-        observed_keys_json = "[]"
     typed_non_session = bool(raw[2])
     # polylogue-39kcs: an append fragment is never parsed for identity --
     # ``_persist_revision_census`` routes every ``source_index < 0`` raw
@@ -2814,27 +2717,39 @@ def record_current_parser_source_census(
         and str(membership_census[1]) == RawRevisionAuthority.BYTE_PROVEN.value
     )
     parser_confirmed_non_session = membership_census is not None and str(membership_census[0]) == "non_session"
-    observed_keys = (
-        tuple(sorted(canonical_authority_logical_key(key) for key in inherited_logical_keys or ()))
-        if inherited_logical_keys is not None
-        else durable_keys
-        if typed_non_session or parser_confirmed_non_session or byte_governed_fragment
-        else None
-    )
+    iter_ids = getattr(parser_sessions, "iter_session_ids", None)
     if parser_sessions is not None:
-        complete = (
-            durable_valid
-            and identities_match
-            and (observed_count > 0 or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+        observed = (
+            iter_ids()
+            if callable(iter_ids)
+            else (f"{session.source_name.value}:{session.provider_session_id}" for session in parser_sessions)
         )
     else:
-        complete = parser_census_is_complete(
-            recorded_keys=observed_keys,
-            durable_keys=durable_keys,
+        observed = inherited_logical_keys
+    with (
+        closing(
+            conn.execute(
+                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id=? ORDER BY logical_source_key",
+                (raw_id,),
+            )
+        ) as memberships,
+        parser_census_identity_measurement(
+            raw_logical_key=raw[0],
+            revision_kind=raw[1],
+            membership_logical_keys=(row[0] for row in memberships),
+            observed_logical_keys=observed,
+            observed_are_receipt=inherited_logical_keys is not None,
+            inherit_durable_keys=(
+                observed is None and (typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+            ),
+        ) as measured,
+    ):
+        complete = measured.complete(
             typed_non_session=typed_non_session,
             parser_confirmed_non_session=parser_confirmed_non_session,
             byte_governed_fragment=byte_governed_fragment,
         )
+        logical_keys_json = measured.keys_json(sqlite_encoding=parser_sessions is not None)
     detail = (
         "parser-observed: append fragment governed by byte revision authority"
         if byte_governed_fragment and complete
@@ -2852,7 +2767,6 @@ def record_current_parser_source_census(
             else "current parser produced no durable authority identity"
         )
     )
-    logical_keys_json = observed_keys_json if parser_sessions is not None else json.dumps(list(observed_keys or ()))
     conn.execute(
         """
         INSERT INTO raw_authority_parser_census (

@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -219,12 +220,213 @@ def parser_census_is_complete(
     Empty identity sets are complete only when a durable non-session or
     byte-authority disposition proves that no parser identity is expected.
     """
-    return (
-        durable_keys is not None
-        and recorded_keys is not None
-        and recorded_keys == durable_keys
-        and (bool(recorded_keys) or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+    return parser_census_identity_is_complete(
+        durable_valid=durable_keys is not None,
+        observed_valid=recorded_keys is not None,
+        identities_match=recorded_keys == durable_keys,
+        observed_count=len(recorded_keys or ()),
+        typed_non_session=typed_non_session,
+        parser_confirmed_non_session=parser_confirmed_non_session,
+        byte_governed_fragment=byte_governed_fragment,
     )
+
+
+def parser_census_identity_is_complete(
+    *,
+    durable_valid: bool,
+    observed_valid: bool,
+    identities_match: bool,
+    observed_count: int,
+    typed_non_session: bool,
+    parser_confirmed_non_session: bool,
+    byte_governed_fragment: bool,
+) -> bool:
+    """One completion law for exact measured producer and retained identity sets."""
+    return (
+        durable_valid
+        and observed_valid
+        and identities_match
+        and (observed_count > 0 or typed_non_session or parser_confirmed_non_session or byte_governed_fragment)
+    )
+
+
+class InvalidParserCensusKeysError(ValueError):
+    """A retained identity receipt cannot establish its declared key set."""
+
+
+@dataclass(frozen=True, slots=True)
+class ParserCensusIdentityMeasurement:
+    """Exact identity comparison scoped to its existing Native disk owner."""
+
+    connection: sqlite3.Connection
+    durable_valid: bool
+    observed_valid: bool
+    identities_match: bool
+    observed_count: int
+
+    def iter_keys(self, *, observed: bool) -> Iterator[str]:
+        with closing(
+            self.connection.execute(
+                "SELECT logical_key FROM census_identity WHERE kind=? ORDER BY logical_key", (int(not observed),)
+            )
+        ) as rows:
+            for row in rows:
+                yield str(row[0])
+
+    def iter_durable_bindings(self) -> Iterator[tuple[str, str | None]]:
+        """Yield canonical identity and its exact captured membership spelling."""
+        with closing(
+            self.connection.execute(
+                "SELECT logical_key, source_key FROM census_identity WHERE kind=1 ORDER BY logical_key"
+            )
+        ) as rows:
+            for key, source_key in rows:
+                yield str(key), None if source_key is None else str(source_key)
+
+    def complete(
+        self,
+        *,
+        typed_non_session: bool,
+        parser_confirmed_non_session: bool,
+        byte_governed_fragment: bool,
+    ) -> bool:
+        return parser_census_identity_is_complete(
+            durable_valid=self.durable_valid,
+            observed_valid=self.observed_valid,
+            identities_match=self.identities_match,
+            observed_count=self.observed_count,
+            typed_non_session=typed_non_session,
+            parser_confirmed_non_session=parser_confirmed_non_session,
+            byte_governed_fragment=byte_governed_fragment,
+        )
+
+    def keys_json(self, *, sqlite_encoding: bool) -> str:
+        if sqlite_encoding:
+            return str(
+                self.connection.execute(
+                    "SELECT json_group_array(logical_key) FROM ("
+                    "SELECT logical_key FROM census_identity WHERE kind=0 ORDER BY logical_key)"
+                ).fetchone()[0]
+                or "[]"
+            )
+        # Preserve the receipt writer's existing stdlib JSON spelling for
+        # inherited/disposition identities without a cohort-sized Python list.
+        import io
+        import json
+
+        with io.StringIO() as encoded:
+            encoded.write("[")
+            first = True
+            with closing(
+                self.connection.execute(
+                    "SELECT logical_key, occurrences FROM census_identity WHERE kind=0 ORDER BY logical_key"
+                )
+            ) as rows:
+                for key, occurrences in rows:
+                    for _ in range(occurrences):
+                        if not first:
+                            encoded.write(", ")
+                        encoded.write(json.dumps(key))
+                        first = False
+            encoded.write("]")
+            return encoded.getvalue()
+
+
+@contextmanager
+def parser_census_identity_measurement(
+    *,
+    raw_logical_key: object,
+    revision_kind: object,
+    membership_logical_keys: Iterable[object],
+    observed_logical_keys: Iterable[str] | None,
+    observed_are_receipt: bool = False,
+    inherit_durable_keys: bool = False,
+    check_stop: Callable[[], None] | None = None,
+) -> Iterator[ParserCensusIdentityMeasurement]:
+    """Measure producer or retained receipt keys under the same identity law.
+
+    Inputs come from the caller's admitted Source snapshot. The scratch owner
+    never reopens that snapshot; its regular indexed table lives on disk.
+    """
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    if observed_logical_keys is not None and inherit_durable_keys:
+        raise ValueError("parser census cannot combine observed and inherited durable keys")
+    with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
+        scratch.execute("PRAGMA cache_size=-2048")
+        scratch.execute("PRAGMA journal_mode=DELETE")
+        scratch.execute("PRAGMA temp_store=FILE")
+        scratch.execute("BEGIN")
+        scratch.execute(
+            "CREATE TABLE census_identity(kind INTEGER NOT NULL, logical_key TEXT NOT NULL, source_key TEXT, "
+            "occurrences INTEGER NOT NULL DEFAULT 1, "
+            "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
+        )
+        durable_valid = True
+        for value in membership_logical_keys:
+            if check_stop is not None:
+                check_stop()
+            if value is None:
+                continue
+            try:
+                key = canonical_authority_logical_key(str(value))
+            except ValueError:
+                durable_valid = False
+                continue
+            scratch.execute(
+                "INSERT OR IGNORE INTO census_identity(kind, logical_key, source_key) VALUES (1, ?, ?)",
+                (key, str(value)),
+            )
+        if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
+            typed_key = str(raw_logical_key)
+            if not typed_key.startswith("pending-raw:"):
+                try:
+                    key = canonical_authority_logical_key(typed_key)
+                except ValueError:
+                    durable_valid = False
+                else:
+                    scratch.execute("INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,))
+        observed_valid = observed_logical_keys is not None or inherit_durable_keys
+        if inherit_durable_keys and durable_valid:
+            scratch.execute(
+                "INSERT INTO census_identity(kind, logical_key) SELECT 0, logical_key FROM census_identity WHERE kind=1"
+            )
+        elif observed_logical_keys is not None:
+            observed = iter(observed_logical_keys)
+            try:
+                while True:
+                    if check_stop is not None:
+                        check_stop()
+                    try:
+                        value = next(observed)
+                    except StopIteration:
+                        break
+                    except InvalidParserCensusKeysError:
+                        observed_valid = False
+                        break
+                    key = canonical_authority_logical_key(value)
+                    inserted = scratch.execute(
+                        "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,)
+                    )
+                    if observed_are_receipt and not inserted.rowcount:
+                        observed_valid = False
+                        scratch.execute(
+                            "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
+                            (key,),
+                        ).close()
+                    inserted.close()
+            finally:
+                close_observed = getattr(observed, "close", None)
+                if callable(close_observed):
+                    close_observed()
+        observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0").fetchone()[0])
+        differs = scratch.execute(
+            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
+            "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
+            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
+        ).fetchone()
+        yield ParserCensusIdentityMeasurement(scratch, durable_valid, observed_valid, differs is None, observed_count)
 
 
 #: ``raw_membership_census.detail`` marker written when a full-only,

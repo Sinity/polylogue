@@ -525,15 +525,17 @@ def observe_source_generation_receipt(
     source: sqlite3.Connection, index: sqlite3.Connection, *, source_generation_id: str, active_generation: str
 ) -> SimpleNamespace:
     """Collect small fixture observations from the actual paged receipt/spool owners."""
+    import os
     from contextlib import closing
-    from tempfile import TemporaryDirectory
+    from tempfile import mkstemp
 
     from polylogue.operations.daemon_ingest import _spool_source_receipt
-    from polylogue.operations.ingest_inputs import spool_connection
+    from polylogue.operations.ingest_inputs import spool_connection, unlink_spool
     from polylogue.storage.source_generation_receipts import (
         iter_source_item_raw_receipts,
         source_generation_receipt_page,
     )
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
 
     items = []
     retired = []
@@ -549,7 +551,20 @@ def observe_source_generation_receipt(
                     source, index, source_generation_id=source_generation_id, source_item_id=item.source_item_id
                 )
             ) as rows:
-                raws = tuple(rows)
+                observed_raws = []
+                for raw in rows:
+                    logicals = tuple(raw.logicals)
+                    observed_raws.append(
+                        SimpleNamespace(
+                            raw_id=raw.raw_id,
+                            parsed_at_ms=raw.parsed_at_ms,
+                            parser_complete=raw.parser_complete,
+                            parser_blockers=raw.parser_blockers,
+                            logicals=logicals,
+                            complete=raw.parser_complete and all(logical.complete for logical in logicals),
+                        )
+                    )
+                raws = tuple(observed_raws)
             marker_missing.update(
                 raw.raw_id for raw in raws if raw.complete and raw.logicals and raw.parsed_at_ms is None
             )
@@ -573,8 +588,11 @@ def observe_source_generation_receipt(
             ) as rows:
                 retired.extend(SimpleNamespace(record_coordinate=str(row[0])) for row in rows)
         cursor = page.next_cursor
-    with TemporaryDirectory(prefix="polylogue-receipt-fixture-") as directory:
-        spool = _spool_source_receipt(source, index, source_generation_id, Path(directory) / "receipt.sqlite")
+    descriptor, filename = mkstemp(prefix="polylogue-receipt-fixture-", suffix=".sqlite")
+    os.close(descriptor)
+    receipt_path = Path(filename)
+    try:
+        spool = _spool_source_receipt(source, index, source_generation_id, receipt_path)
         with spool_connection(spool.path, read_only=True) as observed:
             confirmed = tuple(
                 str(row[0]) for row in observed.execute("SELECT raw_id FROM raws WHERE complete=1 ORDER BY raw_id")
@@ -593,3 +611,8 @@ def observe_source_generation_receipt(
             unresolved_raw_ids=unresolved,
             source_marker_missing_raw_ids=tuple(sorted(marker_missing)),
         )
+    finally:
+        # A failed Native close retains this exact artifact. An enclosing
+        # TemporaryDirectory finalizer would otherwise delete it on unwind.
+        if not retained_native_sql_owners_for_lifetime(receipt_path):
+            unlink_spool(receipt_path)

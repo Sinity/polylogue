@@ -1018,8 +1018,8 @@ def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path)
 
 def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path: Path) -> None:
     """Parser identities stay in scratch SQLite and retain sorted-set parity."""
+    from polylogue.archive.revision_authority import parser_census_identity_measurement
     from polylogue.sources.parsers.base_models import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import _file_backed_parser_census_keys
 
     class OnePassSessions:
         def __init__(self) -> None:
@@ -1034,18 +1034,24 @@ def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path
 
     conn = _connect(tmp_path / "source.db")
     sessions = OnePassSessions()
-    valid, matches, count, encoded = _file_backed_parser_census_keys(
-        conn,
-        "synthetic-raw",
-        None,
-        None,
-        sessions,  # type: ignore[arg-type]
-    )
-    assert sessions.reads == 1
-    assert valid is True
-    assert matches is False
-    assert count == 2
-    assert encoded == '["chatgpt-export:a","chatgpt-export:b"]'
+    with parser_census_identity_measurement(
+        raw_logical_key=None,
+        revision_kind=None,
+        membership_logical_keys=(
+            row[0]
+            for row in conn.execute(
+                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id=?", ("synthetic-raw",)
+            )
+        ),
+        observed_logical_keys=(f"{session.source_name.value}:{session.provider_session_id}" for session in sessions),
+    ) as measured:
+        assert sessions.reads == 1
+        assert measured.durable_valid is True
+        assert measured.identities_match is False
+        assert measured.observed_count == 2
+        assert measured.keys_json(sqlite_encoding=True) == '["chatgpt-export:a","chatgpt-export:b"]'
+        assert measured.connection.execute("PRAGMA temp_store").fetchone() == (1,)
+        assert measured.connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
     conn.close()
 
 

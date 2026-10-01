@@ -14,12 +14,16 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.revision_authority import canonical_authority_logical_key, raw_authority_parser_fingerprint
+from polylogue.archive.revision_authority import (
+    InvalidParserCensusKeysError,
+    canonical_authority_logical_key,
+    raw_authority_parser_fingerprint,
+)
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
@@ -70,6 +74,45 @@ def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | N
             return None
     normalized_keys = tuple(sorted(set(normalized)))
     return normalized_keys if len(normalized_keys) == len(raw_keys) else None
+
+
+def iter_parser_census_logical_keys(logical_keys_json: object) -> Iterator[str]:
+    """Validate the existing ordered receipt while yielding one canonical key.
+
+    Canonical duplicate detection belongs to the shared disk measurement.
+    The durable JSON cell itself remains one SQLite value; this reader does
+    not allocate its decoded list, normalized list and duplicate-key set.
+    """
+    import io
+
+    import ijson
+
+    from polylogue.archive.raw_payload.streams import raw_byte_stream
+
+    with io.StringIO(str(logical_keys_json)) as text, raw_byte_stream(text) as stream:
+        events = iter(ijson.basic_parse(stream))
+        last: str | None = None
+        try:
+            if next(events, None) != ("start_array", None):
+                raise InvalidParserCensusKeysError("parser identity receipt is not an array")
+            for event, value in events:
+                if event == "end_array":
+                    if next(events, None) is not None:
+                        raise InvalidParserCensusKeysError("parser identity receipt has trailing values")
+                    return
+                if event != "string" or not isinstance(value, str) or last is not None and value <= last:
+                    raise InvalidParserCensusKeysError("parser identity receipt keys are not sorted unique strings")
+                last = value
+                try:
+                    key = canonical_authority_logical_key(value)
+                except ValueError as error:
+                    raise InvalidParserCensusKeysError(
+                        "parser identity receipt has an invalid authority key"
+                    ) from error
+                yield key
+        except (ijson.JSONError, UnicodeError) as error:
+            raise InvalidParserCensusKeysError("parser identity receipt JSON cannot establish authority") from error
+        raise InvalidParserCensusKeysError("parser identity receipt is incomplete")
 
 
 @dataclass(frozen=True, slots=True)
