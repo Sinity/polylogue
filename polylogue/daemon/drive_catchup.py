@@ -52,21 +52,29 @@ class DriveCatchupExecution:
             # Future handed in (``loop.run_in_executor``) is already owned by
             # whoever scheduled it and carries no task identity to set.
             task.set_name(f"polylogue-drive-catchup:{label}")
+        cancellation = None
+        while not task.done():
+            try:
+                await asyncio.wait((task,))
+            except asyncio.CancelledError as exc:
+                if cancellation is None and cancel_requested is not None:
+                    cancel_requested()
+                cancellation = cancellation or exc
         try:
-            return await asyncio.shield(task)
+            result = task.result()
         except asyncio.CancelledError:
-            if cancel_requested is not None:
-                cancel_requested()
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if not task.cancelled():
-                task.exception()
+            if cancellation is not None:
+                raise cancellation from None
             raise
+        except BaseException as failure:
+            if cancellation is not None:
+                raise builtins.BaseExceptionGroup(
+                    "Drive cancellation and physical worker failure", [cancellation, failure]
+                ) from None
+            raise
+        if cancellation is not None:
+            raise cancellation
+        return result
 
     async def prepare(self, operation: Callable[[], T]) -> T:
         if current_write_lease() is not None:
@@ -167,19 +175,4 @@ class DriveCatchupExecution:
             )
         finally:
             compute_cancel.reset(cancellation_token)
-        try:
-            return await asyncio.shield(pending)
-        except asyncio.CancelledError:
-            cancelled.set()
-            # Once admitted, the observer-owning callable must settle on its
-            # worker before this owner unwinds or the bridge can be released.
-            while not pending.done():
-                try:
-                    await asyncio.shield(pending)
-                except asyncio.CancelledError:
-                    continue
-                except Exception:
-                    break
-            if not pending.cancelled():
-                pending.exception()
-            raise
+        return await self.settle(pending, label=actor, cancel_requested=cancelled.set)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import json
 import sqlite3
@@ -84,7 +85,10 @@ def make_parser(
     return parser, source, coordinator
 
 
-async def test_drive_prepare_cancellation_retains_its_one_worker_until_physical_drain(tmp_path: Path) -> None:
+@pytest.mark.parametrize("worker_fails", [False, True])
+async def test_drive_prepare_cancellation_retains_its_one_worker_until_physical_drain(
+    tmp_path: Path, worker_fails: bool
+) -> None:
     from polylogue.core.compute import BoundedComputeAdapter, current_cancellation
 
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
@@ -101,6 +105,8 @@ async def test_drive_prepare_cancellation_retains_its_one_worker_until_physical_
         cancellation.add_listener(cancellation_received.set)
         started.set()
         assert release.wait(15)
+        if worker_fails:
+            raise RuntimeError("synthetic failure after physical drain")
         return "physically drained"
 
     task = asyncio.create_task(execution.prepare(prepare))
@@ -111,8 +117,15 @@ async def test_drive_prepare_cancellation_retains_its_one_worker_until_physical_
         assert not task.done()
         assert adapter.snapshot().active_units == 1
         release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        if worker_fails:
+            with pytest.raises(builtins.BaseExceptionGroup) as raised:
+                await task
+            assert len(raised.value.exceptions) == 2
+            assert isinstance(raised.value.exceptions[0], asyncio.CancelledError)
+            assert isinstance(raised.value.exceptions[1], RuntimeError)
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await task
         assert adapter.snapshot().active_units == 0
         assert await execution.prepare(lambda: "successor") == "successor"
     finally:
