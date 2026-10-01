@@ -73,7 +73,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin \
+    PATH=/opt/venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     POLYLOGUE_FORCE_PLAIN=1 \
     POLYLOGUE_ARCHIVE_ROOT=/data/archive \
     POLYLOGUE_CONFIG_DIR=/etc/polylogue \
@@ -86,7 +86,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Runtime deps:
 #   ca-certificates — outbound HTTPS (PyPI, Voyage, Drive)
 #   tini             — PID 1 for clean SIGTERM/SIGINT signalling
-#   curl             — used by HEALTHCHECK against the daemon /api/health endpoint
+#   curl             — used by HEALTHCHECK against the daemon /healthz/ready endpoint
 RUN printf 'Types: deb\nURIs: https://snapshot.debian.org/archive/debian/20261001T000000Z\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\nCheck-Valid-Until: no\n\nTypes: deb\nURIs: https://snapshot.debian.org/archive/debian-security/20261001T000000Z\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\nCheck-Valid-Until: no\n' > /etc/apt/sources.list.d/debian.sources \
  && apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini curl \
@@ -112,11 +112,11 @@ WORKDIR /home/polylogue
 VOLUME ["/data/archive", "/etc/polylogue"]
 EXPOSE 8766
 
-# Healthcheck hits the daemon HTTP API. The daemon must be started with
-# keep the default API enabled for this to succeed.
+# The unauthenticated readiness probe measures archive readiness; keep the
+# default API enabled for this healthcheck.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD curl --fail --silent --show-error \
-      "http://127.0.0.1:${POLYLOGUE_DAEMON_API_PORT}/api/health" \
+      "http://127.0.0.1:${POLYLOGUE_DAEMON_API_PORT}/healthz/ready" \
       > /dev/null || exit 1
 
 # tini reaps zombies and forwards signals; the daemon binary is PID 2.
@@ -140,14 +140,14 @@ LABEL org.opencontainers.image.title="polylogue" \
 
 # ---- distroless (optional) ----------------------------------------------
 # Distroless variant for security-conscious deployments. Reuses the wheel
-# installed into /usr/local in the runtime stage. No shell, no package
+# installed into /opt/venv in the runtime stage. No shell, no package
 # manager — `docker exec` debugging is not possible against this image.
 #
 # Build with:  docker buildx build -f packaging/Containerfile --target distroless -t polylogue:distroless .
 #
 # Note: distroless does not ship curl, so HEALTHCHECK is omitted at the
 # image level. Operators using Kubernetes / compose should configure
-# probes against the same /api/health endpoint at the orchestrator layer.
+# probes against the same /healthz/ready endpoint at the orchestrator layer.
 FROM gcr.io/distroless/python3-debian12:nonroot@sha256:7d1042ce588ab97019fe95c24ffca7bc5a82ccdac572511d5e09bda4435c89c5 AS distroless
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -160,7 +160,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     XDG_CACHE_HOME=/var/cache/polylogue \
     POLYLOGUE_DAEMON_API_HOST=0.0.0.0 \
     POLYLOGUE_DAEMON_API_PORT=8766 \
-    PATH=/opt/venv/bin:/usr/local/bin:/usr/bin:/bin
+    PATH=/opt/venv/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 # Keep the free-threaded interpreter, its bundled shared libraries, and the
 # installed environment together at the same prefixes in both images.

@@ -3,7 +3,7 @@
 # Usage:
 #   docker compose -f docs/docker-compose.yaml up -d
 #   docker compose -f docs/docker-compose.yaml exec polylogued polylogue analyze
-#   curl http://localhost:8766/api/health
+#   curl http://localhost:8766/healthz/ready
 #
 # The named volumes below keep the SQLite archive and configuration durable
 # across container restarts. Replace `polylogue-archive` / `polylogue-config`
@@ -42,14 +42,14 @@ services:
       # - ${HOME}/.codex/sessions:/srv/codex:ro
 
     ports:
-      - "8766:8766"   # Daemon HTTP API (/api/health, /api/status, web shell)
+      - "8766:8766"   # Daemon HTTP API (/healthz/ready, /api/status, web shell)
 
-    # The image declares HEALTHCHECK against /api/health on 127.0.0.1:8766;
+    # The image declares HEALTHCHECK against /healthz/ready on 127.0.0.1:8766;
     # compose surfaces the result via `docker compose ps`. The block below
     # makes that contract explicit and lets you tighten the timing.
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error",
-             "http://127.0.0.1:8766/api/health"]
+             "http://127.0.0.1:8766/healthz/ready"]
       interval: 30s
       timeout: 5s
       start_period: 30s

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import socket
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -42,6 +45,9 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
         env=env,
         text=True,
     ).strip()
+    with socket.socket() as port_reservation:
+        port_reservation.bind(("127.0.0.1", 0))
+        api_port = port_reservation.getsockname()[1]
     daemon_command = [
         str(bin_dir / f"polylogued{suffix}"),
         "run",
@@ -49,7 +55,7 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
         "--no-source-catchup",
         "--no-browser-capture",
         "--api-port",
-        "0",
+        str(api_port),
     ]
     log_path = work_dir / "daemon.log"
     fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -67,6 +73,27 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
                         time.sleep(0.05)
                     else:
                         break
+            # Transport acceptance precedes archive readiness. Exercise the
+            # declared readiness probe before the one-shot installed queries.
+            while True:
+                status = daemon.poll()
+                if status is not None:
+                    raise RuntimeError(f"installed daemon exited before archive readiness ({status}); log={log_path}")
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{api_port}/healthz/ready") as response:
+                        ready = json.load(response)
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 503:
+                        raise
+                    time.sleep(0.05)
+                except urllib.error.URLError as exc:
+                    if not isinstance(exc.reason, ConnectionRefusedError):
+                        raise
+                    time.sleep(0.05)
+                else:
+                    if ready.get("status") != "ready":
+                        raise RuntimeError(f"readiness endpoint returned an invalid success: {ready}")
+                    break
             for script, arguments in (
                 ("polylogue", ["--version"]),
                 ("polylogue", ["--help"]),

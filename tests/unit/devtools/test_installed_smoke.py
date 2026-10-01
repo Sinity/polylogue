@@ -54,6 +54,9 @@ def test_installed_smoke_waits_for_daemon_and_stops_it_on_query_failure(tmp_path
         rows = [json.loads(line) for line in receipt.read_text().splitlines()]
         assert rows[0]["event"] == "daemon_started"
         assert rows[-1]["event"] == "daemon_stopped"
+        assert next(i for i, row in enumerate(rows) if row["event"] == "readiness_ready") < next(
+            i for i, row in enumerate(rows) if row["event"] == "cli"
+        )
         commands = [row["argv"] for row in rows if row["event"] == "cli"]
         assert ["--plain", "analyze", "--count"] in commands
         if failure == "none":
