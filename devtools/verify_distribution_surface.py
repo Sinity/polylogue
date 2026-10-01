@@ -81,7 +81,20 @@ def verify_distribution_surface(work_dir: Path) -> None:
     managed_python = Path(sys.executable).resolve()
     dist_dir = work_dir / "dist"
     _run(
-        ("uv", "build", "--python", str(managed_python), "--out-dir", str(dist_dir), "--sdist", "--wheel", str(ROOT)),
+        (
+            "uv",
+            "build",
+            "--build-constraints",
+            str(Path(os.environ.get("UV_BUILD_CONSTRAINT", ROOT / "packaging/hatchling.txt"))),
+            "--require-hashes",
+            "--python",
+            str(managed_python),
+            "--out-dir",
+            str(dist_dir),
+            "--sdist",
+            "--wheel",
+            str(ROOT),
+        ),
         cwd=ROOT,
     )
 
@@ -98,7 +111,19 @@ def verify_distribution_surface(work_dir: Path) -> None:
 
     sdist_wheel_dir = work_dir / "sdist-wheel"
     _run(
-        ("uv", "build", "--python", str(managed_python), "--out-dir", str(sdist_wheel_dir), "--wheel", str(unpacked)),
+        (
+            "uv",
+            "build",
+            "--build-constraints",
+            str(Path(os.environ.get("UV_BUILD_CONSTRAINT", ROOT / "packaging/hatchling.txt"))),
+            "--require-hashes",
+            "--python",
+            str(managed_python),
+            "--out-dir",
+            str(sdist_wheel_dir),
+            "--wheel",
+            str(unpacked),
+        ),
         cwd=work_dir,
     )
     sdist_wheel = _single_artifact(sdist_wheel_dir, "*.whl")

@@ -1167,3 +1167,49 @@ def test_embedding_coverage_error_when_enabled_with_failures(
     assert alert.severity == HealthSeverity.ERROR
     assert alert.consecutive_failures == 1
     assert "failures" in alert.message
+
+
+@pytest.mark.parametrize(
+    "diagnostic", ["cannot read '/opt/private space/例.json'", 'cannot read "/opt/private/O\'Reilly.json"']
+)
+def test_actual_disk_check_conceals_exception_paths(monkeypatch: pytest.MonkeyPatch, diagnostic: str) -> None:
+    def fail(_root: Path) -> int:
+        raise OSError(diagnostic)
+
+    monkeypatch.setattr("polylogue.daemon.health.disk_free_bytes", fail)
+    alert = _check_disk_space_fast()
+    assert alert.severity == HealthSeverity.ERROR
+    assert "[redacted]" in alert.model_dump()["message"]
+    assert all(fragment not in alert.message for fragment in ("private space", "例.json", "Reilly"))
+
+
+def test_repeated_failure_ratio_preserves_authored_text_and_redacts_only_diagnostic() -> None:
+    from polylogue.daemon.health import _repeated_stage_failure_alert
+
+    alert = _repeated_stage_failure_alert("", 5, 5, ("parse", "cannot read '/opt/private space/例.json'"))
+    assert "5/5 recent attempts failed" in alert.message
+    assert "[redacted]" in alert.message
+    assert "private space" not in alert.message
+    assert "例.json" not in alert.message
+
+
+@pytest.mark.parametrize("tail_length", [1_000, 100_000])
+def test_repeated_failure_privacy_work_stays_within_existing_hint_prefix(
+    monkeypatch: pytest.MonkeyPatch, tail_length: int
+) -> None:
+    from polylogue.core.status_error_privacy import redact_status_error
+    from polylogue.daemon import health
+
+    observed_lengths: list[int] = []
+
+    def project(value: str) -> str:
+        observed_lengths.append(len(value))
+        return redact_status_error(value)
+
+    monkeypatch.setattr(health, "redact_status_error", project)
+    diagnostic = "cannot read '/opt/private space/例.json " + "x" * tail_length + "'"
+    alert = health._repeated_stage_failure_alert("", 5, 5, ("parse", diagnostic))
+    assert observed_lengths == [80]
+    assert "5/5 recent attempts failed" in alert.message
+    assert "[redacted]" in alert.message
+    assert all(fragment not in alert.message for fragment in ("/opt", "private space", "例.json"))

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from polylogue.core.status_error_privacy import redact_status_error
 from polylogue.daemon.live_ingest_attempt_progress import ProgressClassification
 
 
@@ -58,6 +59,11 @@ class LiveIngestAttemptState(BaseModel):
     slow_threshold_s: float | None = None
     completed_at: str | None = None
 
+    @field_validator("error")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None
+
 
 class LiveIngestAttemptSummary(BaseModel):
     # ``available`` separates a measured "no running attempt" from an attempt
@@ -74,3 +80,8 @@ class LiveIngestAttemptSummary(BaseModel):
     stuck_running_count: int = 0
     slow_threshold_s: float | None = None
     recent: list[LiveIngestAttemptState] = Field(default_factory=list)
+
+    @field_validator("unavailable_reason")
+    @classmethod
+    def _redact_diagnostic(cls, value: str | None) -> str | None:
+        return redact_status_error(value) if value is not None else None

@@ -219,13 +219,14 @@ def test_homebrew_dispatch_preserves_tag_fallback_and_branch_recovery(tmp_path: 
             "RELEASE_TAG": "v1.2.3",
             "RECOVERY_TAG": "v1.2.3",
             "GITHUB_REF_TYPE": ref_type,
+            "GITHUB_REF_NAME": "master" if ref_type == "branch" else "v1.2.3",
         },
         capture_output=True,
         text=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
-    expected = ["workflow", "run", "homebrew-bump.yml", "--ref", "v1.2.3"]
+    expected = ["workflow", "run", "homebrew-bump.yml", "--ref", "master" if ref_type == "branch" else "v1.2.3"]
     if ref_type == "branch":
         expected += ["-f", "release_tag=v1.2.3"]
     assert [json.loads(line) for line in calls.read_text().splitlines()] == [expected]
@@ -263,3 +264,112 @@ def test_flakehub_tag_dispatch_publishes_the_selected_tag_instead_of_rolling() -
     )
     assert push["tag"] == "${{ github.ref_type == 'tag' && github.ref_name || '' }}"
     assert push["source-revision"] == "e001ee821cdb763ef120c01f1048bfb2f938bb9c"
+
+
+@pytest.mark.parametrize(
+    "job,kind", [("publish-pypi", "main"), ("publish-pypi-mcp", "mcp"), ("publish-pypi-hooks", "hooks")]
+)
+@pytest.mark.parametrize("mutation", ["unchanged", "tampered", "missing", "extra"])
+def test_publishers_verify_the_build_jobs_staged_bytes(tmp_path: Path, job: str, kind: str, mutation: str) -> None:
+    """Removing the production hash check permits changed bytes to be signed and uploaded."""
+    import hashlib
+
+    publisher = workflow("release.yml")["jobs"][job]
+    verify = next(step for step in publisher["steps"] if step.get("name") == "Verify staged distribution hashes")
+    assert verify["env"]["EXPECTED_HASHES"] == f"${{{{ needs.build.outputs.{kind}_hashes }}}}"
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "synthetic-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"synthetic wheel")
+    expected = {wheel.name: hashlib.sha256(wheel.read_bytes()).hexdigest()}
+    if mutation == "tampered":
+        wheel.write_bytes(b"changed wheel")
+    elif mutation == "missing":
+        wheel.unlink()
+    elif mutation == "extra":
+        (dist / "unexpected.whl").write_bytes(b"extra")
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", verify["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "EXPECTED_HASHES": json.dumps(expected)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (result.returncode == 0) is (mutation == "unchanged"), result.stderr
+
+
+def test_extension_release_executes_only_lockfile_tools() -> None:
+    """A mutable npx range or npm install fallback bypasses the committed executable lock."""
+    package = json.loads((REPO_ROOT / "browser-extension/package.json").read_text())
+    lock = json.loads((REPO_ROOT / "browser-extension/package-lock.json").read_text())
+    for name in ("playwright", "web-ext"):
+        version = package["devDependencies"][name]
+        assert re.fullmatch(r"\d+\.\d+\.\d+", version)
+        assert lock["packages"][""]["devDependencies"][name] == version
+        locked = lock["packages"][f"node_modules/{name}"]
+        assert locked["version"] == version
+        assert locked["integrity"].startswith("sha512-")
+    build_steps = workflow("extension-release.yml")["jobs"]["build"]["steps"]
+    install = next(step for step in build_steps if step.get("name") == "Install dependencies")
+    assert install["run"] == "npm ci"
+    assert (
+        next(step for step in build_steps if step.get("name") == "Install Playwright Chromium")["run"]
+        == 'npm run --prefix "${RELEASE_TOOLS}" install:screenshot-browser'
+    )
+    lint = next(step for step in build_steps if step.get("name") == "Web-ext lint Firefox xpi")["run"]
+    assert '"${RELEASE_TOOLS}/node_modules/.bin/web-ext" lint' in lint
+    assert "npx" not in "\n".join(step.get("run", "") for step in build_steps)
+    assert package["scripts"]["install:screenshot-browser"] == "playwright install --with-deps chromium"
+
+
+def test_build_hash_outputs_cover_each_staged_distribution(tmp_path: Path) -> None:
+    import hashlib
+
+    build = workflow("release.yml")["jobs"]["build"]
+    hashes = next(step for step in build["steps"] if step.get("id") == "hashes")
+    expected = {}
+    for kind, directory in [("main", "staged-dist"), ("mcp", "staged-dist-mcp"), ("hooks", "staged-dist-hooks")]:
+        stage = tmp_path / directory
+        stage.mkdir()
+        wheel = stage / f"synthetic-{kind}.whl"
+        wheel.write_bytes(kind.encode())
+        expected[kind] = {wheel.name: hashlib.sha256(wheel.read_bytes()).hexdigest()}
+        assert build["outputs"][f"{kind}_hashes"] == f"${{{{ steps.hashes.outputs.{kind} }}}}"
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["bash", "-eo", "pipefail", "-c", hashes["run"]],
+        cwd=tmp_path,
+        env={**os.environ, "GITHUB_OUTPUT": str(output)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert {
+        key: json.loads(value) for key, value in (line.split("=", 1) for line in output.read_text().splitlines())
+    } == expected
+
+
+def test_recovery_toolchains_belong_to_the_workflow_revision() -> None:
+    """Using the old product tag for new tool files breaks recovery before it can build."""
+    for name in ("release.yml", "extension-release.yml"):
+        jobs = workflow(name)["jobs"]
+        toolchain = jobs["release-toolchain"]
+        assert toolchain["steps"][0]["with"]["ref"] == "${{ github.workflow_sha }}"
+        assert jobs["build"]["needs"] == "release-toolchain"
+        product = jobs["build"]["steps"][0]["with"]["ref"]
+        assert product == "${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}"
+    source = (REPO_ROOT / "packaging/Containerfile").read_text()
+    external_images = re.findall(r"(?:^FROM |COPY --from=)([^\s]+)", source, re.MULTILINE)
+    assert len(external_images) == 11
+    assert all("@sha256:" in image for image in external_images if image not in {"builder", "runtime"})
+    downloads = json.loads((REPO_ROOT / "packaging/python-downloads.json").read_text())
+    assert set(downloads) == {
+        "cpython-3.14.7+freethreaded-linux-x86_64-gnu",
+        "cpython-3.14.7+freethreaded-linux-aarch64-gnu",
+    }
+    assert all(
+        item["variant"] == "freethreaded" and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+        for item in downloads.values()
+    )

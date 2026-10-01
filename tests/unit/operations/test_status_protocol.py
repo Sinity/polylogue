@@ -373,3 +373,24 @@ def test_component_budget_and_identity_metadata_are_validated() -> None:
         StatusComponentSpec(name="bad", scope="test", collector=lambda: None, deadline_s=0)
     with pytest.raises(ValueError, match="ttl_s"):
         StatusComponentSpec(name="bad", scope="test", collector=lambda: None, ttl_s=-1)
+
+
+def test_collector_failure_diagnostic_is_redacted_on_serialization() -> None:
+    """Removing ComponentSnapshot's privacy projection exposes the collector path."""
+    from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
+
+    def fail() -> None:
+        raise OSError("cannot read '/opt/private space/例.json'")
+
+    registry = StatusComponentRegistry(
+        [
+            StatusComponentSpec(name="private_failure", scope="archive", collector=fail, deadline_s=1.0),
+        ]
+    )
+    snapshot = registry.collect()["private_failure"]
+    assert snapshot.state == "degraded"
+    error = snapshot.to_dict()["error"]
+    assert isinstance(error, str)
+    assert "[redacted]" in error
+    assert "private space" not in error
+    assert "例.json" not in error

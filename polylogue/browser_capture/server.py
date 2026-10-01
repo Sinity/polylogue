@@ -358,7 +358,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Content-Type, Authorization, X-Request-ID, X-Polylogue-Client-Protocol",
+            "Content-Type, Authorization, X-Request-ID, X-Polylogue-Client-Protocol, X-Polylogue-Extension-Contract",
         )
         self.send_header("Access-Control-Max-Age", "600")
         # Chrome's Private Network Access policy blocks an already-origin-approved

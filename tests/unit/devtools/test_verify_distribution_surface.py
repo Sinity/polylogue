@@ -38,6 +38,7 @@ def test_verify_wheel_surface_requires_declared_package_resources(
 def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("UV_BUILD_CONSTRAINT", raising=False)
     calls: list[tuple[str, ...]] = []
 
     def fake_run(cmd: tuple[str, ...], *, cwd: Path, env: dict[str, str] | None = None) -> None:
@@ -65,6 +66,10 @@ def test_verify_distribution_surface_builds_sdist_wheel_and_smokes(
 
     rendered = [" ".join(call[:2]) for call in calls]
     assert rendered.count("uv build") == 2
+    for call in calls:
+        if call[:2] == ("uv", "build"):
+            assert "--require-hashes" in call
+            assert call[call.index("--build-constraints") + 1] == str(surface.ROOT / "packaging/hatchling.txt")
     assert rendered.count("uv venv") == 2
     import_probes = [call for call in calls if len(call) >= 4 and call[1:3] == ("-I", "-c")]
     assert len(import_probes) == 2

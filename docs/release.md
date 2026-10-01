@@ -11,7 +11,7 @@ release action dispatches [`container.yml`](../.github/workflows/container.yml),
 builds and publishes the slim and distroless OCI images to
 `ghcr.io/sinity/polylogue`.
 
-Release Please dispatches independent consumer jobs on its exact `tag_name` ref. Rerun failed jobs to retry rejected dispatches without recreating the release; successful producer outputs remain available. Python publication receives the exact tag input, and its successful main-package upload dispatches Homebrew. It uses the existing `GITHUB_TOKEN` with `actions: write`; no separate release credential is required. GitHub permits this explicit `workflow_dispatch` event even though tag pushes made with that token do not start workflows ([GitHub trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The Python, container, extension, and Homebrew consumers build the released tag. Tag-ref dispatch preserves Sigstore certificate identities and normal container `latest` publication; branch-ref recovery retains its version-only policy. FlakeHub and optional Cachix are dispatched on the exact tag ref; FlakeHub uses immutable tag publication for a tag dispatch and retains rolling publication for a branch dispatch. Every GitHub action in the producer and six consumers is pinned to a verified official full commit SHA. Configurable tool defaults use fixed uv (including Sigstore’s bootstrap installer), Buildx and Nix installer releases, content-addressed QEMU/BuildKit images, and the repository’s locked nixpkgs for Cachix. This is a review of the workflow contracts and direct download defaults, not a full audit of upstream dependencies.
+Release Please dispatches independent consumer jobs on its exact `tag_name` ref. Rerun failed jobs to retry rejected dispatches without recreating the release; successful producer outputs remain available. Python publication receives the exact tag input, and its successful main-package upload dispatches Homebrew. Branch recovery dispatches the current workflow branch and forwards the immutable source tag separately. It uses the existing `GITHUB_TOKEN` with `actions: write`; no separate release credential is required. GitHub permits this explicit `workflow_dispatch` event even though tag pushes made with that token do not start workflows ([GitHub trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow)). The Python, container, extension, and Homebrew consumers build the released tag. Tag-ref dispatch preserves Sigstore certificate identities and normal container `latest` publication; branch-ref recovery retains its version-only policy. FlakeHub and optional Cachix are dispatched on the exact tag ref; FlakeHub uses immutable tag publication for a tag dispatch and retains rolling publication for a branch dispatch. Every GitHub action in the producer and six consumers is pinned to a verified official full commit SHA. Configurable tool defaults use fixed uv (including Sigstore’s bootstrap installer), Buildx and Nix installer releases, content-addressed QEMU/BuildKit images, and the repository’s locked nixpkgs for Cachix. Workflow toolchains are checked out at `github.workflow_sha` separately from a recovery source tag. Extension executables use exact package versions and integrity-checked `npm ci`. Python release tools use the hash-locked `packaging/{hatchling,twine,pipx,cyclonedx-bom}.txt` closures; publishers verify staged bytes against build-job hash outputs before signing. Container inputs include digest-pinned bases/frontend, fixed Debian snapshots, the frozen runtime dependency lock, and checksum-verified CPython 3.14.7 free-threaded distributions. This is a review of direct build inputs, not a full audit of upstream dependencies.
 
 This file is the operator-facing cut-time checklist. The manual procedure
 (see "Manual Fallback" below) is retained only for cases where release-please
@@ -253,3 +253,23 @@ The downstream `release.yml` workflow does not care whether the tag was cut
 by release-please or by hand — it triggers on any annotated `vX.Y.Z` tag.
 
 [release-please]: https://github.com/googleapis/release-please
+
+## Updating release input locks
+
+Update each exact root version in `packaging/<tool>.in`, then run
+`uv pip compile --universal --python-version 3.14 --generate-hashes packaging/<tool>.in --output-file packaging/<tool>.txt`.
+The metadata checker, pipx smoke, SBOM generator, and isolated wheel builders
+consume these hashes. The SBOM tool runs separately from the runtime environment
+so its own dependencies are excluded.
+
+Extension tooling is maintained in `browser-extension/package.json` and its
+lockfile. Use `npm install --save-dev --save-exact <tool>@<version>` and verify
+with `npm ci`; CI executes the locked local npm scripts.
+
+`packaging/python-downloads.json` retains only the amd64 and arm64 CPython
+3.14.7 free-threaded entries from uv 0.12.21, commit
+`7af826859382eb191e47467540850caa8f493e5b`. Each entry contains the exact
+20260929 standalone distribution URL and SHA-256. Container updates must keep
+the interpreter, installed environment, and shared-library compatibility together
+and repeat both image entrypoint smokes. Digest updates must resolve official
+registry multi-platform manifests for both declared architectures.
