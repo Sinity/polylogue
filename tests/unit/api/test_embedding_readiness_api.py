@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.core.errors import VectorRuntimeUnavailableError
 
 
 @pytest.mark.asyncio
@@ -66,7 +67,7 @@ async def test_search_similar_sessions_fails_closed_without_vector_provider(tmp_
     try:
         with (
             patch("polylogue.storage.search_providers.create_vector_provider", return_value=None),
-            pytest.raises(ValueError, match="No vector provider configured"),
+            pytest.raises(VectorRuntimeUnavailableError),
         ):
             await archive.search_similar_sessions("missing-session")
     finally:

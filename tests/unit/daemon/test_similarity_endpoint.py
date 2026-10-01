@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_messag
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import CheckpointEscalation
+from tests.infra.vector_archive import record_owned_vector_closes
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
@@ -588,6 +589,7 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
     from polylogue.config import PolylogueConfig
     from polylogue.core.sqlite_locking import is_transient_sqlite_lock
     from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection as original_checkpoint
 
     config = PolylogueConfig(_data={"embedding_enabled": True})
     monkeypatch.setattr("polylogue.daemon.similarity.load_polylogue_config", lambda: config)
@@ -607,11 +609,9 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
         target.execute("UPDATE sessions SET title = 'New generation'")
         target.execute("UPDATE blocks SET text = 'Changed prose without a matching retained vector'")
     original_count = SqliteVecProvider.count_session_embeddings
-    original_release = SqliteVecProvider._release_connection
     published: list[Path] = []
     busy_checkpoints: list[tuple[int, int, int]] = []
     blocked: list[BaseException] = []
-    original_checkpoint = generation_module.checkpoint_connection
 
     def checkpoint(
         connection: sqlite3.Connection, mode: str, *, boundary: CheckpointEscalation
@@ -622,7 +622,7 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
         return result
 
     monkeypatch.setattr(generation_module, "checkpoint_connection", checkpoint)
-    closed: list[bool] = []
+    closed = record_owned_vector_closes(monkeypatch)
 
     def count_and_publish(provider: SqliteVecProvider, seed: str) -> int:
         count = original_count(provider, seed)
@@ -633,20 +633,10 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
                 raise
             blocked.append(exc)
         else:
-            published.append(resolve_active_index_path(root))
+            published.append(resolve_active_index_path(root).resolve(strict=True))
         return count
 
-    def release(provider: SqliteVecProvider, connection: sqlite3.Connection) -> None:
-        owned = connection is not provider._snapshot_connection
-        original_release(provider, connection)
-        if owned:
-            # Executed on the owning worker, so thread affinity cannot mask a leak.
-            with pytest.raises(sqlite3.ProgrammingError):
-                connection.execute("SELECT 1")
-            closed.append(True)
-
     monkeypatch.setattr(SqliteVecProvider, "count_session_embeddings", count_and_publish)
-    monkeypatch.setattr(SqliteVecProvider, "_release_connection", release)
     provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
     monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
     handler = _make_handler("GET", f"/api/sessions/{session_id}/similar?limit=3")
@@ -666,20 +656,25 @@ def test_similarity_publication_keeps_count_ranking_and_hydration_on_selected_ge
     assert closed == [True]
     if blocked:
         store.promote(second)
-        published.append(resolve_active_index_path(root))
+        published.append(resolve_active_index_path(root).resolve(strict=True))
     assert published == [Path(second.index_path)]
     provider_call.assert_not_called()
 
 
 @pytest.mark.contract
-@pytest.mark.parametrize("failure", ["corrupt", "missing", "projection", "contention", "stale"])
+@pytest.mark.parametrize("failure", ["corrupt", "missing", "projection", "contention", "stale", "runtime"])
 def test_unreadable_retained_vectors_never_certify_absence(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     """Replacing unavailable failures with not_embedded turns this red."""
     _enable_embeddings(monkeypatch)
     session_id, embeddings_db, _ = _seed_ready_similarity_archive()
-    if failure == "corrupt":
+    closed = record_owned_vector_closes(monkeypatch)
+    provider_call = MagicMock(side_effect=AssertionError("retained reads must not acquire vectors"))
+    monkeypatch.setattr(SqliteVecProvider, "_get_embeddings", provider_call)
+    if failure == "runtime":
+        monkeypatch.setattr("polylogue.storage.search_providers._sqlite_vec_available", lambda: False)
+    elif failure == "corrupt":
         embeddings_db.write_bytes(b"synthetic unreadable database")
     elif failure == "missing":
         embeddings_db.unlink()
@@ -715,9 +710,12 @@ def test_unreadable_retained_vectors_never_certify_absence(
             "projection": "embedding_read_failed",
             "stale": "embedding_read_failed",
             "contention": "sqlite_contention",
+            "runtime": "sqlite_vec_not_loaded",
         }[failure]
     )
     assert payload["results"] == []
+    assert closed == ([True] if failure in {"contention", "stale"} else [])
+    provider_call.assert_not_called()
 
 
 @pytest.mark.contract

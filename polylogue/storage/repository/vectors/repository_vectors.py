@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.core.enums import Origin
+from polylogue.core.errors import VectorRuntimeUnavailableError
 from polylogue.core.protocols import VectorProvider
 from polylogue.core.sources import source_name_to_origin
 from polylogue.logging import get_logger
@@ -115,7 +116,7 @@ class RepositoryVectorMixin:
                 require_credentials=False,
             )
         if vector_provider is None:
-            raise ValueError("No vector provider configured")
+            raise VectorRuntimeUnavailableError("No local vector runtime is available")
 
         return await asyncio.to_thread(
             cast(_SessionSimilarityReader, vector_provider).read_session_similarity,

@@ -5,8 +5,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import Origin
 from polylogue.storage.embeddings.identity import vector_derivation_hash
+from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.embedding_write import upsert_message_embedding
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -54,3 +57,20 @@ def seed_vector_archive(
             )
             identities[(native_session, native_message)] = (session_id, message_id)
     return identities
+
+
+def record_owned_vector_closes(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Check owned handles after release on their worker, avoiding a false thread-affinity refusal."""
+    original_release = SqliteVecProvider._release_connection
+    closed: list[bool] = []
+
+    def release(provider: SqliteVecProvider, connection: sqlite3.Connection) -> None:
+        owned = connection is not provider._snapshot_connection
+        original_release(provider, connection)
+        if owned:
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+            closed.append(True)
+
+    monkeypatch.setattr(SqliteVecProvider, "_release_connection", release)
+    return closed

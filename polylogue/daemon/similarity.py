@@ -146,7 +146,7 @@ def _build_archive_similar_payload(
                     archive_root=archive_root_path,
                     render_root=archive_root_path / "render",
                     sources=[],
-                    db_path=Path(index_db),
+                    db_path=Path(index_db).resolve(strict=True),
                     embedding_model=embedding_model,
                     embedding_dimension=embedding_dimension,
                 )
