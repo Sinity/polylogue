@@ -11,7 +11,7 @@ if "run" not in sys.argv:
     raise SystemExit(0)
 
 
-def record(event):
+def record(event: str) -> None:
     with open(os.environ["SMOKE_RECEIPT"], "a") as output:
         print(json.dumps({"event": event}), file=output)
 
@@ -20,12 +20,12 @@ if os.environ.get("SMOKE_FAILURE") == "startup":
     raise SystemExit(7)
 
 
-def stop(_signum, _frame):
+def stop(_signum: int, _frame: object) -> None:
     raise SystemExit(0)
 
 
 class ReadyHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def do_GET(self) -> None:
         record("readiness_ready")
         body = b'{"status":"ready"}'
         self.send_response(200)
@@ -33,7 +33,7 @@ class ReadyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def log_message(self, *_args):
+    def log_message(self, _format: str, *_args: object) -> None:
         pass
 
 

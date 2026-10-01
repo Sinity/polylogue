@@ -106,6 +106,8 @@ def smoke_installed(*, python: Path, bin_dir: Path, work_dir: Path, suffix: str 
                     if ready.get("status") != "ready":
                         raise RuntimeError(f"readiness endpoint returned an invalid success: {ready}")
                     break
+            print("installed smoke: python -m polylogue --version", flush=True)
+            subprocess.run([str(python), "-I", "-m", "polylogue", "--version"], cwd=work_dir, env=env, check=True)
             for script, arguments in (
                 ("polylogue", ["--version"]),
                 ("polylogue", ["--help"]),

@@ -57,6 +57,7 @@ def test_installed_smoke_waits_for_daemon_and_stops_it_on_query_failure(tmp_path
         assert next(i for i, row in enumerate(rows) if row["event"] == "readiness_ready") < next(
             i for i, row in enumerate(rows) if row["event"] == "cli"
         )
+        assert [row["argv"] for row in rows if row["event"] == "module"] == [["-I", "-m", "polylogue", "--version"]]
         commands = [row["argv"] for row in rows if row["event"] == "cli"]
         assert ["--plain", "analyze", "--count"] in commands
         if failure == "none":
