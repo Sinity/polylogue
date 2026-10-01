@@ -368,3 +368,24 @@ def test_catchup_process_halt_and_failed_cumulative_acquisition_conceal_diagnost
     for error in (source["message"], payload["cumulative_unavailable_reason"]):
         assert "[redacted]" in error
         assert all(fragment not in error for fragment in ("/opt", "C:", "Users", "private space", "例.json"))
+
+
+@pytest.mark.parametrize("fault", ["empty", "missing", "missing-events", "corrupt"])
+def test_catchup_distinguishes_stage_event_authority_from_empty(tmp_path: Path, fault: str) -> None:
+    """Swallowing a failed event read as measured-empty makes this red."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    ops = tmp_path / "ops.db"
+    if fault != "missing":
+        initialize_archive_database(ops, ArchiveTier.OPS)
+        if fault == "corrupt":
+            ops.write_text("not sqlite")
+        elif fault == "missing-events":
+            with sqlite3.connect(ops) as conn:
+                conn.execute("DROP TABLE daemon_stage_events")
+    status = catchup_status_info(tmp_path / "index.db", latest_attempt=None, convergence={}, ops_db=ops)
+    assert status.stage_events_available is (fault == "empty")
+    assert (status.stage_events_unavailable_reason is None) is (fault == "empty")
+    assert status.recent_events == []
+    if fault != "empty":
+        assert status.mode == "degraded"

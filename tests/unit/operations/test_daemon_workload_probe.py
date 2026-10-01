@@ -1023,8 +1023,8 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert payload["boundary_table_count_mode"] == "exact"
     assert payload["archive_tiers"]["table_count_mode"] == "exact"
     locations = payload["observability_locations"]
-    assert locations["logical_tables"]["live_ingest_attempt"]["tier"] == "ops"
-    assert locations["logical_tables"]["live_ingest_attempt"]["physical_table"] == "ingest_attempts"
+    assert locations["logical_tables"]["ingest_attempts"]["tier"] == "ops"
+    assert locations["logical_tables"]["ingest_attempts"]["physical_table"] == "ingest_attempts"
     assert locations["logical_tables"]["raw_sessions"]["tier"] == "source"
     assert locations["logical_tables"]["sessions"]["tier"] == "index"
 
@@ -1034,7 +1034,7 @@ def test_probe_payload_carries_stable_top_level_shape(tmp_path: Path) -> None:
     assert counts["sessions"] == 1
     assert counts["messages_fts_docsize"] >= 0
     assert "messages_fts_data" not in counts
-    assert counts["live_ingest_attempt"] == -1
+    assert "live_ingest_attempt" not in counts
     assert counts["ingest_attempts"] == 1
 
     index_counts = payload["archive_tiers"]["tiers"]["index"]["table_counts"]
@@ -1147,12 +1147,57 @@ def test_probe_reports_unavailable_authoritative_convergence_ledger(tmp_path: Pa
     payload = probe(db)
 
     debt = payload["convergence_debt"]
+    assert payload["ok"] is False
+    assert payload["recent_attempts"] is None
+    assert payload["attempt_counts"] is None
+    assert payload["storage_route_counts"] is None
+    assert payload["cursor_lag_baselines"] is None
+    assert payload["daemon_resource_signal"] is None
     assert debt["available"] is False
     assert str(debt["error"]).startswith("convergence debt status unavailable:")
-    assert debt["failed_count"] == 0
-    assert debt["deferred_count"] == 0
-    assert debt["unresolved_count"] == 0
+    assert debt["failed_count"] is None
+    assert debt["deferred_count"] is None
+    assert debt["unresolved_count"] is None
     assert debt["by_stage"] == []
+
+
+def test_probe_ignores_retired_index_attempts_when_ops_is_empty(tmp_path: Path) -> None:
+    """An empty canonical tier stays empty even when retired telemetry has rows.
+
+    Anti-vacuity: restoring the index fallback populates recent attempts and
+    attempt counts from the deliberately conflicting retired row.
+    """
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    with sqlite3.connect(db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE live_ingest_attempt (
+                attempt_id TEXT, started_at TEXT, updated_at TEXT, completed_at TEXT,
+                status TEXT, phase TEXT, queued_file_count INTEGER,
+                needed_file_count INTEGER, succeeded_file_count INTEGER,
+                failed_file_count INTEGER, input_bytes INTEGER,
+                source_payload_read_bytes INTEGER, cursor_fingerprint_read_bytes INTEGER,
+                parse_time_s REAL, convergence_time_s REAL,
+                stale_cursor_write_count INTEGER, source_paths_json TEXT,
+                storage_route TEXT, rss_current_mb REAL
+            );
+            INSERT INTO live_ingest_attempt VALUES (
+                'retired', '2026-01-01', '2026-01-01', '2026-01-01',
+                'completed', 'done', 1, 1, 1, 0, 10, 10, 0, 1.0, 1.0,
+                0, '[]', 'archive_full', 999.0
+            );
+            """
+        )
+
+    payload = probe(db)
+
+    assert payload["ok"] is True
+    assert payload["recent_attempts"] == []
+    assert payload["attempt_counts"]["total"] == 0
+    assert sum(payload["storage_route_counts"].values()) == 0
+    assert payload["daemon_resource_signal"] == {"available": False}
 
 
 def test_probe_reads_ops_cursor_lag_baselines(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 """Per-source-family convergence-debt alert evaluation (#1226).
 
 The daemon records post-ingest convergence failures in
-``live_convergence_debt``. A simple ``failed_count > 0`` rule fires
+``convergence_debt``. A simple ``failed_count > 0`` rule fires
 indiscriminately: a stuck claude-code-session debt is more urgent than a
 stuck chatgpt one, and a low background count of debt across a long-running
 archive is normal noise. This module turns the raw debt summary into
