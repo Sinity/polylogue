@@ -363,6 +363,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "raw_deferred_failures": None,
         "raw_terminal_rejections": None,
         "raw_unexplained_failures": None,
+        "raw_missing_source_coordinates": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": frontier_reason,

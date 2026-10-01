@@ -209,10 +209,12 @@ Restore expectations:
   SHA-256 and size (a ZIP member only after the same ZIP admission
   acquisition applies); `recoverability_proofs` records those recovered
   hashes. Which source windows can hold a raw's bytes (the file prefix, a
-  recorded append window, a pre-offset append after its preceding full
-  observation, or the ZIP member) is decided in one place,
-  `storage/source_blob_restoration.retained_blob_source_candidates`, which
-  raw derivation also reads when it restores an absent blob before
+  recorded append window, a window-less append after the full observation
+  received before it in `raw_payload` receipt order, or the ZIP member), and
+  where the recorded path lies under the archive root in force (a path under
+  the archive's `inbox`, `browser-capture` or `hooks` moves with the root),
+  are decided in one place, `storage/source_blob_restoration.retained_blob_sources`,
+  which raw derivation also reads when it restores an absent blob before
   preparation. Verification and the migration backup gate derive the required
   blob set from the package's own `source.db`, `index.db`, reservations and
   declared-absent sidecar and never read an acquisition file, so a package

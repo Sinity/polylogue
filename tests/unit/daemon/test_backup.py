@@ -31,6 +31,7 @@ from polylogue.storage.backup_blob_closure import (
 from polylogue.storage.blob_integrity import BlobLivenessProjection
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.source_blob_restoration import resolved_source_path
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
@@ -202,11 +203,13 @@ def test_backup_uses_a_valid_external_active_index_target(workspace_env: dict[st
     """
     root = workspace_env["archive_root"]
     conventional = root / "index.db"
+    initialize_archive_database(conventional, ArchiveTier.INDEX)
     with sqlite3.connect(conventional) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('stale')")
     external = tmp_path / "external" / "index.db"
     external.parent.mkdir()
+    initialize_archive_database(external, ArchiveTier.INDEX)
     with sqlite3.connect(external) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker VALUES ('active')")
@@ -246,6 +249,7 @@ def test_backup_maps_a_retired_nested_active_index_without_recursive_search(
     nested = root / "nested"
     generation = nested / ".index-generations" / "gen-retained" / "index.db"
     generation.parent.mkdir(parents=True)
+    initialize_archive_database(generation, ArchiveTier.INDEX)
     with sqlite3.connect(generation) as connection:
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
     retired_root = root.parent / "retired-archive"
@@ -824,7 +828,7 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
 def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
     """Anti-vacuity: treating every colon as a ZIP separator mangles this path."""
     source = str(tmp_path / "session:export.json")
-    assert backup_mod._resolved_source_path(source, tmp_path) == source
+    assert resolved_source_path(source, tmp_path, container_member=False) == source
 
 
 def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
@@ -992,7 +996,7 @@ def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     """A grown file cannot replace a mismatching historical prefix proof.
 
     The only candidate window of a full observation is its recorded-size
-    prefix (``retained_blob_source_candidates``); a prefix that hashes
+    prefix (``retained_blob_sources``); a prefix that hashes
     differently is a typed ``hash_mismatch``, and no whole-file read proves
     the blob instead.
     """
@@ -1059,8 +1063,8 @@ def test_backup_types_legacy_codex_append_without_window(
     )
 
     assert proofs == []
-    assert unproven[0]["kind"] == "legacy_append_window_missing"
-    assert unproven[0]["reason"] == "legacy_append_window_missing"
+    assert unproven[0]["kind"] == "legacy_append_coordinates_unproven"
+    assert unproven[0]["reason"] == "legacy_append_coordinates_unproven"
 
 
 @pytest.mark.parametrize("origin", ["codex-session", "claude-code-session"])
@@ -1095,6 +1099,18 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
             ) VALUES (?, ?, ?, ?, ?, -1, ?, ?, 2, 'passed', 'unknown')""",
             (f"append-{origin}", origin, capture_mode, identity, str(source_path), append_hash, len(expected)),
         )
+        # Admission records each observation's ``raw_payload`` receipt; the
+        # receipt order, not ``acquired_at_ms``, places the full snapshot
+        # before the append.
+        for raw_id, blob_hash, size in (
+            (f"prior-{origin}", prior_hash, len(prefix)),
+            (f"append-{origin}", append_hash, len(expected)),
+        ):
+            conn.execute(
+                """INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+                VALUES (?, ?, 'raw_payload', ?, ?, 1)""",
+                (blob_hash, raw_id, str(source_path), size),
+            )
 
     unproven: list[dict[str, str]] = []
     proofs = backup_mod._source_recoverability_proofs(

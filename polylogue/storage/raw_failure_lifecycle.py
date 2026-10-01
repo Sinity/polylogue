@@ -1,9 +1,12 @@
-"""Read-only lifecycle projection for retained raw failures.
+"""Read-only lifecycle projection for retained raw failures and refusals.
 
-``raw_sessions`` is the ground-truth failure universe.  A parser diagnostic is
+``raw_sessions`` is the ground-truth failure universe. A parser diagnostic is
 not a lifecycle decision: only a matching ``raw_artifacts`` observation can
-explain a failed raw as deferred or terminal.  This module keeps that rule in
-one substrate helper so status, preflight, and maintenance gates cannot drift.
+explain a failed raw as deferred or terminal. Missing legacy append coordinates
+are counted separately as a named degraded condition because they leave the
+session denominator open without being a parse failure. This module keeps
+those projections in one substrate helper so status, preflight, and maintenance
+gates cannot drift.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ class RawFailureLifecycleSnapshot:
     deferred: int = 0
     terminal: int = 0
     unexplained: int = 0
+    missing_source_coordinates: int = 0
     by_origin: tuple[tuple[str, int], ...] = ()
     by_artifact_kind: tuple[tuple[str, int], ...] = ()
     samples: tuple[dict[str, str | None], ...] = ()
@@ -54,7 +58,7 @@ class RawFailureLifecycleSnapshot:
             return "unavailable"
         if self.unexplained > 0:
             return "blocked"
-        if self.parse_failures > 0 or self.validation_failures > 0:
+        if self.parse_failures > 0 or self.validation_failures > 0 or self.missing_source_coordinates > 0:
             return "degraded"
         return "healthy"
 
@@ -71,6 +75,7 @@ class RawFailureLifecycleSnapshot:
             "deferred": self.deferred,
             "terminal": self.terminal,
             "unexplained": self.unexplained,
+            "missing_source_coordinates": self.missing_source_coordinates,
             "by_origin": dict(self.by_origin),
             "by_artifact_kind": dict(self.by_artifact_kind),
             "samples": [dict(sample) for sample in self.samples],
@@ -109,7 +114,7 @@ def read_raw_failure_lifecycle(
     sample_limit: int = 10,
     _connection: sqlite3.Connection | None = None,
 ) -> RawFailureLifecycleSnapshot:
-    """Read and classify every failed raw without opening a write connection.
+    """Read and classify failures plus missing-coordinate refusals read-only.
 
     ``_connection`` is the supplied-reader seam used by the operation status
     boundary.  It is deliberately private to retain the ordinary path API;
@@ -170,6 +175,18 @@ def read_raw_failure_lifecycle(
         has_artifacts = (
             conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_artifacts'").fetchone()
             is not None
+        )
+        missing_source_coordinates = (
+            int(
+                conn.execute(
+                    """SELECT COUNT(DISTINCT raw_id) FROM raw_artifacts
+                       WHERE artifact_kind = ? AND support_status = ?""",
+                    ("terminal_missing_source_coordinates", "unknown"),
+                ).fetchone()[0]
+                or 0
+            )
+            if has_artifacts
+            else 0
         )
         sample_limit = max(0, sample_limit)
         failed_cte = """
@@ -339,6 +356,7 @@ def read_raw_failure_lifecycle(
         deferred=counts["deferred"],
         terminal=counts["terminal"],
         unexplained=counts["unexplained"],
+        missing_source_coordinates=missing_source_coordinates,
         by_origin=tuple(sorted(by_origin.items())),
         by_artifact_kind=tuple(sorted(by_artifact_kind.items())),
         samples=tuple(samples),

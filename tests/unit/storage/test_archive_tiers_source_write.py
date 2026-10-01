@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationStatus
+from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -16,6 +18,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     ArchiveSourceBlobRef,
     CarrierHookEvent,
+    bind_source_raw_revision,
     deterministic_blob_hash,
     deterministic_raw_session_id,
     list_hook_events,
@@ -231,6 +234,123 @@ def test_hook_writer_refuses_invalid_storage_carrier_role_before_persistence(tmp
     assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM hook_event_carriers").fetchone()[0] == 0
     conn.close()
+
+
+def test_exact_append_binding_retires_coordinate_refusal_and_non_session_census(tmp_path: Path) -> None:
+    """A proven append bind replaces stale missing-coordinate authority atomically."""
+    conn = _connect(tmp_path / "source.db")
+    payload = b'{"type":"event_msg"}\n'
+    source_path = str(tmp_path / "append.jsonl")
+    raw_id = write_source_raw_session(
+        conn,
+        origin=Origin.CODEX_SESSION,
+        capture_mode=Provider.CODEX,
+        source_path=source_path,
+        source_index=-1,
+        payload=payload,
+        acquired_at_ms=1,
+        parsed_at_ms=2,
+    )
+    kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+    upsert_raw_artifact(
+        conn,
+        raw_id,
+        ArchiveSourceArtifact(
+            artifact_id="missing-coordinates",
+            origin=Origin.CODEX_SESSION,
+            source_path=source_path,
+            source_index=-1,
+            artifact_kind=kind.value,
+            support_status=kind.support_status,
+            classification_reason='{"outcome_code":"terminal_missing_source_coordinates"}',
+            parse_as_session=False,
+            schema_eligible=False,
+            first_observed_at_ms=1,
+            last_observed_at_ms=1,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO raw_membership_census
+           (raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority)
+           VALUES (?, 'old-parser', 'non_session', 0, 1, '', NULL)""",
+        (raw_id,),
+    )
+    bind_source_raw_revision(
+        conn,
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key="codex-session:append",
+            kind=RawRevisionKind.APPEND,
+            source_revision="a" * 64,
+            acquisition_generation=1,
+            predecessor_source_revision="b" * 64,
+            predecessor_raw_id="previous-append",
+            baseline_raw_id="baseline-full",
+            append_start_offset=0,
+            append_end_offset=len(payload),
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        ),
+    )
+    assert tuple(
+        conn.execute(
+            "SELECT append_start_offset, append_end_offset, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+    ) == (0, len(payload), "byte_proven")
+    assert tuple(
+        conn.execute(
+            "SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ?",
+            (raw_id, kind.value),
+        ).fetchone()
+    ) == (0,)
+    assert tuple(conn.execute("SELECT COUNT(*) FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()) == (
+        0,
+    )
+    conn.close()
+
+
+def test_exact_append_binding_preserves_unrelated_non_session_census(tmp_path: Path) -> None:
+    """An append bind cannot erase a census unless it retires its refusal carrier."""
+    conn = _connect(tmp_path / "source.db")
+    try:
+        payload = b'{"type":"event_msg"}\n'
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            capture_mode=Provider.CODEX,
+            source_path=str(tmp_path / "append.jsonl"),
+            source_index=-1,
+            payload=payload,
+            acquired_at_ms=1,
+            parsed_at_ms=2,
+        )
+        conn.execute(
+            """INSERT INTO raw_membership_census
+               (raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority)
+               VALUES (?, 'old-parser', 'non_session', 0, 1, '', NULL)""",
+            (raw_id,),
+        )
+        bind_source_raw_revision(
+            conn,
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key="codex-session:append",
+                kind=RawRevisionKind.APPEND,
+                source_revision="a" * 64,
+                acquisition_generation=1,
+                predecessor_source_revision="b" * 64,
+                predecessor_raw_id="previous-append",
+                baseline_raw_id="baseline-full",
+                append_start_offset=0,
+                append_end_offset=len(payload),
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        assert tuple(
+            conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()
+        ) == ("non_session",)
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize(

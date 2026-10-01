@@ -597,6 +597,7 @@ class RawFailureSample(BaseModel):
         "terminal_unknown_json_decode",
         "terminal_unknown_export_no_session",
         "terminal_unsupported_shape",
+        "terminal_missing_source_coordinates",
     ]
     provider_hint: str | None = None
     relative_path_spans: tuple[tuple[StrictInt, StrictInt], ...] = Field(default=(), exclude=True)
@@ -666,6 +667,7 @@ class DaemonStatus(BaseModel):
     raw_deferred_failures: int | None = None
     raw_terminal_rejections: int | None = None
     raw_unexplained_failures: int | None = None
+    raw_missing_source_coordinates: int | None = None
     raw_failure_lifecycle_available: bool = False
     raw_failure_lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"] = "unavailable"
     raw_failure_lifecycle_reason: str | None = None
@@ -980,6 +982,7 @@ def _unavailable_raw_failure_info(*, reason: str) -> dict[str, object]:
         "deferred_failures": None,
         "terminal_rejections": None,
         "unexplained_failures": None,
+        "missing_source_coordinates": None,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": redact_status_error(reason),
@@ -1109,6 +1112,7 @@ def _archive_raw_failure_info(archive_db: Path) -> dict[str, object]:
             "deferred_failures": lifecycle_snapshot.deferred,
             "terminal_rejections": lifecycle_snapshot.terminal,
             "unexplained_failures": lifecycle_snapshot.unexplained,
+            "missing_source_coordinates": lifecycle_snapshot.missing_source_coordinates,
             "raw_failure_lifecycle_available": True,
             "raw_failure_lifecycle_state": lifecycle_snapshot.state,
             "samples": combined,
@@ -3240,6 +3244,7 @@ def build_daemon_status(
         raw_deferred_failures=_optional_int(raw_failures.get("deferred_failures")),
         raw_terminal_rejections=_optional_int(raw_failures.get("terminal_rejections")),
         raw_unexplained_failures=_optional_int(raw_failures.get("unexplained_failures")),
+        raw_missing_source_coordinates=_optional_int(raw_failures.get("missing_source_coordinates")),
         raw_failure_lifecycle_available=raw_lifecycle_available,
         raw_failure_lifecycle_state=cast(Literal["healthy", "degraded", "blocked", "unavailable"], raw_lifecycle_state),
         raw_failure_lifecycle_reason=str(raw_lifecycle_reason) if raw_lifecycle_reason is not None else None,
@@ -3614,6 +3619,7 @@ def daemon_status_payload(
             "raw_deferred_failures": status.raw_deferred_failures,
             "raw_terminal_rejections": status.raw_terminal_rejections,
             "raw_unexplained_failures": status.raw_unexplained_failures,
+            "raw_missing_source_coordinates": status.raw_missing_source_coordinates,
             "raw_failure_lifecycle_available": status.raw_failure_lifecycle_available,
             "raw_failure_lifecycle_state": status.raw_failure_lifecycle_state,
             "raw_failure_lifecycle_reason": status.raw_failure_lifecycle_reason,
@@ -4142,6 +4148,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_deferred = _safe_int(payload.get("raw_deferred_failures"))
     raw_terminal = _safe_int(payload.get("raw_terminal_rejections"))
     raw_unexplained = _safe_int(payload.get("raw_unexplained_failures"))
+    raw_missing_coordinates = _safe_int(payload.get("raw_missing_source_coordinates"))
     raw_lifecycle_available = payload.get("raw_failure_lifecycle_available") is True
     lifecycle_state = str(payload.get("raw_failure_lifecycle_state") or "unavailable")
     raw_lifecycle_unavailable = not raw_lifecycle_available or lifecycle_state == "unavailable"
@@ -4149,6 +4156,8 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         lifecycle_reason = str(payload.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
         lines.append(f"Raw failures: {lifecycle_state} ({lifecycle_reason})")
     total_raw = raw_parse + raw_val
+    if raw_missing_coordinates > 0:
+        lines.append(f"Retained session bytes missing append coordinates: {raw_missing_coordinates} (degraded)")
     if not raw_lifecycle_unavailable and total_raw > 0:
         breakdown = f"{raw_parse} parse + {raw_val} validation"
         lines.append(f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {breakdown}")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import json
+import os
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
@@ -438,7 +439,6 @@ def test_absent_retained_blob_is_restored_from_its_exact_direct_source(tmp_path:
         RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
     assert not blob_path.exists()
     assert not any(store.staging_root.iterdir())
-
     source.write_bytes(payload)
     restoring = _run(tmp_path)
     assert restoring.failed == 0
@@ -449,6 +449,32 @@ def test_absent_retained_blob_is_restored_from_its_exact_direct_source(tmp_path:
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)
     assert not any(store.staging_root.iterdir())
+
+
+def test_present_retained_blob_does_not_resolve_an_inaccessible_source_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present canonical blob makes its now-inaccessible acquisition path irrelevant."""
+    bootstrap_archive_root(tmp_path)
+    source = tmp_path / "external" / "private" / "bundle.json"
+    source.parent.mkdir(parents=True)
+    raw_id = _admit(tmp_path, ("still-present",), path=str(source))
+
+    original_stat = Path.stat
+
+    def denied_source_stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == source:
+            raise PermissionError("synthetic inaccessible source")
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", denied_source_stat)
+    replacement = RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
+    try:
+        assert replacement.prepared_inputs is not None
+        assert RawObservationDerivation(tmp_path).publish(raw_observation_frame(tmp_path), replacement)
+    finally:
+        if replacement.scratch_owner is not None:
+            replacement.scratch_owner.cleanup()
 
 
 def test_missing_prepared_raw_retries_without_quarantining_source(tmp_path: Path) -> None:
@@ -766,19 +792,31 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
 
 
 def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path) -> None:
+    """An undecodable sibling settles as terminal corrupt input and the healthy one materializes.
+
+    The poison raw is a known-provider JSON document that does not decode:
+    its outcome is terminal (polylogue-6r7wv), not a failure retried on every
+    pass, and it never blocks the healthy raw.
+    """
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("healthy",), path="healthy.json")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_raw_payload(
+        poison_raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"not json",
             source_path="poison.json",
             acquired_at_ms=1,
         )
     report = _run(tmp_path)
-    assert report.done == 1 and report.failed == 1
+    assert report.failed == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        kinds = {
+            str(row[0])
+            for row in conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (poison_raw_id,))
+        }
+    assert "terminal_corrupt_input" in kinds
 
 
 def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:

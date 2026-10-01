@@ -19,15 +19,19 @@ import io
 import os
 import sqlite3
 import stat
-from collections.abc import Callable, Iterable, Mapping
+import zipfile
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import relocated_source_path, split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
+
+LEGACY_APPEND_COORDINATES_UNPROVEN = "legacy_append_coordinates_unproven"
 
 
 class _ExactWindowReader(io.RawIOBase):
@@ -188,24 +192,223 @@ def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
     )
 
 
-def retained_blob_source_candidates(
-    row: Mapping[str, object],
+def _live_zip_split(source_path: str, root: Path) -> tuple[str, str] | None:
+    """Split ``<container>:<member>`` at a prefix that is a real ZIP here.
+
+    The container path may itself hold colons (a Windows drive, a legal POSIX
+    filename), so every colon is tried, shortest container first.
+    """
+    start = 0
+    while (separator_at := source_path.find(":", start)) != -1:
+        start = separator_at + 1
+        if separator_at == 0 or separator_at == len(source_path) - 1:
+            continue
+        candidate = relocated_source_path(Path(source_path[:separator_at]), root)
+        if candidate.is_file() and zipfile.is_zipfile(candidate):
+            return source_path[:separator_at], source_path[start:]
+    return None
+
+
+def resolved_source_path(source_path: str, root: Path, *, container_member: bool) -> str:
+    """Resolve a recorded acquisition path against the archive root in force.
+
+    A container member keeps its ``:<member>`` suffix and re-anchors its
+    container; a direct path is re-anchored whole, so a colon in a loose
+    file's name stays file-name data.
+    """
+    split = (_live_zip_split(source_path, root) or split_zip_member_text(source_path)) if container_member else None
+    outer, member = split if split is not None else (source_path, None)
+    path = relocated_source_path(Path(outer), root)
+    return f"{path}:{member}" if member is not None else str(path)
+
+
+def is_container_member_row(row: Mapping[str, object], root: Path) -> bool:
+    """Whether a row names a ZIP member: a recorded coordinate, or a legacy path whose prefix is a live ZIP."""
+    if is_recorded_container_member(row):
+        return True
+    source_path = row.get("source_path")
+    return isinstance(source_path, str) and _live_zip_split(source_path, root) is not None
+
+
+def _legacy_append_starts(
+    conn: sqlite3.Connection,
+    rows: tuple[Mapping[str, object], ...],
     *,
-    container_member: bool,
-    prior_full_observations: Iterable[tuple[int, int]] = (),
-) -> tuple[RetainedBlobSource, ...]:
-    """Every recorded source window that can prove one raw's retained bytes.
+    resolved_path: str,
+) -> dict[str, tuple[int, ...]]:
+    """Return hash-verifiable window hypotheses for requested legacy appends.
+
+    A raw row's first-retention order is immutable, but a content-addressed
+    raw can later receive a new ``blob_refs.rowid`` after another observation.
+    Neither order alone fully recovers repeated window-less append history:
+    the first order can miss a re-observed append after a later full anchor,
+    while the latest receipt order can move an anchor past its original
+    append. Produce candidates from both orders and let the retained hash and
+    size prove the bytes. Neither chronology is itself restoration authority.
+    Each ordered pass retains starts only for requested raw ids, keeping the
+    work linear without caching the whole source history.
+    """
+    requested: dict[str, Mapping[str, object]] = {}
+    path_values = {resolved_path}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        source_path = row.get("source_path")
+        if isinstance(raw_id, str) and isinstance(source_path, str):
+            requested[raw_id] = row
+            path_values.add(source_path)
+    if not requested:
+        return {}
+    starts: dict[str, list[int]] = {raw_id: [] for raw_id in requested}
+    for order in ("first_retained", "latest_receipt"):
+        placeholders = ", ".join("?" for _ in path_values)
+        cursor = conn.execute(
+            f"""
+            WITH raw_cohort AS MATERIALIZED (
+                SELECT rowid AS first_retained_order, raw_id, blob_size, source_index, revision_kind,
+                       append_start_offset, append_end_offset, capture_mode,
+                       origin, source_path
+                FROM raw_sessions
+                WHERE source_path IN ({placeholders})
+            ), receipt_order AS (
+                SELECT ref_id, MAX(rowid) AS latest_receipt
+                FROM blob_refs
+                WHERE ref_type = 'raw_payload'
+                  AND ref_id IN (SELECT raw_id FROM raw_cohort)
+                GROUP BY ref_id
+            )
+            SELECT raw_cohort.first_retained_order, raw_cohort.raw_id,
+                   raw_cohort.blob_size, raw_cohort.source_index,
+                   raw_cohort.revision_kind, raw_cohort.append_start_offset,
+                   raw_cohort.append_end_offset, raw_cohort.capture_mode,
+                   raw_cohort.origin, receipt_order.latest_receipt
+            FROM raw_cohort
+            JOIN receipt_order ON receipt_order.ref_id = raw_cohort.raw_id
+            ORDER BY {"raw_cohort.first_retained_order" if order == "first_retained" else "receipt_order.latest_receipt"}
+            """,
+            tuple(sorted(path_values)),
+        )
+        anchor_offset: int | None = None
+        legacy_bytes = 0
+        for (
+            _first_retained_order,
+            raw_id,
+            blob_size,
+            source_index,
+            revision_kind,
+            append_start,
+            append_end,
+            capture_mode,
+            origin,
+            _latest_receipt,
+        ) in cursor:
+            row = {
+                "raw_id": raw_id,
+                "blob_size": blob_size,
+                "source_index": source_index,
+                "revision_kind": revision_kind,
+                "append_start_offset": append_start,
+                "append_end_offset": append_end,
+                "capture_mode": capture_mode,
+                "origin": origin,
+            }
+            if is_legacy_append_without_window(row):
+                size = _optional_int(blob_size)
+                if size is None or size < 0:
+                    continue
+                if raw_id in requested and anchor_offset is not None:
+                    candidate = anchor_offset + legacy_bytes
+                    if candidate not in starts[str(raw_id)]:
+                        starts[str(raw_id)].append(candidate)
+                if anchor_offset is not None:
+                    legacy_bytes += size
+                continue
+            is_anchor = append_end is not None or (
+                _optional_int(source_index) == 0
+                and str(revision_kind or "") in {"full", "unknown"}
+                and append_start is None
+            )
+            if is_anchor:
+                anchor_offset = _optional_int(append_end if append_end is not None else blob_size)
+                legacy_bytes = 0
+    return {raw_id: tuple(candidates) for raw_id, candidates in starts.items()}
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedBlobSources:
+    """Where one retained raw's bytes can be replayed from under the archive root in force."""
+
+    #: The recorded source path re-anchored at the root in force.
+    source_path: str
+    container_member: bool
+    candidates: tuple[RetainedBlobSource, ...]
+
+
+def retained_blob_sources(conn: sqlite3.Connection, row: Mapping[str, object], *, root: Path) -> RetainedBlobSources:
+    """Every candidate source window that may prove one raw's retained bytes.
 
     This is the one owner of that decision: backup recoverability and raw
     derivation's blob restoration both read their candidates here, so a raw
-    one route can prove is one the other can restore. ``row`` is the raw's
-    recorded evidence (:func:`read_raw_source_evidence`); ``container_member``
-    is the caller's container decision (a relocated archive root can move
-    the container). ``prior_full_observations`` are ``(acquired_at_ms,
-    size)`` of the full observations at the same path, read only for a
-    legacy append row. Candidates are proofs only once the bytes read from
-    them hash to the raw's recorded identity; the caller checks that.
+    one route can prove is one the other can restore. It re-anchors the
+    recorded path at the archive root in force, decides whether the row is a
+    ZIP member, and, for a window-less append row, finds where its bytes
+    start (:func:`legacy_append_start`). ``row`` is the raw's recorded evidence
+    (:func:`read_raw_source_evidence`, or a row of the same shape) and
+    ``conn`` reads the source tier. Candidates are proofs only once the bytes
+    read from them hash to the raw's recorded identity; the caller checks
+    that.
     """
+    raw_id = row.get("raw_id") or row.get("ref_id")
+    if not isinstance(raw_id, str):
+        return RetainedBlobSources("", False, ())
+    return retained_blob_sources_many(conn, (row,), root=root).get(raw_id, RetainedBlobSources("", False, ()))
+
+
+def retained_blob_sources_many(
+    conn: sqlite3.Connection, rows: Sequence[Mapping[str, object]], *, root: Path
+) -> dict[str, RetainedBlobSources]:
+    """Resolve candidates for a batch with one receipt-order scan per path.
+
+    Only starts for requested rows are retained. This gives backup and raw
+    derivation a linear pass over each relevant source history without a
+    cache whose size grows with every raw in the archive.
+    """
+    prepared: dict[str, tuple[Mapping[str, object], bool, str]] = {}
+    groups: dict[tuple[str, str], list[Mapping[str, object]]] = {}
+    for row in rows:
+        raw_id = row.get("raw_id") or row.get("ref_id")
+        recorded = row.get("source_path")
+        if not isinstance(raw_id, str) or not isinstance(recorded, str) or not recorded:
+            continue
+        container_member = is_container_member_row(row, root)
+        resolved = resolved_source_path(recorded, root, container_member=container_member)
+        prepared[raw_id] = (row, container_member, resolved)
+        if not container_member and is_legacy_append_without_window(row):
+            groups.setdefault((recorded, resolved), []).append(row)
+
+    starts: dict[str, tuple[int, ...]] = {}
+    for (_recorded, resolved), group_rows in groups.items():
+        starts.update(_legacy_append_starts(conn, tuple(group_rows), resolved_path=resolved))
+
+    return {
+        raw_id: RetainedBlobSources(
+            resolved,
+            container_member,
+            _source_candidates(
+                row,
+                container_member=container_member,
+                legacy_append_starts=starts.get(raw_id, ()),
+            ),
+        )
+        for raw_id, (row, container_member, resolved) in prepared.items()
+    }
+
+
+def _source_candidates(
+    row: Mapping[str, object],
+    *,
+    container_member: bool,
+    legacy_append_starts: tuple[int, ...],
+) -> tuple[RetainedBlobSource, ...]:
     if container_member:
         return (RetainedBlobSource(RetainedBlobSourceKind.ZIP_MEMBER),)
     size = _optional_int(row.get("size_bytes"))
@@ -221,26 +424,50 @@ def retained_blob_source_candidates(
             windows.append(SourceByteWindow(0, end))
         return tuple(RetainedBlobSource(RetainedBlobSourceKind.APPEND_WINDOW, window) for window in windows)
     if is_legacy_append_without_window(row):
-        acquired_at = _optional_int(row.get("acquired_at_ms"))
-        predecessors = (
-            [(timestamp, full_size) for timestamp, full_size in prior_full_observations if timestamp < acquired_at]
-            if acquired_at is not None
-            else []
-        )
-        if not predecessors:
+        if not legacy_append_starts:
             return ()
-        _timestamp, predecessor_end = max(predecessors)
-        return (
+        return tuple(
             RetainedBlobSource(
                 RetainedBlobSourceKind.LEGACY_APPEND_WINDOW,
-                SourceByteWindow(predecessor_end, predecessor_end + size),
-            ),
+                SourceByteWindow(start, start + size),
+            )
+            for start in legacy_append_starts
         )
     full_at_origin = (
         str(row.get("revision_kind") or "") in {"full", "unknown"} and _optional_int(row.get("source_index")) == 0
     )
     kind = RetainedBlobSourceKind.HISTORICAL_SNAPSHOT_PREFIX if full_at_origin else RetainedBlobSourceKind.DIRECT_FILE
     return (RetainedBlobSource(kind, SourceByteWindow(0, size)),)
+
+
+def legacy_append_coordinates_unproven(
+    row: Mapping[str, object],
+    sources: RetainedBlobSources,
+    failures: Sequence[str],
+) -> bool:
+    """Whether available evidence proves a legacy append cannot be placed.
+
+    Candidate windows are hypotheses only. A present regular source with no
+    durable anchor, or with every in-bounds hypothesis hashing to different
+    bytes, is settled as missing coordinate evidence. A missing source,
+    unreadable file, or window beyond its current end remains retryable.
+    """
+    if not is_legacy_append_without_window(row):
+        return False
+    if not sources.candidates:
+        try:
+            metadata = os.stat(sources.source_path)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(metadata.st_mode):
+            return False
+        try:
+            with Path(sources.source_path).open("rb"):
+                pass
+        except FileNotFoundError:
+            return False
+        return True
+    return bool(failures) and all(reason == "hash_mismatch" for reason in failures)
 
 
 def source_window_holds_blob(
@@ -282,6 +509,7 @@ def stage_exact_source_window_blob(
     window: SourceByteWindow,
     blob_hash: str,
     stop: Callable[[], bool] | None = None,
+    on_staged: Callable[[PreparedBlob], None] | None = None,
 ) -> tuple[PreparedBlob | None, str | None]:
     """Stage one direct-source window when its bytes are exactly the retained blob.
 
@@ -307,18 +535,25 @@ def stage_exact_source_window_blob(
             size_bytes=window.end - window.start,
             stop=stop,
         )
+        if prepared is not None and on_staged is not None:
+            on_staged(prepared)
     return (prepared, None) if prepared is not None else (None, "hash_mismatch")
 
 
 __all__ = [
+    "LEGACY_APPEND_COORDINATES_UNPROVEN",
     "RetainedBlobSource",
     "RetainedBlobSourceKind",
+    "RetainedBlobSources",
     "SourceByteWindow",
+    "is_container_member_row",
     "is_legacy_append_without_window",
     "is_recorded_container_member",
+    "legacy_append_coordinates_unproven",
     "read_raw_source_evidence",
+    "resolved_source_path",
+    "retained_blob_sources",
     "source_window_holds_blob",
-    "retained_blob_source_candidates",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]

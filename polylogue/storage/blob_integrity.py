@@ -17,7 +17,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
-from polylogue.core.raw_coordinates import split_zip_member_text
+from polylogue.core.raw_coordinates import relocated_source_path, split_zip_member_text
 from polylogue.logging import get_logger
 from polylogue.storage.blob_liveness import (
     BlobLivenessProjection,
@@ -349,34 +349,14 @@ def _source_db_for_blob_reference_report(db_path: str | Path) -> Path:
     return resolved
 
 
-# Directories the archive owns and acquires material into. A recorded path
-# that runs through one of them was written under some archive root, so its
-# tail from that segment re-anchors onto the root in force.
-_ARCHIVE_OWNED_DIRECTORIES = ("inbox", "browser-capture", "hooks")
-
-
-def _reanchored_archive_path(path: Path, archive_root: Path | None) -> Path | None:
-    """Re-anchor a path recorded under a previous archive root, if it is one."""
-    if archive_root is None:
-        return None
-    parts = path.parts
-    for name in _ARCHIVE_OWNED_DIRECTORIES:
-        if name not in parts:
-            continue
-        tail = parts[parts.index(name) :]
-        candidate = archive_root.joinpath(*tail)
-        if candidate != path:
-            return candidate
-    return None
-
-
 def _source_path_availability(path: str | None, archive_root: Path | None = None) -> tuple[bool | None, str | None]:
     """Report whether a recorded source path still resolves to material on disk.
 
     An archive root moves, and acquisition records absolute paths, so a path
     written under a previous root names material that is present under the
-    current one. Reporting those as missing is false loss, and this number
-    decides whether a prune was safe.
+    current one (``relocated_source_path``, the rule backup and raw
+    derivation read too). Reporting those as missing is false loss, and this
+    number decides whether a prune was safe.
     """
     if not path:
         return None, None
@@ -386,18 +366,14 @@ def _source_path_availability(path: str | None, archive_root: Path | None = None
     # Only a ``<container>:<member>`` coordinate names its container; a
     # missing loose file whose name holds a colon names nothing else.
     split = split_zip_member_text(path)
-    if split is not None:
-        outer_path = Path(split[0])
-        if outer_path.exists():
-            return True, str(outer_path)
-        reanchored_outer = _reanchored_archive_path(outer_path, archive_root)
-        if reanchored_outer is not None and reanchored_outer.exists():
-            return True, str(reanchored_outer)
-        return False, str(outer_path)
-    reanchored = _reanchored_archive_path(direct, archive_root)
-    if reanchored is not None and reanchored.exists():
-        return True, str(reanchored)
-    return False, str(direct)
+    target = Path(split[0]) if split is not None else direct
+    if target.exists():
+        return True, str(target)
+    if archive_root is not None:
+        reanchored = relocated_source_path(target, archive_root)
+        if reanchored != target:
+            return True, str(reanchored)
+    return False, str(target)
 
 
 def _optional_str(value: object) -> str | None:

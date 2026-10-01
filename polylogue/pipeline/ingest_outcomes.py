@@ -196,17 +196,20 @@ def classify_decode_exception(exc: BaseException) -> IngestAttemptDisposition:
     """Classify a raw-payload decode-stage failure by the exception's type.
 
     ``UnicodeDecodeError``/``ValueError`` (which ``json.JSONDecodeError``
-    subclasses) mean the bytes themselves are not the expected shape --
-    :data:`IngestOutcome.CORRUPT_INPUT`. Anything else at the decode
-    boundary is an unexpected defect in the decoder itself, not corrupt
-    input.
+    subclasses) and ``ijson.JSONError`` (the streamed envelope decoder's
+    refusal of a truncated or malformed document) mean the bytes themselves
+    are not the expected shape -- :data:`IngestOutcome.CORRUPT_INPUT`.
+    Anything else at the decode boundary is an unexpected defect in the
+    decoder itself, not corrupt input.
     """
+    import ijson
+
     from polylogue.sources.value_bounds import ValueBoundRefusedError
 
     evidence_ref = f"decode:{type(exc).__name__}"
     if isinstance(exc, ValueBoundRefusedError):
         return value_bound_refused_disposition(stage="decode", diagnostic=str(exc))
-    if isinstance(exc, UnicodeDecodeError | ValueError):
+    if isinstance(exc, UnicodeDecodeError | ValueError | ijson.JSONError):
         return corrupt_input_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
 

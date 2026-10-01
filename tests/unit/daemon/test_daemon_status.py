@@ -51,6 +51,14 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.session_profiles import write_session_profile
 
 
+def _fts_fixture_index(tmp_path: Path, case: str) -> Path:
+    # The readiness registry is keyed by path and outlives pytest's removed
+    # successful tmp_path trees, so each fixture needs a distinct child path.
+    root = tmp_path / case
+    root.mkdir()
+    return root / "index.db"
+
+
 def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Anti-vacuity: source-only durable writes invalidate cached readiness."""
     root = tmp_path / "archive"
@@ -2299,18 +2307,21 @@ def _verdict_clean_component_readiness() -> dict[str, object]:
 
 
 @pytest.mark.parametrize(
-    ("available", "lifecycle_state", "expected_ok"),
+    ("available", "lifecycle_state", "expected_ok", "parse_failures", "missing_coordinates"),
     [
-        (False, "unavailable", False),
-        (True, "blocked", False),
-        (True, "degraded", False),
-        (True, "healthy", True),
+        (False, "unavailable", False, 0, 0),
+        (True, "blocked", False, 0, 0),
+        (True, "degraded", False, 1, 0),
+        (True, "degraded", False, 0, 1),
+        (True, "healthy", True, 0, 0),
     ],
 )
 def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
     available: bool,
     lifecycle_state: Literal["healthy", "degraded", "blocked", "unavailable"],
     expected_ok: bool,
+    parse_failures: int,
+    missing_coordinates: int,
 ) -> None:
     """Root status JSON never promotes missing or non-clean source evidence.
 
@@ -2328,8 +2339,9 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
         raw_failure_lifecycle_reason="source evidence test state",
         raw_frontier_integrity=_proven_healthy_frontier(),
         component_readiness=_verdict_clean_component_readiness(),
-        raw_parse_failures=1 if lifecycle_state == "degraded" else 0,
+        raw_parse_failures=parse_failures,
         raw_unexplained_failures=1 if lifecycle_state == "blocked" else 0,
+        raw_missing_source_coordinates=missing_coordinates,
     )
     with (
         patch("polylogue.daemon.status.build_daemon_status", return_value=status),
@@ -2340,10 +2352,15 @@ def test_daemon_status_route_requires_explicit_clean_raw_failure_lifecycle(
 
     assert payload["ok"] is expected_ok
     lines = format_daemon_status_lines(payload)
-    if expected_ok:
-        assert not any("Raw failures: unavailable" in line for line in lines)
-    else:
+    if not available:
+        assert any("Raw failures: unavailable" in line for line in lines)
+    elif lifecycle_state == "blocked" or parse_failures:
         assert any("Raw failures:" in line for line in lines)
+    if parse_failures:
+        assert any("Raw failures:" in line for line in lines)
+    if missing_coordinates:
+        assert "Retained session bytes missing append coordinates: 1 (degraded)" in lines
+        assert not any("Raw failures:" in line for line in lines)
 
 
 def test_daemon_and_shared_claim_guard_share_mixed_frontier_summary(tmp_path: Path) -> None:
@@ -2501,7 +2518,7 @@ def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: P
 
 
 def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path) -> None:
-    db = tmp_path / "index.db"
+    db = _fts_fixture_index(tmp_path, "lightweight-table-probe")
     with sqlite3.connect(db) as conn:
         conn.executescript(
             """
@@ -2517,7 +2534,7 @@ def test_daemon_status_fts_readiness_uses_lightweight_table_probe(tmp_path: Path
 
 
 def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "archive-file-set")
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
         conn.execute(
@@ -2559,8 +2576,8 @@ def test_daemon_status_fts_readiness_reads_archive_file_set_from_archive_tiers(t
 
 
 def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path) -> None:
-    db_anchor = tmp_path / "custom.sqlite"
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "archive-preference")
+    db_anchor = archive_db.parent / "custom.sqlite"
     with sqlite3.connect(db_anchor) as conn:
         conn.executescript(
             """
@@ -2584,7 +2601,7 @@ def test_daemon_status_fts_readiness_prefers_archive_when_present(tmp_path: Path
 def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    db_path = tmp_path / "index.db"
+    db_path = _fts_fixture_index(tmp_path, "exact-missing-docsize")
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -2629,7 +2646,7 @@ def test_fts_readiness_exact_detects_missing_docsize_row(tmp_path: Path) -> None
 def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from polylogue.daemon import fts_status
 
-    db_path = tmp_path / "index.db"
+    db_path = _fts_fixture_index(tmp_path, "exact-snapshot-transaction")
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     traced: list[str] = []
 
@@ -2650,7 +2667,7 @@ def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.Monke
 def test_fts_readiness_exact_detects_archive_missing_messages_fts_row(tmp_path: Path) -> None:
     from polylogue.daemon.fts_status import fts_readiness_info
 
-    archive_db = tmp_path / "index.db"
+    archive_db = _fts_fixture_index(tmp_path, "exact-missing-fts-row")
     initialize_archive_database(archive_db, ArchiveTier.INDEX)
     with sqlite3.connect(archive_db) as conn:
         conn.execute(

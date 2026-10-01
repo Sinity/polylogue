@@ -8,6 +8,7 @@ source that may progress from a payload that has reached a terminal refusal.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from enum import StrEnum
 
 from polylogue.core.enums import ArtifactSupportStatus
@@ -24,10 +25,14 @@ class RawFailureEvidenceKind(StrEnum):
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
     TERMINAL_UNKNOWN_EXPORT_NO_SESSION = "terminal_unknown_export_no_session"
     TERMINAL_UNSUPPORTED_SHAPE = "terminal_unsupported_shape"
+    TERMINAL_MISSING_SOURCE_COORDINATES = "terminal_missing_source_coordinates"
 
     @property
     def support_status(self) -> ArtifactSupportStatus:
-        if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
+        if self in {
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER,
+            RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES,
+        }:
             return ArtifactSupportStatus.UNKNOWN
         if self in {
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
@@ -46,7 +51,29 @@ class RawFailureEvidenceKind(StrEnum):
     def lifecycle(self) -> str:
         if self is RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER:
             return "resolution"
+        if self is RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES:
+            return "terminal"
         return "deferred" if self.value in RAW_FAILURE_DEFERRED_EVIDENCE_KINDS else "terminal"
+
+
+#: Admitted only in part: a stable JSONL capture whose last record is
+#: truncated, whose raw carries a deferred partial-decode carrier. Its
+#: complete records are admitted; the unterminated tail is not a record yet,
+#: and a later observation of the grown file admits it.
+PARTIAL_TRUNCATED_TAIL = "truncated_tail"
+
+
+@dataclass(frozen=True, slots=True)
+class PartialAdmission:
+    """What an admitted source left out, in typed, countable terms."""
+
+    reason: str
+    #: Records admitted from the complete prefix.
+    complete_record_count: int
+    #: Byte offset where the admitted prefix ends and the left-out tail begins.
+    complete_prefix_bytes: int
+    #: Size of the acquired bytes, tail included.
+    source_bytes: int
 
 
 RAW_FAILURE_TRUSTED_PROVENANCE = "worker-disposition-v1"
@@ -134,10 +161,14 @@ def validated_raw_failure_evidence_kind(
         return None
     if evidence_kind.support_status.value != str(support_status):
         return None
-    if validation_failed and not has_trusted_raw_failure_provenance(
-        classification_reason,
-        artifact_kind=evidence_kind,
-        outcome_code=outcome_code,
+    if (
+        validation_failed
+        and evidence_kind is not RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+        and not has_trusted_raw_failure_provenance(
+            classification_reason,
+            artifact_kind=evidence_kind,
+            outcome_code=outcome_code,
+        )
     ):
         return None
     return evidence_kind
@@ -176,6 +207,7 @@ RAW_FAILURE_TERMINAL_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE.value,
         RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION.value,
         RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
+        RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value,
     }
 )
 RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
@@ -214,6 +246,7 @@ def terminal_carrier_overwrite_predicate() -> str:
 
 
 __all__ = [
+    "PARTIAL_TRUNCATED_TAIL",
     "RAW_FAILURE_DEFERRED_EVIDENCE_KINDS",
     "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
     "RAW_FAILURE_EVIDENCE_KINDS",
@@ -224,6 +257,7 @@ __all__ = [
     "RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS",
     "RAW_FAILURE_TRUSTED_PROVENANCE",
     "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
+    "PartialAdmission",
     "RawFailureEvidenceKind",
     "has_trusted_raw_failure_provenance",
     "terminal_carrier_overwrite_predicate",

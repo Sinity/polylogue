@@ -16,6 +16,8 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
+# FTS readiness keeps a process-wide registry keyed by database path. Give
+# related tests distinct child paths because successful tmp_path trees vanish.
 def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     """Exact coverage must use the FTS-population predicate (search_text != '').
 
@@ -23,7 +25,7 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     FTS index includes it, so the exact source count must include it too —
     otherwise indexed/source exceeds 100%.
     """
-    db = tmp_path / "index.db"
+    db = tmp_path / "tool-block-coverage" / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
     conn = sqlite3.connect(db)
     try:
@@ -78,7 +80,7 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_not_exact(tmp_pa
     coverage, so this must report ``None`` (unmeasured), never a fabricated
     ``100.0``/``0.0`` derived from ``invariant_ready`` alone.
     """
-    db = tmp_path / "index.db"
+    db = tmp_path / "empty-archive-structural" / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
 
     fts = fts_readiness_info(db, exact=False)
@@ -90,7 +92,7 @@ def test_genuinely_empty_archive_reports_coverage_as_unmeasured_not_exact(tmp_pa
 
 def test_genuinely_empty_archive_reports_coverage_as_unmeasured_exact(tmp_path: Path) -> None:
     """Same as above, through the exact (invariant-snapshot) path."""
-    db = tmp_path / "index.db"
+    db = tmp_path / "empty-archive-exact" / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
 
     fts = fts_readiness_info(db, exact=True)

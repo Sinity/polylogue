@@ -28,7 +28,11 @@ from polylogue.daemon.status import (
 )
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceArtifact,
+    upsert_raw_artifact,
+    write_source_raw_session,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
@@ -66,6 +70,8 @@ class TestRawFailureSampleModel:
         ):
             sample = RawFailureSample(failure_kind=cast(Any, kind))
             assert sample.failure_kind == kind
+        schema = RawFailureSample.model_json_schema()
+        assert "terminal_missing_source_coordinates" in schema["properties"]["failure_kind"]["enum"]
 
     def test_raw_evidence_kinds_have_closed_lifecycle_partition(self) -> None:
         assert (
@@ -85,6 +91,7 @@ class TestRawFailureSampleModel:
                     "terminal_unknown_json_decode",
                     "terminal_unknown_export_no_session",
                     "terminal_unsupported_shape",
+                    "terminal_missing_source_coordinates",
                 }
             )
             == RAW_FAILURE_TERMINAL_EVIDENCE_KINDS
@@ -997,6 +1004,43 @@ class TestRawFailureInfoProducesTypedSamples:
         assert info["parse_failures"] == 0
         assert info["validation_failures"] == 0
         assert info["unexplained_failures"] == 0
+        assert info["missing_source_coordinates"] == 0
+
+    def test_raw_failure_info_reports_missing_source_coordinates(self, tmp_path: Path) -> None:
+        source_db = tmp_path / "source.db"
+        initialize_archive_database(source_db, ArchiveTier.SOURCE)
+        kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+        with sqlite3.connect(source_db) as conn:
+            raw_id = write_source_raw_session(
+                conn,
+                origin="codex-session",
+                capture_mode="codex",
+                source_path="/data/append.jsonl",
+                source_index=-1,
+                payload=b'{"type":"event_msg"}\n',
+                acquired_at_ms=1,
+            )
+            upsert_raw_artifact(
+                conn,
+                raw_id,
+                ArchiveSourceArtifact(
+                    artifact_id="missing-coordinates",
+                    origin="codex-session",
+                    source_path="/data/append.jsonl",
+                    source_index=-1,
+                    artifact_kind=kind.value,
+                    support_status=kind.support_status,
+                    classification_reason='{"outcome_code":"terminal_missing_source_coordinates"}',
+                    parse_as_session=False,
+                    schema_eligible=False,
+                ),
+            )
+
+        info = raw_failure_info_for_root(tmp_path)
+
+        assert info["raw_failure_lifecycle_available"] is True
+        assert info["raw_failure_lifecycle_state"] == "degraded"
+        assert info["missing_source_coordinates"] == 1
 
     def test_raw_failure_info_streams_lifecycle_counts_beyond_sample_cap(self, tmp_path: Path) -> None:
         """Lifecycle counts cover every failed raw without bulk-fetching rows."""

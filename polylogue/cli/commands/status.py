@@ -538,12 +538,17 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     raw_parse = status.get("raw_parse_failures", 0)
     raw_val = status.get("raw_validation_failures", 0)
     raw_quarantined = status.get("raw_quarantined", 0)
+    missing_coordinates = status.get("raw_missing_source_coordinates", 0)
     total_raw = (raw_parse or 0) + (raw_val or 0)
     if total_raw > 0:
         fail_color = "red" if total_raw > 10 else "yellow"
         env.ui.console.print(
             f"  Raw failures: [{fail_color}]{total_raw} total ({raw_quarantined} quarantined)"
             f" [{fail_color}]({raw_parse} parse + {raw_val} validation)[/{fail_color}]"
+        )
+    if isinstance(missing_coordinates, int) and missing_coordinates > 0:
+        env.ui.console.print(
+            f"  Retained session bytes missing append coordinates: [yellow]{missing_coordinates} (degraded)[/yellow]"
         )
 
     _render_component_collection_states(env, status)
@@ -862,6 +867,7 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
         "deferred_retryable": "raw_deferred_failures",
         "terminal_rejections": "raw_terminal_rejections",
         "unexplained": "raw_unexplained_failures",
+        "missing_source_coordinates": "raw_missing_source_coordinates",
         "detection_warnings": "raw_detection_warnings",
         "lifecycle_available": "raw_failure_lifecycle_available",
         "lifecycle_state": "raw_failure_lifecycle_state",

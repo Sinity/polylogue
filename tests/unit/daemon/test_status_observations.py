@@ -36,6 +36,7 @@ def test_raw_failure_read_error_does_not_become_zero_or_ok(tmp_path: Path) -> No
     assert result["raw_failure_lifecycle_state"] == "unavailable"
     assert result["parse_failures"] is None
     assert result["validation_failures"] is None
+    assert result["missing_source_coordinates"] is None
     assert result["samples"] == []
 
 

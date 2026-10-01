@@ -67,6 +67,7 @@ _TERM_PARSE_FAILURE = "parse_failure"
 _TERM_VALUE_BOUND_REFUSED = VALUE_BOUND_REFUSED
 _TERM_VALIDATION_REJECTED = "validation_rejected"
 _TERM_NON_SESSION_ARTIFACT = "non_session_artifact"
+_TERM_MISSING_SOURCE_COORDINATES = "missing_source_coordinates"
 _TERM_DECODE_FAILED = "decode_failed"
 _TERM_CENSUS_NON_SESSION = "census_non_session"
 _TERM_UNCLASSIFIED_SHAPE = "unclassified_shape"
@@ -113,6 +114,10 @@ _RULES: dict[str, str] = {
     ),
     _TERM_VALIDATION_REJECTED: "raw_sessions.validation_status = 'failed' records the schema refusal",
     _TERM_NON_SESSION_ARTIFACT: "raw_artifacts declares the item a non-session artifact kind",
+    _TERM_MISSING_SOURCE_COORDINATES: (
+        "retained session bytes exist, but legacy append coordinates cannot be proven; "
+        "the item remains in the source denominator and is not classified as non-session"
+    ),
     _TERM_DECODE_FAILED: "raw_artifacts.decode_error records the typed decode failure",
     _TERM_CENSUS_NON_SESSION: "raw_membership_census recorded a terminal non-session verdict",
     _TERM_UNCLASSIFIED_SHAPE: "artifact taxonomy holds no classification (unknown/unknown); a rule is missing",
@@ -185,7 +190,13 @@ _BLOCKING: frozenset[str] = frozenset(
 )
 
 _WARNING: frozenset[str] = frozenset(
-    {_TERM_PENDING, _TERM_HOOK_NO_SOURCE, _TERM_AUTHORITY_BLOCKED, _TERM_VALUE_BOUND_REFUSED}
+    {
+        _TERM_PENDING,
+        _TERM_HOOK_NO_SOURCE,
+        _TERM_AUTHORITY_BLOCKED,
+        _TERM_VALUE_BOUND_REFUSED,
+        _TERM_MISSING_SOURCE_COORDINATES,
+    }
 )
 
 
@@ -577,6 +588,8 @@ def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple
             WHEN instr(parse_error, '{VALUE_BOUND_REFUSED_HEAD}') > 0 THEN '{_TERM_VALUE_BOUND_REFUSED}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
+            WHEN artifact_kind = 'terminal_missing_source_coordinates'
+                THEN '{_TERM_MISSING_SOURCE_COORDINATES}'
             WHEN parse_as_session = 0 AND artifact_kind IS NOT NULL AND artifact_kind != 'unknown'
                 THEN '{_TERM_NON_SESSION_ARTIFACT}'
             WHEN support_status = 'decode_failed' THEN '{_TERM_DECODE_FAILED}'
@@ -731,6 +744,7 @@ def audit_source_conservation(
             parse_as_session == 0
             and artifact_kind is not None
             and artifact_kind != "unknown"
+            and artifact_kind != "terminal_missing_source_coordinates"
             and artifact_kind != "terminal_superseded_deferred_cas_frontier"
         ):
             lineage_class = f"artifact:{artifact_kind}"
@@ -1056,6 +1070,7 @@ def audit_source_conservation(
         _TERM_PARSE_FAILURE,
         _TERM_VALIDATION_REJECTED,
         _TERM_NON_SESSION_ARTIFACT,
+        _TERM_MISSING_SOURCE_COORDINATES,
         _TERM_DECODE_FAILED,
         _TERM_CENSUS_NON_SESSION,
         _TERM_UNCLASSIFIED_SHAPE,
@@ -1161,6 +1176,7 @@ __all__ = [
 TYPED_ABSENCE_TERMS: frozenset[str] = frozenset(
     {
         _TERM_VALIDATION_REJECTED,
+        _TERM_MISSING_SOURCE_COORDINATES,
         _TERM_NON_SESSION_ARTIFACT,
         _TERM_DECODE_FAILED,
         _TERM_AUTHORITY_BLOCKED,

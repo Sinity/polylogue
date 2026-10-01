@@ -955,6 +955,7 @@ class FileIntakeAdapter(IntakeAdapter):
         failed -= deferred
         excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
         settled = dict(getattr(metrics, "settled_exclusion_paths", {}) or {})
+        partial_by_path = dict(getattr(metrics, "partial_admission_paths", {}) or {})
         if not succeeded:
             # This route calls ``_ingest_files`` directly, so the watcher's
             # own ``_log_ingest_metrics`` never runs for it and the
@@ -988,7 +989,21 @@ class FileIntakeAdapter(IntakeAdapter):
                     actual_cost=actual_cost,
                 )
             elif key in succeeded:
-                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
+                # A stable capture whose final record is truncated admits its
+                # complete records; the result carries what it left out, so it
+                # is never reported as a plain success (polylogue-xf8qp).
+                partial = partial_by_path.get(key)
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.ADMITTED,
+                    reason=(
+                        f"{partial.reason}: {partial.complete_record_count} complete record(s) admitted, "
+                        f"tail from byte {partial.complete_prefix_bytes} of {partial.source_bytes} left out"
+                        if partial is not None
+                        else None
+                    ),
+                    actual_cost=actual_cost,
+                    partial=partial,
+                )
             elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
                 self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
                 outcomes[item.item_id] = AdmissionResult(

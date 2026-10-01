@@ -561,6 +561,32 @@ def test_scoped_terminal_retention_avoids_archive_wide_raw_inventory(tmp_path: P
     assert terminal_paths == {str(source_path)}
 
 
+def test_missing_coordinates_terminal_carrier_protects_unparsed_session_path(tmp_path: Path) -> None:
+    """The typed refusal protects raw custody without claiming a parse failure."""
+    source_db = tmp_path / "source.db"
+    source_path = tmp_path / "legacy-append.jsonl"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions
+               (raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
+               VALUES ('raw-missing-coordinates', 'codex-session', NULL, ?, -1, ?, 4, 3)""",
+            (str(source_path), bytes.fromhex("04" * 32)),
+        )
+        conn.execute(
+            """INSERT INTO raw_artifacts
+               (artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
+                support_status, classification_reason, parse_as_session, schema_eligible,
+                malformed_jsonl_lines, first_observed_at_ms, last_observed_at_ms)
+               VALUES ('missing-coordinates', 'raw-missing-coordinates', 'codex-session', ?, -1,
+                       'terminal_missing_source_coordinates', 'unknown', 'typed refusal', 0, 0, 0, 3, 3)""",
+            (str(source_path),),
+        )
+        conn.commit()
+        terminal_paths = raw_retention_mod._terminal_artifact_paths(conn, {str(source_path)})
+    assert terminal_paths == {str(source_path)}
+
+
 def test_terminal_retention_batches_make_progress_when_failure_kinds_fill_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

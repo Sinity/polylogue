@@ -186,6 +186,9 @@ def test_mid_stream_corruption_raises_partial_decode_error() -> None:
     err = excinfo.value
     assert err.recovered >= 2
     assert "sessions.json" in str(err)
+    from polylogue.sources.prepared_jsonl import DecodeFailure, classify_decode_failure
+
+    assert classify_decode_failure(err) is DecodeFailure.DOCUMENT
 
 
 def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> None:
@@ -223,12 +226,26 @@ def test_mid_stream_non_json_failure_raises_the_same_partial_decode_error() -> N
             iter_json_stream_with(
                 logging.getLogger(__name__),
                 cast(object, FailingIjson),  # type: ignore[arg-type]
-                io.BytesIO(b"[]"),
+                # The stdlib fallback may recover a complete document after
+                # a backend failure. Keep the underlying bytes truncated so
+                # that fallback cannot erase the simulated mid-stream loss.
+                io.BytesIO(b'[{"id": 1}, {"id": 2}, {"id": 3'),
                 "sessions.json",
             )
         )
 
     assert excinfo.value.recovered == 2
+    from polylogue.core.enums import Provider
+    from polylogue.sources.prepared_jsonl import classify_decode_failure, terminal_decode_evidence
+
+    assert classify_decode_failure(excinfo.value) is None
+    assert terminal_decode_evidence(excinfo.value, provider=Provider.CHATGPT) is None
+    assert terminal_decode_evidence(excinfo.value, provider=Provider.UNKNOWN) is None
+    from polylogue.sources.revision_backfill import RetainedParseFailure
+
+    carried = RetainedParseFailure.of(excinfo.value)
+    assert carried.decode_failure is None
+    assert carried.as_exception().__class__ is RuntimeError
 
 
 def test_clean_array_does_not_raise() -> None:

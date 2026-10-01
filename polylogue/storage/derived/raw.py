@@ -18,6 +18,7 @@ from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
+from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
@@ -35,6 +36,8 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    RawFailureEvidenceKind,
+    raw_failure_classification_reason,
 )
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.services.process_pool import terminate_process_pool
@@ -48,10 +51,12 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import (
+    LEGACY_APPEND_COORDINATES_UNPROVEN,
+    RetainedBlobSources,
     is_legacy_append_without_window,
-    is_recorded_container_member,
+    legacy_append_coordinates_unproven,
     read_raw_source_evidence,
-    retained_blob_source_candidates,
+    retained_blob_sources_many,
     stage_exact_blob,
     stage_exact_source_window_blob,
 )
@@ -117,8 +122,8 @@ class RawObservationScope:
     raw_ids: tuple[str, ...] = ()
 
 
-def _discard_staged_blobs(store: BlobStore, prepared: tuple[PreparedBlob, ...]) -> None:
-    for item in prepared:
+def _discard_owned_staged_blobs(store: BlobStore, staged: list[tuple[str, PreparedBlob]]) -> None:
+    for _raw_id, item in staged:
         store.discard_prepared(item)
 
 
@@ -131,12 +136,17 @@ class StagedBlobRestorations:
     collected.
     """
 
-    def __init__(self, store: BlobStore, staged: Sequence[tuple[str, PreparedBlob]]) -> None:
+    def __init__(self, store: BlobStore, staged: Sequence[tuple[str, PreparedBlob]] = ()) -> None:
         self.store = store
-        self.staged = tuple(staged)
-        self._finalizer = weakref.finalize(
-            self, _discard_staged_blobs, store, tuple(prepared for _raw_id, prepared in self.staged)
-        )
+        self._staged = list(staged)
+        self._finalizer = weakref.finalize(self, _discard_owned_staged_blobs, store, self._staged)
+
+    @property
+    def staged(self) -> tuple[tuple[str, PreparedBlob], ...]:
+        return tuple(self._staged)
+
+    def add(self, raw_id: str, prepared: PreparedBlob) -> None:
+        self._staged.append((raw_id, prepared))
 
     def published(self) -> None:
         """The writer moved the staged files into place; nothing is left to discard."""
@@ -144,6 +154,14 @@ class StagedBlobRestorations:
 
     def discard(self) -> None:
         self._finalizer()
+
+
+@dataclass(frozen=True, slots=True)
+class MissingSourceCoordinateRefusal:
+    """Legacy append raws whose exact source window cannot be proven."""
+
+    raw_ids: tuple[str, ...]
+    source_stat_identities: tuple[tuple[str, str, tuple[int, int, int, int, int]], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,6 +185,7 @@ class RawObservationReplacement:
     empty: bool = False
     already_valid: bool = False
     blob_restorations: StagedBlobRestorations | None = None
+    missing_source_coordinate_refusal: MissingSourceCoordinateRefusal | None = None
 
 
 def _session_id(session: ParsedSession) -> str:
@@ -207,6 +226,11 @@ class RawObservationDerivation:
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
+        stat = path.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+    @staticmethod
+    def _source_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
         stat = path.stat()
         return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
@@ -400,6 +424,14 @@ class RawObservationDerivation:
         error = raw["parse_error"]
         coordinates = (key, raw["origin"], raw["effective_origin"], raw["source_path"], raw["source_index"])
         exact_coordinate = "raw_id = ? AND (origin IS ? OR origin IS ?) AND source_path IS ? AND source_index IS ?"
+        if (
+            conn.execute(
+                f"SELECT 1 FROM raw_artifacts WHERE {exact_coordinate} AND artifact_kind = ? LIMIT 1",
+                (*coordinates, RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES.value),
+            ).fetchone()
+            is not None
+        ):
+            return "valid"
         if (
             error
             and conn.execute(
@@ -645,6 +677,14 @@ class RawObservationDerivation:
             # Classification and preparation both read retained bytes, so an
             # absent blob is restored before either runs.
             restorations = self._stage_absent_blob_restorations(archive, raw_ids, descriptors)
+            if isinstance(restorations, MissingSourceCoordinateRefusal):
+                return RawObservationReplacement(
+                    key,
+                    binding,
+                    None,
+                    raw_ids,
+                    missing_source_coordinate_refusal=restorations,
+                )
             if restorations is not None:
                 return RawObservationReplacement(key, binding, None, raw_ids, blob_restorations=restorations)
             process_prepared = bool(descriptors)
@@ -1014,7 +1054,7 @@ class RawObservationDerivation:
         archive: ArchiveStore,
         raw_ids: tuple[str, ...],
         descriptors: Mapping[str, tuple[Provider, str, str, object, int]],
-    ) -> StagedBlobRestorations | None:
+    ) -> StagedBlobRestorations | MissingSourceCoordinateRefusal | None:
         """Stage exact source bytes for every retained blob the component lacks.
 
         Preparation cannot read an absent blob, and retrying it cannot make
@@ -1022,47 +1062,97 @@ class RawObservationDerivation:
         direct file window or its ZIP member -- still holds bytes whose
         SHA-256 and size equal the raw's, those bytes are staged here and
         published by the writer in ``publish``; the next pass then prepares
-        over present bytes. Otherwise the retryable refusal names why
-        (``source_missing``, ``hash_mismatch``, ``container_member_rejected``,
-        ``inexact_payload`` ...) instead of reporting a vanished file; it
-        stays retryable because the source or a restored backup can still
-        bring the bytes back.
+        over present bytes. Source faults remain retryable. A present source
+        that cannot prove any candidate for a legacy window-less append is
+        carried to the writer as typed missing-coordinate evidence.
         """
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 
         blob_store = BlobStore(self.archive_root / "blob")
-        staged: list[tuple[str, PreparedBlob]] = []
+        staged_owner = StagedBlobRestorations(blob_store)
         staged_hashes: set[str] = set()
+        conn = archive.source_connection
+        absent_raw_ids: list[str] = []
+        coordinate_refusals: dict[str, tuple[str, tuple[int, int, int, int, int]]] = {}
+        for raw_id in raw_ids:
+            _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
+            try:
+                self._blob_stat_identity(blob_store.blob_path(blob_hash))
+            except FileNotFoundError:
+                absent_raw_ids.append(raw_id)
+            except OSError:
+                # Present but unreadable: preparation reports it as a
+                # retryable disappearance, not as lost bytes.
+                continue
+        evidence_rows = {
+            raw_id: row for raw_id in absent_raw_ids if (row := read_raw_source_evidence(conn, raw_id)) is not None
+        }
+        sources_by_raw_id = retained_blob_sources_many(
+            conn,
+            tuple(evidence_rows.values()),
+            root=self.archive_root,
+        )
         try:
-            for raw_id in raw_ids:
-                _provider, blob_hash, path, _kind, _size = descriptors[raw_id]
+            for raw_id in absent_raw_ids:
+                _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
                 if blob_hash in staged_hashes:
                     continue
-                try:
-                    self._blob_stat_identity(blob_store.blob_path(blob_hash))
-                    continue
-                except FileNotFoundError:
-                    pass
-                except OSError:
-                    # Present but unreadable: preparation reports it as a
-                    # retryable disappearance, not as lost bytes.
-                    continue
+                sources = sources_by_raw_id.get(raw_id)
+                source_before = None
+                if sources is not None:
+                    try:
+                        source_before = self._source_stat_identity(Path(sources.source_path))
+                    except OSError:
+                        source_before = None
                 prepared, reason = self._stage_blob_from_recorded_source(
-                    archive, blob_store, raw_id, blob_hash=blob_hash, source_path=path
+                    archive,
+                    blob_store,
+                    raw_id,
+                    blob_hash=blob_hash,
+                    row=evidence_rows.get(raw_id),
+                    sources=sources,
+                    on_staged=partial(staged_owner.add, raw_id),
                 )
                 if prepared is None:
+                    row = evidence_rows.get(raw_id)
+                    if (
+                        row is not None
+                        and sources is not None
+                        and reason == LEGACY_APPEND_COORDINATES_UNPROVEN
+                        and is_legacy_append_without_window(row)
+                    ):
+                        try:
+                            after = self._source_stat_identity(Path(sources.source_path))
+                        except OSError:
+                            raise RetainedPreparationRetryableError(
+                                f"retained source changed or became unavailable during coordinate proof: {raw_id}"
+                            ) from None
+                        if source_before is None or source_before != after:
+                            raise RetainedPreparationRetryableError(
+                                f"retained source changed during coordinate proof: {raw_id}"
+                            )
+                        coordinate_refusals[raw_id] = (sources.source_path, after)
+                        continue
                     raise RetainedPreparationRetryableError(
                         f"retained raw blob absent and not restorable from its source ({reason}): {raw_id}"
                     )
-                staged.append((raw_id, prepared))
                 staged_hashes.add(blob_hash)
         except BlobVerificationCancelledError as exc:
-            _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
+            staged_owner.discard()
             raise RetainedPreparationRetryableError("retained blob restoration cancelled") from exc
         except BaseException:
-            _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
+            staged_owner.discard()
             raise
-        return StagedBlobRestorations(blob_store, staged) if staged else None
+        if coordinate_refusals:
+            staged_owner.discard()
+            sealed_source_stats = tuple(
+                sorted(
+                    (raw_id, source_path, stat_identity)
+                    for raw_id, (source_path, stat_identity) in coordinate_refusals.items()
+                )
+            )
+            return MissingSourceCoordinateRefusal(tuple(coordinate_refusals), sealed_source_stats)
+        return staged_owner if staged_owner.staged else None
 
     def _stage_blob_from_recorded_source(
         self,
@@ -1071,40 +1161,34 @@ class RawObservationDerivation:
         raw_id: str,
         *,
         blob_hash: str,
-        source_path: str,
+        row: Mapping[str, object] | None = None,
+        sources: RetainedBlobSources | None = None,
+        on_staged: Callable[[PreparedBlob], None] | None = None,
     ) -> tuple[PreparedBlob | None, str | None]:
         """Stage one absent blob from the first recorded source window holding its exact bytes.
 
-        The candidate windows come from ``retained_blob_source_candidates``,
-        the owner backup recoverability reads too. A ZIP member is replayed
+        The candidate windows, and the recorded path re-anchored at this
+        archive's root, come from ``retained_blob_sources``, the owner backup
+        recoverability reads too. A ZIP member is replayed
         through acquisition's ZIP admission (``zip_reacquired_unit``)
         and staged only when the replayed value is byte-identical to the
         blob; a structural-only match is ``inexact_payload``. Returns the
         staged blob, or ``None`` with the last candidate's refusal reason.
         """
         conn = archive.source_connection
-        row = read_raw_source_evidence(conn, raw_id)
+        row = row or read_raw_source_evidence(conn, raw_id)
         if row is None:
             raise KeyError(raw_id)
-        prior_full_observations: list[tuple[int, int]] = []
-        if is_legacy_append_without_window(row):
-            prior_full_observations = [
-                (int(acquired_at_ms), int(size))
-                for acquired_at_ms, size in conn.execute(
-                    "SELECT acquired_at_ms, blob_size FROM raw_sessions "
-                    "WHERE source_path = ? AND source_index = 0 AND revision_kind IN ('full', 'unknown') "
-                    "AND acquired_at_ms IS NOT NULL AND blob_size IS NOT NULL",
-                    (source_path,),
-                )
-            ]
-        candidates = retained_blob_source_candidates(
-            row,
-            container_member=is_recorded_container_member(row),
-            prior_full_observations=prior_full_observations,
-        )
+        sources = sources or retained_blob_sources_many(conn, (row,), root=self.archive_root).get(raw_id)
+        if sources is None:
+            return None, "no_source_window"
+        source_path, candidates = sources.source_path, sources.candidates
         if not candidates:
+            if legacy_append_coordinates_unproven(row, sources, ()):
+                return None, LEGACY_APPEND_COORDINATES_UNPROVEN
             return None, "no_source_window"
         reason: str | None = None
+        failures: list[str] = []
         for candidate in candidates:
             if candidate.window is not None:
                 prepared, reason = stage_exact_source_window_blob(
@@ -1113,6 +1197,7 @@ class RawObservationDerivation:
                     window=candidate.window,
                     blob_hash=blob_hash,
                     stop=compute_cancel_requested,
+                    on_staged=on_staged,
                 )
             else:
                 from polylogue.operations.zip_acquisition_replay import zip_reacquired_unit
@@ -1131,12 +1216,17 @@ class RawObservationDerivation:
                                 size_bytes=unit.size_bytes,
                                 stop=compute_cancel_requested,
                             )
+                            if prepared is not None and on_staged is not None:
+                                on_staged(prepared)
                     except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
                         reason = f"error:{type(exc).__name__}"
                     else:
                         reason = None if prepared is not None else "inexact_payload"
             if prepared is not None:
                 return prepared, None
+            failures.append(reason or "hash_mismatch")
+        if legacy_append_coordinates_unproven(row, sources, failures):
+            return None, LEGACY_APPEND_COORDINATES_UNPROVEN
         return None, reason
 
     def _publish_blob_restorations(self, restorations: StagedBlobRestorations) -> None:
@@ -1167,6 +1257,14 @@ class RawObservationDerivation:
         if replacement.already_valid:
             return self._current(frame) and self.inspect(frame, (replacement.key,)).get(replacement.key) == "valid"
 
+        sealed_source_stats = (
+            {
+                raw_id: (source_path, stat_identity)
+                for raw_id, source_path, stat_identity in replacement.missing_source_coordinate_refusal.source_stat_identities
+            }
+            if replacement.missing_source_coordinate_refusal is not None
+            else {}
+        )
         lease = ActiveWriterLease(self.archive_root)
         try:
             lease.acquire()
@@ -1176,6 +1274,96 @@ class RawObservationDerivation:
             selected_paths = set(self.source_paths(replacement.raw_ids).values())
             if refusal.unattributed_reason is not None or selected_paths.intersection(refusal.source_paths):
                 return False
+            if replacement.missing_source_coordinate_refusal is not None:
+                from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+                from polylogue.storage.sqlite.archive_tiers.source_write import (
+                    ArchiveSourceArtifact,
+                    upsert_raw_artifact,
+                )
+
+                refusal_rows: list[tuple[str, Mapping[str, object]]] = []
+                preflight_retry = False
+                # The source-tier writer owns the durable refusal receipt. Let
+                # it take the one archive lease, then recheck the sealed input
+                # binding before changing source.db.
+                lease.close()
+                with ArchiveStore.open_source_tier_acquisition(self.archive_root) as source_archive:
+                    conn = source_archive.source_connection
+                    if not self._current(frame) or self._binding(replacement.raw_ids) != replacement.input_binding:
+                        return False
+                    current_refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
+                    current_paths = set(self.source_paths(replacement.raw_ids).values())
+                    if current_refusal.unattributed_reason is not None or current_paths.intersection(
+                        current_refusal.source_paths
+                    ):
+                        return False
+                    for raw_id in replacement.missing_source_coordinate_refusal.raw_ids:
+                        row = read_raw_source_evidence(conn, raw_id)
+                        if row is None or not is_legacy_append_without_window(row):
+                            preflight_retry = True
+                            break
+                        blob_hash = str(row["blob_hash"])
+                        try:
+                            self._blob_stat_identity(BlobStore(self.archive_root / "blob").blob_path(blob_hash))
+                        except FileNotFoundError:
+                            pass
+                        except OSError:
+                            preflight_retry = True
+                            break
+                        else:
+                            preflight_retry = True
+                            break
+                        sealed_source = sealed_source_stats.get(raw_id)
+                        if sealed_source is None:
+                            preflight_retry = True
+                            break
+                        sealed_path, expected_identity = sealed_source
+                        try:
+                            source_identity = self._source_stat_identity(Path(sealed_path))
+                        except OSError:
+                            preflight_retry = True
+                            break
+                        if expected_identity != source_identity:
+                            preflight_retry = True
+                            break
+                        refusal_rows.append((raw_id, row))
+                    if not preflight_retry and len(refusal_rows) == len(
+                        replacement.missing_source_coordinate_refusal.raw_ids
+                    ):
+                        for refused_raw_id, refused_evidence in refusal_rows:
+                            kind = RawFailureEvidenceKind.TERMINAL_MISSING_SOURCE_COORDINATES
+                            acquired_at_ms = int(cast(int | str | None, refused_evidence["acquired_at_ms"]) or 0)
+                            origin = Origin.from_string(str(refused_evidence["origin"]))
+                            source_path = str(refused_evidence["source_path"] or refused_raw_id)
+                            source_index = int(cast(int | str | None, refused_evidence["source_index"]) or 0)
+                            upsert_raw_artifact(
+                                conn,
+                                refused_raw_id,
+                                ArchiveSourceArtifact(
+                                    artifact_id="raw-failure:"
+                                    + hashlib.sha256(f"{refused_raw_id}:{kind.value}".encode()).hexdigest(),
+                                    origin=origin,
+                                    source_path=source_path,
+                                    source_index=source_index,
+                                    artifact_kind=kind.value,
+                                    classification_reason=raw_failure_classification_reason(
+                                        diagnostic=None,
+                                        evidence_ref=None,
+                                        outcome_code=kind.value,
+                                        remediation=None,
+                                        retryable=False,
+                                        trusted_validation_failure=False,
+                                    ),
+                                    support_status=kind.support_status,
+                                    parse_as_session=False,
+                                    schema_eligible=False,
+                                    first_observed_at_ms=acquired_at_ms,
+                                    last_observed_at_ms=acquired_at_ms,
+                                ),
+                            )
+                    else:
+                        preflight_retry = True
+                return not preflight_retry
             if replacement.blob_restorations is not None:
                 self._publish_blob_restorations(replacement.blob_restorations)
                 # The restored bytes are prepared on the next pass, which now

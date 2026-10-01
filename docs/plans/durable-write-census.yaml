@@ -1004,6 +1004,20 @@ writes:
     classification: guarded_producer_refinement
     reason: "the only column this statement writes is first_observed_at_ms, and it writes MIN(first_observed_at_ms, ?) -- monotone backwards, so a later observation can only extend the known history earlier and can never replace the stored earliest observation with a worse one. It runs on the branch where an older carrier already owns the coordinate and the incoming raw is the stale one"
   - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
+    function: "retire_missing_source_coordinate_refusal"
+    table: "raw_artifacts"
+    kind: "delete"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "after exact append coordinates are durably proven, retire only the terminal missing-coordinate artifact for that raw so it cannot continue to mask newly sufficient source evidence"
+  - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
+    function: "retire_missing_source_coordinate_refusal"
+    table: "raw_membership_census"
+    kind: "delete"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "the non-session census row was recorded while append coordinates were absent; once exact coordinates are proven it is stale and must be recensed before identity can be settled"
+  - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
     function: "write_source_raw_session"
     table: "raw_sessions"
     kind: "update"
