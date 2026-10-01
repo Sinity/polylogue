@@ -410,6 +410,17 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
 ) -> None:
     logger = MagicMock()
     monkeypatch.setattr(live_watcher, "logger", logger)
+    from polylogue.core.raw_failure_evidence import PartialAdmission
+
+    partial_paths = (
+        {
+            "synthetic.jsonl": PartialAdmission(
+                reason="truncated_tail", complete_record_count=2, complete_prefix_bytes=72, source_bytes=100
+            )
+        }
+        if partial
+        else {}
+    )
     metrics = LiveBatchMetrics(
         queued_file_count=2,
         needed_file_count=2,
@@ -430,16 +441,8 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         convergence_time_s=0.25,
         total_time_s=1.0,
         stage_timings_s={"full_parse": 0.45, "fts": 0.05, "derived": 0.2},
+        partial_admission_paths=partial_paths,
     )
-
-    if partial:
-        from polylogue.core.raw_failure_evidence import PartialAdmission
-
-        metrics.partial_admission_paths = {
-            "synthetic.jsonl": PartialAdmission(
-                reason="truncated_tail", complete_record_count=2, complete_prefix_bytes=72, source_bytes=100
-            )
-        }
 
     live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
 
