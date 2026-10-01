@@ -44,7 +44,7 @@ from polylogue.storage.io_phase_metrics import (
     settle_connection_cursors,
 )
 from polylogue.storage.sqlite.write_lease import (
-    KnownSourceWriteAuthority,
+    KnownTierWriteAuthority,
     UnleasedWriteError,
     current_sql_custody,
     require_write_lease,
@@ -1140,13 +1140,13 @@ def _connect_archive_writer(
     timeout: float = DB_TIMEOUT,
     check_same_thread: bool = True,
     existing_only: bool = False,
-    source_permit: KnownSourceWriteAuthority | None = None,
+    mutation_permit: KnownTierWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Keep Source SQL authorization dynamic across admitted writer leases."""
     selected = Path(path)
     root = configured_archive_root(path, archive_root)
     is_source = selected.resolve() == (root / "source.db").resolve()
-    if source_permit is not None and not is_source:
+    if mutation_permit is not None and not is_source:
         raise UnleasedWriteError("known Source permit cannot authorize another tier")
     connection = connect_measured(
         f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only else path,
@@ -1174,9 +1174,9 @@ def _connect_archive_writer(
                 # Cleanup stays available after failure, but cannot mint a
                 # successful receipt for a transaction it has rolled back.
                 custody = current_sql_custody()
-                permit = None if custody is None else custody.known_source_authority
+                permit = None if custody is None else custody.known_tier_authority
                 if permit is not None:
-                    permit.authorize_source_sql(connection, action, first, second, schema, trigger)
+                    permit.authorize_tier_sql(connection, action, first, second, schema, trigger)
                 return sqlite3.SQLITE_OK
             try:
                 current_metadata = source_path.stat()
@@ -1197,8 +1197,8 @@ def _connect_archive_writer(
                     if custody.archive_root.resolve() != root.resolve():
                         return sqlite3.SQLITE_DENY
                     custody.assert_namespace()
-                    permit = custody.known_source_authority
-                    if permit is not None and not permit.authorize_source_sql(
+                    permit = custody.known_tier_authority
+                    if permit is not None and not permit.authorize_tier_sql(
                         connection, action, first, second, schema, trigger
                     ):
                         return sqlite3.SQLITE_DENY
@@ -1207,9 +1207,9 @@ def _connect_archive_writer(
             return sqlite3.SQLITE_OK
 
         connection.set_authorizer(authorize)
-        if source_permit is not None:
+        if mutation_permit is not None:
             custody = current_sql_custody()
-            if custody is None or custody.known_source_authority is not source_permit:
+            if custody is None or custody.known_tier_authority is not mutation_permit:
                 raise UnleasedWriteError("Source connection does not own its current known mutation")
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
@@ -1221,7 +1221,7 @@ def open_source_tier_write_connection(
     path: str | Path,
     *,
     archive_root: str | Path | None = None,
-    source_permit: KnownSourceWriteAuthority | None = None,
+    mutation_permit: KnownTierWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Open a source-tier writer with the normal local policy only.
 
@@ -1232,16 +1232,19 @@ def open_source_tier_write_connection(
     """
     require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
     conn = _connect_archive_writer(
-        path, archive_root=archive_root, source_permit=source_permit, timeout=WRITE_CONNECTION_PROFILE.timeout_seconds
+        path,
+        archive_root=archive_root,
+        mutation_permit=mutation_permit,
+        timeout=WRITE_CONNECTION_PROFILE.timeout_seconds,
     )
     owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
             conn.execute(statement)
-        if source_permit is not None:
+        if mutation_permit is not None:
             # temp_store profile setup can discard TEMP objects. Bind exact
             # row guards only after every connection-local setting is final.
-            source_permit.bind_source_connection(conn)
+            mutation_permit.bind_mutation_connection(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
@@ -2215,7 +2218,7 @@ def open_isolated_write_connection(
     profile: SQLiteConnectionProfile = ISOLATED_TIER_WRITE_PROFILE,
     timeout: float | None = None,
     archive_root: str | Path | None = None,
-    source_permit: KnownSourceWriteAuthority | None = None,
+    mutation_permit: KnownTierWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Open one writable tier without attaching sibling databases.
 
@@ -2230,15 +2233,15 @@ def open_isolated_write_connection(
     conn = _connect_archive_writer(
         path,
         archive_root=archive_root,
-        source_permit=source_permit,
+        mutation_permit=mutation_permit,
         timeout=profile.timeout_seconds if timeout is None else timeout,
     )
     owner = NativeSQLCustodyOwner(conn)
     try:
         for statement in write_connection_pragma_statements(profile):
             conn.execute(statement)
-        if source_permit is not None:
-            source_permit.bind_source_connection(conn)
+        if mutation_permit is not None:
+            mutation_permit.bind_mutation_connection(conn)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise

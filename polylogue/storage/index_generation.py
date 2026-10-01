@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import errno
 import fcntl
 import json
 import os
@@ -20,7 +22,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
-from types import TracebackType
+from types import BuiltinFunctionType, TracebackType
 from typing import Any, cast
 
 from polylogue.logging import WARNING, emit
@@ -547,6 +549,15 @@ class RebuildLease:
             raise interruption
 
 
+class ActiveWriterLeaseSettlementError(RuntimeError):
+    """The exact exclusion descriptor remains owned after an uncertain close."""
+
+    def __init__(self, lease: ActiveWriterLease, failure: BaseException) -> None:
+        super().__init__("active-writer exclusion requires original-owner descriptor settlement")
+        self.lease = lease
+        self.failure = failure
+
+
 class ActiveWriterLease:
     """Shared process-held lease refused while an offline rebuild owns the archive."""
 
@@ -554,6 +565,36 @@ class ActiveWriterLease:
         self.path = archive_root / ".index-rebuild.lock"
         self._fd: int | None = None
         self._owner_pid = os.getpid()
+        self._owner_thread = threading.current_thread()
+        self._owner_task = self._task()
+        self._identity: tuple[int, int] | None = None
+        self._close_failure: BaseException | None = None
+
+    @staticmethod
+    def _task() -> object | None:
+        try:
+            return asyncio.current_task()
+        except RuntimeError:
+            return None
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def require_owner(self, archive_root: Path) -> None:
+        if (
+            self._owner_pid != os.getpid()
+            or self._owner_thread is not threading.current_thread()
+            or self._owner_task is not self._task()
+            or self.path.parent.resolve(strict=True) != archive_root.resolve(strict=True)
+            or self._fd is None
+            or self._close_failure is not None
+        ):
+            raise RuntimeError("publication exclusion requires its exact acquired creator and archive")
+        opened = os.fstat(self._fd)
+        linked = self.path.stat(follow_symlinks=False)
+        if self._identity != (opened.st_dev, opened.st_ino) or self._identity != (linked.st_dev, linked.st_ino):
+            raise RuntimeError("publication exclusion namespace changed after acquisition")
 
     def acquire(self) -> None:
         if self._owner_pid != os.getpid():
@@ -565,16 +606,56 @@ class ActiveWriterLease:
             fcntl.LOCK_SH,
             unavailable_message=f"offline index rebuild owns archive: {self.path}",
         )
+        try:
+            metadata = os.fstat(self._fd)
+            self._identity = metadata.st_dev, metadata.st_ino
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "Active-writer acquisition and cleanup failed", [primary, cleanup]
+                ) from primary
+            raise
+
+    def _binding_retired(self, fd: int) -> bool:
+        try:
+            metadata = os.fstat(fd)
+        except OSError as error:
+            return error.errno == errno.EBADF
+        return self._identity is not None and self._identity != (metadata.st_dev, metadata.st_ino)
 
     def close(self) -> None:
         if self._owner_pid != os.getpid():
             raise RuntimeError("cannot release active-writer exclusion inherited across fork")
         if self._fd is not None:
-            fd, self._fd = self._fd, None
+            fd = self._fd
+            if self._close_failure is not None:
+                if not self._binding_retired(fd):
+                    raise ActiveWriterLeaseSettlementError(self, self._close_failure) from self._close_failure
+                self._fd = None
+                self._close_failure = None
+                return
+            closer = os.close
+            native_linux_close = (
+                sys.platform == "linux"
+                and isinstance(closer, BuiltinFunctionType)
+                and closer.__module__ == "posix"
+                and closer.__name__ == "close"
+            )
             try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
+                # Closing the original open file description releases flock.
+                # An earlier LOCK_UN would surrender exclusion even when a
+                # controlled close fails before releasing that description.
+                closer(fd)
+            except BaseException as error:
+                if (native_linux_close and isinstance(error, OSError)) or self._binding_retired(fd):
+                    self._fd = None
+                    raise
+                self._close_failure = error
+                raise ActiveWriterLeaseSettlementError(self, error) from error
+            else:
+                self._fd = None
 
 
 @dataclass(frozen=True, slots=True)

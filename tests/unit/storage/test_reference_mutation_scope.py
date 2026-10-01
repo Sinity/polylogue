@@ -20,6 +20,141 @@ from tests.infra.live_ingest import write_index_session
 from tests.infra.reference_sessions import reference_session
 
 
+@pytest.mark.parametrize("failed_resource", ["payload", "cursor"])
+def test_publication_exclusion_survives_failed_original_owner_cleanup(tmp_path: Path, failed_resource: str) -> None:
+    import errno
+    import fcntl
+    import os
+
+    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.sqlite.connection_profile import (
+        native_sql_children,
+        retained_native_settlement_owners_on_current_thread,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.publication-exclusion", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        entry = tuple(native_sql_children(seal))
+        exclusion = ActiveWriterLease(tmp_path)
+        exclusion.acquire()
+        cursor = seal.observer("user").cursor(factory=ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        next(cursor)
+        fault = OSError(errno.EIO, "synthetic publication cleanup failure")
+        payload_attempts = 0
+        payload_fails = failed_resource == "payload"
+
+        def close_payload() -> None:
+            nonlocal payload_attempts
+            payload_attempts += 1
+            if payload_fails:
+                raise fault
+
+        if failed_resource == "cursor":
+            cursor.cleanup_failure = fault
+            cursor.allow_cleanup.clear()
+        seal.retain_publication_lifetime(exclusion, close_payload)
+        probe = os.open(exclusion.path, os.O_RDWR)
+        try:
+            with pytest.raises((OSError, NativeConnectionSettlementError)):
+                seal.close()
+            assert exclusion.held and not seal._closed and seal.publication_lifetime_bound
+            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            payload_fails = False
+            cursor.allow_cleanup.set()
+            seal.close()
+            assert not exclusion.held and seal._closed and seal.publication_lifetime_bound
+            assert payload_attempts == (2 if failed_resource == "payload" else 1)
+            assert cursor.close_attempts == (2 if failed_resource == "cursor" else 1)
+            assert retained_native_settlement_owners_on_current_thread(entry) == ()
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            payload_fails = False
+            cursor.allow_cleanup.set()
+            seal.close()
+            os.close(probe)
+
+
+@pytest.mark.parametrize("reuse_slot", [False, True])
+def test_publication_parent_retains_uncertain_exclusion_close_without_retrying_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reuse_slot: bool
+) -> None:
+    import errno
+    import fcntl
+    import os
+
+    from polylogue.storage.index_generation import ActiveWriterLease, ActiveWriterLeaseSettlementError
+    from polylogue.storage.sqlite.connection_profile import (
+        native_sql_children,
+        retained_native_settlement_owners_on_current_thread,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.publication-fd-settlement", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        entry = tuple(native_sql_children(seal))
+        exclusion = ActiveWriterLease(tmp_path)
+        exclusion.acquire()
+        descriptor = exclusion._fd
+        assert descriptor is not None
+        original_close = os.close
+        fault = OSError(errno.EIO, "synthetic pre-effect exclusion close failure")
+        attempts = 0
+
+        def close(fd: int) -> None:
+            nonlocal attempts
+            if fd == descriptor:
+                attempts += 1
+                raise fault
+            original_close(fd)
+
+        seal.retain_publication_lifetime(exclusion, lambda: None)
+        probe = os.open(exclusion.path, os.O_RDWR)
+        replacement_fd: int | None = None
+        original_retired = False
+        try:
+            monkeypatch.setattr(os, "close", close)
+            for _ in range(2):
+                with pytest.raises(ActiveWriterLeaseSettlementError) as caught:
+                    seal.close()
+                assert caught.value.failure is fault
+                assert exclusion.held and not seal._closed
+                assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert attempts == 1
+            # Explicitly settle the known original descriptor. A retry only
+            # verifies its retirement; it never closes a recycled numeric slot.
+            original_close(descriptor)
+            original_retired = True
+            if reuse_slot:
+                replacement_fd = os.open(tmp_path / "other-description", os.O_CREAT | os.O_RDWR, 0o600)
+                os.dup2(replacement_fd, descriptor)
+            seal.close()
+            assert seal._closed and not exclusion.held
+            assert retained_native_settlement_owners_on_current_thread(entry) == ()
+            if reuse_slot:
+                assert replacement_fd is not None
+                assert os.fstat(descriptor).st_ino == os.fstat(replacement_fd).st_ino
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            monkeypatch.setattr(os, "close", original_close)
+            if exclusion.held and not original_retired:
+                original_close(descriptor)
+            seal.close()
+            if replacement_fd is not None:
+                original_close(descriptor)
+                if replacement_fd != descriptor:
+                    original_close(replacement_fd)
+            original_close(probe)
+
+
 @pytest.mark.parametrize("lookup", ["shared", "codex:shared", "codex-session:shared"])
 def test_insert_preserves_original_session_alias_resolution(tmp_path: Path, lookup: str) -> None:
     with write_lease("test.reference-alias", archive_root=tmp_path):
@@ -705,7 +840,9 @@ def test_known_source_permit_rejects_inherited_child_using_preexisting_handle(tm
     async def scenario() -> None:
         async with async_write_lease("test.source-permit", archive_root=tmp_path):
             with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
-                permit = seal.prepare_known_source_mutation("authority_control", ("value",), (), key_column="key")
+                permit = seal.prepare_known_tier_mutation(
+                    "authority_control", ("value",), (), tier="source", key_column="key"
+                )
                 with permit.hold_authority():
 
                     async def child() -> None:
@@ -1093,10 +1230,10 @@ def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: 
             setup.execute("INSERT INTO authority_control VALUES ('selected', 'original')")
             setup.commit()
         with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
-            permit = seal.prepare_known_source_mutation(
-                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
             )
-            with permit.hold_authority(), permit.source_connection() as source:
+            with permit.hold_authority(), permit.mutation_connection() as source:
                 if commit_route == "native_context":
                     with source:
                         source.execute("BEGIN IMMEDIATE")
@@ -1107,7 +1244,7 @@ def test_known_source_receipt_accepts_only_its_declared_native_commit(tmp_path: 
                     source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
                     permit.allow_commit(source)
                     source.commit()
-                seal.accept_known_source_commit(permit.committed())
+                seal.accept_known_tier_commit(permit.committed())
             seal.validate_observers_current()
             assert seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "accepted"
 
@@ -1123,10 +1260,10 @@ def test_known_source_rollback_cannot_become_a_successful_receipt(tmp_path: Path
             setup.execute("INSERT INTO authority_control VALUES ('selected', 'original')")
             setup.commit()
         with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
-            permit = seal.prepare_known_source_mutation(
-                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
             )
-            with permit.hold_authority(), permit.source_connection() as source:
+            with permit.hold_authority(), permit.mutation_connection() as source:
                 source.execute("BEGIN IMMEDIATE")
                 source.execute("UPDATE authority_control SET value = 'accepted' WHERE key = 'selected'")
                 permit.allow_commit(source)
@@ -1150,12 +1287,12 @@ def test_known_source_exact_row_guard_survives_factory_profile_setup(tmp_path: P
             )
             setup.commit()
         with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
-            permit = seal.prepare_known_source_mutation(
-                "authority_control", ("value",), (("accepted", "selected"),), key_column="key"
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
             )
             with permit.hold_authority():
                 with pytest.raises(ReferenceSealError):
-                    with permit.source_connection() as source:
+                    with permit.mutation_connection() as source:
                         with pytest.raises(sqlite3.DatabaseError):
                             source.execute("PRAGMA temp_store=DEFAULT")
                         source.execute("BEGIN IMMEDIATE")

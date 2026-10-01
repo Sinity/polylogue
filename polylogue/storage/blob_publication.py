@@ -220,13 +220,14 @@ class BlobPublicationReservationStore:
                 elif tuple(existing) != values:
                     raise ValueError("publication claim collides with another reservation")
             reference_seal.validate_observers_current()
-            permit = reference_seal.prepare_known_source_mutation(
+            permit = reference_seal.prepare_known_tier_mutation(
                 "blob_publication_reservations",
                 ("blob_hash", "size_bytes", "publisher_id", "reserved_at_ms"),
                 tuple(rows),
+                tier="source",
                 key_column="publication_id",
             )
-            with permit.hold_authority(), permit.source_connection() as conn:
+            with permit.hold_authority(), permit.mutation_connection() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.executemany(
                     "INSERT INTO blob_publication_reservations "
@@ -235,7 +236,7 @@ class BlobPublicationReservationStore:
                 )
                 permit.allow_commit(conn)
                 conn.commit()
-                reference_seal.accept_known_source_commit(permit.committed())
+                reference_seal.accept_known_tier_commit(permit.committed())
             return excised
         conn = self._open_connection()
         try:

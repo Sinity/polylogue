@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from polylogue.storage.index_generation import IndexGeneration
+    from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
     from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
 
 from polylogue.core.compute_cancel import compute_cancel_requested
@@ -109,7 +109,7 @@ class ReferenceSealStaleError(ReferenceSealError):
 
 
 @dataclass(frozen=True, slots=True)
-class KnownSourceMutationReceipt:
+class KnownTierMutationReceipt:
     """Proof handle for one exact Source mutation committed under this seal."""
 
     _seal: PreparedIndexMutation
@@ -121,10 +121,11 @@ class KnownSourceMutationReceipt:
     _seal_nonce: object
     _key_column: str
     _effect_count: int
+    _tier: Literal["source", "user"]
 
 
 @dataclass(frozen=True, slots=True)
-class KnownSourceMutationPermit:
+class KnownTierMutationPermit:
     """Exact rows an admitted Source writer is authorized to update."""
 
     _seal: PreparedIndexMutation
@@ -136,6 +137,7 @@ class KnownSourceMutationPermit:
     _seal_nonce: object
 
     _key_column: str
+    _tier: Literal["source", "user"]
     _connection: sqlite3.Connection | None = field(default=None, init=False, compare=False, repr=False)
     _custody: ArchiveWriteCustody | None = field(default=None, init=False, compare=False, repr=False)
     _guard_setup: bool = field(default=False, init=False, compare=False, repr=False)
@@ -145,7 +147,7 @@ class KnownSourceMutationPermit:
     _failure: BaseException | None = field(default=None, init=False, compare=False, repr=False)
 
     @contextmanager
-    def hold_authority(self) -> Iterator[KnownSourceMutationPermit]:
+    def hold_authority(self) -> Iterator[KnownTierMutationPermit]:
         self._seal.validate_observers_current()
         require_write_lease("known Source mutation", archive_root=self._seal.archive_root)
         custody = current_sql_custody()
@@ -153,18 +155,18 @@ class KnownSourceMutationPermit:
             raise ReferenceSealError("known Source mutation requires actual physical archive custody")
         object.__setattr__(self, "_custody", custody)
         try:
-            with custody.known_source_mutation(self):
+            with custody.known_tier_mutation(self):
                 yield self
         finally:
             object.__setattr__(self, "_custody", None)
 
     @contextmanager
-    def source_connection(self) -> Iterator[sqlite3.Connection]:
+    def mutation_connection(self) -> Iterator[sqlite3.Connection]:
         owner = NativeSQLCustodyOwner(
             open_source_tier_write_connection(
                 self._seal._paths["source"],
                 archive_root=self._seal.archive_root,
-                source_permit=self,
+                mutation_permit=self,
             )
         )
         try:
@@ -180,7 +182,7 @@ class KnownSourceMutationPermit:
         else:
             owner.close()
 
-    def bind_source_connection(self, connection: sqlite3.Connection) -> None:
+    def bind_mutation_connection(self, connection: sqlite3.Connection) -> None:
         self._seal._require_live_owner()
         if self._custody is None or current_sql_custody() is not self._custody:
             raise ReferenceSealError("known Source connection has no admitted physical custody")
@@ -196,7 +198,7 @@ class KnownSourceMutationPermit:
                 self._seal._require_live_owner()
                 key, actual = values[0], tuple(values[1:])
                 row = self._seal._scratch.execute(
-                    "SELECT values_blob FROM known_source_mutation_rows WHERE row_key = ?", (key,)
+                    "SELECT values_blob FROM known_tier_mutation_rows WHERE row_key = ?", (key,)
                 ).fetchone()
                 if row is None or pickle.loads(row[0]) != actual:
                     raise ReferenceSealError("Source transaction attempted an undeclared key or value")
@@ -219,7 +221,7 @@ class KnownSourceMutationPermit:
         finally:
             object.__setattr__(self, "_guard_setup", False)
 
-    def authorize_source_sql(
+    def authorize_tier_sql(
         self,
         connection: sqlite3.Connection,
         action: int,
@@ -284,9 +286,9 @@ class KnownSourceMutationPermit:
         if (table, columns, rows) != (self._table, self._columns, self._rows):
             raise ReferenceSealError("Source writer does not match the exact prepared mutation")
 
-    def committed(self) -> KnownSourceMutationReceipt:
+    def committed(self) -> KnownTierMutationReceipt:
         """Mint a receipt only after the exact Source connection context committed."""
-        return self._seal._record_known_source_commit(self)
+        return self._seal._record_known_tier_commit(self)
 
 
 _ACTIVE_MUTATION_SCOPE: ContextVar[IndexMutationScope | None] = ContextVar(
@@ -685,9 +687,12 @@ class PreparedIndexMutation:
         self._candidate_schema: tuple[int, str | None] | None = None
         self.candidate_missing_session_count = 0
         self.candidate_first_missing_session_id: str | None = None
-        self._source_mutation_nonce = object()
-        self._pending_source_permit: KnownSourceMutationPermit | None = None
-        self._pending_source_receipt: KnownSourceMutationReceipt | None = None
+        self._tier_mutation_nonce = object()
+        self._pending_tier_permit: KnownTierMutationPermit | None = None
+        self._pending_tier_receipt: KnownTierMutationReceipt | None = None
+        self._publication_exclusion: ActiveWriterLease | None = None
+        self._publication_payload_cleanup: Callable[[], None] | None = None
+        self._publication_lifetime_bound = False
         self._closed = False
         self._cleanup_requested = False
         self._session_namespace_noted = False
@@ -1189,16 +1194,19 @@ class PreparedIndexMutation:
             raise ReferenceSealStaleError("publisher Source incarnation changed after preparation")
         self.validate_observers_current()
 
-    def prepare_known_source_mutation(
+    def prepare_known_tier_mutation(
         self,
         table: str,
         columns: tuple[str, ...],
         rows: tuple[tuple[object, ...], ...],
         *,
         key_column: str,
-    ) -> KnownSourceMutationPermit:
+        tier: Literal["source", "user"],
+    ) -> KnownTierMutationPermit:
         """Bind one exact prepared Source write to this observer baseline."""
         self._require_new_work()
+        if tier != "source":
+            raise ReferenceSealError("User effects require the exact removal effect witness")
         if (
             not table.isidentifier()
             or not key_column.isidentifier()
@@ -1211,40 +1219,41 @@ class PreparedIndexMutation:
         source_identity = _tier_identity(self._paths["source"])
         if source_identity != self._identities["source"]:
             raise ReferenceSealStaleError("source.db incarnation changed before prepared source publication")
-        if self._pending_source_permit is not None:
+        if self._pending_tier_permit is not None:
             raise ReferenceSealError("this seal already has a pending known Source mutation")
-        permit = KnownSourceMutationPermit(
+        permit = KnownTierMutationPermit(
             self,
             source_identity,
             self._versions["source"],
             table,
             columns,
             rows,
-            self._source_mutation_nonce,
+            self._tier_mutation_nonce,
             key_column,
+            tier,
         )
         self._scratch.execute(
-            "CREATE TABLE IF NOT EXISTS known_source_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
+            "CREATE TABLE IF NOT EXISTS known_tier_mutation_rows(row_key TEXT PRIMARY KEY, values_blob BLOB NOT NULL) WITHOUT ROWID"
         )
-        self._scratch.execute("DELETE FROM known_source_mutation_rows")
+        self._scratch.execute("DELETE FROM known_tier_mutation_rows")
         self._scratch.executemany(
-            "INSERT INTO known_source_mutation_rows VALUES (?, ?)",
+            "INSERT INTO known_tier_mutation_rows VALUES (?, ?)",
             ((row[-1], pickle.dumps(row[:-1], protocol=5)) for row in rows),
         )
         self._scratch.commit()
-        self._pending_source_permit = permit
+        self._pending_tier_permit = permit
         return permit
 
-    def _record_known_source_commit(self, permit: KnownSourceMutationPermit) -> KnownSourceMutationReceipt:
+    def _record_known_tier_commit(self, permit: KnownTierMutationPermit) -> KnownTierMutationReceipt:
         self._require_live_owner()
-        if permit is not self._pending_source_permit or permit._seal_nonce is not self._source_mutation_nonce:
+        if permit is not self._pending_tier_permit or permit._seal_nonce is not self._tier_mutation_nonce:
             raise ReferenceSealError("Source writer used a permit outside its prepared seal")
-        if self._pending_source_receipt is not None:
+        if self._pending_tier_receipt is not None:
             raise ReferenceSealError("known Source mutation permit was already committed")
         if (
             permit._custody is None
             or current_sql_custody() is not permit._custody
-            or permit._custody.known_source_authority is not permit
+            or permit._custody.known_tier_authority is not permit
             or permit._connection is None
             or permit._connection.in_transaction
             or not permit._commit_allowed
@@ -1252,7 +1261,7 @@ class PreparedIndexMutation:
             or permit._failure is not None
         ):
             raise ReferenceSealError("Source receipt requires its actual completed dedicated transaction")
-        receipt = KnownSourceMutationReceipt(
+        receipt = KnownTierMutationReceipt(
             self,
             permit._source_identity,
             permit._prior_data_version,
@@ -1262,25 +1271,26 @@ class PreparedIndexMutation:
             permit._seal_nonce,
             permit._key_column,
             permit._effects,
+            permit._tier,
         )
-        self._pending_source_receipt = receipt
+        self._pending_tier_receipt = receipt
         return receipt
 
-    def accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
+    def accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         """Settle an already committed Source receipt even after cancellation."""
         self._require_live_owner()
         observer = self._observers["source"]
         observer.set_progress_handler(None, 0)
         try:
-            self._accept_known_source_commit(receipt)
+            self._accept_known_tier_commit(receipt)
         finally:
             observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
 
-    def _accept_known_source_commit(self, receipt: KnownSourceMutationReceipt) -> None:
+    def _accept_known_tier_commit(self, receipt: KnownTierMutationReceipt) -> None:
         if (
             receipt._seal is not self
-            or receipt is not self._pending_source_receipt
-            or receipt._seal_nonce is not self._source_mutation_nonce
+            or receipt is not self._pending_tier_receipt
+            or receipt._seal_nonce is not self._tier_mutation_nonce
             or receipt._source_identity != self._identities["source"]
             or receipt._prior_data_version != self._versions["source"]
         ):
@@ -1292,12 +1302,12 @@ class PreparedIndexMutation:
         observer = self._observers["source"]
         if observer.in_transaction:
             raise ReferenceSealError("cannot advance Source authority while its observer has a read transaction")
-        permit = self._pending_source_permit
+        permit = self._pending_tier_permit
         if (
             permit is None
             or permit._custody is None
             or current_sql_custody() is not permit._custody
-            or permit._custody.known_source_authority is not permit
+            or permit._custody.known_tier_authority is not permit
         ):
             raise ReferenceSealError("Source acceptance lost its exact physical mutation authority")
         for tier in ("index", "user", "audit"):
@@ -1329,8 +1339,8 @@ class PreparedIndexMutation:
         # between stable incarnation and data_version checks.
         self._identities["source"] = identity_after
         self._versions["source"] = version_after
-        self._pending_source_permit = None
-        self._pending_source_receipt = None
+        self._pending_tier_permit = None
+        self._pending_tier_receipt = None
 
     def validate_reachability(self, conn: sqlite3.Connection) -> None:
         self._require_new_work()
@@ -1382,6 +1392,25 @@ class PreparedIndexMutation:
         ):
             raise ReferenceSealError("reference seal must be used by its observing index owner")
 
+    def retain_publication_lifetime(self, exclusion: ActiveWriterLease, close_payload: Callable[[], None]) -> None:
+        """Keep this publication's rebuild exclusion through physical cleanup."""
+        from polylogue.storage.index_generation import ActiveWriterLease
+
+        self._require_new_work()
+        if not isinstance(exclusion, ActiveWriterLease):
+            raise ReferenceSealError("publication requires its actual active-writer exclusion")
+        exclusion.require_owner(self.archive_root)
+        if self._publication_exclusion is not None or self._publication_payload_cleanup is not None:
+            raise ReferenceSealError("reference seal already owns a publication lifetime")
+        self._publication_exclusion = exclusion
+        self._publication_payload_cleanup = close_payload
+        self._publication_lifetime_bound = True
+
+    @property
+    def publication_lifetime_bound(self) -> bool:
+        """Whether this seal ever accepted its publication's terminal lifetime."""
+        return self._publication_lifetime_bound
+
     def close(self) -> None:
         if self._closed:
             return
@@ -1406,6 +1435,8 @@ class PreparedIndexMutation:
                 failures.append(exc)
                 return False
 
+        if self._publication_payload_cleanup is not None and settle(self._publication_payload_cleanup):
+            self._publication_payload_cleanup = None
         for name, observer in tuple(self._observers.items()):
             attempted_connections.add(id(observer))
             if settle(partial(self._close_native_connection, observer)):
@@ -1427,13 +1458,18 @@ class PreparedIndexMutation:
         for owner in native_sql_children(self):
             if not owner._settled and owner._connection_identity not in attempted_connections:
                 settle(owner.close)
-        self._closed = (
+        sql_settled = (
             not self._observers
             and not self._observer_leaves
             and self._owned_scratch_connection is None
             and self._scratch_directory is None
             and all(owner._settled for owner in native_sql_children(self))
         )
+        if sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is not None:
+            exclusion = self._publication_exclusion
+            if settle(exclusion.close) or not exclusion.held:
+                self._publication_exclusion = None
+        self._closed = sql_settled and self._publication_payload_cleanup is None and self._publication_exclusion is None
         if self._closed:
             retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:

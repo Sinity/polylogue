@@ -57,10 +57,10 @@ if TYPE_CHECKING:
     import sqlite3
 
 
-class KnownSourceWriteAuthority(Protocol):
-    def bind_source_connection(self, connection: sqlite3.Connection) -> None: ...
+class KnownTierWriteAuthority(Protocol):
+    def bind_mutation_connection(self, connection: sqlite3.Connection) -> None: ...
 
-    def authorize_source_sql(
+    def authorize_tier_sql(
         self,
         connection: sqlite3.Connection,
         action: int,
@@ -143,7 +143,7 @@ class ArchiveWriteCustody:
         "_owner_open",
         "_locked",
         "_sql_owners",
-        "_known_source_mutation",
+        "_known_tier_mutation",
         "owner_pid",
         "owner_thread",
         "owner_task",
@@ -177,7 +177,7 @@ class ArchiveWriteCustody:
         self._owner_open = True
         self._locked = False
         self._sql_owners: dict[int, tuple[SQLCustodyOwner, threading.Thread, asyncio.Task[Any] | None]] = {}
-        self._known_source_mutation: KnownSourceWriteAuthority | None = None
+        self._known_tier_mutation: KnownTierWriteAuthority | None = None
         self.owner_pid = os.getpid()
         self.owner_thread: threading.Thread | None = None
         self.owner_task: asyncio.Task[Any] | None = None
@@ -205,24 +205,24 @@ class ArchiveWriteCustody:
             raise
 
     @contextmanager
-    def known_source_mutation(self, permit: KnownSourceWriteAuthority) -> Iterator[None]:
+    def known_tier_mutation(self, permit: KnownTierWriteAuthority) -> Iterator[None]:
         """Keep one exact Source effect bound through its observer acceptance."""
         require_write_lease("known Source mutation", archive_root=self.archive_root)
         if current_sql_custody() is not self:
             raise UnleasedWriteError("known Source mutation does not own the current physical custody")
-        if self._known_source_mutation is not None:
+        if self._known_tier_mutation is not None:
             raise UnleasedWriteError("physical custody already holds a known Source mutation")
-        self._known_source_mutation = permit
+        self._known_tier_mutation = permit
         try:
             yield
         finally:
-            if self._known_source_mutation is not permit:
+            if self._known_tier_mutation is not permit:
                 raise UnleasedWriteError("known Source mutation authority changed during settlement")
-            self._known_source_mutation = None
+            self._known_tier_mutation = None
 
     @property
-    def known_source_authority(self) -> KnownSourceWriteAuthority | None:
-        return self._known_source_mutation
+    def known_tier_authority(self) -> KnownTierWriteAuthority | None:
+        return self._known_tier_mutation
 
     def bind_owner_context(self) -> None:
         self._check_process()
