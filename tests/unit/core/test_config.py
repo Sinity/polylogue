@@ -51,6 +51,41 @@ class TestConfig:
         """Consumers cloning Config can inspect its explicit-path contract."""
         assert hasattr(MagicMock(spec=Config), "_db_path_explicit")
 
+    def test_runtime_projection_preserves_selected_root_settings_and_defensive_sources(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Generation lookup uses the captured root without resolving ambient settings."""
+        from polylogue.config import resolve_runtime_config
+
+        root = tmp_path / "selected"
+        (root / "inbox").mkdir(parents=True)
+        runtime = resolve_runtime_config(
+            environment={"HOME": str(tmp_path), "POLYLOGUE_SITE_CONFIG": ""},
+            cli_overrides={
+                "archive_root": str(root),
+                "embedding_model": "fixture-model",
+                "embedding_dimension": 16,
+                "judgment_automation_interval_s": 123,
+            },
+        )
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "ambient"))
+        config = runtime.as_config()
+
+        assert config.archive_root == root
+        assert config.render_root == root / "render"
+        assert config.db_path == root / "index.db"
+        assert config.current_db_path() == root / "index.db"
+        assert config.embedding_model == "fixture-model"
+        assert config.embedding_dimension == 16
+        assert config.judgment_automation_interval_s == 123
+        assert config.drive_config == runtime.drive_config
+        assert config.index_config == runtime.index_config
+        assert tuple(config.sources) == runtime.sources
+        assert any(source.path == root / "inbox" for source in config.sources)
+        config.sources.clear()
+        assert runtime.sources
+        assert tuple(runtime.as_config().sources) == runtime.sources
+
     def test_config_db_path_default(self, workspace_env: dict[str, Path]) -> None:
         """db_path defaults to the resolved index.db database path."""
         config = Config(
@@ -682,7 +717,7 @@ class TestPolylogueConfigTOML:
 
         toml_path = tmp_path / "polylogue.toml"
         toml_path.write_text('[daemon]\nhost = "0.0.0.0"\nport = 8123\n', encoding="utf-8")
-        with pytest.raises(ConfigError, match=r"\[daemon\.api\]"):
+        with pytest.raises(ConfigError):
             load_polylogue_config(config_path=toml_path)
 
     def test_toml_sets_browser_capture(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:

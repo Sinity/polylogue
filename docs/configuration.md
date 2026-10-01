@@ -352,6 +352,12 @@ Environment variable precedence is:
 5. Provider credentials such as `VOYAGE_API_KEY` supply secrets; they do not
    enable provider spend by themselves.
 
+Runtime configuration fixes the selected archive root. Its `Config`
+projection follows that root's active index generation when a caller asks for
+`current_db_path()`, including after promotion. A manually constructed
+`Config(db_path=...)` keeps that explicit database path pinned; changing the
+ambient archive-root setting does not redirect an existing configuration.
+
 Common runtime overrides:
 
 | Variable | Config key | Description |
