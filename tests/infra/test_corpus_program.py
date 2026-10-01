@@ -33,6 +33,7 @@ from tests.infra.corpus_program import (
     Replace,
     Restart,
     _codex_transcript,
+    _codex_turn,
     corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
@@ -259,6 +260,84 @@ def test_production_route_carries_attachment_identity_metadata_and_bytes(
     ]
 
 
+def test_native_attachment_preserves_semantics_lineage_and_retained_replay(
+    workspace_env: dict[str, Path], tmp_path: Path
+) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.corpus_program import CorpusState
+
+    payload = (Path(__file__).parents[1] / "fixtures" / "corpus-program-codex-native.jsonl").read_bytes()
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    initial = CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("tool-call-session-1", payload)),
+            Fork("fork", "tool-call-session-1", "child", "child-native"),
+            Append("append", "child", _codex_turn("child-tail", "A divergent authored turn")),
+            Converge("converge"),
+        )
+    ).run(runtime)
+    state: CorpusState = initial.state
+    child = state.artifact("child")
+    native = parse_payload(Provider.CODEX, [json.loads(line) for line in child.payload.splitlines()], "child")[0]
+    assert native.parent_session_provider_id == "tool-call-session-1"
+    assert any(message.model_name == "gpt-5-codex" and message.model_effort == "high" for message in native.messages)
+    assert any(message.input_tokens for message in native.messages)
+    assert any(message.blocks for message in native.messages)
+
+    def semantics(root: Path) -> tuple[list[tuple[Any, ...]], list[tuple[Any, ...]]]:
+        with sqlite3.connect(root / "index.db") as conn:
+            messages = conn.execute(
+                "SELECT native_id, role, message_type, material_origin, input_tokens, output_tokens, "
+                "model_name, model_effort, stop_reason, variant_index, sender_name, recipient, "
+                "delivery_status, end_turn, user_context_text FROM messages ORDER BY message_id"
+            ).fetchall()
+            blocks = conn.execute("SELECT * FROM blocks ORDER BY message_id, position").fetchall()
+        return messages, blocks
+
+    before = semantics(runtime.archive_root)
+    state = Attach("attach", "child", AttachmentArtifact("native-att", "fixture.txt", "text/plain", b"bytes")).apply(
+        state, runtime
+    )
+    state = Converge("attached-converge").apply(state, runtime)
+    assert semantics(runtime.archive_root) == before
+    with ArchiveStore.open_existing(runtime.archive_root, read_only=True) as archive:
+        with archive.open_raw_revision_material(runtime._raw_ids["child"][0]) as (provider, handle, _, _):
+            retained = handle.read()
+    capture = json.loads(retained)
+    replayed = parse_payload(provider, capture, "retained")[0]
+    assert replayed.messages == native.messages
+    assert replayed.parent_session_provider_id == native.parent_session_provider_id
+    assert replayed.attachments[0].provider_attachment_id == "native-att"
+    assert replayed.attachments[0].inline_bytes == b"bytes"
+
+    replay_root = tmp_path / "retained-native-replay"
+    initialize_active_archive_root(replay_root)
+    with ArchiveStore.open_existing(replay_root, read_only=False) as archive:
+        parent_raw = archive.write_raw_payload(
+            provider=Provider.CODEX, payload=payload, source_path="parent.jsonl", acquired_at_ms=1
+        )
+        child_raw = archive.write_raw_payload(
+            provider=provider, payload=retained, source_path="child.json", acquired_at_ms=2
+        )
+    result = backfill_historical_revision_evidence(replay_root, selected_raw_ids=[parent_raw, child_raw])
+    assert result.quarantined == result.adoption_deferred == 0
+    assert result.replayed_logical_sources == 2
+    assert semantics(replay_root) == before
+    with sqlite3.connect(replay_root / "index.db") as conn:
+        links = conn.execute("SELECT src_session_id, resolved_dst_session_id FROM session_links").fetchall()
+        assert links and all(parent is not None for _, parent in links)
+        assert conn.execute("SELECT native_id FROM attachment_native_ids WHERE id_kind = 'attachment'").fetchall() == [
+            ("native-att",)
+        ]
+    runtime.restart()
+    assert runtime.converge()["parse"].parse_failures == 0
+    assert semantics(runtime.archive_root) == before
+
+
 def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[str, Path]) -> None:
     fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
     hook = _hook()
@@ -419,6 +498,35 @@ def test_unchanged_reacquisition_preserves_proven_raw_evidence(workspace_env: di
     assert repeated.skipped > 0
     assert runtime._raw_ids["session"] == raw_ids
     assert runtime.converge()["parse"].parse_failures == 0
+
+
+def test_content_identical_duplicate_reuses_actual_raw_evidence(workspace_env: dict[str, Path]) -> None:
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    program = CorpusProgram(
+        operations=(
+            Acquire("acquire", _artifact("session", _codex_transcript("session", "first", "authored"))),
+            Duplicate("duplicate", "session", "copy"),
+            Converge("converge"),
+        )
+    )
+    run = program.run(runtime)
+    assert run.state.applied_operation_ids == ("acquire", "duplicate", "converge")
+    assert runtime._raw_ids["copy"] == runtime._raw_ids["session"]
+    assert runtime.converge()["parse"].parse_failures == 0
+    with sqlite3.connect(runtime.archive_root / "index.db") as conn:
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("first",)]
+
+
+@pytest.mark.parametrize("payload", [b"\xff", b"{}\n{bad}"])
+def test_malformed_attach_has_typed_refusal(workspace_env: dict[str, Path], payload: bytes) -> None:
+    from tests.infra.corpus_program import CorpusState
+
+    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
+    state = Acquire("acquire", _artifact("invalid", payload)).apply(CorpusState(), runtime)
+    with pytest.raises(CorpusProgramError):
+        Attach("attach", "invalid", AttachmentArtifact("att", "fixture.txt", payload=b"bytes")).apply(state, runtime)
+    assert state.applied_operation_ids == ("acquire",)
+    assert not state.artifact("invalid").attachments
 
 
 @pytest.mark.parametrize("mutation_type", [Append, Replace], ids=["append", "replace"])

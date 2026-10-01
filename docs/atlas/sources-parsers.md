@@ -62,6 +62,10 @@ provider (`docs/provider-origin-identity.md:15-30`;
 
 ## Invariants
 
+- Native Codex browser-capture envelopes retain the original record array and
+  delegate to the ordinary Codex parser before merging envelope attachments;
+  the extension does not provide a Codex page adapter.
+
 - Detection is shape-based and ordered by declared tightness, per payload mode.
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.

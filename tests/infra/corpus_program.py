@@ -402,6 +402,8 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
             output.append(line)
             continue
         if isinstance(value, dict):
+            if value.get("type") == "session_meta" and isinstance(value.get("payload"), dict):
+                value["payload"]["forked_from_id"] = parent_session_id
             for container in (value, value.get("payload")):
                 if not isinstance(container, dict):
                     continue
@@ -409,8 +411,6 @@ def _fork_payload(payload: bytes, new_session_id: str, parent_session_id: str) -
                     if container.get(key) == parent_session_id:
                         container[key] = new_session_id
                         changed = True
-                if container.get("type") == "session_meta":
-                    container["parent_id"] = parent_session_id
             encoded = _canonical_json(value).encode("utf-8")
             output.append(encoded + (b"\n" if line.endswith(b"\n") else b""))
         else:
@@ -906,7 +906,7 @@ class ProductionCorpusRuntime:
         self.source_root = self.archive_root / "corpus-program-sources"
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
-        self._wire_hashes: dict[str, bytes] = {}
+        self._wire_hashes: dict[str, tuple[str, bytes]] = {}
         self._crashed = False
         self.last_results: list[object] = []
 
@@ -934,17 +934,18 @@ class ProductionCorpusRuntime:
                 result = await AcquisitionService(backend).acquire_sources([Source(name=source_name, path=path)])
                 self.last_results.append(result)
                 wire_hash = hashlib.sha256(wire_payload).digest()
-                unchanged = (
-                    result.skipped > 0
-                    and artifact.artifact_id in self._raw_ids
-                    and self._wire_hashes.get(artifact.artifact_id) == wire_hash
-                    and self._source_paths.get(artifact.artifact_id) == path
+                known_ids = tuple(
+                    dict.fromkeys(
+                        raw_id
+                        for artifact_id, known_hash in self._wire_hashes.items()
+                        if known_hash == (source_name, wire_hash)
+                        for raw_id in self._raw_ids[artifact_id]
+                    )
                 )
-                if result.errors or (not result.raw_ids and not unchanged):
+                if result.errors or (not result.raw_ids and not (result.skipped > 0 and known_ids)):
                     raise CorpusAcquisitionRejectedError(artifact.artifact_id, result)
-                if result.raw_ids:
-                    self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids)
-                self._wire_hashes[artifact.artifact_id] = wire_hash
+                self._raw_ids[artifact.artifact_id] = tuple(result.raw_ids) or known_ids
+                self._wire_hashes[artifact.artifact_id] = (source_name, wire_hash)
                 self._source_paths[artifact.artifact_id] = path
                 return result
             finally:
@@ -1039,13 +1040,18 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     from polylogue.core.enums import Provider
 
     provider = Provider.from_string(artifact.source_name)
+    if provider not in {Provider.CODEX, Provider.CHATGPT, Provider.CLAUDE_AI}:
+        raise CorpusProgramError("Attach requires a provider with native capture payload support")
     from polylogue.browser_capture.models import BrowserCaptureBlock
     from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 
     try:
-        payload = json.loads(artifact.payload)
-    except json.JSONDecodeError:
-        payload = [json.loads(line) for line in artifact.payload.splitlines() if line.strip()]
+        try:
+            payload = json.loads(artifact.payload)
+        except json.JSONDecodeError:
+            payload = [json.loads(line) for line in artifact.payload.splitlines() if line.strip()]
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CorpusProgramError("Attach refused: transcript is not JSON or JSONL") from exc
     sessions = parse_payload(provider, payload, artifact.artifact_id, source_path=artifact.source_path)
     sessions = require_positive_conversational_evidence(
         sessions,
@@ -1104,6 +1110,10 @@ def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
             "attachments": attachment_payload,
         },
     }
+    if provider.value == "codex":
+        envelope["raw_provider_payload"] = payload if isinstance(payload, list) else [payload]
+    elif provider.value in {"chatgpt", "claude-ai"}:
+        envelope["raw_provider_payload"] = payload
     return _canonical_json(envelope).encode("utf-8")
 
 

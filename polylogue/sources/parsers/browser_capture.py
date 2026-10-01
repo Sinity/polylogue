@@ -809,6 +809,21 @@ def parse(payload: object, fallback_id: str) -> ParsedSession:
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id
     )
     raw_provider_payload = envelope.raw_provider_payload
+    if provider is Provider.CODEX and raw_provider_payload is not None:
+        from polylogue.sources.parsers.codex import is_supported_session_stream
+        from polylogue.sources.parsers.codex import parse as parse_codex
+
+        if not isinstance(raw_provider_payload, list) or not is_supported_session_stream(raw_provider_payload):
+            raise ValueError("Codex native capture requires a supported record stream")
+        return _merge_envelope_session_events(
+            _apply_browser_capture_session_kind(
+                _merge_envelope_attachments(parse_codex(raw_provider_payload, provider_session_id), envelope),
+                envelope,
+                provider_session_id,
+                has_native_payload=True,
+            ),
+            envelope,
+        )
     if envelope.session.provider is Provider.CHATGPT and has_chatgpt_native_payload(raw_provider_payload):
         from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 

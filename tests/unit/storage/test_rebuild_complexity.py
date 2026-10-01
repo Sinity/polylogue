@@ -139,6 +139,7 @@ def _run_component_measurement(
 
 def _assert_component_shape(observations: list[GrowthObservation]) -> None:
     assert observations
+    assert len({observation.metric("selected_component_count") for observation in observations}) == 1
     measured = "\n".join(f"  {observation.tier}: {dict(observation.metrics)}" for observation in observations)
     assert all(observation.metric("archive_wide_derived_statements") == 0 for observation in observations), (
         f"incremental component route emitted archive-wide derived writes; measured counters:\n{measured}"
@@ -146,6 +147,10 @@ def _assert_component_shape(observations: list[GrowthObservation]) -> None:
     assert all(observation.metric("component_derived_vm_steps") > 0 for observation in observations), (
         f"production route reported no derived work; measured counters:\n{measured}"
     )
+    assert all(
+        observation.metric("component_derived_vm_steps") <= observations[0].metric("component_derived_vm_steps")
+        for observation in observations[1:]
+    ), f"fixed component work grew with unrelated archive rows; measured counters:\n{measured}"
 
 
 @pytest.mark.timeout(0)
@@ -177,6 +182,7 @@ def test_incremental_component_has_no_archive_wide_derived_writes(tmp_path: Path
         "fts-identity-rebuild",
         "fts-literal-scope",
         "fts-tautology-scope",
+        "fts-delete-all",
         "delegation-copy",
         "delegation-rebuild",
     ],
@@ -213,6 +219,10 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
                 assert archive._conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == count
             elif mutation == "fts-rebuild":
                 assert rebuild_archive_messages_fts(archive._conn) > 0
+            elif mutation == "fts-delete-all":
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+                archive._conn.execute("INSERT INTO messages_fts(messages_fts) VALUES('delete-all')")
+                assert archive._conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
             elif mutation == "fts-identity-rebuild":
                 assert archive._conn.execute(insert_all_message_identity_rows_sql()).rowcount > 0
             elif mutation == "fts-literal-scope":
@@ -284,6 +294,30 @@ def test_incremental_law_rejects_once_per_pass_archive_refresh(
     assert observation.metric("archive_wide_derived_statements") > 0
     with pytest.raises(AssertionError):
         _assert_component_shape([observation])
+
+
+@pytest.mark.timeout(0)
+def test_incremental_law_rejects_archive_wide_derived_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = _run
+    scans = 0
+
+    def read_after_selected_pass(*args: Any, **kwargs: Any) -> DerivationReport:
+        nonlocal scans
+        result = original(*args, **kwargs)
+        if kwargs.get("raw_ids"):
+            scans += 1
+            with ArchiveStore.open_existing(args[0], read_only=True) as archive:
+                rows = archive._conn.execute("SELECT * FROM action_pairs").fetchall()
+                assert len(rows) > 0
+        return result
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["_run"]), "_run", read_after_selected_pass)
+    observations = [_run_component_measurement(tmp_path, size, component_count=1) for size in (2, 8)]
+    assert scans == 2
+    assert all(observation.metric("archive_wide_derived_statements") == 0 for observation in observations)
+    assert observations[1].metric("component_derived_vm_steps") > observations[0].metric("component_derived_vm_steps")
+    with pytest.raises(AssertionError):
+        _assert_component_shape(observations)
 
 
 def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(

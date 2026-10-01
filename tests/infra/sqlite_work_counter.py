@@ -93,6 +93,10 @@ def _is_archive_wide_derived_statement(sql: str) -> bool:
         )
     if operation in {"delete from", "update"}:
         return not _scoped_content_mutation(sql, table)
+    if table == "messages_fts" and re.match(r"\s*\(messages_fts(?:\s*,|\))", sql[target.end() :]):
+        # FTS5 control writes (delete-all/rebuild/optimize/merge) operate on
+        # the whole index, even though their payload uses a VALUES row.
+        return True
     if re.match(r"\s*(?:\([^)]*\))?\s*values\b", sql[target.end() :]):
         return False
     if table in {"messages_fts", "messages_fts_identity"}:

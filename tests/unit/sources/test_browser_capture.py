@@ -35,6 +35,38 @@ from polylogue.storage.blob_store import BlobStore
 from tests.infra.archive_scenarios import open_index_db
 
 
+def test_native_codex_capture_preserves_ordinary_parser_semantics() -> None:
+    records = [
+        json.loads(line)
+        for line in (Path(__file__).parents[2] / "fixtures" / "corpus-program-codex-native.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    native = parse_payload(Provider.CODEX, records, "native")[0]
+    payload = _capture_payload()
+    session = cast(dict[str, object], payload["session"])
+    session["provider"] = "codex"
+    session["provider_session_id"] = native.provider_session_id
+    session["turns"] = [{"provider_turn_id": "placeholder", "role": "user", "text": "DOM projection"}]
+    payload["raw_provider_payload"] = records
+    captured = parse_browser_capture(payload, "capture")
+    assert captured.messages == native.messages
+    assert captured.parent_session_provider_id == native.parent_session_provider_id
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in captured.ingest_flags
+    assert DOM_FALLBACK_INGEST_FLAG not in captured.ingest_flags
+    schema = BrowserCaptureEnvelope.model_json_schema()
+    assert any(shape.get("type") == "array" for shape in schema["properties"]["raw_provider_payload"]["anyOf"])
+
+
+@pytest.mark.parametrize("raw", [[], ["wrong"], [{"unrecognized": "record"}], {"mapping": {}}])
+def test_native_codex_capture_refuses_unsupported_records(raw: object) -> None:
+    payload = _capture_payload()
+    cast(dict[str, object], payload["session"])["provider"] = "codex"
+    payload["raw_provider_payload"] = raw
+    with pytest.raises(ValueError):
+        parse_browser_capture(payload, "capture")
+
+
 def _capture_payload() -> dict[str, object]:
     return {
         "polylogue_capture_kind": "browser_llm_session",
