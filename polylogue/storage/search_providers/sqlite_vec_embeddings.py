@@ -33,7 +33,8 @@ class SqliteVecEmbeddingMixin:
         @property
         def document_recipe(self) -> EmbeddingRecipe: ...
 
-        query_recipe: EmbeddingRecipe
+        @property
+        def query_recipe(self) -> EmbeddingRecipe: ...
 
     def _get_embeddings(
         self,

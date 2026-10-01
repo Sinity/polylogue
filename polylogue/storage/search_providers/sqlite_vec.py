@@ -44,11 +44,10 @@ class SqliteVecProvider(
         query_recipe: EmbeddingRecipe | None = None,
     ) -> None:
         document_recipe = EmbeddingRecipe.current(model=model, dimensions=dimension)
-        self.query_recipe = query_recipe or EmbeddingRecipe.current(
-            model=model, dimensions=dimension, input_type="query"
-        )
-        if self.query_recipe.input_type != "query" or not document_recipe.retrieval_compatible(self.query_recipe):
+        selected_query = query_recipe or EmbeddingRecipe.current(model=model, dimensions=dimension, input_type="query")
+        if selected_query.input_type != "query" or not document_recipe.retrieval_compatible(selected_query):
             raise SqliteVecError("query and document recipes do not declare compatible retrieval contracts")
+        self._query_recipe = query_recipe
         if snapshot_connection is not None:
             # This provider is an operation-scoped reader. The archive owner
             # opened and pinned the handle; consume its recorded index proof
@@ -79,6 +78,13 @@ class SqliteVecProvider(
     def document_recipe(self) -> EmbeddingRecipe:
         """The actual document producer's current declared request contract."""
         return EmbeddingRecipe.current(model=self.model, dimensions=self.dimension)
+
+    @property
+    def query_recipe(self) -> EmbeddingRecipe:
+        """An explicit query selection, or the current document model with query role."""
+        return self._query_recipe or EmbeddingRecipe.current(
+            model=self.model, dimensions=self.dimension, input_type="query"
+        )
 
     async def read_session_similarity(
         self,
@@ -121,7 +127,7 @@ class SqliteVecProvider(
                         connection=connection,
                         model=self.model,
                         dimension=self.dimension,
-                        query_recipe=self.query_recipe,
+                        query_recipe=self._query_recipe,
                     )
                 )
                 require_vector_seed_session(connection, session_id)

@@ -306,6 +306,42 @@ def test_provider_wire_keeps_independent_actual_roles_and_models(
     assert len(captured) == 2
 
 
+def test_implicit_query_recipe_follows_actual_document_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caching an implicit query model at construction makes this red."""
+    import json
+
+    from polylogue.storage.search_providers import create_vector_provider
+
+    captured: list[dict[str, object]] = []
+    client_type = httpx.Client
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        captured.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"embedding": [0.1] * 1024}]})
+
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: client_type(transport=httpx.MockTransport(serve), **kwargs))
+    provider = create_vector_provider(
+        voyage_api_key="synthetic-key",
+        db_path=tmp_path / "embeddings.db",
+        archive_root=tmp_path,
+        model="voyage-4",
+        dimension=1024,
+    )
+    assert isinstance(provider, SqliteVecProvider)
+    provider.model = "voyage-4-lite"
+    assert len(provider._get_embeddings([_TEXT], input_type="document")) == 1
+    assert len(provider._get_embeddings([_TEXT], input_type="query")) == 1
+    assert [(payload["model"], payload["input_type"]) for payload in captured] == [
+        ("voyage-4-lite", "document"),
+        ("voyage-4-lite", "query"),
+    ]
+    with pytest.raises(SqliteVecError):
+        provider._get_embeddings([_TEXT], input_type="unknown")
+    assert len(captured) == 2
+
+
 def test_adapter_label_drift_publishes_only_refs_and_preserves_purchased_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

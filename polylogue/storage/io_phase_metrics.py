@@ -11,6 +11,8 @@ import os
 import sqlite3
 import threading
 import time
+import weakref
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -151,6 +153,15 @@ def _transaction_phase(sql: str) -> Phase | None:
 
 
 class _MeasuredCursor(sqlite3.Cursor):
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        super().__init__(connection)
+        cast(_MeasuredConnection, connection)._register_cursor(self)
+
+    def close(self) -> None:
+        super().close()
+        cursors = getattr(self.connection, "_native_cursors", {})
+        cursors.pop(id(self), None)
+
     def execute(self, sql: str, parameters: Any = (), /) -> _MeasuredCursor:
         phase = _transaction_phase(sql)
         connection = cast(_MeasuredConnection, self.connection)
@@ -169,6 +180,7 @@ class _MeasuredConnection(sqlite3.Connection):
     _metric_tier: Tier | None = None
     _metric_context_exit = False
     _metric_statement_phase: Phase | None = None
+    _native_closed = False
 
     @overload
     def cursor(self, factory: None = None) -> sqlite3.Cursor: ...
@@ -177,18 +189,122 @@ class _MeasuredConnection(sqlite3.Connection):
     def cursor(self, factory: Callable[[sqlite3.Connection], _CursorT]) -> _CursorT: ...
 
     def cursor(self, factory: Callable[[sqlite3.Connection], sqlite3.Cursor] | None = None) -> sqlite3.Cursor:
-        return super().cursor(factory or _MeasuredCursor)
+        selected = _MeasuredCursor if factory is None else factory
+        if (
+            isinstance(selected, type)
+            and type(selected) is type
+            and issubclass(selected, sqlite3.Cursor)
+            and selected.__new__ is sqlite3.Cursor.__new__
+        ):
+            # Preserve the exact plain subclass and its ordinary class-call
+            # behavior, registering before its initializer can issue SQL.
+            constructor: Any = selected
+
+            def construct(connection: sqlite3.Connection) -> sqlite3.Cursor:
+                cursor = cast(sqlite3.Cursor, constructor.__new__(constructor, connection))
+                self._register_cursor(cursor)
+                # Bind the actual initializer descriptor as the class call
+                # does, including native, static and class method shapes.
+                try:
+                    descriptor: Any = next(
+                        base.__dict__["__init__"] for base in constructor.__mro__ if "__init__" in base.__dict__
+                    )
+                    initializer = (
+                        descriptor.__get__(cursor, constructor) if hasattr(descriptor, "__get__") else descriptor
+                    )
+                    returned = initializer(connection)
+                    if returned is not None:
+                        raise TypeError(f"__init__() should return None, not '{type(returned).__name__}'")
+                except BaseException:
+                    # A failing initializer that never called native __init__
+                    # created no statement or handle. Do not retain a fiction.
+                    if sqlite3.Cursor.connection.__get__(cursor) is None:
+                        self._native_cursors.pop(id(cursor), None)
+                    raise
+                return cursor
+
+            # Keep SQLite's native closed-handle and thread checks ahead of
+            # factory invocation, as in the original Connection.cursor call.
+            return super().cursor(construct)
+        # Arbitrary callbacks/metaclasses retain their invocation semantics.
+        # A cursor never exposed by a raising callback cannot be captured;
+        # constructor physical proof covers our owned/plain-class factories.
+        cursor = super().cursor(selected)
+        self._register_cursor(cursor)
+        return cursor
+
+    def _register_cursor(self, cursor: sqlite3.Cursor) -> None:
+        cursors = getattr(self, "_native_cursors", None)
+        if cursors is None:
+            self._native_cursors: dict[int, weakref.ReferenceType[sqlite3.Cursor]] = {}
+        cursor_id = id(cursor)
+        connection_ref = weakref.ref(self)
+
+        def discard(reference: weakref.ReferenceType[sqlite3.Cursor]) -> None:
+            connection = connection_ref()
+            if connection is not None and connection._native_cursors.get(cursor_id) is reference:
+                connection._native_cursors.pop(cursor_id)
+
+        # Custom cursor equality/hash methods cannot merge two physical
+        # statements. Identity keys also support unhashable custom cursors.
+        self._native_cursors[cursor_id] = weakref.ref(cursor, discard)
 
     def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
-        phase = _transaction_phase(sql)
-        if phase is None:
-            return super().execute(sql, parameters)
-        self._metric_statement_phase = phase
+        # The stdlib shortcuts bypass the Python cursor factory. Create the
+        # actual cursor first so even an execute-error traceback is owned.
+        return self.cursor().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        return self.cursor().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        return self.cursor().executescript(sql_script)
+
+    def live_cursors(self) -> tuple[sqlite3.Cursor, ...]:
+        live = {
+            id(cursor): cursor
+            for reference in getattr(self, "_native_cursors", {}).values()
+            if (cursor := reference()) is not None
+        }
+        live.update(getattr(self, "_unsettled_native_cursors", {}))
+        return tuple(live.values())
+
+    def close_cursor(self, cursor: sqlite3.Cursor) -> None:
         try:
-            with timed_io_phase(self._metric_tier, phase):
-                return super().execute(sql, parameters)
-        finally:
-            self._metric_statement_phase = None
+            cursor.close()
+        except BaseException:
+            # Healthy cursors remain weakly inventoried. A failed physical
+            # close must retain this exact actual statement independently of
+            # an exception traceback or the producer's last local reference.
+            pending = getattr(self, "_unsettled_native_cursors", None)
+            if pending is None:
+                self._unsettled_native_cursors: dict[int, sqlite3.Cursor] = {}
+            self._unsettled_native_cursors[id(cursor)] = cursor
+            raise
+        getattr(self, "_native_cursors", {}).pop(id(cursor), None)
+        getattr(self, "_unsettled_native_cursors", {}).pop(id(cursor), None)
+
+    def settle_cursors(self) -> None:
+        failures: list[BaseException] = []
+        for cursor in self.live_cursors():
+            try:
+                self.close_cursor(cursor)
+            except BaseException as failure:
+                failures.append(failure)
+        if failures:
+            # sqlite3_close_v2 alone can leave a zombie connection held by a
+            # partially consumed statement. Keep the actual connection open
+            # for its existing native owner's creator-thread cleanup retry.
+            raise BaseExceptionGroup("native SQLite cursors remain unsettled", failures)
+
+    def close(self) -> None:
+        if self._native_closed:
+            return super().close()
+        self.settle_cursors()
+        super().close()
+        self._native_closed = True
+        if hasattr(self, "_native_cursors"):
+            self._native_cursors.clear()
 
     def commit(self) -> None:
         if not self.in_transaction or self._metric_context_exit or self._metric_statement_phase is not None:
@@ -219,6 +335,19 @@ class _MeasuredConnection(sqlite3.Connection):
             self._metric_context_exit = False
 
 
+def settle_connection_cursors(connection: sqlite3.Connection) -> None:
+    """Settle statements through the same measured connection's creator owner."""
+    cast(_MeasuredConnection, connection).settle_cursors()
+
+
+def live_connection_cursors(connection: sqlite3.Connection) -> tuple[sqlite3.Cursor, ...]:
+    return cast(_MeasuredConnection, connection).live_cursors()
+
+
+def close_connection_cursor(connection: sqlite3.Connection, cursor: sqlite3.Cursor) -> None:
+    cast(_MeasuredConnection, connection).close_cursor(cursor)
+
+
 def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connection:
     """Time an actual returned SQLite handle without altering its PRAGMA policy."""
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
@@ -246,7 +375,10 @@ def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connecti
 __all__ = [
     "IoPhaseSample",
     "UNAVAILABLE_SQLITE_INTERNAL_PHASES",
+    "close_connection_cursor",
     "connect_measured",
+    "live_connection_cursors",
+    "settle_connection_cursors",
     "io_phase_process_snapshot",
     "io_phase_snapshot",
     "record_io_phase",
