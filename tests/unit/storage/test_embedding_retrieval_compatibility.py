@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,7 +43,7 @@ def test_compatible_switch_keeps_exact_outputs_and_occurrences_without_work(
         recipe_version=lambda domain: adapter.recipe_version,
     )
     assert adapter.inspect(frame, [f"message:{mid}" for mid in ids]) == {f"message:{mid}": "valid" for mid in ids}
-    with sqlite3.connect(root / "index.db") as conn:
+    with closing(sqlite3.connect(root / "index.db")) as conn, conn:
         conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
         assert (
             select_pending_archive_session_window(
@@ -188,10 +189,10 @@ def test_compatible_selection_refuses_stale_or_incomplete_evidence(tmp_path: Pat
     sid, ids = _session(root)
     assert embed_archive_session_sync(root / "index.db", _Documents("voyage-4"), sid).status == "embedded"
     if damage == "source":
-        with sqlite3.connect(root / "index.db") as conn:
+        with closing(sqlite3.connect(root / "index.db")) as conn, conn:
             conn.execute("UPDATE blocks SET text = ?", (_NEW_TEXT,))
     else:
-        with sqlite3.connect(root / "embeddings.db") as conn:
+        with closing(sqlite3.connect(root / "embeddings.db")) as conn, conn:
             assert try_load_sqlite_vec(conn)[0]
             if damage == "recipe":
                 conn.execute("UPDATE message_embeddings_meta SET recipe_hash = ?", (b"x" * 32,))
@@ -368,8 +369,6 @@ def test_settled_preflight_aggregates_without_materializing_session_membership(
 
 def test_ref_only_publication_refuses_changed_output_currency(tmp_path: Path) -> None:
     """A missing purchased payload between reservation and publication cannot create a ref."""
-    from contextlib import closing
-
     from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.embedding_compatibility import clear_embedding_refs
@@ -398,3 +397,55 @@ def test_ref_only_publication_refuses_changed_output_currency(tmp_path: Path) ->
         assert not adapter.publish(frame, replacement)
     assert provider.calls == []
     assert _rows(root)[1] == []
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        None,
+        {},
+        {"demo_only": True},
+        {"demo_only": True, "demo_session_ids": [7], "demo_raw_ids": [], "demo_assertion_ids": []},
+        {"demo_only": False, "demo_session_ids": ["unrelated"], "demo_raw_ids": [], "demo_assertion_ids": []},
+        {
+            "demo_only": True,
+            "demo_session_ids": ["stale-recorded-session"],
+            "demo_raw_ids": [],
+            "demo_assertion_ids": [],
+        },
+    ],
+)
+def test_incomplete_or_stale_demo_membership_does_not_exclude_real_acquisition(
+    tmp_path: Path, manifest: dict[str, object] | None
+) -> None:
+    """Only exact completed ownership membership can remove a real work key."""
+    import json
+
+    from polylogue.storage.archive_identity import DEMO_OWNERSHIP_MANIFEST_FILENAME
+
+    root = tmp_path / "archive"
+    sid, _ids = _session(root)
+    path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
+    path.write_text("invalid JSON" if manifest is None else json.dumps(manifest))
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        selected = select_pending_archive_session_window(conn, status_table="")
+    assert [item.session_id for item in selected] == [sid]
+
+
+def test_unreadable_demo_ownership_keeps_acquisition_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A read failure must not grant acquisition by dropping an exclusion."""
+    from polylogue.storage.archive_identity import DEMO_OWNERSHIP_MANIFEST_FILENAME
+
+    root = tmp_path / "archive"
+    _session(root)
+    original = Path.read_text
+
+    def read(path: Path, *args: Any, **kwargs: Any) -> str:
+        if path.name == DEMO_OWNERSHIP_MANIFEST_FILENAME:
+            raise PermissionError("synthetic ownership read denied")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        with pytest.raises(PermissionError):
+            select_pending_archive_session_window(conn, status_table="")

@@ -34,7 +34,10 @@ def _session(root: Path, *, extra: bool = False) -> tuple[str, tuple[str, ...]]:
             store, ParsedSession(source_name=Provider.CODEX, provider_session_id="compatibility", messages=messages)
         )
     with closing(sqlite3.connect(root / "index.db")) as conn:
-        ids = tuple(str(r[0]) for r in conn.execute("SELECT message_id FROM messages ORDER BY message_id"))
+        ids = tuple(
+            str(r[0])
+            for r in conn.execute("SELECT message_id FROM messages WHERE session_id = ? ORDER BY message_id", (sid,))
+        )
     return sid, ids
 
 
@@ -107,8 +110,8 @@ def add_settled_sessions(root: Path, *, count: int) -> None:
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
     from polylogue.storage.sqlite.write_lease import write_lease
 
-    store = EmbeddingGenerationStore(root)
-    with write_lease("fixture.settled-bindings", archive_root=root), store.writer_lock() as binding:
+    lifecycle_store = EmbeddingGenerationStore(root)
+    with write_lease("fixture.settled-bindings", archive_root=root), lifecycle_store.writer_lock() as binding:
         with closing(sqlite3.connect(binding.database_path)) as conn:
             address = conn.execute("SELECT vector_derivation_hash FROM message_embeddings_meta").fetchone()[0]
             conn.execute("ATTACH DATABASE ? AS idx", (str(root / "index.db"),))
@@ -122,7 +125,7 @@ def add_settled_sessions(root: Path, *, count: int) -> None:
             )
             conn.commit()
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        store.refresh_binding_contract(binding)
+        lifecycle_store.refresh_binding_contract(binding)
 
 
 def clear_embedding_refs(root: Path) -> None:

@@ -28,6 +28,7 @@ from polylogue.storage.embeddings.materialization import (
     archive_embeddable_messages_relation,
     archive_embedding_blocked_counts_sql,
     archive_embedding_messages_table_ref,
+    embedding_acquisition_predicate,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -160,6 +161,7 @@ class EmbeddingStatusPayload(TypedDict):
     pending_sessions: int | None
     pending_messages: int | None
     pending_messages_exact: bool
+    acquisition_excluded_messages: int | None
     compute_missing_messages: int | None
     binding_pending_messages: int | None
     candidate_prose_messages: int | None
@@ -898,6 +900,7 @@ def _payload_from_stats(
         "pending_sessions": pending_sessions if measurable else None,
         "pending_messages": stats.pending_messages if (measurable and pending_messages_exact) else None,
         "pending_messages_exact": pending_messages_exact and measurable,
+        "acquisition_excluded_messages": stats.acquisition_excluded_messages if measurable else None,
         "compute_missing_messages": stats.compute_missing_messages if measurable else None,
         "binding_pending_messages": stats.binding_pending_messages if measurable else None,
         "candidate_prose_messages": stats.candidate_prose_messages,
@@ -1037,6 +1040,7 @@ def _archive_embedding_status_payload(
         # pending_sessions = total_sessions set in that same branch. The
         # detail pass still downgrades this to False when one of its own
         # queries times out.
+        acquisition_excluded_messages = None
         compute_missing_messages = binding_pending_messages = None
         pending_messages_exact = include_detail
         coverage_unmeasurable_reason = None if authoritative_state.measurable else authoritative_state.reason
@@ -1251,20 +1255,32 @@ def _archive_embedding_status_payload(
                     meta="em",
                     vectors_table=vectors_table,
                 )
+                acquisition_allowed = embedding_acquisition_predicate(conn, "m")
                 work_rows = _rows_with_timeout(
                     conn,
                     f"""SELECT
-                    COALESCE(SUM(NOT COALESCE({available}, 0)), 0),
-                    COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0)
+                    COALESCE(SUM(NOT COALESCE({available}, 0) AND {acquisition_allowed}), 0),
+                    COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0),
+                    COALESCE(SUM(NOT {acquisition_allowed}), 0)
                     FROM {messages_ref}
                     LEFT JOIN {refs_table} AS r ON r.message_id = m.message_id
                     {meta_join}""",
                     timeout_ms=detail_timeout_ms,
                 )
                 if work_rows:
-                    compute_missing_messages, binding_pending_messages = (_payload_int(value) for value in work_rows[0])
+                    compute_missing_messages, binding_pending_messages, acquisition_excluded_messages = (
+                        _payload_int(value) for value in work_rows[0]
+                    )
             elif not has_refs and not has_meta:
-                compute_missing_messages, binding_pending_messages = total_messages, 0
+                acquisition_allowed = embedding_acquisition_predicate(conn, "m")
+                excluded = _scalar_int_with_timeout(
+                    conn,
+                    f"SELECT COUNT(*) FROM {messages_ref} WHERE NOT {acquisition_allowed}",
+                    timeout_ms=detail_timeout_ms,
+                )
+                acquisition_excluded_messages = excluded
+                compute_missing_messages = None if excluded is None else total_messages - excluded
+                binding_pending_messages = 0
             if blocked_unembedded_messages:
                 if compute_missing_messages is not None:
                     compute_missing_messages = max(compute_missing_messages - blocked_unembedded_messages, 0)
@@ -1314,6 +1330,7 @@ def _archive_embedding_status_payload(
             embedded_messages=embedded_messages,
             pending_sessions=pending_sessions,
             pending_messages=pending_messages,
+            acquisition_excluded_messages=acquisition_excluded_messages,
             compute_missing_messages=compute_missing_messages,
             binding_pending_messages=binding_pending_messages,
             candidate_prose_messages=candidate_prose_messages,

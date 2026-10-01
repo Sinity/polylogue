@@ -39,11 +39,14 @@ from polylogue.storage.embeddings.identity import (
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import (
+    EmbeddingAcquisitionExcludedError,
     EmbeddingProvenanceError,
     EmbeddingWriteAdmission,
     _should_embed_archive_message,
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
+    embedding_acquisition_allowed,
+    embedding_acquisition_predicate,
     inline_embedding_admission,
     message_prose_sql,
 )
@@ -221,7 +224,10 @@ def reserve_embedding_message(
             validate_schema=False,
         ) as conn,
     ):
-        return _message_input(conn, message_id, recipe, binding, index_generation)
+        payload = _message_input(conn, message_id, recipe, binding, index_generation)
+        if payload is not None and not embedding_acquisition_allowed(conn, payload.session_id):
+            raise EmbeddingAcquisitionExcludedError("demo_acquisition_excluded")
+        return payload
 
 
 def _current_input(
@@ -302,7 +308,7 @@ class EmbeddingDerivationAdapter:
                 return (), None
             relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
             params: list[object] = []
-            predicates: list[str] = []
+            predicates: list[str] = [embedding_acquisition_predicate(conn, "desired")]
             if cursor is not None:
                 predicates.append("desired.message_id > ?")
                 params.append(cursor)
@@ -511,6 +517,9 @@ class EmbeddingDerivationAdapter:
                 payload=reserved,
                 retained_output=retained,
             )
+        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
+            if not embedding_acquisition_allowed(conn, reserved.session_id):
+                raise EmbeddingAcquisitionExcludedError("demo_acquisition_excluded")
         vectors = self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
         if len(vectors) != 1:
             raise RuntimeError("embedding provider returned a mismatched vector count")

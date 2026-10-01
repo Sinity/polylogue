@@ -27,6 +27,7 @@ from polylogue.config import load_polylogue_config
 from polylogue.core.enums import Origin
 from polylogue.core.sqlite_introspection import index_exists as _index_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.storage.archive_identity import archive_root_for_index_path, demo_owned_session_ids
 from polylogue.storage.archive_tuple_location import InactiveTierDestination
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.embeddings.identity import (
@@ -196,6 +197,24 @@ def embedding_error_class(error_message: object) -> str:
     if "timeout" in normalized or "timed out" in normalized:
         return "provider_timeout"
     return "provider_error"
+
+
+class EmbeddingAcquisitionExcludedError(RuntimeError):
+    """The completed demo owner excludes this exact session from acquisition."""
+
+
+def embedding_acquisition_allowed(conn: sqlite3.Connection, session_id: str) -> bool:
+    """Apply acquisition policy without certifying or deleting stored outputs."""
+    index_path = next((str(row[2]) for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    return not index_path or session_id not in demo_owned_session_ids(archive_root_for_index_path(Path(index_path)))
+
+
+def embedding_acquisition_predicate(conn: sqlite3.Connection, alias: str) -> str:
+    """Pin the completed demo membership once for this SQL work selection."""
+    index_path = next((str(row[2]) for row in conn.execute("PRAGMA database_list") if row[1] == "main"), "")
+    excluded = demo_owned_session_ids(archive_root_for_index_path(Path(index_path))) if index_path else frozenset()
+    conn.create_function("polylogue_embedding_acquisition_allowed", 1, lambda sid: int(sid not in excluded))
+    return f"polylogue_embedding_acquisition_allowed({alias}.session_id)"
 
 
 def archive_embeddable_message_where(alias: str = "m") -> str:
@@ -635,6 +654,7 @@ def archive_embedding_session_window_sql(
         ceiling_filter = "AND ds.message_count <= ?"
         params.append(max_messages)
     pending_filter = "" if rebuild else f"AND {predicate.pending_sql}"
+    acquisition_filter = embedding_acquisition_predicate(conn, "s")
 
     sql = f"""
         {predicate.cte_sql}
@@ -648,6 +668,7 @@ def archive_embedding_session_window_sql(
           {floor_filter}
           {ceiling_filter}
           {pending_filter}
+          AND {acquisition_filter}
         ), window_ranked AS (
             SELECT session_id, title, message_count,
                    ROW_NUMBER() OVER (ORDER BY (sort_key_ms IS NULL), sort_key_ms DESC, session_id) AS ordinal,
@@ -1377,6 +1398,11 @@ def _prepare_archive_embedding_attempt(
             ).fetchone()
             if session is None:
                 return EmbedSessionOutcome(status="not_found", session_id=session_id)
+
+            if not embedding_acquisition_allowed(index_conn, session_id):
+                return EmbedSessionOutcome(
+                    status="deferred", session_id=session_id, deferred=True, error="demo_acquisition_excluded"
+                )
 
             messages_ref = archive_embedding_messages_table_ref(index_conn, alias="m")
             prose_expr = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))

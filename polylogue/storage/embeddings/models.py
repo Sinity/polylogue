@@ -14,6 +14,7 @@ class EmbeddingStatsSnapshot:
     embedded_messages: int | None = 0
     pending_sessions: int | None = 0
     pending_messages: int = 0
+    acquisition_excluded_messages: int | None = None
     compute_missing_messages: int | None = None
     binding_pending_messages: int | None = None
     candidate_prose_messages: int | None = None
