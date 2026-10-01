@@ -1,6 +1,7 @@
 name: Release
 
-# Triggered by pushing an annotated tag matching `vX.Y.Z`. Builds the
+# Dispatched by Release Please with its released tag, or triggered by an
+# independently pushed annotated tag matching `vX.Y.Z`. Builds the
 # wheel + sdist, smokes them through gate distribution on the
 # build host, runs an installed-wheel smoke matrix across supported
 # Python versions on Linux + macOS, signs the artifacts with Sigstore
@@ -43,14 +44,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-toolchain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+      - name: Stage workflow-owned release tools
+        run: |
+          mkdir release-toolchain
+          cp packaging/*.txt packaging/smoke-installed.py devtools/verify_distribution_surface.py release-toolchain/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-tool-requirements
+          path: release-toolchain/*
+          if-no-files-found: error
+
   build:
     name: build-and-smoke
+    needs: release-toolchain
     timeout-minutes: 20
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      main_hashes: ${{ steps.hashes.outputs.main }}
+      mcp_hashes: ${{ steps.hashes.outputs.mcp }}
+      hooks_hashes: ${{ steps.hashes.outputs.hooks }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Manual recovery must package the immutable tag, not the workflow
           # branch that happens to contain this recovery machinery.
@@ -95,15 +116,21 @@ jobs:
             fi
           fi
           echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
-          python-version: "3.14"
+          version: "0.12.21"
+          python-version: "3.14t"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-requirements
+          path: ${{ runner.temp }}/release-tools
       - name: Install dev dependencies (frozen lockfile)
         run: uv sync --extra dev --group audit --frozen
       - name: Build wheel + sdist and smoke installed entrypoints
-        run: uv run devtools gate distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
+        run: uv run python "${RUNNER_TEMP}/release-tools/verify_distribution_surface.py" --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir --installed-smoke-script "${RUNNER_TEMP}/release-tools/smoke-installed.py"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+          UV_BUILD_CONSTRAINT: ${{ runner.temp }}/release-tools/hatchling.txt
       - name: Verify installed wheel exposes the exact build revision
         env:
           EXPECTED_REVISION: ${{ steps.source.outputs.revision }}
@@ -127,9 +154,13 @@ jobs:
           assert len(payload["revision"] or "") == 40, payload
           assert payload["dirty"] is False, payload
           PY
+      - name: Install hash-locked metadata checker
+        run: |
+          uv venv "${RUNNER_TEMP}/twine-venv"
+          uv pip install --python "${RUNNER_TEMP}/twine-venv/bin/python" --require-hashes -r "${RUNNER_TEMP}/release-tools/twine.txt"
       - name: twine check (PyPI metadata long-description renderability)
         run: |
-          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist/dist"/*.whl "${RUNNER_TEMP}/dist/dist"/*.tar.gz
+          "${RUNNER_TEMP}/twine-venv/bin/python" -m twine check "${RUNNER_TEMP}/dist/dist"/*.whl "${RUNNER_TEMP}/dist/dist"/*.tar.gz
       - name: Extract project version from pyproject.toml
         id: version
         run: |
@@ -137,12 +168,12 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
       - name: Build polylogue-mcp wrapper distribution (#1309)
         run: |
-          uv build --out-dir "${RUNNER_TEMP}/dist-mcp" packaging/polylogue-mcp
-          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist-mcp"/*.whl "${RUNNER_TEMP}/dist-mcp"/*.tar.gz
+          uv build --build-constraints "${RUNNER_TEMP}/release-tools/hatchling.txt" --require-hashes --out-dir "${RUNNER_TEMP}/dist-mcp" packaging/polylogue-mcp
+          "${RUNNER_TEMP}/twine-venv/bin/python" -m twine check "${RUNNER_TEMP}/dist-mcp"/*.whl "${RUNNER_TEMP}/dist-mcp"/*.tar.gz
       - name: Build polylogue-hooks wrapper distribution (#1309)
         run: |
-          uv build --out-dir "${RUNNER_TEMP}/dist-hooks" packaging/polylogue-hooks
-          uv run --with twine python -m twine check "${RUNNER_TEMP}/dist-hooks"/*.whl "${RUNNER_TEMP}/dist-hooks"/*.tar.gz
+          uv build --build-constraints "${RUNNER_TEMP}/release-tools/hatchling.txt" --require-hashes --out-dir "${RUNNER_TEMP}/dist-hooks" packaging/polylogue-hooks
+          "${RUNNER_TEMP}/twine-venv/bin/python" -m twine check "${RUNNER_TEMP}/dist-hooks"/*.whl "${RUNNER_TEMP}/dist-hooks"/*.tar.gz
       - name: Stage top-level wheel + sdist for downstream jobs
         run: |
           mkdir -p staged-dist
@@ -157,17 +188,31 @@ jobs:
           cp "${RUNNER_TEMP}/dist-hooks"/*.whl staged-dist-hooks/
           cp "${RUNNER_TEMP}/dist-hooks"/*.tar.gz staged-dist-hooks/
           ls -la staged-dist-mcp/ staged-dist-hooks/
-      - uses: actions/upload-artifact@v7
+      - name: Record staged distribution hashes
+        id: hashes
+        run: |
+          python - <<'PYHASH'
+          import hashlib, json, os
+          from pathlib import Path
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for kind, directory in [("main", "staged-dist"), ("mcp", "staged-dist-mcp"), ("hooks", "staged-dist-hooks")]:
+                  hashes = {path.name: digest(path) for path in sorted(Path(directory).iterdir())}
+                  print(f"{kind}={json.dumps(hashes, separators=(',', ':'))}", file=output)
+          PYHASH
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts
           path: staged-dist/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts-mcp
           path: staged-dist-mcp/*
           if-no-files-found: error
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distribution-artifacts-hooks
           path: staged-dist-hooks/*
@@ -189,43 +234,33 @@ jobs:
         python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python-version }}t
       - name: Install built wheel into fresh venv
         shell: bash
         run: |
           python -m venv .venv-smoke
           # shellcheck disable=SC1091
           source .venv-smoke/bin/activate
-          python -m pip install --upgrade pip
           wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           echo "Installing ${wheel}"
           python -m pip install "${wheel}"
-      - name: Smoke installed entrypoints against an empty XDG archive
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-tool-requirements
+          path: release-tools/
+      - name: Smoke installed entrypoints through the installed daemon
         shell: bash
-        env:
-          POLYLOGUE_FORCE_PLAIN: "1"
         run: |
-          # shellcheck disable=SC1091
-          source .venv-smoke/bin/activate
-          archive_root="${RUNNER_TEMP}/polylogue-archive"
-          mkdir -p "${archive_root}"
-          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
-          polylogue --version
-          polylogue --help > /dev/null
-          polylogued --help > /dev/null
-          polylogue-mcp --help > /dev/null
-          # `analyze` against an empty XDG archive must not crash on first-run
-          # (covers schema bootstrap on a fresh database).
-          polylogue --plain analyze
-          # `--plain analyze --count` is the smoke parity with gate distribution.
-          polylogue --plain analyze --count
-          python -m polylogue --version
+          .venv-smoke/bin/python -I release-tools/smoke-installed.py \
+            --python "${GITHUB_WORKSPACE}/.venv-smoke/bin/python" \
+            --bin-dir "${GITHUB_WORKSPACE}/.venv-smoke/bin" \
+            --work-dir "${RUNNER_TEMP}/installed-smoke"
 
   installed-smoke-hooks:
     # polylogue-hooks has no runtime dependencies, so this smoke installs the
@@ -241,11 +276,11 @@ jobs:
         python-version: ["3.11", "3.12", "3.13", "3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-hooks
           path: dist-hooks/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install polylogue-hooks wheel into fresh venv (no other deps)
@@ -254,7 +289,6 @@ jobs:
           python -m venv .venv-hooks
           # shellcheck disable=SC1091
           source .venv-hooks/bin/activate
-          python -m pip install --upgrade pip
           wheel=$(find dist-hooks -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pip install "${wheel}"
           # Confirm zero third-party runtime closure (only pip/setuptools/wheel + polylogue-hooks).
@@ -294,13 +328,17 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/setup-python@v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          python-version: "3.14"
+          name: release-tool-requirements
+          path: release-tools/
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.14t"
       - name: Install built wheel through pipx and smoke every console script
         shell: bash
         env:
@@ -309,16 +347,13 @@ jobs:
           PIPX_BIN_DIR: ${{ runner.temp }}/pipx-bin
         run: |
           set -euo pipefail
-          python -m pip install --user pipx
+          python -m pip install --user --require-hashes -r release-tools/pipx.txt
           wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pipx install --suffix=-smoke "${wheel}"
-          archive_root="${RUNNER_TEMP}/polylogue-pipx-archive"
-          mkdir -p "${archive_root}"
-          export POLYLOGUE_ARCHIVE_ROOT="${archive_root}"
-          "${PIPX_BIN_DIR}/polylogue-smoke" --version
-          "${PIPX_BIN_DIR}/polylogue-smoke" --plain analyze --count
-          "${PIPX_BIN_DIR}/polylogued-smoke" --help > /dev/null
-          "${PIPX_BIN_DIR}/polylogue-mcp-smoke" --help > /dev/null
+          python -I release-tools/smoke-installed.py \
+            --python "${PIPX_HOME}/venvs/polylogue-smoke/bin/python" \
+            --bin-dir "${PIPX_BIN_DIR}" --suffix=-smoke \
+            --work-dir "${RUNNER_TEMP}/pipx-smoke"
 
   installed-smoke-mcp:
     # polylogue-mcp is a thin wrapper that pins the matching polylogue release.
@@ -337,24 +372,23 @@ jobs:
         python-version: ["3.14"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-mcp
           path: dist-mcp/
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: ${{ matrix.python-version }}t
       - name: Install polylogue + polylogue-mcp wrapper into fresh venv
         shell: bash
         run: |
           python -m venv .venv-mcp
           # shellcheck disable=SC1091
           source .venv-mcp/bin/activate
-          python -m pip install --upgrade pip
           main_wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           mcp_wheel=$(find dist-mcp -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
           python -m pip install "${main_wheel}" "${mcp_wheel}"
@@ -373,13 +407,18 @@ jobs:
     timeout-minutes: 10
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          python-version: "3.14"
+          name: release-tool-requirements
+          path: release-tools/
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.21"
+          python-version: "3.14t"
       - name: Generate CycloneDX SBOM from built wheel
         run: |
           wheel=$(find dist -maxdepth 1 -type f -name '*.whl' | sort | head -n1)
@@ -390,15 +429,16 @@ jobs:
           # shellcheck disable=SC1091
           source .venv-sbom/bin/activate
           uv pip install "${wheel}"
-          uv pip install cyclonedx-bom
-          cyclonedx-py environment \
+          uv venv .venv-sbom-tools
+          uv pip install --python .venv-sbom-tools/bin/python --require-hashes -r release-tools/cyclonedx-bom.txt
+          .venv-sbom-tools/bin/cyclonedx-py environment .venv-sbom \
             --output-format json \
             --output-file sbom/polylogue-${{ needs.build.outputs.version }}.cdx.json
-          cyclonedx-py environment \
+          .venv-sbom-tools/bin/cyclonedx-py environment .venv-sbom \
             --output-format xml \
             --output-file sbom/polylogue-${{ needs.build.outputs.version }}.cdx.xml
           ls -la sbom/
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom-artifacts
           path: sbom/*
@@ -418,14 +458,37 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Verify staged distribution hashes
+        env:
+          EXPECTED_HASHES: ${{ needs.build.outputs.main_hashes }}
+        run: |
+          python - <<'PYHASH'
+          import hashlib, json, os
+          from pathlib import Path
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          expected = json.loads(os.environ["EXPECTED_HASHES"])
+          actual = {path.name: digest(path) for path in Path("dist").iterdir() if path.is_file()}
+          if not expected or actual != expected:
+              raise SystemExit("staged distribution hashes do not match the build job")
+          PYHASH
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -439,10 +502,31 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true
+
+  dispatch-homebrew:
+    name: Dispatch Homebrew after main package publication
+    needs: [build, publish-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch exact published tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: v${{ needs.build.outputs.version }}
+          RECOVERY_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            gh workflow run homebrew-bump.yml --ref "${RELEASE_TAG}"
+          else
+            gh workflow run homebrew-bump.yml --ref "${GITHUB_REF_NAME}" -f "release_tag=${RECOVERY_TAG}"
+          fi
 
   publish-pypi-mcp:
     # Independent Trusted Publisher binding on PyPI is required for this
@@ -450,7 +534,7 @@ jobs:
     # publisher with owner=Sinity, repo=polylogue, workflow=release.yml,
     # environment=pypi-mcp before the first tagged release reaches this job.
     name: publish-pypi-mcp
-    needs: [build, installed-smoke-mcp, sbom]
+    needs: [build, installed-smoke-mcp, sbom, publish-pypi]
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true' && inputs.release_tag != '')
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -461,14 +545,37 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-mcp
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Verify staged distribution hashes
+        env:
+          EXPECTED_HASHES: ${{ needs.build.outputs.mcp_hashes }}
+        run: |
+          python - <<'PYHASH'
+          import hashlib, json, os
+          from pathlib import Path
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          expected = json.loads(os.environ["EXPECTED_HASHES"])
+          actual = {path.name: digest(path) for path in Path("dist").iterdir() if path.is_file()}
+          if not expected or actual != expected:
+              raise SystemExit("staged distribution hashes do not match the build job")
+          PYHASH
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -478,7 +585,7 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true
@@ -500,14 +607,37 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: distribution-artifacts-hooks
           path: dist/
       - name: List artifacts about to be signed and published
         run: ls -la dist/
+      - name: Verify staged distribution hashes
+        env:
+          EXPECTED_HASHES: ${{ needs.build.outputs.hooks_hashes }}
+        run: |
+          python - <<'PYHASH'
+          import hashlib, json, os
+          from pathlib import Path
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+          expected = json.loads(os.environ["EXPECTED_HASHES"])
+          actual = {path.name: digest(path) for path in Path("dist").iterdir() if path.is_file()}
+          if not expected or actual != expected:
+              raise SystemExit("staged distribution hashes do not match the build job")
+          PYHASH
+      - name: Pin Sigstore bootstrap installer
+        # The pinned action invokes pip install uv and uv pip install uv.
+        # Both resolvers must select the same fixed release.
+        run: |
+          printf 'uv==0.12.21\n' > "${RUNNER_TEMP}/sigstore-bootstrap-constraints.txt"
       - name: Sign wheel + sdist with Sigstore (keyless OIDC)
-        uses: sigstore/gh-action-sigstore-python@v3.5.0
+        uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9 # v3.5.0
+        env:
+          PIP_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
+          UV_CONSTRAINT: ${{ runner.temp }}/sigstore-bootstrap-constraints.txt
         with:
           inputs: |
             ./dist/*.whl
@@ -517,7 +647,7 @@ jobs:
         run: |
           find dist/ -type f ! \( -name '*.whl' -o -name '*.tar.gz' \) -delete
           ls -la dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           skip-existing: true
           verbose: true

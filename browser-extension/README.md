@@ -253,14 +253,13 @@ native-id uniqueness constraint.
 ## Development
 
 ```bash
-npm install
+npm ci
 npm test              # vitest
 npm run test:watch    # watch mode
 npm run lint          # eslint
 npm run validate      # in-tree manifest validation
 npm run build         # build Chrome .zip + Firefox .xpi under dist/
-npm install --no-save playwright@1
-npx playwright install chromium
+npm run install:screenshot-browser
 npm run test:screenshots # execute the popup HTML and verify all screenshot sizes
 npm run screenshots   # capture store-submission screenshots (Playwright)
 ```
@@ -294,7 +293,7 @@ To rebuild locally:
 
 ```bash
 cd browser-extension
-npm install
+npm ci
 npm run build
 ls dist/
 ```

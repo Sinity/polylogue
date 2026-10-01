@@ -13,8 +13,8 @@
 // Usage:
 //   node scripts/screenshots.mjs [--out DIR] [--browser-executable PATH]
 //
-// Install Playwright with `npm install --no-save playwright@1`, then
-// `npx playwright install chromium` (the release workflow does both).
+// Install locked dependencies with `npm ci`, then
+// `npm run install:screenshot-browser` (the release workflow does both).
 
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -88,7 +88,7 @@ async function main() {
   try {
     playwright = await import("playwright");
   } catch (cause) {
-    throw new Error("Install screenshot dependencies: npm install --no-save playwright@1 && npx playwright install chromium", { cause });
+    throw new Error("Install screenshot dependencies: npm ci && npm run install:screenshot-browser", { cause });
   }
 
   const args = parseArgs(process.argv.slice(2));
