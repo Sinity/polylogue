@@ -28,7 +28,12 @@ from polylogue.storage.derivation_identity import (
     DerivationKeyLike,
     DerivationSubject,
 )
-from polylogue.storage.embeddings.identity import EmbeddingRecipe, EmbeddingSourceDigest, vector_derivation_hash
+from polylogue.storage.embeddings.identity import (
+    EmbeddingRecipe,
+    EmbeddingSourceDigest,
+    embedding_derivation_key,
+    vector_derivation_hash,
+)
 from polylogue.storage.embeddings.materialization import (
     embed_archive_session_sync,
     select_pending_archive_session_window,
@@ -80,15 +85,15 @@ class _EmbeddingConfig(dict[str, object]):
     embedding_dimension = 1024
     embedding_max_cost_usd = 0.0
 
-    def __init__(self, *, model: str = "voyage-4", api_key: str | None = "test-key") -> None:
+    def __init__(self, *, model: str = "voyage-4", dimension: int = 1024, api_key: str | None = "test-key") -> None:
         super().__init__(
             voyage_api_key=api_key,
             embedding_max_cost_usd=0.0,
             embedding_model=model,
-            embedding_dimension=1024,
+            embedding_dimension=dimension,
         )
         self.embedding_model = model
-        self.embedding_dimension = 1024
+        self.embedding_dimension = dimension
         self.embedding_max_cost_usd = 0.0
 
 
@@ -111,6 +116,7 @@ def _write_archive_session(
     text: str,
     role: Role = Role.USER,
     material_origin: MaterialOrigin = MaterialOrigin.HUMAN_AUTHORED,
+    message_native_id: str = "m1",
 ) -> str:
     with ArchiveStore(root) as archive:
         return write_index_session(
@@ -120,7 +126,7 @@ def _write_archive_session(
                 provider_session_id=native_id,
                 messages=[
                     ParsedMessage(
-                        provider_message_id="m1",
+                        provider_message_id=message_native_id,
                         role=role,
                         text=text,
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
@@ -155,6 +161,152 @@ def _open_embeddings(path: Path) -> sqlite3.Connection:
         conn.close()
         pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
     return conn
+
+
+@pytest.mark.parametrize(
+    "configured_model, configured_dimension",
+    [("voyage-4", 1024), ("voyage-5", 1024), ("voyage-4", 512), ("voyage-5", 512)],
+)
+def test_supplied_document_recipe_finalizes_and_reuses_under_unchanged_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured_model: str, configured_dimension: int
+) -> None:
+    """Mutation: recomputing source identity with configuration supersedes this producer."""
+    from polylogue.storage.embeddings import materialization
+
+    monkeypatch.setattr(
+        materialization,
+        "load_polylogue_config",
+        lambda: _EmbeddingConfig(model=configured_model, dimension=configured_dimension),
+    )
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="supplied-document-recipe", text=_INITIAL_TEXT)
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    calls: list[list[str]] = []
+
+    class Provider(_FakeVectorProvider):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            calls.append(texts)
+            return super()._get_embeddings(texts, input_type)
+
+    provider = Provider()
+    assert embed_archive_session_sync(root / "index.db", provider, session_id).status == "embedded"
+    assert embed_archive_session_sync(root / "index.db", provider, session_id).status == "embedded"
+    assert calls == [[_INITIAL_TEXT]]
+
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        state = conn.execute(
+            "SELECT recipe_hash, output_contract_hash, attempt_state FROM embedding_derivation_state WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        meta = conn.execute(
+            "SELECT em.model, em.dimension, em.recipe_hash, em.output_contract_hash, r.vector_derivation_hash "
+            "FROM message_embedding_refs AS r JOIN message_embeddings_meta AS em "
+            "ON em.vector_derivation_hash = r.vector_derivation_hash WHERE r.session_id = ?",
+            (session_id,),
+        ).fetchone()
+    recipe = _recipe()
+    assert state == (recipe.recipe_hash, recipe.output_contract_hash, "succeeded")
+    assert meta == (
+        provider.model,
+        provider.dimension,
+        recipe.recipe_hash,
+        recipe.output_contract_hash,
+        vector_derivation_hash(recipe=recipe, input_text=_INITIAL_TEXT),
+    )
+
+
+@pytest.mark.parametrize("source_change", ["text", "occurrence", "eligibility", None])
+@pytest.mark.parametrize("configuration_change", ["model", "dimension", "producer", None])
+def test_inflight_source_and_configuration_changes_queue_coherent_successor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_change: str | None,
+    configuration_change: str | None,
+) -> None:
+    """Mutations: using ambient source hashes, ignoring config drift, or mixing successor identities."""
+    from polylogue.storage.embeddings import materialization
+
+    root = tmp_path / "archive"
+    session_id = _write_archive_session(root, native_id="inflight-recipe", text=_INITIAL_TEXT)
+    initialize_archive_database(root / "embeddings.db", ArchiveTier.EMBEDDINGS)
+    configured = _EmbeddingConfig(model="voyage-5", dimension=512)
+    monkeypatch.setattr(materialization, "load_polylogue_config", lambda: configured)
+    changed_text = _CHANGED_TEXT if source_change == "text" else _INITIAL_TEXT
+
+    class Provider(_FakeVectorProvider):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            nonlocal configured
+            assert texts == [_INITIAL_TEXT]
+            if source_change is not None:
+                assert (
+                    _write_archive_session(
+                        root,
+                        native_id="inflight-recipe",
+                        text=changed_text,
+                        role=Role.TOOL if source_change == "eligibility" else Role.USER,
+                        message_native_id="m2" if source_change == "occurrence" else "m1",
+                    )
+                    == session_id
+                )
+            if configuration_change == "model":
+                # Transition to the actual producer model still invalidates
+                # the in-flight attempt because configuration itself changed.
+                configured = _EmbeddingConfig(model=self.model, dimension=512)
+            elif configuration_change == "dimension":
+                configured = _EmbeddingConfig(model="voyage-5", dimension=self.dimension)
+            elif configuration_change == "producer":
+                configured = _EmbeddingConfig(model=self.model, dimension=self.dimension)
+            return super()._get_embeddings(texts, input_type)
+
+    outcome = embed_archive_session_sync(root / "index.db", Provider(), session_id)
+    changed = source_change is not None or configuration_change is not None
+    assert outcome.status == ("error" if changed else "embedded")
+    successor_recipe = (
+        EmbeddingRecipe.current(model=configured.embedding_model, dimensions=configured.embedding_dimension)
+        if configuration_change is not None
+        else _recipe()
+    )
+    source = EmbeddingSourceDigest()
+    if source_change != "eligibility":
+        source.update(vector_derivation_hash(recipe=successor_recipe, input_text=changed_text))
+    with sqlite3.connect(root / "embeddings.db") as conn:
+        state = conn.execute(
+            "SELECT generation, source_hash, recipe_hash, output_contract_hash, derivation_key, attempt_state "
+            "FROM embedding_derivation_state WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        status = conn.execute(
+            "SELECT needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        # Superseding telemetry never deletes the purchased output produced
+        # by the original request, even when its occurrence was replaced.
+        original_meta = conn.execute("SELECT model, recipe_hash FROM message_embeddings_meta").fetchall()
+    assert state == (
+        2 if changed else 1,
+        source.digest(),
+        successor_recipe.recipe_hash,
+        successor_recipe.output_contract_hash,
+        embedding_derivation_key(session_id=session_id, source_hash=source.digest(), recipe=successor_recipe).digest(),
+        "pending" if changed else "succeeded",
+    )
+    assert status == (1 if changed else 0,)
+    assert original_meta == [("voyage-4", _recipe().recipe_hash)]
+    if (source_change is not None and configuration_change is None) or configuration_change == "producer":
+        retried = embed_archive_session_sync(root / "index.db", _FakeVectorProvider(), session_id)
+        assert retried.status == ("no_embeddable_messages" if source_change == "eligibility" else "embedded")
+        with sqlite3.connect(root / "embeddings.db") as conn:
+            assert conn.execute(
+                "SELECT generation, attempt_state FROM embedding_derivation_state WHERE session_id = ?",
+                (session_id,),
+            ).fetchone() == (2, "succeeded")
+            retained_ids = conn.execute(
+                "SELECT message_id FROM message_embedding_refs WHERE session_id = ?", (session_id,)
+            ).fetchall()
+        with sqlite3.connect(root / "index.db") as conn:
+            current_ids = conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? AND role = 'user'", (session_id,)
+            ).fetchall()
+        assert retained_ids == current_ids
 
 
 def test_message_derivation_inspection_rejects_ref_after_message_semantics_change(
