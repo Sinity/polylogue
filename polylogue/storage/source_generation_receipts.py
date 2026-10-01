@@ -538,6 +538,7 @@ def _logical_receipt(
                 membership_content_hash=membership_content_hash,
                 head=current_head,
                 applications=observed,
+                check_stop=check_stop,
             )
         else:
             for _ in observed:
@@ -611,6 +612,7 @@ def _count_current_or_prefix_applications(
     membership_content_hash: bytes | None,
     head: tuple[object, ...],
     applications: Iterable[tuple[object, ...]],
+    check_stop: Callable[[], None] | None,
 ) -> int:
     """Count exact application receipts that prove this raw's current effect.
 
@@ -625,7 +627,7 @@ def _count_current_or_prefix_applications(
     head_content_hash = _bytes_cell(head[3])
     head_frontier = _int_cell(head[5])
     head_generation = _int_cell(head[6])
-    raw_is_prefix = _raw_is_predecessor(source_conn, raw_id=raw_id, accepted_raw_id=head_raw_id)
+    raw_is_prefix = _raw_is_predecessor(source_conn, raw_id=raw_id, accepted_raw_id=head_raw_id, check_stop=check_stop)
     valid = 0
     for application in applications:
         decision = str(application[3])
@@ -674,6 +676,7 @@ def _count_current_or_prefix_applications(
                     source_revision=source_revision,
                     acquisition_generation=acquisition_generation,
                     application=application,
+                    check_stop=check_stop,
                 )
             )
         )
@@ -682,25 +685,18 @@ def _count_current_or_prefix_applications(
     return valid
 
 
-def _raw_is_predecessor(source_conn: sqlite3.Connection, *, raw_id: str, accepted_raw_id: str) -> bool:
-    """Read the exact source predecessor chain without reopening or recursion proxying."""
-    row = source_conn.execute(
-        """
-        WITH RECURSIVE chain(raw_id, predecessor_raw_id, path) AS (
-            SELECT raw_id, predecessor_raw_id, ',' || raw_id || ','
-            FROM main.raw_sessions WHERE raw_id = ?
-            UNION ALL
-            SELECT candidate.raw_id, candidate.predecessor_raw_id,
-                   chain.path || candidate.raw_id || ','
-            FROM main.raw_sessions AS candidate
-            JOIN chain ON candidate.raw_id = chain.predecessor_raw_id
-            WHERE instr(chain.path, ',' || candidate.raw_id || ',') = 0
-        )
-        SELECT EXISTS(SELECT 1 FROM chain WHERE raw_id = ? AND raw_id != ?)
-        """,
-        (accepted_raw_id, raw_id, accepted_raw_id),
-    ).fetchone()
-    return bool(row[0])
+def _raw_is_predecessor(
+    source_conn: sqlite3.Connection,
+    *,
+    raw_id: str,
+    accepted_raw_id: str,
+    check_stop: Callable[[], None] | None,
+) -> bool:
+    """Read the supplied snapshot's strict predecessor relation with disk cycle detection."""
+    if raw_id == accepted_raw_id:
+        return False
+    with closing(_source_predecessor_rows(source_conn, raw_id=accepted_raw_id, check_stop=check_stop)) as rows:
+        return any(str(row[0]) == raw_id for row in rows)
 
 
 def _membership_application_decision(membership_decision: str | None) -> str | None:
@@ -721,6 +717,7 @@ def _byte_prefix_metadata_is_exact(
     source_revision: str | None,
     acquisition_generation: int | None,
     application: tuple[object, ...],
+    check_stop: Callable[[], None] | None,
 ) -> bool:
     """Require a byte append's own frontier receipt and exact source chain."""
     if source_revision is None or acquisition_generation is None:
@@ -763,7 +760,7 @@ def _byte_prefix_metadata_is_exact(
         and application_content_hash is not None
         and str(application[7]) == "byte"
         and application_end == candidate_append_end
-        and _byte_append_chain_is_exact(source_conn, raw_id=raw_id)
+        and _byte_append_chain_is_exact(source_conn, raw_id=raw_id, check_stop=check_stop)
     )
 
 
@@ -771,6 +768,34 @@ def _byte_append_chain_is_exact(
     source_conn: sqlite3.Connection, *, raw_id: str, check_stop: Callable[[], None] | None = None
 ) -> bool:
     """Prove the selected append's linked authority on the supplied Source snapshot."""
+    expected_key: str | None = None
+    baseline_id: str | None = None
+    with closing(_source_predecessor_rows(source_conn, raw_id=raw_id, check_stop=check_stop)) as rows:
+        for row in rows:
+            cursor_id = str(row[0])
+            if row[3] != RawRevisionAuthority.BYTE_PROVEN.value:
+                return False
+            try:
+                key = canonical_authority_logical_key(str(row[1]))
+            except ValueError:
+                return False
+            if expected_key is None:
+                expected_key = key
+                baseline_id = None if row[6] is None else str(row[6])
+            elif key != expected_key:
+                return False
+            if row[2] == "full":
+                source_index = _int_cell(row[4])
+                return cursor_id == baseline_id and source_index is not None and source_index >= 0
+            if row[2] != "append" or row[5] is None or row[6] != baseline_id:
+                return False
+    return False
+
+
+def _source_predecessor_rows(
+    source_conn: sqlite3.Connection, *, raw_id: str, check_stop: Callable[[], None] | None
+) -> Iterator[tuple[object, ...]]:
+    """Walk one Source snapshot with bounded disk deduplication and cooperative cancellation."""
     with scratch_connection_context(prefix="polylogue-byte-chain-", filename="visited.db") as visited:
         visited.execute("PRAGMA journal_mode=DELETE")
         visited.execute("PRAGMA temp_store=FILE")
@@ -778,41 +803,25 @@ def _byte_append_chain_is_exact(
         visited.execute("BEGIN")
         visited.execute("CREATE TABLE visited(raw_id TEXT PRIMARY KEY) WITHOUT ROWID")
         cursor_id: str | None = raw_id
-        expected_key: str | None = None
-        baseline_id: str | None = None
         while cursor_id is not None:
             check_compute_cancelled()
             if check_stop is not None:
                 check_stop()
             with closing(visited.execute("INSERT OR IGNORE INTO visited VALUES (?)", (cursor_id,))) as inserted:
                 if not inserted.rowcount:
-                    return False
+                    return
             with closing(
                 source_conn.execute(
-                    "SELECT logical_source_key, revision_kind, revision_authority, source_index, "
+                    "SELECT raw_id, logical_source_key, revision_kind, revision_authority, source_index, "
                     "predecessor_raw_id, baseline_raw_id FROM main.raw_sessions WHERE raw_id=?",
                     (cursor_id,),
                 )
             ) as rows:
                 row = rows.fetchone()
-            if row is None or row[2] != RawRevisionAuthority.BYTE_PROVEN.value:
-                return False
-            try:
-                key = canonical_authority_logical_key(str(row[0]))
-            except ValueError:
-                return False
-            if expected_key is None:
-                expected_key = key
-                baseline_id = None if row[5] is None else str(row[5])
-            elif key != expected_key:
-                return False
-            if row[1] == "full":
-                source_index = _int_cell(row[3])
-                return cursor_id == baseline_id and source_index is not None and source_index >= 0
-            if row[1] != "append" or row[4] is None or row[5] != baseline_id:
-                return False
-            cursor_id = str(row[4])
-        return False
+            if row is None:
+                return
+            yield tuple(row)
+            cursor_id = None if row[5] is None else str(row[5])
 
 
 def _int_cell(value: object) -> int | None:
