@@ -508,7 +508,11 @@ def test_focused_caller_publishes_failed_verdict_from_existing_unreadable_ledger
     step = payload["steps"][0]
     assert step["process_exit"] == 0 and step["evidence_error"]["type"] == "UnicodeDecodeError"
     history = list(verify_runs._iter_history_pinned(receipt_workspace / "history.jsonl"))
-    assert history[-1]["steps"][0]["evidence_error"] == step["evidence_error"]
+    assert history[-1]["semantic_receipt"]["status"] == "failed"
+    historical_step = history[-1]["semantic_receipt"]["steps"][0]
+    assert historical_step["process_exit"] == 0
+    assert historical_step["evidence_error"] == {"phase": "aggregation", "type": "UnicodeDecodeError"}
+    assert "message" not in historical_step["evidence_error"]
     canonical = verify_runs.read_verification_evidence(receipt_workspace / "evidence.jsonl")[-1]
     assert canonical["status"] == "failed"
     assert canonical["steps"][0]["process_exit"] == 0
