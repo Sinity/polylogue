@@ -132,8 +132,10 @@ Use the installed runtime's explicit verified restore operation for supported
 current-format backups. It applies declared durable evolution on the new
 owned destination; a raw file copy does not grant startup authority. Unknown
 versions or noncanonical schema shapes receive a typed refusal while the
-original package remains intact. Pre-reset archives remain salvage evidence
-and are never migration or restoration inputs.
+original package remains intact. Previous core tiers and their authority receipts
+remain salvage evidence. The explicitly selected purchased Embeddings exception
+uses ordinary fresh-root startup as described above; it does not import a core
+archive or grant copied durable receipts startup authority.
 
 Verify the completed destination through production status and query routes.
 Report field-query readiness and FTS availability separately: a restored
@@ -145,7 +147,7 @@ explicit gaps in the restore result.
 
 For ordinary archive replacement or removal, preserve a full-evidence copy outside the path that will be recreated. Include all six tiers and every referenced blob. Record the copy's location, the selected runtime commit and executable version, and a manifest of the preserved files outside Git. Keep the original `user.db`; an export of selected rows is supplementary evidence, not a replacement.
 
-For the fresh-start reset, move the entire previous Polylogue state aside intact solely as salvage evidence. Do not qualify it for application reads or use it for rollback or readback.
+For the fresh-start reset, preserve the previous Polylogue state intact outside the new archive. Its core tiers remain salvage evidence and are not rollback or readback inputs. Independently preserve the explicitly selected embedding backup, verify its current schema and exact content/model reuse through the preparation witness, and keep the original backup unchanged.
 
 A copied archive is custody evidence, not active authority for its new inodes.
 Create and verify a complete backup package, use the explicit restore operation
