@@ -159,15 +159,14 @@ def exclude_archive_blob_publishers(source_db_path: Path) -> Iterator[ArchiveWri
 
 
 @contextmanager
-def _archive_blob_publisher_slot(source_db_path: Path) -> Iterator[None]:
+def _archive_blob_publisher_slot(source_db_path: Path) -> Iterator[BinaryIO]:
     lock_path = _writer_lock_path(source_db_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        # Actual file close releases flock. An explicit unlock before close
+        # would surrender exclusion while a failed close retained the handle.
+        yield lock_file
 
 
 @dataclass(frozen=True, slots=True)

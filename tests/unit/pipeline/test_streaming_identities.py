@@ -15,7 +15,7 @@ from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.pipeline import ids
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
-from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 
 
 def test_disk_projection_transfers_files_and_closes_handles_before_iterator_yields(tmp_path: Path) -> None:
@@ -60,29 +60,24 @@ def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
     from typing import Any, cast
 
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
     prepared = SqliteMessageStore(tmp_path / "prepared.db")
     sink = prepared.new_sink()
     sink.append(ParsedMessage(provider_message_id="retained", role=Role.USER, text="retained row"))
     prepared.conn.commit()
     prepared.close()
+    sink = SqliteMessageSink(prepared.path, sink.session_ordinal, count=len(sink))
     projection = ids.session_revision_projection(_session([], [], []).model_copy(update={"messages": sink}))
     actual_connect = sqlite3.connect
-    opened: list[FailingReader] = []
-
-    class FailingReader(sqlite3.Connection):
-        fail_close = True
-
-        def close(self) -> None:
-            if self.fail_close:
-                raise OSError("synthetic projection page close failure")
-            super().close()
+    opened: list[ControlledConnection] = []
 
     def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         if isinstance(database, str) and "projection.db?mode=ro" in database:
-            kwargs["factory"] = FailingReader
+            kwargs["factory"] = ControlledConnection
             connection = actual_connect(database, *args, **kwargs)
-            assert isinstance(connection, FailingReader)
+            assert isinstance(connection, ControlledConnection)
+            connection.close_failure = OSError("synthetic projection page close failure")
             opened.append(connection)
             return connection
         return cast(sqlite3.Connection, actual_connect(database, *args, **kwargs))
@@ -102,7 +97,7 @@ def test_projection_close_preserves_artifact_until_failed_reader_close_settles(
         artifact = projection._artifact_owner
         assert artifact is not None
         assert (Path(artifact._scratch.name) / "projection.db").is_file()
-        opened[0].fail_close = False
+        opened[0].close_failure = None
         reader.submit(owner.close).result()
     projection.close()
     assert not Path(artifact._scratch.name).exists()

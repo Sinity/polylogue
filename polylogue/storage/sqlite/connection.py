@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import polylogue.paths as _paths
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.logging import get_logger
 from polylogue.storage.fts.pl_fold import register_pl_fold
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -244,7 +245,7 @@ def open_read_connection(
         return
 
     conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         _configure_read_connection(conn, archive_root=configured_archive_root(path, archive_root))
         if not _is_initialized_archive_index(path, archive_root=configured_archive_root(path, archive_root)):

@@ -144,6 +144,7 @@ from polylogue.core.protocols import ProgressCallback
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.core.sqlite_introspection import relation_exists as _relation_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.types import SessionId
@@ -862,6 +863,7 @@ class ArchiveStore:
         self._user_write_connections: list[sqlite3.Connection] = []
         self._blob_publisher: ArchiveBlobPublisher | None = None
         self._replay_publisher_slot: ExitStack | None = None
+        self._replay_publisher_lock_file: BinaryIO | None = None
         self._retained_writes_in_progress = 0
         self._sql_custody: ArchiveWriteCustody | None = None
         self._archive_custody_identity: tuple[int, int] | None = None
@@ -1498,21 +1500,28 @@ class ArchiveStore:
     def _release_mutation_lease(
         self, exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None
     ) -> None:
-        context, self._pending_archive_mutation_lease_context = self._pending_archive_mutation_lease_context, None
-        first_error: BaseException | None = None
+        context = self._pending_archive_mutation_lease_context
+        failures: list[BaseException] = []
         if context is not None:
             try:
                 context.__exit__(*(exc_info if exc_info is not None else (None, None, None)))
             except BaseException as error:
-                first_error = error
-        custody, self._sql_custody = self._sql_custody, None
+                failures.append(error)
+            else:
+                self._pending_archive_mutation_lease_context = None
+        custody = self._sql_custody
         if custody is not None:
             try:
                 custody.release_sql_owner(self)
             except BaseException as error:
-                first_error = first_error or error
-        if first_error is not None:
-            raise first_error
+                # release_sql_owner may have retired its logical reference
+                # before descriptor close failed. Its same-custody retry branch
+                # owns the still-retained physical binding.
+                failures.append(error)
+            else:
+                self._sql_custody = None
+        if failures:
+            raise failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive lease settlement failed", failures)
 
     @property
     def active_cold_build_engaged(self) -> bool:
@@ -2021,15 +2030,25 @@ class ArchiveStore:
         from polylogue.storage.blob_publication import _archive_blob_publisher_slot
 
         slot = ExitStack()
-        slot.enter_context(_archive_blob_publisher_slot(self.source_db_path))
+        self._replay_publisher_lock_file = slot.enter_context(_archive_blob_publisher_slot(self.source_db_path))
         self._replay_publisher_slot = slot
 
     def _release_replay_publisher_slot(self) -> None:
         if self._retained_writes_in_progress:
             return
-        slot, self._replay_publisher_slot = self._replay_publisher_slot, None
+        slot = self._replay_publisher_slot
         if slot is not None:
             slot.close()
+        lock_file = self._replay_publisher_lock_file
+        if lock_file is not None:
+            # ExitStack pops callbacks even when native close raises. Keep the
+            # exact file, not only the exhausted stack, for creator retry.
+            if not lock_file.closed:
+                lock_file.close()
+            if not lock_file.closed:
+                raise RuntimeError("replay publisher's actual file remains open after close")
+        self._replay_publisher_lock_file = None
+        self._replay_publisher_slot = None
 
     @contextmanager
     def _retained_replay_exclusion(self, *, manage_transaction: bool) -> Iterator[None]:
@@ -2160,7 +2179,6 @@ class ArchiveStore:
                 self.operation_vector_connection = None
         if self._blob_publisher is not None:
             settle(self._blob_publisher.discard_pending)
-        settle(self._release_replay_publisher_slot)
         if self._source_conn is not None:
             connection = self._source_conn
             if settle_connection(connection):
@@ -2190,29 +2208,27 @@ class ArchiveStore:
             lease = self._active_writer_lease
             if settle(lease.close):
                 self._active_writer_lease = None
-        if handles_closed and self._active_writer_lease is None and not failures:
+        if transactions_settled and handles_closed and not failures:
+            settle(self._release_replay_publisher_slot)
+        if transactions_settled and handles_closed and not failures:
+            settle(lambda: self._release_mutation_lease(None))
+        physical_settled = (
+            self._active_writer_lease is None
+            and self._pending_archive_mutation_lease_context is None
+            and self._sql_custody is None
+            and self._replay_publisher_slot is None
+            and self._replay_publisher_lock_file is None
+        )
+        if handles_closed and physical_settled and not failures:
             for callback in tuple(self._settlement_callbacks):
                 if settle(callback):
                     self._settlement_callbacks.remove(callback)
         callbacks_settled = not self._settlement_callbacks
-        if transactions_settled and handles_closed and callbacks_settled:
-            try:
-                self._release_mutation_lease(
-                    None if not failures else (type(failures[0]), failures[0], failures[0].__traceback__)
-                )
-            except BaseException as exc:
-                failures.append(exc)
-        if (
-            handles_closed
-            and callbacks_settled
-            and self._active_writer_lease is None
-            and self._pending_archive_mutation_lease_context is None
-            and self._sql_custody is None
-        ):
+        if handles_closed and callbacks_settled and physical_settled:
             settle(lambda: retire_native_sql_parent(self))
         if failures:
             failure = failures[0] if len(failures) == 1 else BaseExceptionGroup("Archive close failed", failures)
-            if not handles_closed or not callbacks_settled:
+            if not handles_closed or not physical_settled or not callbacks_settled:
                 raise ArchiveStoreSettlementError(self, failure) from failure
             raise failure
 
@@ -6480,7 +6496,7 @@ class ArchiveStore:
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)
-        owner = NativeSQLCustodyOwner(conn)
+        owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
         deleted = 0
         deleted_session_ids: list[str] = []
         try:

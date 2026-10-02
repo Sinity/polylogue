@@ -351,7 +351,7 @@ def test_population_and_sealing_failure_settles_or_exposes_the_actual_scratch_ow
 
 @pytest.mark.parametrize("failure_kind", ["locator", "flush"])
 def test_session_event_population_failure_closes_the_disk_owner_index(tmp_path: Path, failure_kind: str) -> None:
-    from polylogue.pipeline.ids import message_content_identities
+    from polylogue.pipeline.ids import disk_message_owner_resolution, message_content_identities
     from polylogue.sources.parsers.base import ParsedSessionEvent
     from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 
@@ -370,13 +370,14 @@ def test_session_event_population_failure_closes_the_disk_owner_index(tmp_path: 
         event = ParsedSessionEvent(event_type="claude_tool_result_sidecar", payload={"tool_use_id": "one"})
         locators = {"one": {"undeclared": "value"}} if failure_kind == "locator" else None
         expected = ValueError if failure_kind == "locator" else sqlite3.OperationalError
-        with pytest.raises(expected):
+        with disk_message_owner_resolution(messages) as owners, pytest.raises(expected):
             write._write_session_events(
                 destination,
                 "session",
                 messages,
                 [event],
                 content_identities=message_content_identities(messages),
+                owner_resolution=owners,
                 sidecar_blob_locators=locators,
             )
         assert retained_native_sql_owners_on_current_thread() == ()

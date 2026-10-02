@@ -200,7 +200,6 @@ def write_fixture_index_session(
             source_conn=kwargs.get("source_conn"),
             raw_id=kwargs.get("raw_id"),
             force_replace=bool(kwargs.get("force_replace", False)),
-            child_source_path=kwargs.get("child_source_path"),
             prepared_rows=rows,
         )
         kwargs["prepared_write"] = owned_prepared
