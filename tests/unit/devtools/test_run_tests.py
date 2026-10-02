@@ -53,6 +53,7 @@ def isolated_focused_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -
     from tests.infra.devtools_admission_fixture import make_focused_checkout
 
     root = make_focused_checkout(tmp_path / "checkout")
+    monkeypatch.chdir(root)
     monkeypatch.setattr(run_tests, "ROOT", root)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     return root

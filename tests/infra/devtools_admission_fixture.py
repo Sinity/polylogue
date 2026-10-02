@@ -43,6 +43,7 @@ def make_focused_checkout(root: Path) -> Path:
     """An owned path-selection root whose fake runs can publish real artifacts."""
     selected = root / "tests/unit/core/test_identity_law.py"
     selected.parent.mkdir(parents=True)
+    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
     selected.write_text("def test_session_id_is_origin_native_id():\n    pass\n", encoding="utf-8")
     (root / "tests/unit/pipeline").mkdir()
     return root
