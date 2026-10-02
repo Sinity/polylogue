@@ -1,8 +1,8 @@
+"""Neutral live processes for admitted-run custody controls."""
+
 from __future__ import annotations
 
 from typing import BinaryIO
-
-"""Neutral live processes for admitted-run custody controls."""
 
 DETACHED_PROGRAM = """
 import json, os, pathlib, subprocess, sys, time

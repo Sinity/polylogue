@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any, BinaryIO, cast
 
 import pytest
 
@@ -109,7 +110,7 @@ def test_only_the_run_s_own_process_group_is_attributed(tmp_path: Path) -> None:
     assert [entry["pid"] for entry in document["processes"]] == [100]
 
 
-def test_detached_child_in_managed_cgroup_is_attributed(tmp_path: Path) -> None:
+def test_marker_owns_detached_child_among_shared_cgroup_peers(tmp_path: Path) -> None:
     """A setsid child remains charged to the managed cgroup after leaving its process group."""
     proc = _proc(tmp_path)
     _process(proc, 100, pgid=100, pss_kib=100 * KIB)
@@ -350,9 +351,9 @@ def test_custody_marker_comparison_streams_large_fields(tmp_path: Path, monkeypa
     sizes: list[int] = []
     original_open = Path.open
 
-    def tracked_open(path: Path, *args: object, **kwargs: object) -> object:
+    def tracked_open(path: Path, *args: Any, **kwargs: Any) -> Any:
         handle = original_open(path, *args, **kwargs)
-        return EnvironmentReader(handle, sizes) if path.name == "environ" else handle
+        return EnvironmentReader(cast(BinaryIO, handle), sizes) if path.name == "environ" else handle
 
     proc = _proc(tmp_path)
     process = _process(proc, 100, pgid=100)
@@ -401,7 +402,7 @@ def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
             monkeypatch.setattr(pytest_slot, "admit_width", lambda argv, **_kwargs: (list(argv), None))
             launch, log = tmp_path / "launch.json", tmp_path / "slot.log"
             pytest_slot._write_launch(launch, argv=command, cwd=str(tmp_path), env=environment, log_path=log)
-            code = pytest_slot.run_launch(launch)
+            code = pytest_slot._run_launch(launch)
             receipt = json.loads(log.with_suffix(".result.json").read_text())
         identities = json.loads((tmp_path / "identities.json").read_text())
         assert code == 0
@@ -444,3 +445,16 @@ def test_reused_leader_between_group_check_and_payload_is_not_owned(
     document = sampler.snapshot()
     assert document["observed_samples"] == 0 and document["incomplete"]
     assert document["processes"] == []
+
+
+def test_reused_owned_pid_keeps_separate_birth_identity(tmp_path: Path) -> None:
+    proc = _proc(tmp_path)
+    leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    (leader / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    (leader / "stat").write_text("100 (successor) S 1 100 " + "0 " * 16 + "99999\n")
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["processes_seen"] == 2
+    assert {(entry["pid"], entry["start_ticks"]) for entry in document["processes"]} == {(100, 1000), (100, 99999)}
