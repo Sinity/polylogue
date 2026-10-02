@@ -5,6 +5,7 @@ from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 
@@ -1242,7 +1243,7 @@ async def test_bound_removal_permission_stays_with_actual_apply_task_and_thread(
         await coordinator.run("test.bound-removal", owner)
         assert observations == [frozenset()]
     finally:
-        assert await coordinator.shutdown()
+        assert await coordinator.shutdown(timeout=float("inf"))
 
 
 @pytest.mark.parametrize("commit_route", ["explicit", "native_context", "cancelled_after_commit"])
@@ -1336,9 +1337,26 @@ def test_known_source_exact_row_guard_survives_factory_profile_setup(tmp_path: P
             with permit.hold_authority():
                 with pytest.raises(ReferenceSealError):
                     with permit.mutation_connection() as source:
-                        for setting in ("temp_store=DEFAULT", "foreign_keys=OFF", "synchronous=OFF"):
+                        for setting in (
+                            "temp_store=DEFAULT",
+                            "foreign_keys=OFF",
+                            "recursive_triggers=OFF",
+                            "synchronous=OFF",
+                            "ignore_check_constraints=ON",
+                            "defer_foreign_keys=ON",
+                            "writable_schema=ON",
+                            "trusted_schema=OFF",
+                            "query_only=ON",
+                            "legacy_alter_table=ON",
+                            "wal_checkpoint",
+                            "optimize",
+                            "incremental_vacuum",
+                        ):
                             with pytest.raises(sqlite3.DatabaseError):
                                 source.execute(f"PRAGMA {setting}")
+                        assert source.execute("PRAGMA table_info(authority_control)").fetchall()
+                        with pytest.raises(sqlite3.DatabaseError):
+                            source.blobopen("authority_control", "value", 1, readonly=False)
                         source.execute("BEGIN IMMEDIATE")
                         sql = "UPDATE authority_control SET value = ? WHERE key = ?"
                         if route == "custom_cursor":
@@ -1445,21 +1463,21 @@ def test_known_source_reserves_tier_during_original_observer_advancement(
             permit = seal.prepare_known_tier_mutation(
                 "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
             )
-            original_verify = seal._verify_known_tier_postimage
+            original_observer = seal._require_unpinned_observer
             attempted = False
             with closing(sqlite3.connect(tmp_path / "source.db", timeout=0)) as foreign:
 
-                def verify_reserved(connection: sqlite3.Connection, tier: str) -> None:
+                def observe_reserved(tier: str) -> sqlite3.Connection:
                     nonlocal attempted
-                    if connection is seal.observer("source"):
+                    if tier == "source" and permit._acceptance_reservation:
                         attempted = True
                         with pytest.raises(sqlite3.OperationalError) as refusal:
                             foreign.execute("UPDATE authority_control SET value='foreign' WHERE key='selected'")
                         assert refusal.value.sqlite_errorcode == sqlite3.SQLITE_BUSY
                         foreign.rollback()
-                    original_verify(connection, tier)
+                    return original_observer(tier)
 
-                monkeypatch.setattr(seal, "_verify_known_tier_postimage", verify_reserved)
+                monkeypatch.setattr(seal, "_require_unpinned_observer", observe_reserved)
                 with permit.hold_authority(), permit.mutation_connection() as source:
                     source.execute("BEGIN IMMEDIATE")
                     source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
@@ -1471,12 +1489,85 @@ def test_known_source_reserves_tier_during_original_observer_advancement(
             seal.validate_observers_current()
 
 
+def test_known_source_postimage_cursor_failure_refuses_commit_and_retains_actual_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.source-precommit-postimage-fault", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            with closing(setup.execute("CREATE TABLE authority_control (key TEXT PRIMARY KEY, value TEXT)")):
+                pass
+            with closing(setup.execute("INSERT INTO authority_control VALUES ('selected','original')")):
+                pass
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            original_version = seal.observer_version("source")
+            failed_cursors: list[ControlledCursor] = []
+
+            class PostimageCursor(ControlledCursor):
+                def execute(self, sql: str, parameters: Any = (), /) -> "PostimageCursor":
+                    super().execute(sql, parameters)
+                    if sql.startswith("SELECT") and 'FROM "authority_control"' in sql:
+                        self.allow_cleanup.clear()
+                        failed_cursors.append(self)
+                    return self
+
+            source: sqlite3.Connection | None = None
+            try:
+                with pytest.raises(NativeConnectionSettlementError):
+                    with permit.hold_authority(), permit.mutation_connection() as source:
+                        with closing(source.execute("BEGIN IMMEDIATE")):
+                            pass
+                        with closing(
+                            source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
+                        ):
+                            pass
+                        original_cursor = source.cursor
+
+                        def postimage_cursor() -> sqlite3.Cursor:
+                            return original_cursor(factory=PostimageCursor)
+
+                        monkeypatch.setattr(source, "cursor", postimage_cursor)
+                        permit.allow_commit(source)
+                assert source is not None and failed_cursors
+                owner = next(child for child in native_sql_children(seal) if child.connection is source)
+                assert owner.close_required and not permit._commit_allowed
+                assert seal._versions["source"] == original_version
+                with pytest.raises(ReferenceSealError):
+                    seal.observer_version("source")
+                with pytest.raises(ReferenceSealError):
+                    permit.committed()
+                for failed_cursor in failed_cursors:
+                    failed_cursor.allow_cleanup.set()
+                owner.close()
+                assert owner.connection is None
+                with pytest.raises(ReferenceSealError):
+                    seal.observer("source")
+                with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as check:
+                    with closing(check.execute("SELECT value FROM authority_control")) as cursor:
+                        assert cursor.fetchone()[0] == "original"
+            finally:
+                for failed_cursor in failed_cursors:
+                    failed_cursor.allow_cleanup.set()
+                if source is not None:
+                    for child in native_sql_children(seal):
+                        if child.connection is source:
+                            child.close()
+
+
 @pytest.mark.parametrize("include_cascade", [True, False])
 def test_known_source_guards_declared_foreign_key_trigger_and_sequence_effects(
     tmp_path: Path, include_cascade: bool
 ) -> None:
     from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
-    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, PreparedIndexMutation
+    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, KnownTierRowImage, PreparedIndexMutation
 
     with write_lease("test.source-cascade-effects", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
@@ -1491,13 +1582,31 @@ def test_known_source_guards_declared_foreign_key_trigger_and_sequence_effects(
                 "INSERT INTO authority_child VALUES ('child','selected');"
             )
         with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                parent = seal.retain_tier_row("source", "authority_parent", 1)
+                child = seal.retain_tier_row("source", "authority_child", 1)
+            assert parent is not None and child is not None
+            log = KnownTierRowImage(
+                seal,
+                "authority_log",
+                ("sequence", "key"),
+                1,
+                (seal.retain_literal_scalar(1), parent.cells[0]),
+            )
+            sequence = KnownTierRowImage(
+                seal,
+                "sqlite_sequence",
+                ("name", "seq"),
+                1,
+                (seal.retain_literal_scalar("authority_log"), seal.retain_literal_scalar(1)),
+            )
             effects = [
-                KnownTierRowEffect("authority_parent", ("key",), ("selected",), None),
-                KnownTierRowEffect("authority_log", ("sequence", "key"), None, (1, "selected")),
-                KnownTierRowEffect("sqlite_sequence", ("name", "seq"), None, ("authority_log", 1)),
+                KnownTierRowEffect("authority_parent", parent.columns, parent, None),
+                KnownTierRowEffect("authority_log", log.columns, None, log),
+                KnownTierRowEffect("sqlite_sequence", sequence.columns, None, sequence),
             ]
             if include_cascade:
-                effects.append(KnownTierRowEffect("authority_child", ("key", "parent"), ("child", "selected"), None))
+                effects.append(KnownTierRowEffect("authority_child", child.columns, child, None))
             permit = seal.prepare_known_tier_mutation(tier="source", effects=effects)
             with permit.hold_authority():
                 if include_cascade:
@@ -1589,9 +1698,15 @@ def test_archive_settlement_callback_waits_for_all_original_read_children(tmp_pa
 def test_original_excision_projection_survives_source_commit_and_protects_other_rows(
     tmp_path: Path, surviving_anchor: bool
 ) -> None:
+    from dataclasses import replace
+
     from polylogue.storage.sqlite.archive_tiers.archive import stage_index_session_deletions
-    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
-    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, PreparedIndexMutation
+    from polylogue.storage.sqlite.connection_profile import (
+        ISOLATED_TIER_WRITE_PROFILE,
+        open_isolated_write_connection,
+        open_source_tier_write_connection,
+    )
+    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, KnownTierRowImage, PreparedIndexMutation
     from polylogue.storage.sqlite.write_lease import authorized_session_removal
 
     with write_lease("test.original-excision-projection", archive_root=tmp_path):
@@ -1631,17 +1746,61 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                 archive_root=tmp_path, plan_hash="exact-projection", session_ids=(target,), excise_assertions=True
             ),
             PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
-            closing(open_connection(tmp_path / "index.db", archive_root=tmp_path)) as index,
+            closing(
+                open_isolated_write_connection(
+                    tmp_path / "index.db",
+                    purpose="test.excision-index-stage",
+                    archive_root=tmp_path,
+                    profile=replace(ISOLATED_TIER_WRITE_PROFILE, foreign_keys=True),
+                )
+            ) as index,
         ):
+            with closing(index.execute("PRAGMA foreign_keys")) as cursor:
+                assert cursor.fetchone()[0] == 1
+            with closing(index.execute("SELECT message_id FROM messages WHERE session_id=?", (target,))) as cursor:
+                target_messages = tuple(row[0] for row in cursor)
+            with closing(
+                index.execute(
+                    "SELECT b.block_id FROM blocks b JOIN messages m ON m.message_id=b.message_id WHERE m.session_id=?",
+                    (target,),
+                )
+            ) as cursor:
+                target_blocks = tuple(row[0] for row in cursor)
+            assert target_messages and target_blocks
+            with closing(index.execute("SELECT * FROM messages WHERE session_id=?", (survivor,))) as cursor:
+                survivor_messages = tuple(cursor)
+            with closing(
+                index.execute(
+                    "SELECT b.* FROM blocks b JOIN messages m ON m.message_id=b.message_id WHERE m.session_id=?",
+                    (survivor,),
+                )
+            ) as cursor:
+                survivor_blocks = tuple(cursor)
+            assert survivor_messages and survivor_blocks
             user = seal.observer("user")
-            columns = tuple(str(row[1]) for row in user.execute("PRAGMA table_info(assertions)"))
-            old = tuple(user.execute("SELECT * FROM assertions WHERE assertion_id='removable'").fetchone())
-            frame = tuple(user.execute("SELECT * FROM query_unit_frame_state").fetchone())
+            with seal.original_read_snapshot():
+                with seal.original_rows(
+                    "user", "SELECT rowid FROM assertions WHERE assertion_id='removable'"
+                ) as cursor:
+                    assertion_rowid = cursor.fetchone()[0]
+                old = seal.retain_tier_row("user", "assertions", assertion_rowid)
+                frame = seal.retain_tier_row("user", "query_unit_frame_state", 1)
+            assert old is not None and frame is not None
+            columns = old.columns
+            with seal._owned_cursor(user, "SELECT epoch FROM query_unit_frame_state WHERE singleton=1") as cursor:
+                next_epoch = cursor.fetchone()[0] + 1
+            advanced_frame = KnownTierRowImage(
+                seal,
+                frame.table,
+                frame.columns,
+                frame.rowid,
+                (frame.cells[0], seal.retain_literal_scalar(next_epoch)),
+            )
             user_permit = seal.prepare_known_tier_mutation(
                 tier="user",
                 effects=(
                     KnownTierRowEffect("assertions", columns, old, None),
-                    KnownTierRowEffect("query_unit_frame_state", ("singleton", "epoch"), frame, (1, int(frame[1]) + 1)),
+                    KnownTierRowEffect("query_unit_frame_state", frame.columns, frame, advanced_frame),
                 ),
             )
             source_permit = seal.prepare_known_tier_mutation(
@@ -1685,6 +1844,123 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                 assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone() is None
                 assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone() is None
                 assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='request-history'").fetchone()
+                for message_id in target_messages:
+                    with closing(index.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,))) as cursor:
+                        assert cursor.fetchone() is None
+                for block_id in target_blocks:
+                    with closing(index.execute("SELECT 1 FROM blocks WHERE block_id=?", (block_id,))) as cursor:
+                        assert cursor.fetchone() is None
+                with closing(index.execute("SELECT * FROM messages WHERE session_id=?", (survivor,))) as cursor:
+                    assert tuple(cursor) == survivor_messages
+                with closing(
+                    index.execute(
+                        "SELECT b.* FROM blocks b JOIN messages m ON m.message_id=b.message_id WHERE m.session_id=?",
+                        (survivor,),
+                    )
+                ) as cursor:
+                    assert tuple(cursor) == survivor_blocks
+                with closing(index.execute("PRAGMA foreign_key_check")) as cursor:
+                    assert cursor.fetchone() is None
+
+
+@pytest.mark.parametrize("include_replace_delete", [False, True])
+def test_known_source_replace_requires_its_implicit_delete_effect(tmp_path: Path, include_replace_delete: bool) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import KnownTierRowEffect, KnownTierRowImage, PreparedIndexMutation
+
+    with write_lease("test.source-replace-effects", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("CREATE TABLE replace_control (key TEXT PRIMARY KEY, value TEXT UNIQUE)")
+            setup.executemany(
+                "INSERT INTO replace_control VALUES (?,?)", (("selected", "original"), ("other", "collision"))
+            )
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                selected = seal.retain_tier_row("source", "replace_control", 1)
+                collision = seal.retain_tier_row("source", "replace_control", 2)
+            assert selected is not None and collision is not None
+            replacement = KnownTierRowImage(
+                seal,
+                selected.table,
+                selected.columns,
+                selected.rowid,
+                (selected.cells[0], collision.cells[1]),
+            )
+            effects = [KnownTierRowEffect("replace_control", selected.columns, selected, replacement)]
+            if include_replace_delete:
+                effects.append(KnownTierRowEffect("replace_control", collision.columns, collision, None))
+            permit = seal.prepare_known_tier_mutation(tier="source", effects=effects)
+            with permit.hold_authority():
+
+                def replace() -> None:
+                    with permit.mutation_connection() as source:
+                        assert source.execute("PRAGMA recursive_triggers").fetchone()[0] == 1
+                        source.execute("BEGIN IMMEDIATE")
+                        source.execute("UPDATE OR REPLACE replace_control SET value='collision' WHERE key='selected'")
+                        permit.allow_commit(source)
+                        source.commit()
+                        seal.accept_known_tier_commit(permit.committed())
+
+                if include_replace_delete:
+                    replace()
+                    assert tuple(
+                        tuple(row) for row in seal.observer("source").execute("SELECT * FROM replace_control")
+                    ) == (("selected", "collision"),)
+                else:
+                    with pytest.raises(ReferenceSealError):
+                        replace()
+                    assert tuple(
+                        tuple(row)
+                        for row in seal.observer("source").execute("SELECT * FROM replace_control ORDER BY key")
+                    ) == (
+                        ("other", "collision"),
+                        ("selected", "original"),
+                    )
+
+
+def test_native_incremental_handle_close_failure_retains_actual_owner_until_creator_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+    connection = connect_measured(":memory:")
+    connection.execute("CREATE TABLE literal_control(key INTEGER PRIMARY KEY, value TEXT)")
+    connection.execute("INSERT INTO literal_control VALUES (1,'retained literal')")
+    connection.commit()
+    owner = NativeSQLCustodyOwner(connection)
+    completions: list[str] = []
+    owner.retain_settlement_callback(lambda: completions.append("complete"))
+    close_blob = NativeSQLCustodyOwner.close_incremental_blob
+    blocked = True
+    selected_blob: sqlite3.Blob | None = None
+
+    def guarded_close(selected: NativeSQLCustodyOwner, blob: sqlite3.Blob) -> None:
+        if selected is owner and blocked:
+            raise OSError("synthetic actual incremental close fault")
+        close_blob(selected, blob)
+
+    monkeypatch.setattr(NativeSQLCustodyOwner, "close_incremental_blob", guarded_close)
+    try:
+        with pytest.raises(NativeConnectionSettlementError):
+            with owner.readonly_blob("literal_control", "value", 1) as blob:
+                selected_blob = blob
+                assert blob.read() == b"retained literal"
+        assert owner._incremental_blobs == [selected_blob]
+        assert owner.connection is connection and not owner._settled and completions == []
+        with pytest.raises(NativeConnectionSettlementError):
+            owner.close()
+        assert selected_blob is not None and len(selected_blob) == len(b"retained literal")
+        blocked = False
+        owner.close()
+        assert owner._settled and completions == ["complete"] and owner._incremental_blobs == []
+        with pytest.raises(sqlite3.ProgrammingError):
+            len(selected_blob)
+    finally:
+        blocked = False
+        owner.close()
 
 
 @pytest.mark.parametrize("native_owner", [False, True])
@@ -1699,6 +1975,7 @@ def test_settlement_callbacks_wait_for_original_custody_release(
     with write_lease("test.callback-custody-release", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         selected: NativeSQLCustodyOwner | ArchiveStore
+        error_type: type[NativeConnectionSettlementError] | type[ArchiveStoreSettlementError]
         if native_owner:
             selected = NativeSQLCustodyOwner(connect_measured(":memory:"))
             custody = selected.custody
@@ -1786,6 +2063,143 @@ def test_archive_retains_actual_replay_slot_file_until_close_retry(
             archive.close()
 
 
+@pytest.mark.parametrize("snapshot", ["cursor", "transaction", "consumed_cursor"])
+@pytest.mark.parametrize("boundary", ["observers", "writer"])
+def test_original_observer_currency_refuses_pinned_wal_read_before_foreign_commit_acceptance(
+    tmp_path: Path, snapshot: str, boundary: str
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import (
+        open_isolated_write_connection,
+        open_source_tier_write_connection,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    with write_lease("test.original-observer-pinned", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            setup.execute("PRAGMA journal_mode=WAL")
+            setup.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value TEXT)")
+            setup.executemany(
+                "INSERT INTO authority_control VALUES (?,?)", [("first", "original"), ("second", "retained")]
+            )
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            observer = seal.observer("source")
+            with closing(
+                open_isolated_write_connection(
+                    tmp_path / "index.db", archive_root=tmp_path, purpose="test observer currency"
+                )
+            ) as writer:
+                validate = (
+                    seal.validate_observers_current
+                    if boundary == "observers"
+                    else lambda: seal.validate_for_writer(writer)
+                )
+                if snapshot == "transaction":
+                    observer.execute("BEGIN")
+                cursor = observer.execute("SELECT value FROM authority_control ORDER BY key")
+                try:
+                    assert cursor.fetchone()[0] == "original"
+                    if snapshot == "consumed_cursor":
+                        cursor.fetchall()
+                    with closing(
+                        open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)
+                    ) as foreign:
+                        foreign.execute("UPDATE authority_control SET value='foreign' WHERE key='second'")
+                        foreign.commit()
+                    with pytest.raises(ReferenceSealError):
+                        validate()
+                finally:
+                    cursor.close()
+                    if observer.in_transaction:
+                        observer.rollback()
+                with pytest.raises(ReferenceSealStaleError):
+                    validate()
+
+
+def test_original_reference_readers_settle_retained_native_cursors_before_currency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from collections.abc import Callable
+
+    from polylogue.archive.context_models import ContextImage, ContextSpec
+    from polylogue.context.compiler import context_snapshot_record_from_image
+    from polylogue.storage.block_anchor import BlockAnchor, resolve_block_anchor
+    from polylogue.storage.io_phase_metrics import live_connection_cursors
+    from polylogue.storage.sqlite.archive_tiers.context_delivery_write import write_context_delivery
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    retained: list[tuple[sqlite3.Connection, sqlite3.Cursor]] = []
+    open_observer = PreparedIndexMutation._open_observer
+
+    def sticky_observer(seal: PreparedIndexMutation, tier: str, path: Path) -> sqlite3.Connection:
+        connection = open_observer(seal, tier, path)
+        make_cursor = connection.cursor
+
+        def sticky_cursor(factory: Callable[[sqlite3.Connection], sqlite3.Cursor] | None = None) -> sqlite3.Cursor:
+            cursor = make_cursor() if factory is None else make_cursor(factory)
+            retained.append((connection, cursor))
+            return cursor
+
+        monkeypatch.setattr(connection, "cursor", sticky_cursor)
+        return connection
+
+    with write_lease("test.original-reference-readers", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            parent = write_index_session(archive, reference_session("parent", messages=(("prefix", "prefix"),)))
+            child = write_index_session(
+                archive, reference_session("child", parent="parent", messages=(("prefix", "prefix"), ("tail", "tail")))
+            )
+            with closing(
+                archive._conn.execute(
+                    "SELECT m.message_id,b.content_hash FROM messages m JOIN blocks b USING(message_id) "
+                    "WHERE m.session_id=? ORDER BY b.position LIMIT 1",
+                    (parent,),
+                )
+            ) as cursor:
+                message_id, content_hash = cursor.fetchone()
+            evidence = EvidenceRef(child, message_id)
+            image = ContextImage(
+                spec=ContextSpec(seed_refs=(f"session:{child}",), read_views=()), segments=(), evidence_refs=(evidence,)
+            )
+            with closing(open_connection(tmp_path / "user.db", archive_root=tmp_path)) as user, user:
+                upsert_assertion(
+                    user,
+                    assertion_id="inherited-reader",
+                    target_ref="session:child",
+                    kind=AssertionKind.ANNOTATION,
+                    author_kind="user",
+                    evidence_refs=(evidence.format(),),
+                )
+                write_context_delivery(
+                    user,
+                    image=image,
+                    record=context_snapshot_record_from_image(image, boundary="session-start"),
+                    recipient_ref="agent:reader",
+                    delivered_by_ref="user:local",
+                    delivered_at_ms=1,
+                )
+            monkeypatch.setattr(PreparedIndexMutation, "_open_observer", sticky_observer)
+            with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+                with seal.original_read_snapshot():
+                    result = resolve_block_anchor(
+                        seal.observer("index"), BlockAnchor(parent, message_id, bytes(content_hash).hex())
+                    )
+                    assert result.state == "ok"
+                seal.validate_observers_current()
+                assert retained
+                for connection, cursor in retained:
+                    assert live_connection_cursors(connection) == ()
+                    with pytest.raises(sqlite3.ProgrammingError):
+                        cursor.fetchone()
+                # The observers remain open and usable. Closing the parent
+                # cannot conceal a still-live child statement in this control.
+                with seal.original_read_snapshot():
+                    with seal.original_rows("index", "SELECT count(*) FROM sessions") as cursor:
+                        assert cursor.fetchone()[0] == 2
+
+
 @pytest.mark.parametrize("tier", ["source", "user"])
 @pytest.mark.parametrize("setup_effect", ["declared", "different_value", "different_pragma", "failed_close"])
 def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
@@ -1793,12 +2207,12 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
 ) -> None:
     from typing import Any, Literal, cast
 
-    from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
+    from polylogue.storage.io_phase_metrics import _MeasuredCursor
     from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
     from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
-    actual_execute = _MeasuredConnection.execute
+    actual_execute = _MeasuredCursor.execute
     selected: NativeSQLCustodyOwner | None = None
     blocked_cursor: ControlledCursor | None = None
 
@@ -1807,12 +2221,13 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
         with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
             permit = seal.prepare_known_tier_mutation(tier=cast(Literal["source", "user"], tier), effects=())
 
-            def execute(connection: _MeasuredConnection, sql: str, parameters: Any = (), /) -> _MeasuredCursor:
+            def execute(cursor: _MeasuredCursor, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
                 nonlocal selected, blocked_cursor
-                if sql.startswith("PRAGMA journal_size_limit =") and permit._setup_connection is connection:
+                connection = cursor.connection
+                if sql.startswith("PRAGMA busy_timeout =") and permit._setup_connection is connection:
                     selected = next(child for child in native_sql_children(seal) if child.connection is connection)
                     if setup_effect == "different_value":
-                        sql = "PRAGMA journal_size_limit = 1"
+                        sql = "PRAGMA busy_timeout = 1"
                     elif setup_effect == "different_pragma":
                         sql = "PRAGMA foreign_keys = OFF"
                     elif setup_effect == "failed_close":
@@ -1822,9 +2237,9 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
                         blocked_cursor.fetchone()
                         blocked_cursor.allow_cleanup.clear()
                         raise OSError("synthetic failure inside exact profile setup")
-                return actual_execute(connection, sql, parameters)
+                return actual_execute(cursor, sql, parameters)
 
-            monkeypatch.setattr(_MeasuredConnection, "execute", execute)
+            monkeypatch.setattr(_MeasuredCursor, "execute", execute)
             try:
                 with permit.hold_authority():
                     if setup_effect == "declared":
@@ -1857,6 +2272,417 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
                     blocked_cursor.allow_cleanup.set()
                 if selected is not None:
                     selected.close()
+
+
+@pytest.mark.parametrize(
+    "storage_class,literal",
+    [
+        ("blob", b""),
+        ("text", b""),
+        ("blob", bytes(range(256)) * 2344),
+        ("text", b"\xff\x00\xc0\x80" * 150000),
+        ("text", ("雪\u0000é" * 100000).encode("utf-8")),
+    ],
+)
+def test_original_native_literal_slot_preserves_bytes_below_sqlite_value_limit(
+    tmp_path: Path, storage_class: Literal["text", "blob"], literal: bytes
+) -> None:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.native-literal-slot", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            seal._scratch.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1000000)
+            # The hex predecessor exceeded this native value limit for the
+            # same valid literal. The production slot retains its bytes once.
+            cell = seal.retain_literal_stream(
+                storage_class,
+                len(literal),
+                (literal[offset : offset + 32768] for offset in range(0, len(literal), 32768)),
+            )
+            expression, arguments = seal.source_literal_expression(cell)
+            with closing(
+                seal._scratch.execute(
+                    f"SELECT typeof({expression}),length(CAST({expression} AS BLOB)),CAST({expression} AS BLOB)",
+                    arguments * 3,
+                )
+            ) as cursor:
+                result = cursor.fetchone()
+            assert result == (storage_class, len(literal), literal)
+            assert b"".join(seal._literal_cell_chunks(cell)) == literal
+            with closing(seal._scratch.execute("SELECT count(*) FROM known_tier_literals")) as cursor:
+                assert cursor.fetchone()[0] == 1
+            null = seal.retain_literal_scalar(None)
+            null_expression, null_arguments = seal.source_literal_expression(null)
+            with closing(seal._scratch.execute(f"SELECT typeof({null_expression})", null_arguments)) as cursor:
+                assert cursor.fetchone()[0] == "null"
+
+
+def test_original_literal_preparation_retains_failed_actual_blob_and_directory_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.literal-blob-retry", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        original_close = NativeSQLCustodyOwner.close_incremental_blob
+        scratch_owner = next(child for child in native_sql_children(seal) if child.connection is seal._scratch)
+        witness = seal._original_witness_path()
+        failure = OSError(errno.EIO, "synthetic original literal Blob close failure")
+        blocked = True
+
+        def close(owner: NativeSQLCustodyOwner, blob: sqlite3.Blob) -> None:
+            if owner is scratch_owner and blocked:
+                raise failure
+            original_close(owner, blob)
+
+        monkeypatch.setattr(NativeSQLCustodyOwner, "close_incremental_blob", close)
+        try:
+            with pytest.raises(NativeConnectionSettlementError) as caught:
+                seal.retain_literal_stream("blob", 3, (b"abc",))
+            assert caught.value.owner is scratch_owner and caught.value.failure is failure
+            assert len(scratch_owner._incremental_blobs) == 1
+            actual_blob = scratch_owner._incremental_blobs[0]
+            assert len(actual_blob) == 3
+            with pytest.raises(NativeConnectionSettlementError) as refused:
+                seal.retain_literal_scalar(1)
+            assert refused.value.owner is scratch_owner
+            with pytest.raises(sqlite3.DatabaseError):
+                with closing(seal._scratch.execute("DELETE FROM known_tier_literals")):
+                    pass
+            with pytest.raises(NativeConnectionSettlementError):
+                seal.close()
+            assert witness.exists() and scratch_owner.connection is seal._scratch
+            assert actual_blob is scratch_owner._incremental_blobs[0]
+            blocked = False
+            seal.close()
+            assert not witness.exists() and scratch_owner._settled
+            assert not scratch_owner._incremental_blobs
+            with pytest.raises(sqlite3.ProgrammingError):
+                len(actual_blob)
+        finally:
+            blocked = False
+            seal.close()
+
+
+@pytest.mark.parametrize("failed_close", [False, True])
+def test_literal_attachment_freezes_all_main_writes_until_actual_dedicated_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_close: bool
+) -> None:
+    import errno
+
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+
+    with write_lease("test.literal-phase-gate", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+            with closing(setup.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value TEXT)")):
+                pass
+            with closing(setup.execute("INSERT INTO authority_control VALUES ('selected','original')")):
+                pass
+            setup.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            cell = seal.retain_literal_stream("blob", 3, (b"abc",))
+            cached_write = "UPDATE known_tier_literal_cells SET byte_length=byte_length WHERE cell_id=?"
+            with closing(seal._scratch.execute(cached_write, (cell._cell_id,))):
+                pass
+            seal._scratch.commit()
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            control_archive_connections(monkeypatch, tmp_path / "source.db")
+            with permit.hold_authority():
+                connection_context = permit.mutation_connection()
+                source = connection_context.__enter__()
+                assert isinstance(source, ControlledConnection)
+                owner = next(child for child in native_sql_children(seal) if child.connection is source)
+                witness = seal._original_witness_path()
+                try:
+                    expression, arguments = seal.source_literal_expression(cell)
+                    with closing(source.execute(f"SELECT {expression}", arguments)) as cursor:
+                        assert cursor.fetchone()[0] == b"abc"
+                    with pytest.raises(ReferenceSealError):
+                        seal.retain_literal_stream("blob", 1, (b"x",))
+                    for statement in (cached_write, "DELETE FROM known_tier_literals WHERE rowid=?"):
+                        with pytest.raises(sqlite3.DatabaseError):
+                            with closing(seal._scratch.execute(statement, (cell._cell_id,))):
+                                pass
+                    with pytest.raises(sqlite3.DatabaseError):
+                        with closing(seal._scratch.execute("CREATE TABLE unrelated_main_write(value BLOB)")):
+                            pass
+                    with pytest.raises(sqlite3.DatabaseError):
+                        seal._scratch.blobopen("known_tier_literals", "literal", cell._cell_id, readonly=False)
+                    with closing(
+                        seal._scratch.execute("INSERT INTO temp.authorized_removals VALUES ('exact-temporary')")
+                    ):
+                        pass
+                    seal._scratch.commit()
+                    assert b"".join(seal._literal_cell_chunks(cell)) == b"abc"
+                    if failed_close:
+                        source.close_failure = OSError(errno.EIO, "synthetic actual attached writer close failure")
+                        with pytest.raises(NativeConnectionSettlementError):
+                            connection_context.__exit__(None, None, None)
+                        assert witness.exists() and seal._live_literal_reader is owner
+                        assert owner.connection is source and owner.close_required
+                        with pytest.raises(ReferenceSealError):
+                            seal.retain_literal_scalar(1)
+                        source.close_failure = None
+                        owner.close()
+                    else:
+                        connection_context.__exit__(None, None, None)
+                    assert seal._live_literal_reader is None and owner.connection is None
+                    assert seal.retain_literal_scalar(1)._seal is seal
+                finally:
+                    source.close_failure = None
+                    owner.close()
+
+
+def test_native_row_capture_reuses_exact_unchanged_cells_and_prepared_native_slots(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    value = b"retained\x00literal" * 40000
+    with write_lease("test.literal-row-reuse", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            with closing(source.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value BLOB) STRICT")):
+                pass
+            with closing(source.execute("INSERT INTO authority_control VALUES ('selected',?)", (value,))):
+                pass
+            source.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                original = seal.retain_tier_row("source", "authority_control", 1)
+                assert original is not None
+                prepared = seal.retain_literal_stream(
+                    "blob", len(value), (value[offset : offset + 32768] for offset in range(0, len(value), 32768))
+                )
+                reused = seal._retain_native_row(
+                    seal.observer("source"),
+                    "authority_control",
+                    original.columns,
+                    1,
+                    reuse=original,
+                    prepared_cells={"value": prepared},
+                )
+                assert reused is not None
+                assert reused.cells[0] == original.cells[0] and reused.cells[1] == prepared
+                wrong = seal.retain_literal_stream(
+                    "blob",
+                    len(value),
+                    (b"x" * min(32768, len(value) - offset) for offset in range(0, len(value), 32768)),
+                )
+                unchanged = seal._retain_native_row(
+                    seal.observer("source"),
+                    "authority_control",
+                    original.columns,
+                    1,
+                    reuse=original,
+                    prepared_cells={"value": wrong},
+                )
+                assert unchanged is not None and unchanged.cells == original.cells
+                # Original key/value plus the two actual prepared values.
+                # Both native captures reuse locators rather than copying cells.
+                with closing(seal._scratch.execute("SELECT count(*) FROM known_tier_literals")) as cursor:
+                    assert cursor.fetchone()[0] == 4
+
+
+@pytest.mark.parametrize("marker_first", [True, False])
+def test_selected_source_hydration_preserves_actual_global_sequence_inputs_and_journal(
+    tmp_path: Path, marker_first: bool
+) -> None:
+    import hashlib
+
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    sequence = (1 << 62) + 17
+    with write_lease("test.selected-source-baseline", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            statements = (
+                (
+                    "INSERT INTO accepted_marker_inputs(sequence,identity,raw_id,payload,payload_sha256) "
+                    "VALUES (?,?,?,?,?)",
+                    (
+                        sequence + 10,
+                        "a" * 64,
+                        "selected",
+                        b"neutral marker",
+                        hashlib.sha256(b"neutral marker").hexdigest(),
+                    ),
+                ),
+                ("INSERT INTO raw_existence_changes(sequence,raw_id) VALUES (?,?)", (sequence, "retained")),
+            )
+            for sql, parameters in statements if marker_first else reversed(statements):
+                with closing(source.execute(sql, parameters)):
+                    pass
+            with closing(
+                source.execute(
+                    "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms) "
+                    "VALUES ('selected','codex','neutral-source',?,0,0)",
+                    (bytes(32),),
+                )
+            ):
+                pass
+            source.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                with seal.original_rows(
+                    "source", "SELECT rowid,name,seq FROM sqlite_sequence ORDER BY rowid"
+                ) as cursor:
+                    original_sequence = tuple(tuple(row) for row in cursor)
+                with seal.original_rows("source", "SELECT rowid FROM raw_sessions WHERE raw_id='selected'") as cursor:
+                    raw_rowid = cursor.fetchone()[0]
+                image = seal.retain_tier_row("source", "raw_sessions", raw_rowid)
+                assert image is not None
+                seal._provision_source_stage()
+                seal._source_allocation_dependencies("raw_existence_changes")
+                seal._source_allocation_dependencies("accepted_marker_inputs")
+                assert seal._load_source_row(image)
+                assert not seal._load_source_row(image)
+                with closing(
+                    seal._scratch.execute("SELECT rowid,name,seq FROM sqlite_sequence ORDER BY rowid")
+                ) as cursor:
+                    assert tuple(tuple(row) for row in cursor) == original_sequence
+                with closing(seal._scratch.execute("SELECT sequence,raw_id FROM raw_existence_changes")) as cursor:
+                    assert tuple(tuple(row) for row in cursor) == ((sequence, "retained"),)
+                with closing(
+                    seal._scratch.execute("SELECT retained_floor FROM raw_existence_journal_control")
+                ) as cursor:
+                    assert cursor.fetchone()[0] == 0
+                assert seal._scratch.getconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER)
+                with closing(seal._scratch.execute("PRAGMA foreign_key_check")) as cursor:
+                    assert cursor.fetchone() is None
+            seal.validate_observers_current()
+
+
+def test_selected_source_loads_a_long_canonical_supersession_chain_without_python_recursion(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    chain_length = 1200
+    with write_lease("test.selected-source-material-chain", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            for position in range(chain_length):
+                with closing(
+                    source.execute(
+                        "INSERT INTO material_observations("
+                        "material_id,referrer_ref,source_uri,acquisition_state,retryable,supersedes_material_id,"
+                        "custody,privacy_classification,acquired_at_ms,created_at_ms) "
+                        "VALUES (?,?,'https://example.invalid/material','claimed',0,?,'claimed','synthetic',0,0)",
+                        (
+                            f"material-{position}",
+                            "session:neutral",
+                            None if position == 0 else f"material-{position - 1}",
+                        ),
+                    )
+                ):
+                    pass
+            source.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            with seal.original_read_snapshot():
+                with seal.original_rows(
+                    "source",
+                    "SELECT rowid FROM material_observations WHERE material_id=?",
+                    (f"material-{chain_length - 1}",),
+                ) as cursor:
+                    rowid = cursor.fetchone()[0]
+                image = seal.retain_tier_row("source", "material_observations", rowid)
+                assert image is not None
+                seal._provision_source_stage()
+                assert seal._load_source_row(image)
+                with closing(seal._scratch.execute("SELECT count(*) FROM material_observations")) as cursor:
+                    assert cursor.fetchone()[0] == chain_length
+                with closing(
+                    seal._scratch.execute(
+                        "SELECT count(*) FROM temp.polylogue_source_stage_rows "
+                        "WHERE table_name='material_observations' AND load_state!=2"
+                    )
+                ) as cursor:
+                    assert cursor.fetchone()[0] == 0
+                with closing(seal._scratch.execute("PRAGMA foreign_key_check")) as cursor:
+                    assert cursor.fetchone() is None
+                assert seal._scratch.getconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER)
+            seal.validate_observers_current()
+
+
+@pytest.mark.parametrize("index_state", ["absent", "unreadable"])
+def test_source_only_witness_never_resolves_or_opens_missing_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, index_state: str
+) -> None:
+    from polylogue.storage import archive_identity
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    with write_lease("test.source-only-capability", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    # Existing Source remains authoritative even when the optional derived
+    # tier cannot be read. Resolution itself must not occur on this route.
+    selected = archive_identity.resolve_active_index_path(tmp_path)
+    selected.unlink()
+    if index_state == "unreadable":
+        selected.mkdir()
+    opened: list[str] = []
+    original_open = PreparedIndexMutation._open_observer
+
+    def forbidden_resolution(root: Path) -> Path:
+        pytest.fail("Source-only capability attempted active Index resolution")
+
+    def recorded_open(owner: PreparedIndexMutation, tier: str, path: Path) -> sqlite3.Connection:
+        opened.append(tier)
+        return original_open(owner, tier, path)
+
+    monkeypatch.setattr(archive_identity, "resolve_active_index_path", forbidden_resolution)
+    monkeypatch.setattr(PreparedIndexMutation, "_open_observer", recorded_open)
+    with PreparedIndexMutation.source_only(archive_root=tmp_path) as seal:
+        assert opened == ["source"]
+        assert set(seal._observers) == {"source"}
+        with seal.original_read_snapshot():
+            with seal.original_rows("source", "SELECT 1") as rows:
+                assert rows.fetchone()[0] == 1
+        for tier in ("index", "user", "audit"):
+            with pytest.raises(ReferenceSealError):
+                seal.observer(tier)
+        with pytest.raises(ReferenceSealError):
+            seal.note_session_namespace_change()
+        with pytest.raises(ReferenceSealError):
+            seal.authorize_session_removal(("unproven-session",))
+        with pytest.raises(ReferenceSealError):
+            seal._retire_user_fields(projected=True)
+        with pytest.raises(ReferenceSealError):
+            _ = seal.index_identity
+    assert opened == ["source"]
+
+
+def test_source_only_witness_refuses_foreign_source_commit_and_literal_owner(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    with write_lease("test.source-only-currency", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    with PreparedIndexMutation.source_only(archive_root=tmp_path) as first:
+        with PreparedIndexMutation.source_only(archive_root=tmp_path) as second:
+            cell = first.retain_literal_scalar("original owner")
+            with pytest.raises(ReferenceSealError):
+                second.source_literal_expression(cell)
+        with closing(sqlite3.connect(tmp_path / "source.db")) as foreign:
+            with closing(
+                foreign.execute(
+                    "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms) "
+                    "VALUES('foreign-source-only','unknown-export','synthetic/foreign',?,1,1)",
+                    (b"f" * 32,),
+                )
+            ):
+                pass
+            foreign.commit()
+        with pytest.raises(ReferenceSealStaleError):
+            first.validate_observers_current()
 
 
 def test_user_reference_array_census_does_not_fetch_complete_json_cells(
@@ -1991,3 +2817,174 @@ def test_constructor_accounts_original_index_identity_before_resolving_long_refe
                     "sessions", ("session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (session_id,)
                 )
             assert tuple(charges) == initial
+
+
+def test_partial_update_factory_retains_paid_original_cells_outside_effect_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    value = b"original-cell" * 100000
+    charges: list[int] = []
+    failure = OSError("synthetic terminal preparation verification failure")
+    with write_lease("test.partial-update-original-demand", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            with closing(source.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value BLOB)")):
+                pass
+            with closing(source.execute("INSERT INTO authority_control VALUES ('selected',?)", (value,))):
+                pass
+            source.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path, input_demand=charges.append) as seal:
+            original_verify = seal._verify_implicit_sequence_effects
+            injected = False
+
+            def verify(tier: str) -> None:
+                nonlocal injected
+                original_verify(tier)
+                if not injected:
+                    injected = True
+                    raise failure
+
+            monkeypatch.setattr(seal, "_verify_implicit_sequence_effects", verify)
+            with pytest.raises(OSError) as caught:
+                seal.prepare_known_tier_mutation(
+                    "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+                )
+            assert caught.value is failure
+            paid = tuple(charges)
+            with seal._owned_cursor(
+                seal._scratch,
+                "SELECT column_name,byte_length FROM temp.original_input_fields "
+                "WHERE tier='source' AND table_name='authority_control' AND physical_rowid=1",
+            ) as cursor:
+                assert dict(cursor) == {"key": len("selected"), "value": len(value)}
+            with seal._owned_cursor(seal._scratch, "SELECT count(*) FROM temp.known_tier_effects") as cursor:
+                assert cursor.fetchone()[0] == 0
+            assert "source" not in seal._pending_tier_permits
+            permit = seal.prepare_known_tier_mutation(
+                "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+            )
+            assert tuple(charges) == paid
+            with permit.hold_authority(), permit.mutation_connection() as source:
+                with closing(source.execute("BEGIN IMMEDIATE")):
+                    pass
+                with closing(source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")):
+                    pass
+                permit.allow_commit(source)
+                source.commit()
+                seal.accept_known_tier_commit(permit.committed())
+            seal.validate_observers_current()
+
+
+def test_partial_update_factory_rolls_back_effects_after_original_window_currency_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    with write_lease("test.partial-update-original-window", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            with closing(source.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value TEXT)")):
+                pass
+            with closing(source.execute("INSERT INTO authority_control VALUES ('selected','original')")):
+                pass
+            source.commit()
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            original_verify = seal._verify_implicit_sequence_effects
+
+            def commit_between_collection_and_currency(tier: str) -> None:
+                original_verify(tier)
+                assert seal._original_reads_active and seal.observer("source").in_transaction
+                with closing(sqlite3.connect(tmp_path / "source.db")) as foreign:
+                    with closing(foreign.execute("INSERT INTO authority_control VALUES ('unrelated','foreign')")):
+                        pass
+                    foreign.commit()
+
+            monkeypatch.setattr(seal, "_verify_implicit_sequence_effects", commit_between_collection_and_currency)
+            with pytest.raises(ReferenceSealStaleError):
+                seal.prepare_known_tier_mutation(
+                    "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+                )
+            assert not seal._original_reads_active and not seal.observer("source").in_transaction
+            assert "source" not in seal._pending_tier_permits
+            with seal._owned_cursor(seal._scratch, "SELECT count(*) FROM temp.known_tier_effects") as cursor:
+                assert cursor.fetchone()[0] == 0
+            with seal._owned_cursor(
+                seal.observer("source"), "SELECT value FROM authority_control WHERE key='selected'"
+            ) as cursor:
+                assert cursor.fetchone()[0] == "original"
+
+
+def test_partial_update_factory_rollback_close_failure_retains_primary_and_original_creator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    primary = OSError("synthetic exact effect verification fault")
+    blocked: list[ControlledCursor] = []
+    with write_lease("test.partial-update-rollback-close", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            with closing(source.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value TEXT)")):
+                pass
+            with closing(source.execute("INSERT INTO authority_control VALUES ('selected','original')")):
+                pass
+            source.commit()
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        owner = next(child for child in native_sql_children(seal) if child.connection is seal._scratch)
+        assert seal._scratch_directory is not None
+        witness = Path(seal._scratch_directory.name)
+        original_cursor = seal._scratch.cursor
+
+        class RollbackCursor(ControlledCursor):
+            def execute(self, sql: str, parameters: Any = (), /) -> "RollbackCursor":
+                super().execute(sql, parameters)
+                if sql == "ROLLBACK TO prepare_known_tier_effects":
+                    self.allow_cleanup.clear()
+                    blocked.append(self)
+                return self
+
+        def cursor() -> sqlite3.Cursor:
+            return original_cursor(factory=RollbackCursor)
+
+        def refuse(tier: str) -> None:
+            raise primary
+
+        monkeypatch.setattr(seal._scratch, "cursor", cursor)
+        monkeypatch.setattr(seal, "_verify_implicit_sequence_effects", refuse)
+        try:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                seal.prepare_known_tier_mutation(
+                    "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+                )
+
+            def includes(failure: BaseException, target: BaseException) -> bool:
+                if failure is target:
+                    return True
+                if isinstance(failure, BaseExceptionGroup):
+                    return any(includes(child, target) for child in failure.exceptions)
+                return False
+
+            assert includes(caught.value, primary) and blocked
+            assert owner.connection is seal._scratch and owner.close_required
+            assert witness.exists() and "source" not in seal._pending_tier_permits
+            with pytest.raises(ReferenceSealError):
+                seal.prepare_known_tier_mutation(tier="source", effects=())
+            with pytest.raises(NativeConnectionSettlementError) as close_failure:
+                seal.close()
+            assert close_failure.value.owner is owner
+            assert owner.connection is seal._scratch
+            assert witness.exists()
+            for selected in blocked:
+                selected.allow_cleanup.set()
+            seal.close()
+            assert owner.connection is None and not witness.exists()
+        finally:
+            for selected in blocked:
+                selected.allow_cleanup.set()
+            seal.close()

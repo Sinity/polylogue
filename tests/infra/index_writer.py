@@ -182,6 +182,9 @@ def write_fixture_index_session(
     in-memory indexes declare that separate destination explicitly. An existing
     batch or ArchiveStore scope is borrowed only for its exact connection.
     """
+    current = current_index_mutation_scope()
+    if current is not None:
+        current.require_new_work(conn)
     owned_prepared = None
     if "prepared_write" not in kwargs:
         rows = kwargs.pop("prepared_rows", None)
