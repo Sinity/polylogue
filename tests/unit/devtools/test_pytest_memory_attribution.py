@@ -593,7 +593,8 @@ def test_custody_settlement_retains_known_birth_after_marker_loss_and_catches_fo
     from devtools import pytest_memory
 
     proc = _proc(tmp_path)
-    _process(proc, 100, pgid=100, pss_kib=1)
+    parent = _process(proc, 100, pgid=100, pss_kib=1)
+    (parent / "uid_map").write_text("0 4294967295 4294967295\n")
     monkeypatch.setattr(pytest_memory, "_marker_matches", lambda pid, *_args, **_kwargs: None if pid == 100 else True)
     descriptors: dict[int, int] = {}
     signalled: list[int] = []
@@ -658,17 +659,6 @@ def test_custody_settlement_survives_actual_concurrent_foreign_bwrap_startup(
 
     started = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
     child = subprocess.Popen(["bwrap", "--bind", "/", "/", "--", "sleep", "0.1"])
-    marker_reader = pytest_memory._marker_matches
-    unreadable = 0
-
-    def observe(pid: int, marker: str, *, proc: Path) -> bool | None:
-        nonlocal unreadable
-        result = marker_reader(pid, marker, proc=proc)
-        if pid == child.pid and result is None:
-            unreadable += 1
-        return result
-
-    monkeypatch.setattr(pytest_memory, "_marker_matches", observe)
     monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("foreign bwrap was signalled"))
     try:
         assert (
@@ -678,8 +668,151 @@ def test_custody_settlement_survives_actual_concurrent_foreign_bwrap_startup(
             is None
         )
         assert child.wait() == 0
-        assert unreadable > 0
     finally:
         if child.poll() is None:
             child.terminate()
         child.wait()
+
+
+@pytest.mark.uses_real_clock
+@pytest.mark.parametrize("restore_readability", [False, True])
+def test_custody_settlement_keeps_actual_opaque_birth_pending_until_readability_or_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_readability: bool
+) -> None:
+    from devtools import pytest_memory
+
+    ready, release, observed = (tmp_path / name for name in ("ready", "release", "observed"))
+    program = (
+        "import ctypes, time\nfrom pathlib import Path\n"
+        "libc = ctypes.CDLL(None, use_errno=True)\n"
+        "assert libc.prctl(4, 0, 0, 0, 0) == 0\n"
+        f"Path({str(ready)!r}).touch()\n"
+        f"while not Path({str(release)!r}).exists():\n    time.sleep(0.001)\n"
+        "assert libc.prctl(4, 1, 0, 0, 0) == 0\n"
+        f"while not Path({str(observed)!r}).exists():\n    time.sleep(0.001)\n"
+    )
+    child = subprocess.Popen([sys.executable, "-c", program])
+    try:
+        while not ready.exists():
+            assert child.poll() is None
+            time.sleep(0.001)
+        # Only this exact live birth participates, so unrelated shared host work
+        # cannot manufacture the permission transition this control proves.
+        proc = _proc(tmp_path)
+        (proc / str(child.pid)).symlink_to(Path("/proc") / str(child.pid), target_is_directory=True)
+        original = pytest_memory._marker_matches
+        unreadable = 0
+        readable = 0
+
+        def observe(pid: int, marker: str, *, proc: Path) -> bool | None:
+            nonlocal unreadable, readable
+            result = original(pid, marker, proc=proc)
+            if result is None:
+                unreadable += 1
+                if restore_readability:
+                    release.touch()
+            elif result is False:
+                readable += 1
+                observed.touch()
+            return result
+
+        monkeypatch.setattr(pytest_memory, "_marker_matches", observe)
+        monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("unknown birth was signalled"))
+        refusal = pytest_memory.settle_custody(
+            "synthetic-unshared-custody",
+            started_ticks=0,
+            known_births={},
+            term_grace_s=2 if restore_readability else 0,
+            kill_grace_s=2 if restore_readability else 0,
+            proc=proc,
+        )
+        assert unreadable
+        if restore_readability:
+            assert refusal is None
+            assert child.wait() == 0
+            assert readable
+        else:
+            assert refusal is not None
+            assert child.poll() is None
+            assert not readable
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait()
+
+
+@pytest.mark.parametrize("mapping", ["", "invalid", "0 1000 1\n", "1000 1000 1\n"])
+def test_unknown_unreadable_birth_cannot_be_excluded_by_uncertain_or_different_map(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mapping: str
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    process = _process(proc, 100, pgid=100, pss_kib=1)
+    (process / "uid_map").write_text(mapping)
+    monkeypatch.setattr(pytest_memory, "_marker_matches", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("unknown birth was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "fresh", started_ticks=0, known_births={}, term_grace_s=0, kill_grace_s=0, proc=proc
+        )
+        is not None
+    )
+
+
+@pytest.mark.uses_real_clock
+def test_custody_settlement_excludes_actual_opaque_host_ancestor_peer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    host_proc = Path("/proc")
+    pid = os.getppid()
+    while pid and pytest_memory._outside_user_namespace(pid, proc=host_proc) is not True:
+        fields = (host_proc / str(pid) / "stat").read_text().rpartition(")")[2].split()
+        pid = int(fields[1])
+    assert pid
+    identity = pytest_memory._identity(pid, proc=host_proc)
+    assert identity is not None and identity.state not in {"Z", "X"}
+    assert pytest_memory._marker_matches(pid, "synthetic-unshared-custody", proc=host_proc) is None
+    assert (host_proc / str(pid)).stat().st_uid == os.getuid()
+    proc = _proc(tmp_path)
+    (proc / str(pid)).symlink_to(host_proc / str(pid), target_is_directory=True)
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("host peer was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "synthetic-unshared-custody", started_ticks=0, known_births={}, term_grace_s=0, kill_grace_s=0, proc=proc
+        )
+        is None
+    )
+    assert pytest_memory._identity(pid, proc=host_proc) == identity
+
+
+def test_namespace_exclusion_revalidates_the_exact_birth_after_map_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    process = _process(proc, 100, pgid=100, pss_kib=1)
+    (process / "uid_map").write_text("0 4294967295 4294967295\n")
+    original = pytest_memory._outside_user_namespace
+
+    def reused(pid: int, *, proc: Path) -> bool | None:
+        result = original(pid, proc=proc)
+        if result is True:
+            (process / "stat").write_text("100 (peer) S 1 100 " + "0 " * 16 + "99999\n")
+            (process / "uid_map").write_text("0 1000 1\n")
+        return result
+
+    monkeypatch.setattr(pytest_memory, "_outside_user_namespace", reused)
+    monkeypatch.setattr(pytest_memory, "_marker_matches", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("unknown birth was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "fresh", started_ticks=0, known_births={}, term_grace_s=0, kill_grace_s=0, proc=proc
+        )
+        is not None
+    )

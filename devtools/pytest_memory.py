@@ -97,6 +97,35 @@ def _marker_matches(pid: int, marker: str, *, proc: Path) -> bool | None:
         return None
 
 
+def _outside_user_namespace(pid: int, *, proc: Path) -> bool | None:
+    """Prove an unmapped ancestor/peer, never infer it from differing maps.
+
+    uid_map reads across namespaces are relative to the reader. A child can
+    map only IDs mapped in its parent, so an unmapped start cannot describe
+    our descendant. Empty, malformed or unreadable mappings prove nothing.
+    See user_namespaces(7), User and group ID mappings.
+    """
+    outside = False
+    rows = 0
+    invalid_uid = (1 << 32) - 1
+    try:
+        with (proc / str(pid) / "uid_map").open() as handle:
+            for line in handle:
+                fields = line.split()
+                if len(fields) != 3:
+                    return None
+                first, mapped, count = map(int, fields)
+                if not (0 <= first < invalid_uid and 0 <= mapped <= invalid_uid and 0 < count <= invalid_uid - first):
+                    return None
+                if mapped != invalid_uid and count > invalid_uid - mapped:
+                    return None
+                outside |= mapped == invalid_uid
+                rows += 1
+    except (OSError, ValueError):
+        return None
+    return outside if rows else None
+
+
 def settle_custody(
     marker: str,
     *,
@@ -160,6 +189,16 @@ def settle_custody(
                             except FileNotFoundError:
                                 raced = True
                                 continue
+                            outside = _outside_user_namespace(pid, proc=proc)
+                            after = _identity(pid, proc=proc)
+                            if after is None or after.start_ticks != identity.start_ticks:
+                                raced = True
+                                continue
+                            if outside is True:
+                                proof = pinned.pop(pid, None)
+                                if proof is not None:
+                                    os.close(proof[1])
+                                continue
                         # A foreign bwrap startup can temporarily make environ
                         # unreadable. Pin its birth without signalling it; only
                         # readability or exact death can settle that uncertainty.
@@ -208,7 +247,27 @@ def settle_custody(
                 for _proof, descriptor in pinned.values():
                     poller.register(descriptor, select.POLLIN)
                 poller.poll(max(1, int(min(0.05, deadline - time.monotonic()) * 1000)))
-        return "execution custody did not settle"
+        evidence = []
+        for pid, (proof, descriptor) in pinned.items():
+            poller = select.poll()
+            poller.register(descriptor, select.POLLIN)
+            dead = any(events & select.POLLIN for _descriptor, events in poller.poll(0))
+            current = _identity(pid, proc=proc)
+            same_birth = current is not None and current.start_ticks == proof.start_ticks
+            marker_state = _marker_matches(pid, marker, proc=proc) if same_birth else None
+            evidence.append(
+                {
+                    "pid": pid,
+                    "start_ticks": proof.start_ticks,
+                    "state": "exited" if dead else "reused" if current is not None and not same_birth else "live",
+                    "proc_state": current.state if same_birth and current is not None else None,
+                    "marker": "owned" if marker_state is True else "foreign" if marker_state is False else "unreadable",
+                    "owned_birth": births.get(pid) == proof.start_ticks,
+                }
+            )
+        return "execution custody did not settle: " + json.dumps(
+            {"scan_raced": raced, "coverage_unavailable": unavailable, "births": evidence}, sort_keys=True
+        )
     finally:
         for _identity_proof, descriptor in pinned.values():
             with contextlib.suppress(OSError):

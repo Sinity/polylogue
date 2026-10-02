@@ -216,17 +216,32 @@ def test_managed_snapshot_preserves_actual_host_pid_and_outer_basetemp(
 
 
 @pytest.mark.parametrize("fork_on_term", [False, True])
+@pytest.mark.parametrize("new_userns", [False, True])
 def test_managed_snapshot_settles_detached_children_before_source_publication(
-    source_repository: Path, fork_on_term: bool
+    source_repository: Path, monkeypatch: pytest.MonkeyPatch, fork_on_term: bool, new_userns: bool
 ) -> None:
     """Group-only settlement leaves a setsid writer alive after the receipt."""
     import time
 
     root = source_repository
+    samplers: list[Any] = []
+    if new_userns:
+        sampler_type = pytest_slot.ProcessGroupMemorySampler
+
+        def sparse_sampler(*args: Any, **kwargs: Any) -> Any:
+            # The initial root sample precedes the nested namespace/detach;
+            # this descendant must be discovered from its actual marker.
+            kwargs["interval_s"] = 60
+            sampler = sampler_type(*args, **kwargs)
+            samplers.append(sampler)
+            return sampler
+
+        monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", sparse_sampler)
     detached = (
         "import os, signal, sys, time\nfrom pathlib import Path\n"
         "def heartbeat(name):\n"
         "    path = Path('.cache/' + name)\n"
+        "    path.with_name(name + '-pid').write_text(str(os.getpid()))\n"
         "    while True:\n        path.write_text(str(time.monotonic_ns()))\n        time.sleep(0.01)\n"
     )
     if fork_on_term:
@@ -244,13 +259,22 @@ def test_managed_snapshot_settles_detached_children_before_source_publication(
     (root / "tests/nested/test_one.py").write_text(
         "import subprocess, sys, time\nfrom pathlib import Path\n"
         "def test_one():\n"
-        f"    subprocess.Popen([sys.executable, '-c', {detached!r}], start_new_session=True)\n"
+        f"    command = [sys.executable, '-c', {detached!r}]\n"
+        + (
+            "    command = ['bwrap', '--unshare-user', '--uid', '0', '--gid', '0', '--bind', '/', '/', '--', *command]\n"
+            if new_userns
+            else ""
+        )
+        + "    subprocess.Popen(command, start_new_session=True)\n"
         "    while not Path('.cache/heartbeat').exists():\n        time.sleep(0.01)\n"
     )
     exit_code, receipt = _record(root)
     assert exit_code == 0, receipt
     assert receipt["execution_source"]["custody_settled"] is True
     heartbeat = root / ".cache/heartbeat"
+    if new_userns:
+        detached_pid = int((root / ".cache/heartbeat-pid").read_text())
+        assert detached_pid not in samplers[0].custody_births()
     terminal = heartbeat.read_text()
     time.sleep(0.1)
     assert heartbeat.read_text() == terminal
