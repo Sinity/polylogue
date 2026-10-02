@@ -28,12 +28,16 @@ class EmbeddingFetcher(Protocol):
     def __call__(self, texts: list[str], input_type: str = "document") -> list[Embedding]: ...
 
 
+class VectorReadConnection(Protocol):
+    def __call__(self, *, index_path: Path | None = None) -> sqlite3.Connection: ...
+
+
 class MutableSqliteVecProvider(SqliteVecProvider):
     _ensure_vec_available: Callable[[], None]
     _ensure_tables: Callable[[], None]
     _get_embeddings: EmbeddingFetcher
     _get_connection: Callable[[], sqlite3.Connection]
-    _get_read_connection: Callable[[], sqlite3.Connection]
+    _get_read_connection: VectorReadConnection
 
 
 def make_message(
@@ -103,40 +107,28 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
 ) -> None:
     """Mutation: resolve the active index instead of the supplied path and this fails."""
 
+    from tests.infra.vector_archive import seed_vector_archive
+
+    identities = seed_vector_archive(
+        tmp_path,
+        [("session-1", "message-1", "a sufficiently long pinned snapshot message", [1.0] + [0.0] * 1023)],
+    )
+    _, message_id = identities[("session-1", "message-1")]
     embeddings_path = tmp_path / "pinned-embeddings.db"
     pinned_index_path = tmp_path / "pinned-index.db"
+    (tmp_path / "embeddings.db").rename(embeddings_path)
+    (tmp_path / "index.db").rename(pinned_index_path)
     embeddings = sqlite3.connect(embeddings_path)
-    embeddings.execute("PRAGMA journal_mode = WAL")
-    embeddings.execute("CREATE TABLE snapshot_probe (value INTEGER NOT NULL)")
-    embeddings.execute("INSERT INTO snapshot_probe VALUES (1)")
-    embeddings.commit()
-    embeddings.close()
+    try:
+        embeddings.execute("PRAGMA journal_mode = WAL")
+        embeddings.execute("CREATE TABLE snapshot_probe (value INTEGER NOT NULL)")
+        embeddings.execute("INSERT INTO snapshot_probe VALUES (1)")
+        embeddings.commit()
+    finally:
+        embeddings.close()
     index = sqlite3.connect(pinned_index_path)
     try:
         index.execute("PRAGMA journal_mode = WAL")
-        index.executescript(
-            """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT NOT NULL);
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                message_type TEXT NOT NULL,
-                role TEXT NOT NULL,
-                material_origin TEXT NOT NULL,
-                word_count INTEGER NOT NULL
-            );
-            CREATE TABLE blocks (
-                message_id TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                block_type TEXT NOT NULL,
-                text TEXT
-            );
-            INSERT INTO sessions VALUES ('session-1', 'test');
-            INSERT INTO messages VALUES ('message-1', 'session-1', 'message', 'user', 'human_authored', 6);
-            INSERT INTO blocks VALUES ('message-1', 0, 'text', 'a sufficiently long pinned snapshot message');
-            """
-        )
-        index.commit()
     finally:
         index.close()
 
@@ -146,7 +138,6 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
         raise AssertionError("snapshot reader must not resolve an active index")
 
     monkeypatch.setattr(runtime, "resolve_active_index_path", unexpected_active_index_resolution)
-    monkeypatch.setattr(runtime, "try_load_sqlite_vec", lambda connection: (True, None))
     configure_projection = runtime._configure_current_embedding_messages
 
     def publish_after_pin(
@@ -184,7 +175,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
         assert connection.in_transaction
         assert connection.execute("PRAGMA query_only").fetchone()[0] == 1
         assert connection.execute("SELECT value FROM snapshot_probe").fetchone()[0] == 1
-        assert connection.execute("SELECT message_id FROM current_embedding_messages").fetchone()[0] == "message-1"
+        assert connection.execute("SELECT message_id FROM current_embedding_messages").fetchone()[0] == message_id
     finally:
         connection.close()
 
