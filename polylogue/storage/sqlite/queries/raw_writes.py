@@ -52,7 +52,7 @@ async def execute_raw_admission_plan_async(
     # Import lazily: the backend loads its query adapters during construction.
     from polylogue.storage.sqlite.async_sqlite import _await_settled
 
-    task = asyncio.ensure_future(
+    task: asyncio.Task[RawAdmissionExecution] = asyncio.ensure_future(
         conn._execute(_apply_plan, conn, plan, transaction_depth)  # type: ignore[no-untyped-call]
     )
     await _await_settled(task)
@@ -86,7 +86,9 @@ async def publish_acquired_zip_input(
 ) -> str:
     from polylogue.storage.sqlite.async_sqlite import _await_settled
 
-    task = asyncio.ensure_future(conn._execute(_publish_input, conn, manifest, observed_at_ms, transaction_depth))
+    task: asyncio.Task[str] = asyncio.ensure_future(
+        conn._execute(_publish_input, conn, manifest, observed_at_ms, transaction_depth)  # type: ignore[no-untyped-call]
+    )
     await _await_settled(task)
     return task.result()
 
@@ -138,8 +140,8 @@ async def record_acquired_zip_disposition(
 ) -> None:
     from polylogue.storage.sqlite.async_sqlite import _await_settled
 
-    task = asyncio.ensure_future(
-        conn._execute(
+    task: asyncio.Task[None] = asyncio.ensure_future(
+        conn._execute(  # type: ignore[no-untyped-call]
             _record_input_disposition,
             conn,
             source_generation_id,
@@ -210,8 +212,8 @@ async def complete_acquired_zip_input(
         if stopped.is_set():
             raise asyncio.CancelledError()
 
-    task = asyncio.ensure_future(
-        conn._execute(
+    task: asyncio.Task[str] = asyncio.ensure_future(
+        conn._execute(  # type: ignore[no-untyped-call]
             _complete_input,
             conn,
             source_generation_id,

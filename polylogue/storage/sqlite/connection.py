@@ -129,7 +129,7 @@ def _get_cached_connection(path: Path, *, archive_root: Path) -> sqlite3.Connect
 
     path.parent.mkdir(parents=True, exist_ok=True)
     require_write_lease(f"cached write connection({path})", archive_root=archive_root)
-    conn = connect_measured(path, timeout=DB_TIMEOUT)
+    conn = connect_measured(path, uri=True, timeout=DB_TIMEOUT)
     owner = NativeSQLCustodyOwner(conn, cache_entry=(cache, key))
     cache[key] = owner
     try:

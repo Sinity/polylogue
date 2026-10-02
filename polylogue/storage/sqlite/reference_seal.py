@@ -11,12 +11,13 @@ from __future__ import annotations
 import asyncio
 import os
 import pickle
+import re
 import sqlite3
 import tempfile
 import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from functools import partial
@@ -158,6 +159,9 @@ class KnownTierMutationPermit:
     _connection: sqlite3.Connection | None = field(default=None, init=False, compare=False, repr=False)
     _custody: ArchiveWriteCustody | None = field(default=None, init=False, compare=False, repr=False)
     _guard_setup: bool = field(default=False, init=False, compare=False, repr=False)
+    _setup_connection: sqlite3.Connection | None = field(default=None, init=False, compare=False, repr=False)
+    _setup_pragma: tuple[str, str, str | None] | None = field(default=None, init=False, compare=False, repr=False)
+    _setup_attempted: bool = field(default=False, init=False, compare=False, repr=False)
     _effects: int = field(default=0, init=False, compare=False, repr=False)
     _commit_allowed: bool = field(default=False, init=False, compare=False, repr=False)
     _commit_attempted: bool = field(default=False, init=False, compare=False, repr=False)
@@ -210,17 +214,53 @@ class KnownTierMutationPermit:
         else:
             owner.close()
 
-    def bind_mutation_connection(self, connection: sqlite3.Connection) -> None:
+    def configure_mutation_connection(self, connection: sqlite3.Connection, statements: tuple[str, ...]) -> None:
+        self._seal._require_live_owner()
+        if self._custody is None or current_sql_custody() is not self._custody:
+            raise ReferenceSealError("known tier profile setup requires its admitted physical custody")
+        if self._setup_attempted or self._connection is not None or connection.in_transaction:
+            raise ReferenceSealError("known tier profile setup requires one fresh dedicated connection")
+        if not any(child.connection is connection for child in native_sql_children(self._seal)):
+            raise ReferenceSealError("known tier profile setup requires its registered original native child")
+        with closing(connection.execute("PRAGMA database_list")) as cursor:
+            path = next(str(row[2]) for row in cursor if row[1] == "main")
+        if Path(path).resolve() != self._seal._paths[self._tier].resolve():
+            raise ReferenceSealError("known tier profile setup selected another physical tier")
+        object.__setattr__(self, "_setup_attempted", True)
+        object.__setattr__(self, "_setup_connection", connection)
+        try:
+            with closing(connection.execute("PRAGMA data_version")) as cursor:
+                object.__setattr__(self, "_writer_data_version", int(cursor.fetchone()[0]))
+            self._seal.validate_observers_current()
+            for statement in statements:
+                match = re.fullmatch(r"PRAGMA (?:(main)\.)?([a-z_]+) = ([A-Za-z_0-9-]+)", statement)
+                if match is None:
+                    raise ReferenceSealError("known tier profile setup requires one exact declared PRAGMA")
+                schema, pragma, value = match.groups()
+                object.__setattr__(self, "_setup_pragma", (pragma.casefold(), value.casefold(), schema))
+                try:
+                    with closing(connection.execute(statement)):
+                        pass
+                finally:
+                    object.__setattr__(self, "_setup_pragma", None)
+        finally:
+            object.__setattr__(self, "_setup_pragma", None)
+            object.__setattr__(self, "_setup_connection", None)
+        self._bind_mutation_connection(connection)
+
+    def _bind_mutation_connection(self, connection: sqlite3.Connection) -> None:
         self._seal._require_live_owner()
         if self._custody is None or current_sql_custody() is not self._custody:
             raise ReferenceSealError("known Source connection has no admitted physical custody")
         if self._connection is not None or connection.in_transaction:
             raise ReferenceSealError("known Source mutation requires one fresh dedicated connection")
-        path = next(str(row[2]) for row in connection.execute("PRAGMA database_list") if row[1] == "main")
+        with closing(connection.execute("PRAGMA database_list")) as cursor:
+            path = next(str(row[2]) for row in cursor if row[1] == "main")
         if Path(path).resolve() != self._seal._paths[self._tier].resolve():
             raise ReferenceSealError("known Source mutation selected another tier")
         object.__setattr__(self, "_connection", connection)
-        object.__setattr__(self, "_writer_data_version", int(connection.execute("PRAGMA data_version").fetchone()[0]))
+        if self._writer_data_version is None:
+            raise ReferenceSealError("known tier guard binding has no original setup version")
 
         object.__setattr__(self, "_guard_setup", True)
         try:
@@ -337,19 +377,14 @@ class KnownTierMutationPermit:
         if action == sqlite3.SQLITE_PRAGMA:
             if second is None:
                 return True
-            if self._connection is not None:
-                # TEMP guards and FK/trigger semantics are immutable after
-                # the factory has finalized this dedicated connection.
-                return False
-            return first in {
-                "temp_store",
-                "busy_timeout",
-                "foreign_keys",
-                "cache_size",
-                "mmap_size",
-                "synchronous",
-                "wal_autocheckpoint",
-            }
+            # Only the exact factory statement currently executing on this
+            # registered connection has setup permission. No setting remains
+            # available after setup success, failure, or guard binding.
+            return connection is self._setup_connection and self._setup_pragma == (
+                (first or "").casefold(),
+                second.casefold(),
+                schema,
+            )
         if connection is not self._connection:
             return False
         if self._guard_setup and schema == "temp":

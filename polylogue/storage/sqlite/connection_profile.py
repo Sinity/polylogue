@@ -29,7 +29,7 @@ import threading
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import BuiltinFunctionType, TracebackType
@@ -41,6 +41,7 @@ from polylogue.storage.io_phase_metrics import (
     close_connection_cursor,
     connect_measured,
     live_connection_cursors,
+    native_connection_physically_closed,
     settle_connection_cursors,
 )
 from polylogue.storage.sqlite.write_lease import (
@@ -472,9 +473,10 @@ class NativeSQLCustodyOwner:
                 self.frame._cursors.clear()
             try:
                 # Cancellation interrupts work, never original-owner cleanup.
-                connection.set_progress_handler(None, 0)
-                if connection.in_transaction:
-                    connection.rollback()
+                if not native_connection_physically_closed(connection):
+                    connection.set_progress_handler(None, 0)
+                    if connection.in_transaction:
+                        connection.rollback()
             except BaseException as error:
                 failures.append(error)
             try:
@@ -1203,7 +1205,9 @@ def _connect_archive_writer(
         raise UnleasedWriteError("known tier permit cannot authorize another physical tier")
     connection = connect_measured(
         f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only else path,
-        uri=existing_only,
+        # Sibling Source attachments use mode=ro URIs even when main is an
+        # ordinary Path. URI handling belongs to the entire native connection.
+        uri=True,
         timeout=timeout,
         check_same_thread=check_same_thread,
         **({"cached_statements": 0} if is_source or is_user else {}),
@@ -1304,12 +1308,14 @@ def open_source_tier_write_connection(
         conn, terminal_parent=None if mutation_permit is None else mutation_permit.terminal_parent
     )
     try:
-        for statement in write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE):
-            conn.execute(statement)
-        if mutation_permit is not None:
-            # temp_store profile setup can discard TEMP objects. Bind exact
-            # row guards only after every connection-local setting is final.
-            mutation_permit.bind_mutation_connection(conn)
+        statements = write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE)
+        if mutation_permit is None:
+            for statement in statements:
+                conn.execute(statement)
+        else:
+            # Profile setup precedes immutable row/FK/trigger enforcement on
+            # the permit's one registered native connection.
+            mutation_permit.configure_mutation_connection(conn, (*statements, "PRAGMA recursive_triggers = ON"))
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise
@@ -1567,7 +1573,9 @@ def _attach_sibling_tiers(conn: sqlite3.Connection, *, archive_root: Path) -> No
     """
     main_path: str | None = None
     attached: set[str] = set()
-    for row in conn.execute("PRAGMA database_list").fetchall():
+    with closing(conn.execute("PRAGMA database_list")) as cursor:
+        databases = cursor.fetchall()
+    for row in databases:
         schema_name = str(row[1])
         if schema_name == "main":
             main_path = str(row[2]) if row[2] else None
@@ -2108,7 +2116,8 @@ def attach_readonly_database(
     uri = f"file:{quote(str(path))}?mode=ro" + ("&immutable=1" if immutable else "")
     conn.set_authorizer(None)
     try:
-        conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
+        with closing(conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))):
+            pass
     finally:
         conn.set_authorizer(_authorize_read_operation)
 
@@ -2124,7 +2133,9 @@ def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -
     from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
     assert_population_admitted(path)
-    if conn.execute("PRAGMA query_only").fetchone()[0] == 1:
+    with closing(conn.execute("PRAGMA query_only")) as cursor:
+        query_only = cursor.fetchone()[0]
+    if query_only == 1:
         attach_readonly_database(conn, path, alias=alias)
         return
     if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
@@ -2132,7 +2143,8 @@ def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -
     # Source mutations use its admitted direct connection. Cross-tier handles
     # retain read access without acquiring another Source write surface.
     attachment = f"file:{quote(str(Path(path).resolve()))}?mode=ro" if Path(path).name == "source.db" else str(path)
-    conn.execute(f"ATTACH DATABASE ? AS {alias}", (attachment,))
+    with closing(conn.execute(f"ATTACH DATABASE ? AS {alias}", (attachment,))):
+        pass
 
 
 def _authorize_read_temp_operation(
@@ -2309,13 +2321,14 @@ def open_isolated_write_connection(
         conn, terminal_parent=None if mutation_permit is None else mutation_permit.terminal_parent
     )
     try:
-        for statement in write_connection_pragma_statements(profile):
-            conn.execute(statement)
-        if mutation_permit is not None:
-            # Complete effects include SQLite's FK actions. Fix their policy
-            # before installing immutable exact-effect guards.
-            conn.execute("PRAGMA foreign_keys = ON")
-            mutation_permit.bind_mutation_connection(conn)
+        statements = write_connection_pragma_statements(profile)
+        if mutation_permit is None:
+            for statement in statements:
+                conn.execute(statement)
+        else:
+            mutation_permit.configure_mutation_connection(
+                conn, (*statements, "PRAGMA foreign_keys = ON", "PRAGMA recursive_triggers = ON")
+            )
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
         raise

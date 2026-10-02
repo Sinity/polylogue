@@ -45,6 +45,10 @@ from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 DURABLE_MIGRATION_TIERS = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
 
 
+def _is_schema_inventory_digest(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeTierProbeAuthority:
     """The schema/version of an authenticated post-apply train candidate."""
@@ -58,9 +62,7 @@ class RuntimeTierProbeAuthority:
             self.tier not in DURABLE_MIGRATION_TIERS
             or type(self.version) is not int
             or self.version < 1
-            or not isinstance(self.schema_inventory_sha256, str)
-            or len(self.schema_inventory_sha256) != 64
-            or any(character not in "0123456789abcdef" for character in self.schema_inventory_sha256)
+            or not _is_schema_inventory_digest(self.schema_inventory_sha256)
         ):
             raise ValueError("invalid runtime tier probe schema authority")
 

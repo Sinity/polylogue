@@ -335,6 +335,11 @@ class _MeasuredConnection(sqlite3.Connection):
             self._metric_context_exit = False
 
 
+def native_connection_physically_closed(connection: sqlite3.Connection) -> bool:
+    """Use only this factory's successful native-close and statement proof."""
+    return isinstance(connection, _MeasuredConnection) and connection._native_closed and not connection.live_cursors()
+
+
 def settle_connection_cursors(connection: sqlite3.Connection) -> None:
     """Settle statements through the same measured connection's creator owner."""
     cast(_MeasuredConnection, connection).settle_cursors()
@@ -378,6 +383,7 @@ __all__ = [
     "close_connection_cursor",
     "connect_measured",
     "live_connection_cursors",
+    "native_connection_physically_closed",
     "settle_connection_cursors",
     "io_phase_process_snapshot",
     "io_phase_snapshot",

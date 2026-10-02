@@ -2297,11 +2297,11 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     literal('],"semantic_session_fields":')
     write(_session_semantic_fields(convo))
     literal(',"session_events":[')
-    with _event_owner_resolution(convo) as resolution:
+    with _event_owner_resolution(convo) as event_resolution:
         for event_index, event in enumerate(convo.session_events):
             if event_index:
                 literal(",")
-            write(_event_hash_payload(event, event_index, resolution))
+            write(_event_hash_payload(event, event_index, event_resolution))
     literal('],"title":')
     write(_prose_for_hash(convo.title))
     literal(',"updated_at":')
@@ -2373,9 +2373,9 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                         )
 
         event_count = 0
-        with _event_owner_resolution(convo) as resolution:
+        with _event_owner_resolution(convo) as event_resolution:
             for event_count, event in enumerate(convo.session_events, start=1):
-                payload = _event_hash_payload(event, event_count - 1, resolution)
+                payload = _event_hash_payload(event, event_count - 1, event_resolution)
                 conn.execute(
                     "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))
                 )

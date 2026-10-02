@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
@@ -507,12 +508,126 @@ def test_writer_source_attachment_retains_reads_and_refuses_native_cursor_mutati
             )
         ) as index:
             connection_profile.attach_database(index, source, alias="source_tier")
-            assert index.execute("SELECT value FROM source_tier.evidence").fetchone()[0] == "retained"
+            with closing(index.execute("SELECT value FROM source_tier.evidence")) as cursor:
+                assert cursor.fetchone()[0] == "retained"
             with closing(index.cursor(factory=sqlite3.Cursor)) as cursor:
                 with pytest.raises(sqlite3.OperationalError):
                     cursor.execute("UPDATE source_tier.evidence SET value = 'wrong'")
             index.rollback()
-            index.execute("CREATE TABLE local_evidence (value TEXT)")
-            index.execute("INSERT INTO local_evidence VALUES ('index remains writable')")
+            with closing(index.execute("CREATE TABLE local_evidence (value TEXT)")):
+                pass
+            with closing(index.execute("INSERT INTO local_evidence VALUES ('index remains writable')")):
+                pass
             index.commit()
-            assert index.execute("SELECT value FROM local_evidence").fetchone()[0] == "index remains writable"
+            with closing(index.execute("SELECT value FROM local_evidence")) as cursor:
+                assert cursor.fetchone()[0] == "index remains writable"
+
+
+@pytest.mark.parametrize("factory", ["ordinary", "daemon", "existing-only", "cached"])
+def test_archive_writer_factories_preserve_readonly_source_uri_attachments(tmp_path: Path, factory: str) -> None:
+    from polylogue.storage.io_phase_metrics import live_connection_cursors, native_connection_physically_closed
+    from polylogue.storage.sqlite.connection import _get_cached_connection
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    with write_lease("test.writer-source-uri", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        path = tmp_path / "index.db"
+        if factory == "cached":
+            connection = _get_cached_connection(path, archive_root=tmp_path)
+        elif factory == "existing-only":
+            connection = connection_profile._connect_archive_writer(path, archive_root=tmp_path, existing_only=True)
+            connection_profile._attach_sibling_tiers(connection, archive_root=tmp_path)
+        else:
+            selected = (
+                connection_profile.open_connection
+                if factory == "ordinary"
+                else connection_profile.open_daemon_connection
+            )
+            connection = selected(path, archive_root=tmp_path)
+        try:
+            with closing(connection.execute("SELECT count(*) FROM source_tier.raw_sessions")) as cursor:
+                assert cursor.fetchone()[0] == 0
+            with closing(connection.cursor(factory=sqlite3.Cursor)) as cursor:
+                with pytest.raises(sqlite3.OperationalError):
+                    cursor.execute("DELETE FROM source_tier.raw_sessions")
+            connection.rollback()
+            with closing(connection.execute("CREATE TABLE local_uri_evidence(value TEXT)")):
+                pass
+            with closing(connection.execute("INSERT INTO local_uri_evidence VALUES ('writable')")):
+                pass
+            connection.commit()
+        finally:
+            if factory == "cached":
+                owner = next(
+                    owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is connection
+                )
+                owner.close()
+            else:
+                connection.close()
+        assert native_connection_physically_closed(connection)
+        assert live_connection_cursors(connection) == ()
+
+
+def test_existing_archive_writer_refuses_missing_file_without_creating_it(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    path = tmp_path / "missing.db"
+    with write_lease("test.existing-uri-refusal", archive_root=tmp_path):
+        with pytest.raises(FileNotFoundError):
+            connection_profile._connect_archive_writer(path, archive_root=tmp_path, existing_only=True)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("failed_close", [False, True])
+def test_native_owner_settles_original_supported_connection_after_external_close(
+    tmp_path: Path, failed_close: bool
+) -> None:
+    import os
+
+    from polylogue.storage.io_phase_metrics import connect_measured, native_connection_physically_closed
+    from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    path = tmp_path / "externally-closed.db"
+    connection = connect_measured(path)
+    owner = connection_profile.NativeSQLCustodyOwner(connection)
+    completions: list[str] = []
+    owner.retain_settlement_callback(lambda: completions.append("settled"))
+    cursor = connection.cursor(factory=ControlledCursor)
+    assert isinstance(cursor, ControlledCursor)
+    cursor.execute("SELECT 1 UNION ALL SELECT 2")
+    cursor.fetchone()
+    identity = path.stat().st_dev, path.stat().st_ino
+    observe_descriptors = os.path.isdir("/proc/self/fd")
+    if observe_descriptors:
+        assert selected_file_descriptors(identity)
+    try:
+        if failed_close:
+            cursor.allow_cleanup.clear()
+            with pytest.raises(BaseExceptionGroup):
+                connection.close()
+            assert not native_connection_physically_closed(connection)
+            with pytest.raises(connection_profile.NativeConnectionSettlementError):
+                owner.close()
+            assert owner.connection is connection and completions == []
+            if observe_descriptors:
+                assert selected_file_descriptors(identity)
+            cursor.allow_cleanup.set()
+            owner.close()
+        else:
+            connection.close()
+            assert native_connection_physically_closed(connection)
+            assert owner.connection is connection and completions == []
+            owner.close()
+        assert owner.connection is None and completions == ["settled"]
+        assert native_connection_physically_closed(connection)
+        assert cursor.close_attempts == (3 if failed_close else 1)
+        if observe_descriptors:
+            assert selected_file_descriptors(identity) == ()
+        owner.close()
+        assert completions == ["settled"]
+    finally:
+        cursor.allow_cleanup.set()
+        owner.close()

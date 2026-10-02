@@ -1786,3 +1786,76 @@ def test_archive_retains_actual_replay_slot_file_until_close_retry(
         finally:
             blocked = False
             archive.close()
+
+
+@pytest.mark.parametrize("tier", ["source", "user"])
+@pytest.mark.parametrize("setup_effect", ["declared", "different_value", "different_pragma", "failed_close"])
+def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tier: str, setup_effect: str
+) -> None:
+    from typing import Any, Literal, cast
+
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection, _MeasuredCursor
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    actual_execute = _MeasuredConnection.execute
+    selected: NativeSQLCustodyOwner | None = None
+    blocked_cursor: ControlledCursor | None = None
+
+    with write_lease("test.exact-profile-setup", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            permit = seal.prepare_known_tier_mutation(tier=cast(Literal["source", "user"], tier), effects=())
+
+            def execute(connection: _MeasuredConnection, sql: str, parameters: Any = (), /) -> _MeasuredCursor:
+                nonlocal selected, blocked_cursor
+                if sql.startswith("PRAGMA journal_size_limit =") and permit._setup_connection is connection:
+                    selected = next(child for child in native_sql_children(seal) if child.connection is connection)
+                    if setup_effect == "different_value":
+                        sql = "PRAGMA journal_size_limit = 1"
+                    elif setup_effect == "different_pragma":
+                        sql = "PRAGMA foreign_keys = OFF"
+                    elif setup_effect == "failed_close":
+                        blocked_cursor = connection.cursor(factory=ControlledCursor)
+                        assert isinstance(blocked_cursor, ControlledCursor)
+                        blocked_cursor.execute("SELECT 1 UNION ALL SELECT 2")
+                        blocked_cursor.fetchone()
+                        blocked_cursor.allow_cleanup.clear()
+                        raise OSError("synthetic failure inside exact profile setup")
+                return actual_execute(connection, sql, parameters)
+
+            monkeypatch.setattr(_MeasuredConnection, "execute", execute)
+            try:
+                with permit.hold_authority():
+                    if setup_effect == "declared":
+                        with permit.mutation_connection() as connection:
+                            assert permit._setup_connection is None and permit._setup_pragma is None
+                            with pytest.raises(ReferenceSealError):
+                                permit.configure_mutation_connection(connection, ("PRAGMA foreign_keys = OFF",))
+                            for pragma in ("journal_size_limit = 1", "foreign_keys = OFF", "recursive_triggers = OFF"):
+                                with pytest.raises(sqlite3.DatabaseError):
+                                    with closing(connection.execute("PRAGMA " + pragma)):
+                                        pass
+                    else:
+                        expected: type[BaseException] = (
+                            NativeConnectionSettlementError if setup_effect == "failed_close" else sqlite3.DatabaseError
+                        )
+                        with pytest.raises(expected):
+                            with permit.mutation_connection():
+                                pytest.fail("a forged or failed profile reached guarded producer SQL")
+                assert permit._setup_connection is None and permit._setup_pragma is None
+                assert selected is not None
+                if setup_effect == "failed_close":
+                    assert selected.connection is not None and selected.close_required
+                    assert blocked_cursor is not None and blocked_cursor.close_attempts == 1
+                    blocked_cursor.allow_cleanup.set()
+                    selected.close()
+                    assert blocked_cursor.close_attempts == 2
+                assert selected.connection is None
+            finally:
+                if blocked_cursor is not None:
+                    blocked_cursor.allow_cleanup.set()
+                if selected is not None:
+                    selected.close()

@@ -2,6 +2,7 @@
 
 import sqlite3
 from builtins import BaseExceptionGroup
+from collections.abc import Callable
 from contextlib import closing
 from pathlib import Path
 
@@ -18,7 +19,7 @@ def test_canonical_probe_consumer_retains_actual_statement_until_creator_retry(
     monkeypatch: pytest.MonkeyPatch, fail_prepare: bool
 ) -> None:
     cursors: list[ControlledCursor] = []
-    initialize = schema_inventory.initialize_runtime_tier_probe
+    initialize = bootstrap.initialize_runtime_tier_probe
 
     def prepare(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
         initialize(connection, tier)
@@ -226,7 +227,10 @@ def test_original_temp_archive_survives_pre_parent_or_terminal_close_failure(
         initialize(connection, tier)
         block_statement(connection)
 
-    def constructor_with_statement(connection: sqlite3.Connection, callback: object) -> None:
+    def constructor_with_statement(
+        connection: sqlite3.Connection,
+        callback: Callable[[int, str | None, str | None, str | None, str | None], int] | None,
+    ) -> None:
         set_authorizer(connection, callback)
         block_statement(connection)
         raise ValueError("synthetic failure before bootstrap receives its connection")
@@ -238,7 +242,7 @@ def test_original_temp_archive_survives_pre_parent_or_terminal_close_failure(
         directory = tempfile.TemporaryDirectory(dir=tmp_path, prefix="original-archive-")
         root = Path(directory.name)
         reference = weakref.ref(directory)
-        owner = None
+        owner: profiles.NativeSQLCustodyOwner | ArchiveStore | None = None
         with write_lease("test.original-temp-archive", archive_root=root):
             with retain_native_sql_lifetimes(directory):
                 if route == "parent_slot":
@@ -297,7 +301,7 @@ def test_original_temp_archive_survives_pre_parent_or_terminal_close_failure(
             cursor.allow_cleanup.set()
         owner.close()
         if route == "parent_slot":
-            assert selected_file.closed
+            assert selected_file is not None and selected_file.closed
         else:
             assert isinstance(owner, profiles.NativeSQLCustodyOwner)
             assert owner.connection is None and cursors[0].close_attempts == 2

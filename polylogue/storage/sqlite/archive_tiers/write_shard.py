@@ -248,17 +248,17 @@ class SessionShardBuilder:
         """Seal the sole resolver's evidence beside this session's row tuples."""
         session = self._session_count + 1
         self._conn.execute("INSERT INTO shard_owner_manifest VALUES (?, ?)", (session, len(resolution.keys)))
-        for ordinal, key in enumerate(resolution.keys):
-            self._conn.execute("INSERT INTO shard_owner_key VALUES (?, ?, ?)", (session, ordinal, key))
+        for ordinal, owner_key in enumerate(resolution.keys):
+            self._conn.execute("INSERT INTO shard_owner_key VALUES (?, ?, ?)", (session, ordinal, owner_key))
         for kind, lookup in (
             ("physical", resolution.by_physical_coordinate),
             ("stable", resolution.by_stable_key),
             ("provider", resolution.unique_provider_keys),
         ):
-            for key in lookup:
+            for lookup_key, owner_key in lookup.items():
                 self._conn.execute(
                     "INSERT INTO shard_owner_lookup VALUES (?, ?, ?, ?)",
-                    (session, kind, json.dumps(key, separators=(",", ":")), lookup[key]),
+                    (session, kind, json.dumps(lookup_key, separators=(",", ":")), owner_key),
                 )
         for kind, ambiguous in (
             ("physical", resolution.ambiguous_physical_coordinates),
@@ -266,10 +266,10 @@ class SessionShardBuilder:
             ("key", resolution.ambiguous_keys),
             ("provider", resolution.ambiguous_provider_ids),
         ):
-            for key in ambiguous:
+            for ambiguous_key in ambiguous:
                 self._conn.execute(
                     "INSERT INTO shard_owner_ambiguity VALUES (?, ?, ?)",
-                    (session, kind, json.dumps(key, separators=(",", ":"))),
+                    (session, kind, json.dumps(ambiguous_key, separators=(",", ":"))),
                 )
 
     def add(self, prepared: object) -> None:
@@ -779,10 +779,10 @@ __all__ = [
 
 class _ShardOwnerKeys(Sequence[str]):
     def __init__(self, path: Path, session: int, count: int) -> None:
-        self.path, self.session, self.count = path, session, count
+        self.path, self.session, self._count = path, session, count
 
     def __len__(self) -> int:
-        return self.count
+        return self._count
 
     @overload
     def __getitem__(self, index: int) -> str: ...
@@ -790,9 +790,9 @@ class _ShardOwnerKeys(Sequence[str]):
     def __getitem__(self, index: slice) -> list[str]: ...
     def __getitem__(self, index: int | slice) -> str | list[str]:
         if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(self.count))]
-        ordinal = index + self.count if index < 0 else index
-        if not 0 <= ordinal < self.count:
+            return [self[i] for i in range(*index.indices(self._count))]
+        ordinal = index + self._count if index < 0 else index
+        if not 0 <= ordinal < self._count:
             raise IndexError(index)
         with _shard_connection(self.path) as conn:
             row = conn.execute(
@@ -804,7 +804,7 @@ class _ShardOwnerKeys(Sequence[str]):
 
     def __iter__(self) -> Iterator[str]:
         start = 0
-        while start < self.count:
+        while start < self._count:
             with _shard_connection(self.path) as conn:
                 rows = conn.execute(
                     "SELECT ordinal, owner_key FROM shard_owner_key WHERE session_ordinal=? AND ordinal>=? ORDER BY ordinal LIMIT 512",
@@ -812,7 +812,7 @@ class _ShardOwnerKeys(Sequence[str]):
                 ).fetchall()
             if not rows or any(int(row[0]) != start + i for i, row in enumerate(rows)):
                 raise ShardRefusedError("sealed message-owner range is incomplete")
-            if start + len(rows) > self.count:
+            if start + len(rows) > self._count:
                 raise ShardRefusedError("sealed message-owner range exceeds its manifest")
             start += len(rows)
             yield from (str(row[1]) for row in rows)
