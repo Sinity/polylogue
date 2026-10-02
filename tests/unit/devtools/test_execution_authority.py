@@ -182,6 +182,26 @@ def test_managed_snapshot_rejects_transient_timestamp_valid_shared_bytecode(
     assert inspect_testmon_graph(root).usable
 
 
+def test_managed_snapshot_exposes_its_actual_child_pid_namespace(
+    source_repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A root bind over /proc exposes host PIDs to a namespace child."""
+    root = source_repository
+    parent_namespace = Path("/proc/self/ns/pid").stat().st_ino
+    monkeypatch.setenv("SYNTHETIC_PARENT_PID_NAMESPACE", str(parent_namespace))
+    (root / "tests/nested/test_one.py").write_text(
+        "import os\nfrom pathlib import Path\ndef test_one():\n"
+        "    pid = os.getpid()\n"
+        "    assert int(Path('/proc/self/stat').read_text().split()[0]) == pid\n"
+        "    assert int(Path(f'/proc/{pid}/stat').read_text().split()[0]) == pid\n"
+        "    assert Path('/proc/self/ns/pid').stat().st_ino != int(os.environ['SYNTHETIC_PARENT_PID_NAMESPACE'])\n"
+    )
+    exit_code, receipt = _record(root)
+    assert exit_code == 0, receipt
+    assert receipt["execution_source"]["pid_namespace_settled"] is True
+
+
 def test_managed_snapshot_settles_detached_children_before_source_publication(source_repository: Path) -> None:
     """Group-only settlement leaves a setsid writer alive after the receipt."""
     import time
