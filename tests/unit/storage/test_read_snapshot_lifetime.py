@@ -31,11 +31,14 @@ Anti-vacuity, per test:
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     SEALED_READ_CONNECTION_PROFILE,
@@ -47,26 +50,29 @@ from polylogue.storage.sqlite.connection_profile import (
     read_frame,
 )
 from polylogue.storage.sqlite.wal_checkpoint import WalCheckpointObservation, checkpoint_wal
+from polylogue.storage.sqlite.write_lease import write_lease
 
 _PAYLOAD = "x" * 512
 _ROWS = 4000
 
 
 @pytest.fixture
-def wal_db(tmp_path: Path) -> Path:
-    """A WAL archive with implicit checkpointing off, as the daemon owner leaves it."""
+def wal_db(tmp_path: Path) -> Iterator[Path]:
+    """A provisioned WAL tier under the recurring checkpoint owner's lease."""
     db = tmp_path / "index.db"
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA wal_autocheckpoint=0")
-        conn.execute("CREATE TABLE rows_ (position INTEGER PRIMARY KEY, body TEXT NOT NULL)")
-        conn.executemany("INSERT INTO rows_ (body) VALUES (?)", [(_PAYLOAD,) for _ in range(_ROWS)])
-        conn.commit()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    finally:
-        conn.close()
-    return db
+    with write_lease("test.read-snapshot-tier", archive_root=tmp_path):
+        initialize_archive_database(db, ArchiveTier.INDEX)
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA wal_autocheckpoint=0")
+            conn.execute("CREATE TABLE rows_ (position INTEGER PRIMARY KEY, body TEXT NOT NULL)")
+            conn.executemany("INSERT INTO rows_ (body) VALUES (?)", [(_PAYLOAD,) for _ in range(_ROWS)])
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        yield db
 
 
 def _write_burst(db: Path, rows: int = _ROWS) -> None:
