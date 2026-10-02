@@ -43,6 +43,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
@@ -1028,6 +1029,37 @@ def _source_connection_context(
         raise
     else:
         owner.close()
+
+
+def readable_table_info(conn: sqlite3.Connection, table: str) -> list[tuple[Any, ...]]:
+    """Return ordered metadata for ordinary and readable generated columns.
+
+    ``table_xinfo`` retains the first six ``table_info`` metadata positions.
+    Its final flag distinguishes virtual-table implementation columns (1)
+    from ordinary (0), VIRTUAL generated (2), and STORED generated (3) values.
+    """
+    quoted = '"' + table.replace('"', '""') + '"'
+    # Allocate before execute: a failing statement still belongs to this creator.
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection, close_connection_cursor
+
+    cursor = conn.cursor()
+    primary: BaseException | None = None
+    try:
+        cursor.execute(f"PRAGMA table_xinfo({quoted})")
+        return [tuple(row) for row in cursor if int(row[6]) in (0, 2, 3)]
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            if isinstance(conn, _MeasuredConnection):
+                close_connection_cursor(conn, cursor)
+            else:
+                cursor.close()
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Statement and native cursor close failed", [primary, cleanup]) from primary
+            raise
 
 
 def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str], bool]:

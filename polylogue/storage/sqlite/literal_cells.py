@@ -1,8 +1,9 @@
 """Exact SQLite cell framing with bounded Python transfers.
 
-SQLite can allocate a complete cell for expressions and WITHOUT ROWID
-lookups. Incremental rowid reads avoid that allocation; chunking the fallback
-only bounds transfers to Python, not SQLite's internal memory.
+SQLite can allocate a complete cell for expressions, generated-column
+tables and WITHOUT ROWID lookups. Incremental rowid reads avoid that
+allocation; chunking the fallback only bounds transfers to Python, not
+SQLite's internal memory.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import sqlite3
 import struct
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Generator, Iterator
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Literal
 
@@ -82,6 +83,24 @@ def stream_literal_blob(
         yield chunk
 
 
+@contextmanager
+def owned_literal_stream(stream: Generator[bytes, None, None]) -> Iterator[Generator[bytes, None, None]]:
+    """Settle this exact borrowed native stream without losing either failure."""
+    primary: BaseException | None = None
+    try:
+        yield stream
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            stream.close()
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Native literal read and settlement failed", [primary, cleanup]) from cleanup
+            raise
+
+
 def stream_literal_cell(
     connection: sqlite3.Connection,
     cell: SQLiteLiteralCell,
@@ -92,7 +111,7 @@ def stream_literal_cell(
     incremental: Callable[[], AbstractContextManager[sqlite3.Blob]] | None,
     close_cursor: Callable[[sqlite3.Cursor], None],
     check_cancel: Callable[[], None],
-) -> Iterator[bytes]:
+) -> Generator[bytes, None, None]:
     """Yield exact literal bytes; callers retain and settle the actual owner.
 
     The incremental factory must return the original creator's readonly Blob

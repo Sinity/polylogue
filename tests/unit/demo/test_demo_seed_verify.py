@@ -844,6 +844,8 @@ def test_demo_generated_tier_reconvergence_applies_source_train_without_replacin
 ) -> None:
     from polylogue.demo.seed import _reconverge_stale_demo_generated_tiers
     from polylogue.operations.canonical_archive_ingest import scoped_one_shot_archive_owner
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from tests.infra.durable_tier_fixtures import bootstrap_baseline_archive
     from tests.infra.index_replacement import source_baseline
 
@@ -858,7 +860,7 @@ def test_demo_generated_tier_reconvergence_applies_source_train_without_replacin
     with scoped_one_shot_archive_owner(root):
         assert _reconverge_stale_demo_generated_tiers(root) == ()
     with sqlite3.connect(root / "source.db") as source:
-        assert source.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert source.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert source.execute("SELECT raw_id FROM raw_sessions ORDER BY raw_id").fetchall() == [
             tuple(row) for row in rows
         ]

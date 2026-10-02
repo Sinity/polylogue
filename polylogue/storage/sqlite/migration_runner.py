@@ -12,11 +12,12 @@ import stat
 import time
 import types
 import uuid
+from builtins import BaseExceptionGroup
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
-from functools import lru_cache, partial
+from functools import cache, lru_cache, partial
 from importlib import resources
 from pathlib import Path
 from threading import Lock
@@ -29,11 +30,16 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.backup_blob_closure import package_blob_closure
-from polylogue.storage.io_phase_metrics import _MeasuredConnection, close_connection_cursor
+from polylogue.storage.io_phase_metrics import _MeasuredConnection, close_connection_cursor, connection_cursor
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-from polylogue.storage.sqlite.literal_cells import literal_metadata, stream_literal_blob, stream_literal_cell
+from polylogue.storage.sqlite.literal_cells import (
+    literal_metadata,
+    owned_literal_stream,
+    stream_literal_blob,
+    stream_literal_cell,
+)
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -364,6 +370,15 @@ def _execute_proved_migration_sql(conn: sqlite3.Connection, step: MigrationStep)
 
 def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
     """Bind exact retained values, including primary keys, independently of DDL."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_on_current_thread
+
+    owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is conn)
+    if len(owners) > 1:
+        raise MigrationError("literal proof has ambiguous native connection ownership")
+    owner = owners[0] if owners else None
+    if owner is not None:
+        owner.require_connection()
     digest = hashlib.sha256()
 
     def frame(value: bytes) -> None:
@@ -373,22 +388,24 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
     def metadata_text(value: object) -> str:
         return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
-    tables_cursor = conn.execute(
-        "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
-    )
-    try:
+    with connection_cursor(
+        conn, "SELECT name, wr FROM pragma_table_list WHERE schema='main' AND type='table' ORDER BY name COLLATE BINARY"
+    ) as tables_cursor:
         tables = tuple(tables_cursor)
-    finally:
-        tables_cursor.close()
     for table, without_rowid in tables:
+        check_compute_cancelled()
         name = metadata_text(table)
         if name == "sqlite_schema":
             continue
-        with closing(conn.execute("SELECT name, pk FROM pragma_table_xinfo(?) ORDER BY cid", (name,))) as cursor:
+        with connection_cursor(
+            conn, "SELECT name, pk, hidden FROM pragma_table_xinfo(?) ORDER BY cid", (name,)
+        ) as cursor:
             columns = tuple(cursor)
+        generated = any(column[2] in (2, 3) for column in columns)
         selected = [metadata_text(column[0]) for column in columns]
         frame(b"table")
         frame(name.encode("utf-8"))
+        alias: str | None = None
         if without_rowid:
             order = [metadata_text(column[0]) for column in sorted(columns, key=lambda row: int(row[1])) if column[1]]
             if not order:
@@ -433,14 +450,25 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             # private TEMP table never changes caller storage pragmas.
             locator = _quote_sqlite_identifier("literal_locator_" + uuid.uuid4().hex)
             key_names = [_quote_sqlite_identifier("key_" + str(index)) for index in range(len(order))]
-            conn.execute(f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})").close()
+            with connection_cursor(
+                conn, f"CREATE TEMP TABLE {locator} (ordinal INTEGER PRIMARY KEY, {','.join(key_names)})"
+            ):
+                pass
             try:
-                conn.execute(
+                with connection_cursor(
+                    conn,
                     f"INSERT INTO {locator} SELECT row_number() OVER (ORDER BY {ordering}), "
-                    f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}"
-                ).close()
-            except BaseException:
-                conn.execute(f"DROP TABLE temp.{locator}").close()
+                    f"{','.join(_quote_sqlite_identifier(column) for column in order)} FROM {table_sql}",
+                ):
+                    pass
+            except BaseException as primary:
+                try:
+                    with connection_cursor(conn, f"DROP TABLE temp.{locator}"):
+                        pass
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "Literal locator hydration and retirement failed", [primary, cleanup]
+                    ) from primary
                 raise
             bindings = " AND ".join(
                 f"t.{_quote_sqlite_identifier(column)} IS k.{key}" for column, key in zip(order, key_names, strict=True)
@@ -451,58 +479,84 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
             if without_rowid
             else f"FROM {table_sql} ORDER BY {ordering}"
         )
-        descriptors = None
+        proof_failure: BaseException | None = None
         try:
-            descriptors = conn.execute(f"SELECT {','.join(projection)} {descriptor_source}")
-            for row_offset, row in enumerate(descriptors):
-                frame(b"row")
-                row_id = None if without_rowid else int(row[1])
-                for offset in range(0, len(row), 2):
-                    storage_class, value = metadata_text(row[offset]), row[offset + 1]
-                    frame(storage_class.encode("ascii"))
-                    if storage_class in {"null", "integer", "real"}:
-                        frame(literal_metadata(storage_class, value, None).fixed_bytes())
-                    elif row_id is not None:
-                        # Readonly incremental handles also accept TEXT and
-                        # indexed/primary-key columns, preserving literal
-                        # bytes without UTF-8 decoding or whole-cell copies.
-                        with conn.blobopen(name, selected[offset // 2], row_id, readonly=True) as blob:
-                            digest.update(len(blob).to_bytes(8, "big"))
-                            for chunk in stream_literal_blob(blob, len(blob), lambda: None):
-                                digest.update(chunk)
-                    else:
-                        # Generic synthetic WITHOUT ROWID proofs have no
-                        # SQLite incremental-cell API. Keep Python transfers
-                        # bounded and literal; SQLite itself still allocates
-                        # one cell and may sort complete primary keys. No
-                        # currently admitted durable archive uses this shape.
-                        column_sql = "t." + _quote_sqlite_identifier(selected[offset // 2])
-                        with closing(
-                            conn.execute(f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,))
-                        ) as cell:
-                            size = int(cell.fetchone()[0])
-                        cell_metadata = literal_metadata(storage_class, value, size)
-                        digest.update(size.to_bytes(8, "big"))
-                        for chunk in stream_literal_cell(
-                            conn,
-                            cell_metadata,
-                            expression=column_sql,
-                            source_sql=cell_sql,
-                            parameters=(row_offset + 1,),
-                            incremental=None,
-                            close_cursor=(
-                                partial(close_connection_cursor, conn)
-                                if isinstance(conn, _MeasuredConnection)
-                                else sqlite3.Cursor.close
-                            ),
-                            check_cancel=lambda: None,
-                        ):
-                            digest.update(chunk)
+            with connection_cursor(conn, f"SELECT {','.join(projection)} {descriptor_source}") as descriptors:
+                for row_offset, row in enumerate(descriptors):
+                    check_compute_cancelled()
+                    frame(b"row")
+                    row_id = None if without_rowid else int(row[1])
+                    for offset in range(0, len(row), 2):
+                        storage_class, value = metadata_text(row[offset]), row[offset + 1]
+                        frame(storage_class.encode("ascii"))
+                        if storage_class in {"null", "integer", "real"}:
+                            frame(literal_metadata(storage_class, value, None).fixed_bytes())
+                        elif row_id is not None and not generated:
+                            # Readonly incremental handles also accept TEXT and
+                            # indexed/primary-key columns, preserving literal
+                            # bytes without UTF-8 decoding or whole-cell copies.
+                            blob_scope = (
+                                owner.readonly_blob(name, selected[offset // 2], row_id)
+                                if owner is not None
+                                else conn.blobopen(name, selected[offset // 2], row_id, readonly=True)
+                            )
+                            with blob_scope as blob:
+                                digest.update(len(blob).to_bytes(8, "big"))
+                                for chunk in stream_literal_blob(blob, len(blob), check_compute_cancelled):
+                                    digest.update(chunk)
+                        else:
+                            # Generated-column tables also prohibit Blob.open on
+                            # their ordinary stored fields. Select the fallback
+                            # from actual native shape, never a failed Blob probe.
+                            # Transfers stay bounded; SQLite can allocate a whole
+                            # scalar and sort WITHOUT ROWID keys internally.
+                            column_sql = ("t." if without_rowid else "") + _quote_sqlite_identifier(
+                                selected[offset // 2]
+                            )
+                            if without_rowid:
+                                literal_source = cell_sql
+                            else:
+                                assert alias is not None
+                                literal_source = f"FROM {table_sql} WHERE {_quote_sqlite_identifier(alias)}=?"
+                            literal_parameters = (row_offset + 1,) if without_rowid else (row_id,)
+                            with connection_cursor(
+                                conn, f"SELECT length(CAST({column_sql} AS BLOB)) {literal_source}", literal_parameters
+                            ) as cell:
+                                size = int(cell.fetchone()[0])
+                            cell_metadata = literal_metadata(storage_class, value, size)
+                            digest.update(size.to_bytes(8, "big"))
+                            with owned_literal_stream(
+                                stream_literal_cell(
+                                    conn,
+                                    cell_metadata,
+                                    expression=column_sql,
+                                    source_sql=literal_source,
+                                    parameters=literal_parameters,
+                                    incremental=None,
+                                    close_cursor=(
+                                        partial(close_connection_cursor, conn)
+                                        if isinstance(conn, _MeasuredConnection)
+                                        else sqlite3.Cursor.close
+                                    ),
+                                    check_cancel=check_compute_cancelled,
+                                )
+                            ) as chunks:
+                                for chunk in chunks:
+                                    digest.update(chunk)
+        except BaseException as failure:
+            proof_failure = failure
+            raise
         finally:
-            if descriptors is not None:
-                descriptors.close()
             if locator is not None:
-                conn.execute(f"DROP TABLE temp.{locator}").close()
+                try:
+                    with connection_cursor(conn, f"DROP TABLE temp.{locator}"):
+                        pass
+                except BaseException as cleanup:
+                    if proof_failure is not None:
+                        raise BaseExceptionGroup(
+                            "Literal proof and locator retirement failed", [proof_failure, cleanup]
+                        ) from proof_failure
+                    raise
         frame(b"end-table")
     return digest.hexdigest()
 
@@ -3843,6 +3897,14 @@ def durable_change_train_to_payload(train: DurableChangeTrain) -> dict[str, obje
     return payload
 
 
+@cache
+def _manifest_dataclass_hints(annotation: type) -> Mapping[str, object]:
+    # The canonical manifest schema is static. Recompiling its ForwardRefs for
+    # each nested object retains code proportional to repeated train validation.
+    # Cache schema only; every payload still receives full structural validation.
+    return types.MappingProxyType(get_type_hints(annotation))
+
+
 def _decode_manifest_value(annotation: object, value: object, *, label: str) -> object:
     origin = get_origin(annotation)
     args = get_args(annotation)
@@ -3909,7 +3971,7 @@ def _decode_manifest_value(annotation: object, value: object, *, label: str) -> 
             raise DurableChangeTrainError(
                 f"{label} fields differ: missing={sorted(missing)}, unexpected={sorted(unexpected)}"
             )
-        hints = get_type_hints(annotation)
+        hints = _manifest_dataclass_hints(annotation)
         decoded = {
             item.name: _decode_manifest_value(
                 hints[item.name],

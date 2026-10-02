@@ -40,8 +40,8 @@ from __future__ import annotations
 
 import sqlite3
 from codecs import getincrementaldecoder
-from collections.abc import Iterable, Iterator
-from contextlib import ExitStack
+from collections.abc import Generator, Iterable, Iterator
+from contextlib import ExitStack, closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -395,12 +395,12 @@ class CodexStatePart:
     payload: dict[str, object]
 
 
-def _iter_blob_text_chunks(blob: sqlite3.Blob, chunk_chars: int) -> Iterator[str]:
+def _iter_text_chunks(chunks: Iterable[bytes], chunk_chars: int) -> Generator[str, None, None]:
     """Decode a SQLite TEXT value incrementally, including embedded NULs."""
     decoder = getincrementaldecoder("utf-8")()
     pending = ""
     emitted = False
-    while raw := blob.read(64 * 1024):
+    for raw in chunks:
         pending += decoder.decode(raw)
         while len(pending) >= chunk_chars:
             yield pending[:chunk_chars]
@@ -411,14 +411,13 @@ def _iter_blob_text_chunks(blob: sqlite3.Blob, chunk_chars: int) -> Iterator[str
         yield pending
 
 
-def _blob_text_length_chars(blob: sqlite3.Blob) -> int:
+def _text_length_chars(chunks: Iterable[bytes]) -> int:
     """Count characters with bounded reads; SQLite length(TEXT) stops at NUL."""
     decoder = getincrementaldecoder("utf-8")()
     count = 0
-    while raw := blob.read(64 * 1024):
+    for raw in chunks:
         count += len(decoder.decode(raw))
     count += len(decoder.decode(b"", final=True))
-    blob.seek(0)
     return count
 
 
@@ -429,7 +428,7 @@ def iter_codex_state_parts(
     page_size: int = CODEX_STATE_PAGE_ROWS,
     text_chars: int = CODEX_STATE_MAX_TEXT_CHARS,
     immutable: bool = False,
-) -> Iterator[CodexStatePart]:
+) -> Generator[CodexStatePart, None, None]:
     """Read every valid state row in keyset pages and every text field in chunks.
 
     The retained logical export is immutable. ``rowid`` is only an internal
@@ -439,9 +438,55 @@ def iter_codex_state_parts(
         raise ValueError("page_size and text_chars must be positive")
     table = "thread_goals" if state_kind == "goals" else "stage1_outputs"
     fields = ("objective",) if state_kind == "goals" else ("raw_memory", "rollout_summary")
+    # Imports stay local to the actual Native read route. Acquisition's
+    # metadata-only source probe need not initialize this storage stack.
+    from polylogue.core.compute_cancel import check_compute_cancelled
+    from polylogue.sources.sqlite_export import readable_table_info
+    from polylogue.storage.io_phase_metrics import close_connection_cursor, connection_cursor
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeConnectionSettlementError,
+        retained_native_sql_owners_on_current_thread,
+    )
+    from polylogue.storage.sqlite.literal_cells import SQLiteLiteralCell, owned_literal_stream, stream_literal_cell
+
     with logical_source_context(path, immutable=immutable) as conn:
         conn.row_factory = sqlite3.Row
-        columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is conn)
+        if len(owners) != 1:
+            raise LogicalExportError("Codex state reading requires its exact existing Native owner")
+        owner = owners[0]
+        owner.require_connection()
+        # This factory owns a fresh connection. Keep shape, metadata, character
+        # counting and every literal chunk on one native read view, including
+        # direct live SQLite inputs as well as immutable reconstructions.
+        with connection_cursor(conn, "BEGIN"):
+            pass
+        shape = readable_table_info(conn, table)
+        columns = {str(row[1]) for row in shape}
+        incremental = not any(row[6] in (2, 3) for row in shape)
+
+        def close_literal_cursor(cursor: sqlite3.Cursor) -> None:
+            try:
+                close_connection_cursor(conn, cursor)
+            except BaseException as failure:
+                owner.close_required = True
+                raise NativeConnectionSettlementError(owner, failure) from failure
+
+        def literal_chunks(field: str, source_rowid: int, row: sqlite3.Row) -> Generator[bytes, None, None]:
+            kind = str(row[f"kind_{field}"])
+            if kind not in {"text", "blob"}:
+                raise LogicalExportError("Codex state text field lacks its TEXT or BLOB storage class")
+            yield from stream_literal_cell(
+                conn,
+                SQLiteLiteralCell("text" if kind == "text" else "blob", int(row[f"bytes_{field}"])),
+                expression=field,
+                source_sql=f"FROM {table} WHERE rowid=?",
+                parameters=(source_rowid,),
+                incremental=(lambda: owner.readonly_blob(table, field, source_rowid)) if incremental else None,
+                close_cursor=close_literal_cursor,
+                check_cancel=check_compute_cancelled,
+            )
+
         after_rowid: int | None = None
         while True:
             # A page carries metadata only. Even one provider-generated
@@ -466,13 +511,23 @@ def iter_codex_state_parts(
                     "(rollout_slug IS NOT NULL AND length(CAST(rollout_slug AS BLOB)) > 0) AS has_rollout_slug"
                 )
             for field in fields:
-                select.append(f"({field} IS NULL) AS null_{field}" if field in columns else f"1 AS null_{field}")
+                if field in columns:
+                    select.extend(
+                        (
+                            f"({field} IS NULL) AS null_{field}",
+                            f"typeof({field}) AS kind_{field}",
+                            f"length(CAST({field} AS BLOB)) AS bytes_{field}",
+                        )
+                    )
+                else:
+                    select.append(f"1 AS null_{field}")
             where = "" if after_rowid is None else " WHERE rowid > ?"
             params = (*((after_rowid,) if after_rowid is not None else ()), page_size)
-            rows = conn.execute(
-                f"SELECT {', '.join(select)} FROM {table}{where} ORDER BY rowid LIMIT ?",
-                params,
-            ).fetchall()
+            check_compute_cancelled()
+            with connection_cursor(
+                conn, f"SELECT {', '.join(select)} FROM {table}{where} ORDER BY rowid LIMIT ?", params
+            ) as cursor:
+                rows = cursor.fetchall()
             if not rows:
                 break
             for row in rows:
@@ -489,10 +544,13 @@ def iter_codex_state_parts(
                     char_lengths: dict[str, int] = {}
                     for field in fields:
                         if field in columns and not _row_int(row, f"null_{field}"):
-                            blob = stack.enter_context(conn.blobopen(table, field, source_rowid, readonly=True))
-                            if len(blob) > text_chars:
-                                char_lengths[field] = _blob_text_length_chars(blob)
-                            chunks[field] = _iter_blob_text_chunks(blob, text_chars)
+                            if int(row[f"bytes_{field}"]) > text_chars:
+                                with owned_literal_stream(literal_chunks(field, source_rowid, row)) as counted:
+                                    char_lengths[field] = _text_length_chars(counted)
+                            raw_chunks = stack.enter_context(
+                                owned_literal_stream(literal_chunks(field, source_rowid, row))
+                            )
+                            chunks[field] = stack.enter_context(closing(_iter_text_chunks(raw_chunks, text_chars)))
                         else:
                             chunks[field] = iter(("",))
                         first[field] = next(chunks[field])
