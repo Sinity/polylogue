@@ -37,6 +37,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -170,6 +171,7 @@ def collect_selection(
         try:
             if datafile is not None:
                 from devtools.execution_source import start_execution
+                from devtools.pytest_memory import CUSTODY_ENV
                 from devtools.pytest_slot import _focused_worktree_provenance, _group_reaped
 
                 env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
@@ -177,6 +179,8 @@ def collect_selection(
                 provenance = _focused_worktree_provenance(str(root), env)
                 assert guard is not None
                 execution_command = guard.command(command, env, provenance)
+                env[CUSTODY_ENV] = uuid.uuid4().hex
+                guard.observe_custody(env[CUSTODY_ENV])
                 process = subprocess.Popen(
                     execution_command,
                     cwd=root,

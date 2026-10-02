@@ -16,11 +16,13 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 
 from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS, effective_hypothesis_profile
+from devtools.pytest_memory import ProcessGroupMemorySampler, settle_custody
 from devtools.pytest_rerun import testmon_rerun_environment
 from devtools.testmon_provision import testmon_environment
 from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
@@ -40,6 +42,10 @@ class ExecutionSourceGuard:
         self.bindings: list[str] = []
         self.digest: str | None = None
         self.launched = False
+        self.custody_marker: str | None = None
+        self.started_ticks = 0
+        self.sampler: ProcessGroupMemorySampler | None = None
+        self.custody_settled = False
         self.bytecode = Path(tempfile.mkdtemp(prefix=".bytecode-", dir=self.copy))
         try:
             listed = subprocess.run(
@@ -109,15 +115,12 @@ class ExecutionSourceGuard:
             "--info-fd",
             str(info.fileno()),
             "--die-with-parent",
-            "--unshare-pid",
             "--bind",
             "/",
             "/",
             "--dev-bind",
             "/dev",
             "/dev",
-            "--proc",
-            "/proc",
             "--ro-bind",
             str(self.copy),
             str(self.copy),
@@ -136,6 +139,10 @@ class ExecutionSourceGuard:
             *command,
         ]
 
+    def observe_custody(self, marker: str) -> None:
+        self.custody_marker = marker
+        self.started_ticks = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+
     @property
     def pass_fds(self) -> tuple[int, ...]:
         return (*self.fds, *(info.fileno() for info in self.infos))
@@ -148,26 +155,30 @@ class ExecutionSourceGuard:
             try:
                 info.seek(0)
                 setup = json.load(info)
-                if (
-                    not isinstance(setup, dict)
-                    or not isinstance(setup.get("child-pid"), int)
-                    or not isinstance(setup.get("pid-namespace"), int)
-                ):
+                if not isinstance(setup, dict) or not isinstance(setup.get("child-pid"), int):
                     self.failure = "readonly boundary setup was not proved"
-                else:
-                    # bwrap reports the namespace init. Its death settles all
-                    # namespace descendants in the kernel, including setsid
-                    # children; a live same namespace cannot publish authority.
-                    try:
-                        namespace = Path(f"/proc/{setup['child-pid']}/ns/pid").stat().st_ino
-                    except FileNotFoundError:
-                        namespace = None
-                    if namespace == setup["pid-namespace"]:
-                        self.failure = "execution PID namespace remains alive"
             except (OSError, ValueError):
                 self.failure = "readonly boundary setup was not proved"
             finally:
                 info.close()
+        if self.custody_marker is not None:
+            from devtools.pytest_slot import STOP_KILL_GRACE_S, STOP_TERM_GRACE_S
+
+            try:
+                settlement = settle_custody(
+                    self.custody_marker,
+                    started_ticks=self.started_ticks,
+                    known_births=self.sampler.custody_births() if self.sampler is not None else {},
+                    term_grace_s=STOP_TERM_GRACE_S,
+                    kill_grace_s=STOP_KILL_GRACE_S,
+                )
+            except OSError as exc:
+                settlement = f"execution custody coverage failed: {exc}"
+            self.custody_settled = settlement is None
+            if settlement is not None:
+                self.failure = settlement
+        elif self.launched:
+            self.failure = "execution custody was not identified"
         for fd in self.fds:
             try:
                 os.close(fd)
@@ -175,16 +186,17 @@ class ExecutionSourceGuard:
                 self.failure = f"boundary descriptor cleanup failed: {exc}"
         self.fds.clear()
         self.resources.close()
-        try:
-            shutil.rmtree(self.copy)
-        except OSError as exc:
-            self.failure = f"boundary source cleanup failed: {exc}"
+        if not self.launched or self.custody_settled:
+            try:
+                shutil.rmtree(self.copy)
+            except OSError as exc:
+                self.failure = f"boundary source cleanup failed: {exc}"
         return {
             "status": "unavailable" if self.failure or not self.launched else "stable",
             "observer": "readonly_snapshot",
             "reason": self.failure or (None if self.launched else "execution never launched"),
             "git_worktree_content_sha256": self.digest,
-            "pid_namespace_settled": self.launched and bool(self.infos) and self.failure is None,
+            "custody_settled": self.custody_settled,
         }
 
 

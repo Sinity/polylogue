@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -505,3 +506,118 @@ def test_enumeration_fault_preserves_proven_birth_for_resumed_marker_fault(
     assert document["incomplete"]
     assert document["processes_seen"] == 2
     assert {entry["pid"] for entry in document["processes"]} == {100, 101}
+
+
+def test_custody_settlement_refuses_unreadable_eligible_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=1)
+    monkeypatch.setattr(pytest_memory, "_marker_matches", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: pytest.fail("unknown ownership was signalled"))
+    refusal = pytest_memory.settle_custody(
+        "fresh",
+        started_ticks=0,
+        known_births={},
+        term_grace_s=0,
+        kill_grace_s=0,
+        proc=proc,
+    )
+    assert refusal is not None
+
+
+def test_custody_settlement_cannot_signal_a_reused_birth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    process = _process(proc, 100, pgid=100, pss_kib=1)
+    (process / "environ").write_bytes((CUSTODY_ENV + "=fresh").encode() + b"\0")
+
+    def reused(_pid: int) -> int:
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        (process / "stat").write_text("100 (peer) S 1 100 " + "0 " * 16 + "99999\n")
+        (process / "environ").write_bytes((CUSTODY_ENV + "=peer").encode() + b"\0")
+        return descriptor
+
+    monkeypatch.setattr(os, "pidfd_open", reused)
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("reused birth was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "fresh",
+            started_ticks=0,
+            known_births={},
+            term_grace_s=1,
+            kill_grace_s=1,
+            proc=proc,
+        )
+        is None
+    )
+
+
+def test_custody_settlement_rescans_foreign_churn_without_claiming_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    process = _process(proc, 100, pgid=100, pss_kib=1)
+    original = pytest_memory._identity
+    calls = 0
+
+    def vanished(pid: int, *, proc: Path) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            for item in process.iterdir():
+                item.unlink()
+            process.rmdir()
+            return None
+        return original(pid, proc=proc)
+
+    monkeypatch.setattr(pytest_memory, "_identity", vanished)
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: pytest.fail("foreign churn was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "fresh", started_ticks=0, known_births={}, term_grace_s=1, kill_grace_s=1, proc=proc
+        )
+        is None
+    )
+
+
+def test_custody_settlement_retains_known_birth_after_marker_loss_and_catches_fork(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=1)
+    monkeypatch.setattr(pytest_memory, "_marker_matches", lambda pid, *_args, **_kwargs: None if pid == 100 else True)
+    descriptors: dict[int, int] = {}
+    signalled: list[int] = []
+
+    def pin(pid: int) -> int:
+        descriptor = os.open(os.devnull, os.O_RDONLY)
+        descriptors[descriptor] = pid
+        return descriptor
+
+    def terminate(descriptor: int, _signal: int) -> None:
+        pid = descriptors[descriptor]
+        signalled.append(pid)
+        if pid == 100:
+            _process(proc, 101, pgid=101, pss_kib=1)
+        process = proc / str(pid)
+        for item in process.iterdir():
+            item.unlink()
+        process.rmdir()
+
+    monkeypatch.setattr(os, "pidfd_open", pin)
+    monkeypatch.setattr(signal, "pidfd_send_signal", terminate)
+    assert (
+        pytest_memory.settle_custody(
+            "fresh", started_ticks=0, known_births={100: 1000}, term_grace_s=1, kill_grace_s=1, proc=proc
+        )
+        is None
+    )
+    assert signalled == [100, 101]

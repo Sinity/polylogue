@@ -1222,6 +1222,8 @@ def _run_held_admitted(
         finish_execution(guard, env)
         raise
     child_environment = {**env, CUSTODY_ENV: uuid.uuid4().hex}
+    if guard is not None:
+        guard.observe_custody(child_environment[CUSTODY_ENV])
     try:
         process = subprocess.Popen(
             execution_command,
@@ -1267,6 +1269,8 @@ def _run_held_admitted(
         _group_reaped(process.pid)
         finish_execution(guard, env)
         raise
+    if guard is not None:
+        guard.sampler = sampler
     try:
         sampler.start()
     except BaseException:
@@ -1851,6 +1855,8 @@ def _run_launch(launch_path: Path) -> int:
                 if guard is not None and worktree_provenance is not None:
                     worktree_provenance["capture_source"] = "readonly_snapshot"
                 environment[CUSTODY_ENV] = uuid.uuid4().hex
+                if guard is not None:
+                    guard.observe_custody(environment[CUSTODY_ENV])
                 child = subprocess.Popen(
                     execution_command,
                     pass_fds=guard.pass_fds if guard is not None else (),
@@ -1878,6 +1884,8 @@ def _run_launch(launch_path: Path) -> int:
                         "progress": progress(),
                     },
                 )
+                if guard is not None:
+                    guard.sampler = sampler
                 sampler.start()
                 returncode = child.wait()
                 if returncode == 1:

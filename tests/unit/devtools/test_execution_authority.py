@@ -182,47 +182,83 @@ def test_managed_snapshot_rejects_transient_timestamp_valid_shared_bytecode(
     assert inspect_testmon_graph(root).usable
 
 
-def test_managed_snapshot_exposes_its_actual_child_pid_namespace(
+def test_managed_snapshot_preserves_actual_host_pid_and_outer_basetemp(
     source_repository: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A root bind over /proc exposes host PIDs to a namespace child."""
+    """PID isolation makes host basetemp and receipt owners appear dead."""
+    import os
+
     root = source_repository
     parent_namespace = Path("/proc/self/ns/pid").stat().st_ino
     monkeypatch.setenv("SYNTHETIC_PARENT_PID_NAMESPACE", str(parent_namespace))
+    monkeypatch.setenv("SYNTHETIC_PARENT_PID", str(os.getpid()))
+    outer = root.parent / f"tmp-{os.getpid()}-abcdef"
+    outer.mkdir()
+    (outer / "active").touch()
+    monkeypatch.setenv("SYNTHETIC_OUTER_TEMP", str(outer))
     (root / "tests/nested/test_one.py").write_text(
         "import os\nfrom pathlib import Path\ndef test_one():\n"
         "    pid = os.getpid()\n"
         "    assert int(Path('/proc/self/stat').read_text().split()[0]) == pid\n"
         "    assert int(Path(f'/proc/{pid}/stat').read_text().split()[0]) == pid\n"
-        "    assert Path('/proc/self/ns/pid').stat().st_ino != int(os.environ['SYNTHETIC_PARENT_PID_NAMESPACE'])\n"
+        "    assert Path('/proc/self/ns/pid').stat().st_ino == int(os.environ['SYNTHETIC_PARENT_PID_NAMESPACE'])\n"
+        "    assert Path('/proc/' + os.environ['SYNTHETIC_PARENT_PID']).exists()\n"
+        "    from devtools.pytest_slot import sweep_stale_temp_trees\n"
+        "    outer = Path(os.environ['SYNTHETIC_OUTER_TEMP'])\n"
+        "    sweep_stale_temp_trees(outer.parent)\n"
+        "    assert (outer / 'active').exists()\n"
     )
     exit_code, receipt = _record(root)
     assert exit_code == 0, receipt
-    assert receipt["execution_source"]["pid_namespace_settled"] is True
+    assert receipt["execution_source"]["custody_settled"] is True
+    assert (outer / "active").exists()
 
 
-def test_managed_snapshot_settles_detached_children_before_source_publication(source_repository: Path) -> None:
+@pytest.mark.parametrize("fork_on_term", [False, True])
+def test_managed_snapshot_settles_detached_children_before_source_publication(
+    source_repository: Path, fork_on_term: bool
+) -> None:
     """Group-only settlement leaves a setsid writer alive after the receipt."""
     import time
 
     root = source_repository
+    detached = (
+        "import os, signal, sys, time\nfrom pathlib import Path\n"
+        "def heartbeat(name):\n"
+        "    path = Path('.cache/' + name)\n"
+        "    while True:\n        path.write_text(str(time.monotonic_ns()))\n        time.sleep(0.01)\n"
+    )
+    if fork_on_term:
+        detached += (
+            "def fork_on_term(*_args):\n"
+            "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "    if os.fork() == 0:\n"
+            "        os.setsid()\n        signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
+            "        heartbeat('fork-heartbeat')\n"
+            "    while not Path('.cache/fork-heartbeat').exists():\n        time.sleep(0.001)\n"
+            "    sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, fork_on_term)\n"
+        )
+    detached += "heartbeat('heartbeat')\n"
     (root / "tests/nested/test_one.py").write_text(
         "import subprocess, sys, time\nfrom pathlib import Path\n"
         "def test_one():\n"
-        "    subprocess.Popen([sys.executable, '-c',\n"
-        "        \"import time; from pathlib import Path; p=Path('.cache/heartbeat'); \"\n"
-        "        \"exec('while True:\\n p.write_text(str(time.monotonic_ns()))\\n time.sleep(0.01)')\"],\n"
-        "        start_new_session=True)\n"
+        f"    subprocess.Popen([sys.executable, '-c', {detached!r}], start_new_session=True)\n"
         "    while not Path('.cache/heartbeat').exists():\n        time.sleep(0.01)\n"
     )
     exit_code, receipt = _record(root)
     assert exit_code == 0, receipt
-    assert receipt["execution_source"]["pid_namespace_settled"] is True
+    assert receipt["execution_source"]["custody_settled"] is True
     heartbeat = root / ".cache/heartbeat"
     terminal = heartbeat.read_text()
     time.sleep(0.1)
     assert heartbeat.read_text() == terminal
+    if fork_on_term:
+        fork = root / ".cache/fork-heartbeat"
+        final_fork = fork.read_text()
+        time.sleep(0.1)
+        assert fork.read_text() == final_fork
     assert inspect_testmon_graph(root).usable
 
 

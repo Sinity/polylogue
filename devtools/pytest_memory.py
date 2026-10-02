@@ -15,8 +15,11 @@ compared against.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import select
+import signal
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -59,12 +62,13 @@ _MEASURES: Final[tuple[str, ...]] = ("rss_kib", "pss_kib", "private_kib", "swap_
 class _Identity:
     start_ticks: int
     group: int
+    state: str
 
 
 def _identity(pid: int, *, proc: Path) -> _Identity | None:
     try:
         fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
-        return _Identity(int(fields[19]), int(fields[2]))
+        return _Identity(int(fields[19]), int(fields[2]), fields[0])
     except (OSError, IndexError, ValueError):
         return None
 
@@ -91,6 +95,114 @@ def _marker_matches(pid: int, marker: str, *, proc: Path) -> bool | None:
             return not oversized and pending == expected
     except OSError:
         return None
+
+
+def settle_custody(
+    marker: str,
+    *,
+    started_ticks: int,
+    known_births: Mapping[int, int],
+    term_grace_s: float,
+    kill_grace_s: float,
+    proc: Path = Path("/proc"),
+) -> str | None:
+    """Physically settle exact launch ownership, including detached children.
+
+    Births before the fresh marker cannot inherit it. Unreadable eligible
+    ownership stays unavailable. pidfds bind signals and death to one birth;
+    rescanning after settlement catches forks made before that birth died.
+    """
+    births = dict(known_births)
+    pinned: dict[int, tuple[_Identity, int]] = {}
+    unavailable = False
+    dead_births: set[tuple[int, int]] = set()
+    try:
+        for termination, grace in ((signal.SIGTERM, term_grace_s), (signal.SIGKILL, kill_grace_s)):
+            deadline = time.monotonic() + grace
+            while True:
+                owned: list[int] = []
+                raced = False
+                try:
+                    for entry in proc.iterdir():
+                        if not entry.name.isdigit():
+                            continue
+                        pid = int(entry.name)
+                        identity = _identity(pid, proc=proc)
+                        if identity is None:
+                            try:
+                                unavailable |= entry.stat().st_uid == os.getuid()
+                            except FileNotFoundError:
+                                raced = True
+                            continue
+                        known = births.get(pid) == identity.start_ticks
+                        if not known and identity.start_ticks < started_ticks:
+                            continue
+                        if identity.state in {"Z", "X"}:
+                            birth = (pid, identity.start_ticks)
+                            raced |= birth not in dead_births
+                            dead_births.add(birth)
+                            continue
+                        matched = _marker_matches(pid, marker, proc=proc)
+                        if not known and matched is not True:
+                            after = _identity(pid, proc=proc)
+                            if after is None or after.start_ticks != identity.start_ticks:
+                                raced = True
+                            elif matched is None:
+                                try:
+                                    unavailable |= entry.stat().st_uid == os.getuid()
+                                except FileNotFoundError:
+                                    raced = True
+                            continue
+                        births[pid] = identity.start_ticks
+                        proof = pinned.get(pid)
+                        if proof is None or proof[0].start_ticks != identity.start_ticks:
+                            if proof is not None:
+                                pinned.pop(pid)
+                                os.close(proof[1])
+                            try:
+                                descriptor = os.pidfd_open(pid)
+                            except ProcessLookupError:
+                                raced = True
+                                continue
+                            after = _identity(pid, proc=proc)
+                            if after is None or after.start_ticks != identity.start_ticks:
+                                os.close(descriptor)
+                                raced = True
+                                continue
+                            pinned[pid] = identity, descriptor
+                        owned.append(pid)
+                except (OSError, ValueError):
+                    unavailable = True
+                if not owned and not raced:
+                    deaths = select.poll()
+                    for _proof, descriptor in pinned.values():
+                        deaths.register(descriptor, select.POLLIN)
+                    dead = {descriptor for descriptor, events in deaths.poll(0) if events & select.POLLIN}
+                    raced = any(descriptor not in dead for _proof, descriptor in pinned.values())
+                    if not raced:
+                        return "execution custody coverage unavailable" if unavailable else None
+                if not owned:
+                    if time.monotonic() >= deadline:
+                        break
+                    continue
+                for pid in owned:
+                    try:
+                        signal.pidfd_send_signal(pinned[pid][1], termination)
+                    except ProcessLookupError:
+                        pass
+                    except OSError:
+                        unavailable = True
+                if time.monotonic() >= deadline:
+                    break
+                poller = select.poll()
+                for pid in owned:
+                    poller.register(pinned[pid][1], select.POLLIN)
+                poller.poll(max(1, int(min(0.05, deadline - time.monotonic()) * 1000)))
+        return "execution custody did not settle"
+    finally:
+        for _identity_proof, descriptor in pinned.values():
+            with contextlib.suppress(OSError):
+                os.close(descriptor)
 
 
 def _rollup(pid: int, *, proc: Path) -> dict[str, int] | None:
@@ -207,6 +319,11 @@ class ProcessGroupMemorySampler:
         if thread is not None:
             thread.join(timeout=self._interval_s * 4)
         return self.persist()
+
+    def custody_births(self) -> dict[int, int]:
+        """Untruncated identity proofs retained by the actual sampler."""
+        with self._sample_lock:
+            return {pid: proof[0] for pid, proof in self._known_births.items()}
 
     def _loop(self) -> None:
         while not self._stop.is_set():
