@@ -954,6 +954,7 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     """
     import polylogue.sources.origin_specs as origin_specs_module
 
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-cache"))
     source_root = tmp_path / "source-root"
     source_dir = source_root / "polylogue" / "sources"
     source_dir.mkdir(parents=True)
@@ -965,7 +966,9 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     origin_specs_module._invalidate_source_signatures()
 
     first = origin_specs_module.lowering_fingerprint()
-    memos = list((source_root / ".cache" / "source-fingerprints").glob("*.txt"))
+    memo_root = origin_specs_module._source_memo_root()
+    assert memo_root is not None
+    memos = list(memo_root.glob("fingerprint-*.txt"))
     assert len(memos) == 1 and len(memos[0].read_text(encoding="utf-8")) == 64
 
     origin_specs_module._fingerprint_sources_cached.cache_clear()
@@ -978,6 +981,7 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     assert origin_specs_module.lowering_fingerprint() == first
 
     monkeypatch.undo()
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-cache"))
     monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
     monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
     emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
@@ -1218,34 +1222,35 @@ class TestSemanticSourceClosureMemo:
             assert origin_specs_module._semantic_source_paths(paths) is first
         assert walked == []
 
-    def test_fingerprint_calls_stat_each_member_once_per_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Anti-vacuity: clearing the signature memo restores per-call stats."""
+    def test_fingerprint_reads_each_member_once_per_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: clearing the signature memo restores content reads."""
         import polylogue.sources.origin_specs as origin_specs_module
 
         paths = origin_specs_module._LOWERING_FINGERPRINT_PATHS
-        origin_specs_module._semantic_source_closure.cache_clear()
+        # Prime advisory AST memos so observed reads measure signature work.
+        origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
+        origin_specs_module._fingerprint_sources_cached.cache_clear()
         origin_specs_module._invalidate_source_signatures()
 
-        real_stat = Path.stat
+        real_read = Path.read_bytes
         walked: list[Path] = []
 
-        def counting_stat(path: Path) -> os.stat_result:
+        def counting_read(path: Path) -> bytes:
             walked.append(path)
-            return real_stat(path)
+            return real_read(path)
 
-        monkeypatch.setattr(Path, "stat", counting_stat)
+        monkeypatch.setattr(Path, "read_bytes", counting_read)
         first = origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
-        cold_stat_count = len(walked)
+        cold_read_count = len(walked)
         members = origin_specs_module._semantic_source_paths(paths)
-        assert cold_stat_count == len(members)
+        assert cold_read_count == len(members)
         for _ in range(20):
             assert origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law") == first
-        assert len(walked) == cold_stat_count
+        assert len(walked) == cold_read_count
 
         origin_specs_module._invalidate_source_signatures()
-        origin_specs_module._semantic_source_closure.cache_clear()
         origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
-        assert len(walked) >= cold_stat_count * 2
+        assert len(walked) == cold_read_count * 2
 
     def test_edited_member_changes_the_fingerprint_under_a_warm_memo(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1753,8 +1758,6 @@ def _reset_closure_caches(module: object) -> None:
     module._semantic_source_closure.cache_clear()  # type: ignore[attr-defined]
     module._local_import_paths.cache_clear()  # type: ignore[attr-defined]
     module._invalidate_source_signatures()  # type: ignore[attr-defined]
-    module._IMPORT_EDGES = None  # type: ignore[attr-defined]
-    module._IMPORT_EDGES_ADDED = False  # type: ignore[attr-defined]
 
 
 def test_the_import_closure_memo_outlives_the_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1775,11 +1778,14 @@ def test_the_import_closure_memo_outlives_the_process(tmp_path: Path, monkeypatc
     (package / "a.py").write_text("from .b import B\n", encoding="utf-8")
     (package / "b.py").write_text("B = 1\n", encoding="utf-8")
 
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-cache"))
     monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
     _reset_closure_caches(module)
     first = module._semantic_source_paths(("pkg/a.py",))
     assert {path.name for path in first} == {"a.py", "b.py"}
-    assert (tmp_path / ".cache" / "source-fingerprints" / "import-edges-v1.json").is_file()
+    memo_root = module._source_memo_root()
+    assert memo_root is not None
+    assert list(memo_root.glob("edges-*.json"))
 
     _reset_closure_caches(module)
 
@@ -1810,6 +1816,7 @@ def test_a_memoized_closure_still_sees_a_module_that_appeared_later(
     (package / "a.py").write_text("from .b import B\nfrom .c import C\n", encoding="utf-8")
     (package / "b.py").write_text("B = 1\n", encoding="utf-8")
 
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-cache"))
     monkeypatch.setattr(module, "_SOURCE_ROOT", tmp_path)
     _reset_closure_caches(module)
     assert {path.name for path in module._semantic_source_paths(("pkg/a.py",))} == {"a.py", "b.py"}
