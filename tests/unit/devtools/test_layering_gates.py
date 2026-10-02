@@ -21,6 +21,7 @@ import pytest
 from devtools import gate, required_gate, verify, verify_layering, verify_runs
 from devtools.sqlite_degradation import census_sqlite_degradation_anchors
 from devtools.testmon_provision import TestmonGraphState, TestmonGraphStatus
+from devtools.toolchain import venv_bin
 
 
 def _root_imports(repo_root: Path, target: str) -> tuple[dict[str, set[str]], tuple[str, ...]]:
@@ -268,7 +269,7 @@ def test_whole_quick_preserves_tracked_stale_baselines_and_reports_their_cause(
     before = {relative: (tmp_path / relative).read_bytes() for relative in tracked if relative}
     content = verify_runs.git_worktree_content_sha256(tmp_path)
     assert content is not None
-    original_bin = gate.venv_bin
+    original_bin = venv_bin
     checkout = verify.ROOT
     monkeypatch.setattr(gate, "venv_bin", lambda name, *, root: original_bin(name, root=checkout))
     monkeypatch.setattr(gate, "venv_python", lambda *, root: sys.executable)
