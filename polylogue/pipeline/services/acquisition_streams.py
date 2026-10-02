@@ -247,6 +247,7 @@ async def iter_raw_record_stream(
     generation: str | None = None
     source_item: str | None = None
     fingerprint: str | None = None
+    input_acquired_at: str | None = None
     coordinates: PickleSpool[str] | None = None
 
     async def publish(effect: Callable[[], Awaitable[object]]) -> object:
@@ -264,6 +265,7 @@ async def iter_raw_record_stream(
                         coordinates.close()
                     generation = source_item = fingerprint = None
                     coordinates = None
+                    input_acquired_at = datetime.now(UTC).isoformat()
                     identity = envelope.captured_input_identity
                     if (
                         input_observation_callback is not None
@@ -290,7 +292,7 @@ async def iter_raw_record_stream(
                         source_name=envelope.input_source_name,
                     )
                     generation = manifest.source_generation_id
-                    observed_at = acquisition_timestamp_ms(datetime.now(UTC).isoformat())
+                    observed_at = acquisition_timestamp_ms(input_acquired_at)
                     source_item = await publish(
                         lambda manifest=manifest, observed_at=observed_at: input_repository.publish_acquired_zip_input(
                             manifest,
@@ -325,6 +327,7 @@ async def iter_raw_record_stream(
                     )
                 elif envelope.enumeration_complete:
                     if input_repository is None:
+                        input_acquired_at = None
                         continue
                     if (
                         generation is None
@@ -351,13 +354,21 @@ async def iter_raw_record_stream(
                     coordinates.close()
                     coordinates = None
                     generation = source_item = fingerprint = None
+                    input_acquired_at = None
                 continue
             raw_data = envelope.data if envelope is not None else item
             if not isinstance(raw_data, RawSessionData):
                 raise TypeError("acquisition record has no raw payload")
             if not raw_data.raw_bytes and not raw_data.blob_hash:
                 continue
-            record = make_raw_record(raw_data, source.name, blob_root=blob_root, blob_store=blob_store)
+            acquired_at = None
+            if raw_data.captured_zip_coordinate is not None:
+                if envelope is None or input_acquired_at is None:
+                    raise ValueError("ZIP raw has no accepted acquisition pass")
+                acquired_at = input_acquired_at
+            record = make_raw_record(
+                raw_data, source.name, blob_root=blob_root, blob_store=blob_store, acquired_at=acquired_at
+            )
             if envelope is not None and raw_data.captured_zip_coordinate is not None and input_repository is not None:
                 if generation is None or source_item is None or coordinates is None:
                     raise ValueError("ZIP raw has no accepted frozen input")

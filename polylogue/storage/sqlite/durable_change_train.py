@@ -784,12 +784,16 @@ def _invoke_runtime_consumers(
                                 _ISOLATED_RUNTIME_PROBE_CACHE.pop(next(iter(_ISOLATED_RUNTIME_PROBE_CACHE)))
                             _ISOLATED_RUNTIME_PROBE_CACHE[key] = cached_detail
                     detail = cached_detail
-                elif reference.endswith(":_record_zip_container_coordinate"):
+                elif reference.endswith(":execute_raw_admission_plan_sync"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_zip_container_coordinate_write(cast(Callable[..., object], value))
+                    detail = _probe_captured_zip_admission(cast(Callable[..., object], value))
+                elif reference.endswith(":retained_source_location"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("captured ZIP restoration requires source tier")
+                    detail = _probe_captured_zip_restoration(cast(Callable[..., object], value))
                 elif reference.endswith(":raw_revision_descriptor"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1753,71 +1757,105 @@ def _seed_probe_raw_row(
     )
 
 
-def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
-    """Exercise the zip-member coordinate write against a migrated source tier.
+def _probe_captured_zip_admission(execute: Callable[..., object]) -> str:
+    """Publish the captured coordinate atomically through actual raw admission."""
+    from dataclasses import replace
 
-    The consumer decodes a v2 zip-member identity and forwards it to
-    ``record_raw_container_coordinate``, which writes the source tier. The
-    probe drives both arms: a raw whose id genuinely encodes its coordinate is
-    recorded, and one whose id does not is rejected without a write, which is
-    the guard that keeps legacy or unrelated identities out of the table.
-    """
-    from polylogue.core.enums import Provider
-    from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_coordinate
-    from polylogue.storage.runtime.raw.records import RawSessionRecord
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_member_raw_id,
+    )
+    from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+        PendingPreParseRawAdmissionRequest,
+        RawAdmissionResult,
+        plan_raw_admission,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_captured_zip_coordinate
 
-    blob_hash = "b" * 64
-    source_path = "/durable-change-train/coordinate-probe.zip"
-    source_index = 1
-    entry_ordinal, split_index = zip_member_source_coordinate(source_index)
-    matching_raw_id = zip_member_raw_id(
-        source_path=source_path,
-        entry_ordinal=entry_ordinal,
-        split_index=split_index,
+    coordinate = CapturedZipMemberCoordinate(
+        "/durable-change-train/physical/input.zip",
+        "/durable-change-train/declared/input.zip",
+        "directory:with:separators/session.json",
+        2,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        "a" * 64,
+        "c" * 64,
+    )
+    payload = b'{"probe":"captured-member"}'
+    blob_hash = hashlib.sha256(payload).digest()
+    raw_id = captured_zip_member_raw_id(coordinate, blob_hash.hex())
+    request = PendingPreParseRawAdmissionRequest(
+        origin=Origin.UNKNOWN_EXPORT,
+        capture_mode=Provider.UNKNOWN,
+        source_path=coordinate.declared_member,
+        canonical_source_path=coordinate.canonical_member,
+        source_index=coordinate.source_index,
         blob_hash=blob_hash,
+        blob_size=len(payload),
+        acquired_at_ms=1,
+        raw_id=raw_id,
+        captured_zip_coordinate=coordinate,
+        addressing_mode=coordinate.addressing_mode.value,
+        content_identity=blob_hash.hex(),
+    )
+    with _runtime_probe_source_connection() as probe:
+        result = cast(RawAdmissionResult, execute(probe, plan_raw_admission(request)))
+        if result.raw_id != raw_id or read_raw_captured_zip_coordinate(probe, raw_id) != coordinate:
+            raise DurableChangeTrainError("captured ZIP admission lost its exact coordinate")
+        before = probe.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+        for altered in (
+            replace(request, raw_id="unrelated-raw"),
+            replace(request, source_path="/durable-change-train/other.zip:session.json"),
+            replace(request, canonical_source_path=coordinate.declared_member),
+            replace(request, source_index=coordinate.source_index + 1),
+            replace(request, addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER.value),
+        ):
+            try:
+                execute(probe, plan_raw_admission(altered))
+            except ValueError:
+                pass
+            else:
+                raise DurableChangeTrainError("captured ZIP admission accepted conflicting input evidence")
+            if probe.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] != before:
+                raise DurableChangeTrainError("captured ZIP refusal published an unrelated raw")
+    return "admitted the captured coordinate and refused altered identity, paths, index and reading"
+
+
+def _probe_captured_zip_restoration(resolve: Callable[..., object]) -> str:
+    """Restore the captured physical member without reinterpreting path separators."""
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_coordinate_receipt,
     )
 
-    def _record(raw_id: str) -> RawSessionRecord:
-        return RawSessionRecord(
-            raw_id=raw_id,
-            blob_hash=blob_hash,
-            source_name=Provider.CLAUDE_CODE.value,
-            source_path=source_path,
-            source_index=source_index,
-            blob_size=0,
-            acquired_at="2026-01-01T00:00:00+00:00",
-        )
-
-    with _runtime_probe_directory(prefix="polylogue-durable-train-coordinate-") as directory:
-        root = Path(directory) / "archive"
-        initialize_active_archive_root(root)
-        with ArchiveStore.open_existing(root, read_only=False) as archive:
-            connection = archive._ensure_source_conn()
-            for raw_id in (matching_raw_id, "durable-change-train-unrelated-raw"):
-                _seed_probe_raw_row(
-                    connection,
-                    raw_id=raw_id,
-                    source_path=source_path,
-                    source_index=source_index,
-                    blob_hash=bytes.fromhex(blob_hash),
-                )
-            writer(archive, _record(matching_raw_id), source_raw_id=matching_raw_id, blob_hash=blob_hash)
-            writer(
-                archive,
-                _record("durable-change-train-unrelated-raw"),
-                source_raw_id="durable-change-train-unrelated-raw",
-                blob_hash=blob_hash,
-            )
-            recorded = {
-                str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_container_coordinates").fetchall()
-            }
-    if matching_raw_id not in recorded:
-        raise DurableChangeTrainError("zip container coordinate write did not record a matching v2 identity")
-    if "durable-change-train-unrelated-raw" in recorded:
-        raise DurableChangeTrainError("zip container coordinate write recorded an identity it should have rejected")
-    return "recorded a v2 zip member coordinate and rejected an unrelated identity"
+    coordinate = CapturedZipMemberCoordinate(
+        "/durable-change-train/physical/input.zip",
+        "/durable-change-train/declared/input.zip",
+        "directory:with:separators/session.json",
+        2,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        "a" * 64,
+        "c" * 64,
+    )
+    row = {
+        "source_path": coordinate.declared_member,
+        "captured_coordinate": captured_zip_coordinate_receipt(coordinate),
+    }
+    if resolve(row, Path("/durable-change-train/active")) != (coordinate.canonical_member, True):
+        raise DurableChangeTrainError("captured ZIP restoration lost the accepted physical member")
+    for receipt in (17, "{}"):
+        try:
+            resolve({**row, "captured_coordinate": receipt}, Path("/durable-change-train/active"))
+        except ValueError:
+            pass
+        else:
+            raise DurableChangeTrainError("captured ZIP restoration reinterpreted malformed evidence")
+    return "restored the exact captured physical member and refused malformed receipts"
 
 
 def _probe_raw_byte_revision_dependents(reader: Callable[..., object]) -> str:
