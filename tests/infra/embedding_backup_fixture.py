@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import subprocess
+import sys
 from contextlib import closing
 from pathlib import Path
 from typing import Never
@@ -114,3 +116,21 @@ def embedding_vector_rows(path: Path) -> tuple[list[tuple[object, ...]], list[tu
                 "SELECT vector_derivation_hash, embedding, model FROM message_embeddings ORDER BY vector_derivation_hash"
             ).fetchall(),
         )
+
+
+_RESTART_PROGRAM = """
+import sys
+from pathlib import Path
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.operations.embedding_lifecycle import ensure_embedding_lifecycle_startup
+from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
+root = Path(sys.argv[1])
+with arm_write_lease_enforcement(), write_lease("startup.embedding-backup", archive_root=root):
+    initialize_active_archive_root(root)
+    ensure_embedding_lifecycle_startup(root)
+"""
+
+
+def restart_restored_embedding_backup(root: Path) -> None:
+    """Cold process admission cannot use the first constructor's process cache."""
+    subprocess.run([sys.executable, "-c", _RESTART_PROGRAM, str(root)], check=True)

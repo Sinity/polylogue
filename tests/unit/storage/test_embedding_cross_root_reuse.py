@@ -23,7 +23,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import load_polylogue_config
-from polylogue.operations.embedding_lifecycle import ensure_embedding_lifecycle_startup
 from polylogue.storage.embeddings.identity import EMBEDDING_INPUT_SCHEMA_VERSION, EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import (
     count_archive_embedding_session_state,
@@ -31,15 +30,15 @@ from polylogue.storage.embeddings.materialization import (
     select_pending_archive_session_window,
 )
 from polylogue.storage.embeddings.preflight import read_embedding_work_counts
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
 from tests.infra.embedding_backup_fixture import (
     BACKUP_TEXT,
     NoCallVectorProvider,
     SyntheticVectorProvider,
     connect_vector_fixture,
     embedding_vector_rows,
+    restart_restored_embedding_backup,
     snapshot_embedding_backup,
     startup_restored_embedding_backup,
     write_embedding_session,
@@ -80,10 +79,10 @@ def test_vector_written_under_one_root_is_a_hit_under_a_fresh_root(
     with closing(connect_vector_fixture(fresh_root / "index.db")) as connection:
         assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     assert embedding_vector_rows(adopted) == original_rows
-    # Restart with fresh owner objects through the same actual startup boundary.
-    with arm_write_lease_enforcement(), write_lease("restart.embedding-backup", archive_root=fresh_root):
-        initialize_active_archive_root(fresh_root)
-        ensure_embedding_lifecycle_startup(fresh_root)
+    # A cold process has neither the original handles nor bootstrap memo.
+    restart_restored_embedding_backup(fresh_root)
+    assert (fresh_root / "embeddings.db").resolve() == adopted
+    assert json.loads((adopted.parent / "generation.json").read_text()) == metadata
     fresh_session = write_embedding_session(fresh_root, native_id="fresh-native", message_native_id="m-fresh")
     assert fresh_session != old_session
     monkeypatch.setattr(
