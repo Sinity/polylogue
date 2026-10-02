@@ -43,7 +43,7 @@ class ExecutionSourceGuard:
         self.resources = contextlib.ExitStack()
         self.bindings: list[str] = []
         self.digest: str | None = None
-        self.launched = False
+        self.launch_possible = False
         self.attempts: list[dict[str, Any]] = []
         self.custody_settled = False
         self.bytecode = Path(tempfile.mkdtemp(prefix=".bytecode-", dir=self.copy))
@@ -164,6 +164,10 @@ class ExecutionSourceGuard:
             "kill_grace_s": STOP_KILL_GRACE_S,
         }
         self.attempts.append({"closure": closure, "token": token, "pid": None, "pidfd": None})
+        # Popen can create its child before Python assigns/records its result.
+        # From this point onward an interruption cannot prove no launch; only
+        # exact registered supervisor death and closure permit source removal.
+        self.launch_possible = True
         return [sys.executable, "-I", "-B", f"/proc/self/fd/{executable}", json.dumps(config)]
 
     @property
@@ -175,7 +179,7 @@ class ExecutionSourceGuard:
         )
 
     def launched_process(self, process: subprocess.Popen[Any]) -> None:
-        self.launched = True
+        self.launch_possible = True
         attempt = self.attempts[-1]
         attempt["pid"] = process.pid
         attempt["pidfd"] = os.pidfd_open(process.pid)
@@ -271,15 +275,15 @@ class ExecutionSourceGuard:
                 self.failure = f"boundary descriptor cleanup failed: {exc}"
         self.fds.clear()
         self.resources.close()
-        if not self.launched or self.custody_settled:
+        if not self.launch_possible or self.custody_settled:
             try:
                 shutil.rmtree(self.copy)
             except OSError as exc:
                 self.failure = f"boundary source cleanup failed: {exc}"
         return {
-            "status": "unavailable" if self.failure or not self.launched else "stable",
+            "status": "unavailable" if self.failure or not self.launch_possible else "stable",
             "observer": "readonly_snapshot",
-            "reason": self.failure or (None if self.launched else "execution never launched"),
+            "reason": self.failure or (None if self.launch_possible else "execution never launched"),
             "git_worktree_content_sha256": self.digest,
             "custody_settled": self.custody_settled,
             "attempt_closures": closures,

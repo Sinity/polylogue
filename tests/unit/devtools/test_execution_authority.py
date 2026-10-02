@@ -555,9 +555,13 @@ def test_in_slot_rerun_requires_two_physical_closures_and_keeps_initial_exit(sou
     assert inspect_testmon_graph(root).usable
 
 
-def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(source_repository: Path) -> None:
+@pytest.mark.parametrize("before_registration", [False, True])
+def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(
+    source_repository: Path, before_registration: bool
+) -> None:
     import json
     import os
+    import select
     import signal
     import sys
     import time
@@ -580,7 +584,7 @@ def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(sour
     )
     launch, log = root / ".cache/cancel-launch.json", root / ".cache/cancel.log"
     environment = {**os.environ, "POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE": "1"}
-    environment.pop("TESTMON_DATAFILE", None)
+    environment["TESTMON_DATAFILE"] = str(_testmon_datafile(root))
     launch.write_text(
         json.dumps(
             {
@@ -591,29 +595,62 @@ def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(sour
             }
         )
     )
+    registration = root / ".cache/registration-ready"
+    registration_gate = (
+        "import json, time\nfrom devtools.execution_source import ExecutionSourceGuard\n"
+        "def gate(guard, process):\n"
+        f"    marker = Path({str(registration)!r})\n"
+        "    temporary = marker.with_suffix('.tmp')\n"
+        "    temporary.write_text(json.dumps({'copy': str(guard.copy), 'pid': process.pid}))\n"
+        "    temporary.replace(marker)\n"
+        "    while True:\n        time.sleep(0.001)\n"
+        "ExecutionSourceGuard.launched_process = gate\n"
+        if before_registration
+        else ""
+    )
     controller = (
         "import sys\nfrom pathlib import Path\n"
         f"sys.path.insert(0, {str(checkout)!r})\n"
         "from devtools import pytest_slot\n"
         "pytest_slot.admission_ledger = lambda _env: None\n"
         "pytest_slot.admit_width = lambda argv, **_kwargs: (list(argv), None)\n"
-        f"raise SystemExit(pytest_slot._run_launch(Path({str(launch)!r})))\n"
+        + registration_gate
+        + f"raise SystemExit(pytest_slot._run_launch(Path({str(launch)!r})))\n"
     )
     waiter = subprocess.Popen([sys.executable, "-c", controller])
+    observed_pidfd: int | None = None
+    observed: dict[str, Any] = {}
     try:
-        while not ready.exists():
+        while not ready.exists() or (before_registration and not registration.exists()):
             assert waiter.poll() is None
             time.sleep(0.001)
         detached_pid = int(identity.read_text())
+        if before_registration:
+            observed = json.loads(registration.read_text())
+            observed_pidfd = os.pidfd_open(observed["pid"])
         waiter.send_signal(signal.SIGTERM)
         assert waiter.wait(timeout=10) == 128 + signal.SIGTERM
         receipt = json.loads(pytest_slot._slot_result_path(log).read_text())
         assert receipt["status"] == "interrupted"
         assert receipt["execution_source"]["status"] == "unavailable"
-        assert receipt["execution_source"]["custody_settled"] is True
-        assert len(receipt["execution_source"]["attempt_closures"]) == 1
+        assert not inspect_testmon_graph(root).usable
+        if before_registration:
+            assert receipt["execution_source"]["custody_settled"] is False
+            assert receipt["execution_source"]["attempt_closures"] == []
+            assert Path(observed["copy"]).exists()
+            # Later physical death cannot retroactively supply the missing
+            # attempt binding to the interrupted producer's receipt.
+            poller = select.poll()
+            assert observed_pidfd is not None
+            poller.register(observed_pidfd, select.POLLIN)
+            assert any(events & select.POLLIN for _fd, events in poller.poll(10000))
+        else:
+            assert receipt["execution_source"]["custody_settled"] is True
+            assert len(receipt["execution_source"]["attempt_closures"]) == 1
         assert not Path(f"/proc/{detached_pid}").exists()
     finally:
         if waiter.poll() is None:
             waiter.kill()
         waiter.wait()
+        if observed_pidfd is not None:
+            os.close(observed_pidfd)
