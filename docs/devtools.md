@@ -149,6 +149,16 @@ devtools scenario run reader-visual-smoke
 
 Campaign outputs live under `.local/`, not in tracked docs trees.
 
+Pytest steps retain the original `process_exit` separately from the evidence
+verdict. An existing unreadable or malformed report, selection, summary, or
+event ledger produces `pytest_evidence_unavailable`; statistics publication
+and mirror failures use the same diagnosis. The run-local step records
+`evidence_error` with the phase, exception type, and message, and a process
+exit of zero becomes a failed verification exit. Explicit interruption and
+nonexecution diagnoses remain alongside this evidence error. `devtools why`
+shows the recorded error; the canonical receipt carries only its phase and
+type, without local paths or exception text.
+
 ## Local State Layout
 
 - `.cache/`: disposable cache state.

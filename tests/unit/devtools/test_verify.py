@@ -551,6 +551,9 @@ def test_finish_step_does_not_retry_unavailable_pytest_statistics(
     assert result is not None
     assert calls == 1
     assert "statistics" not in result
+    assert result["exit"] == result["process_exit"] == 1
+    assert result["diagnosis"] == "pytest_evidence_unavailable"
+    assert result["evidence_error"]["type"] == "OSError"
 
 
 def test_broad_managed_pytest_profile_honors_environment_then_defaults() -> None:

@@ -6,6 +6,7 @@ receipt writers or the verdict decisions they exercise.
 
 from __future__ import annotations
 
+import io
 import json
 import signal
 import sys
@@ -14,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from devtools import pytest_slot, run_tests, verify, verify_runs
+from devtools import pytest_slot, run_tests, verify, verify_runs, why
 from devtools.checkout_identity import CheckoutIdentity
 from devtools.testmon_provision import TestmonGraphState, TestmonGraphStatus
 from devtools.verification_admission import AffectedAdmission
@@ -365,3 +366,173 @@ def test_outliers_refuse_a_missing_lane_instead_of_falling_back_to_older_reports
     output = capsys.readouterr()
     assert not output.out
     assert "incomplete full-run evidence" in output.err
+
+
+def _passing_step_evidence(step_dir: Path) -> None:
+    for name, payload in {
+        "pytest-report.json": {"tests": [{"nodeid": "test_target", "outcome": "passed"}]},
+        "selection.json": {"selected_count": 1},
+        "summary.json": {"exitstatus": 0},
+    }.items():
+        (step_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+    (step_dir / "events.jsonl").write_text(
+        json.dumps({"event": "collection_finished", "selected_count": 1}) + "\n", encoding="utf-8"
+    )
+
+
+@pytest.mark.parametrize(
+    ("artifact", "fault", "error_type"),
+    [
+        ("pytest-report.json", "directory", "IsADirectoryError"),
+        ("selection.json", "directory", "IsADirectoryError"),
+        ("summary.json", "directory", "IsADirectoryError"),
+        ("events.jsonl", "directory", "IsADirectoryError"),
+        ("events", "not_directory", "NotADirectoryError"),
+        ("events.jsonl", "utf8", "UnicodeDecodeError"),
+        ("events.jsonl", "json", "JSONDecodeError"),
+        ("events/gw0.jsonl", "utf8", "UnicodeDecodeError"),
+        ("events/gw0.jsonl", "json", "JSONDecodeError"),
+        ("pytest-report.json", "json", "JSONDecodeError"),
+        ("selection.json", "json", "JSONDecodeError"),
+        ("summary.json", "json", "JSONDecodeError"),
+        ("summary.json", "object", "ValueError"),
+        ("pytest-report.json", "tests_null", "TypeError"),
+    ],
+)
+def test_existing_unreadable_pytest_evidence_fails_the_actual_receipt_owner(
+    receipt_workspace: Path, artifact: str, fault: str, error_type: str
+) -> None:
+    """Removing strict terminal reads or reinstating suppression turns real faults green."""
+    run = verify_runs.VerifyRun(tier="focused-test", argv=[], git_head="a" * 40, root=receipt_workspace)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    _passing_step_evidence(artifacts.step_dir)
+    path = artifacts.step_dir / artifact
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if fault == "directory":
+        path.unlink()
+        path.mkdir()
+    else:
+        prefix = b'{"event": "collection_finished"}\n' if artifact.endswith("jsonl") else b""
+        path.write_bytes(
+            prefix
+            + (
+                b"\xff"
+                if fault == "utf8"
+                else b"[]"
+                if fault == "object"
+                else b'{"tests": null}'
+                if fault == "tests_null"
+                else b"invalid-json"
+            )
+        )
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": 0})
+    assert result is not None
+    assert result["status"] == "failed"
+    assert result["exit"] == 1 and result["process_exit"] == 0
+    assert result["diagnosis"] == "pytest_evidence_unavailable"
+    assert result["evidence_error"]["phase"] == "aggregation"
+    assert result["evidence_error"]["type"] == error_type
+    assert result["evidence_error"]["message"]
+    assert "statistics" not in result
+    persisted = _only_receipt(receipt_workspace)["steps"][0]
+    assert persisted == result
+    assert path.exists(), "the unreadable input remains diagnostic evidence"
+
+
+@pytest.mark.parametrize("phase", ["statistics_publication", "statistics_mirror"])
+def test_statistics_publication_fault_records_failure_before_success(receipt_workspace: Path, phase: str) -> None:
+    run = verify_runs.VerifyRun(tier="focused-test", argv=[], git_head="a" * 40, root=receipt_workspace)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    _passing_step_evidence(artifacts.step_dir)
+    destination = (
+        artifacts.statistics_path
+        if phase == "statistics_publication"
+        else receipt_workspace / verify_runs.CURRENT_STATISTICS_PATH
+    )
+    destination.mkdir()
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": 0})
+    assert result is not None
+    assert result["status"] == "failed" and result["process_exit"] == 0 and result["exit"] == 1
+    assert result["evidence_error"]["phase"] == phase
+    assert result["evidence_error"]["type"] == "IsADirectoryError"
+    assert result["statistics"]["outcomes"] == {"passed": 1}
+    assert result["statistics"]["ordinary_eligible"] is False
+    assert result["statistics"]["ok"] is False
+    assert _only_receipt(receipt_workspace)["steps"][0] == result
+
+
+@pytest.mark.parametrize(
+    ("process_exit", "diagnosis"),
+    [
+        (143, "pytest_interrupted"),
+        (130, "verification_interrupted"),
+        (125, "focused_test_runner_exception"),
+        (125, "pytest_slot_unavailable"),
+        (137, "oom_killed"),
+        (2, "pytest_failed"),
+    ],
+)
+def test_evidence_fault_preserves_execution_failure_and_explicit_terminal_reason(
+    receipt_workspace: Path, process_exit: int, diagnosis: str
+) -> None:
+    run = verify_runs.VerifyRun(tier="focused-test", argv=[], git_head="a" * 40, root=receipt_workspace)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    artifacts.events_merged_path.write_bytes(b"\xff")
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": process_exit, "diagnosis": diagnosis})
+    assert result is not None
+    assert result["process_exit"] == process_exit and result["exit"] == process_exit
+    assert result["diagnosis"] == ("pytest_evidence_unavailable" if diagnosis == "pytest_failed" else diagnosis)
+    assert result["evidence_error"]["type"] == "UnicodeDecodeError"
+    assert result["status"] == "failed"
+
+
+def test_focused_caller_publishes_failed_verdict_from_existing_unreadable_ledger(
+    receipt_workspace: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A raw zero reaches the real owner; callers must adopt its failed evidence verdict."""
+    selected = receipt_workspace / "test_target.py"
+    selected.write_text("def test_target(): pass\n", encoding="utf-8")
+
+    def zero_with_unreadable_ledger(_label: str, _cmd: list[str], **kwargs: Any) -> Any:
+        step_dir = Path(kwargs["env"]["POLYLOGUE_PYTEST_SUMMARY_PATH"]).parent
+        _passing_step_evidence(step_dir)
+        (step_dir / "events.jsonl").write_bytes(b'{"event": "collection_finished"}\n\xff')
+        return 0, 0.1, {"diagnosis": "pytest_passed"}
+
+    monkeypatch.setattr(run_tests, "_run", zero_with_unreadable_ledger)
+    assert run_tests.main([str(selected)]) == 1
+    payload = _only_receipt(receipt_workspace)
+    assert payload["exit_code"] == 1 and payload["status"] == "failed"
+    assert payload["diagnosis"] == "pytest_evidence_unavailable"
+    assert payload["pytest_aggregate"]["terminal_green"] is False
+    step = payload["steps"][0]
+    assert step["process_exit"] == 0 and step["evidence_error"]["type"] == "UnicodeDecodeError"
+    history = list(verify_runs._iter_history_pinned(receipt_workspace / "history.jsonl"))
+    assert history[-1]["semantic_receipt"]["status"] == "failed"
+    historical_step = history[-1]["semantic_receipt"]["steps"][0]
+    assert historical_step["process_exit"] == 0
+    assert historical_step["evidence_error"] == {"phase": "aggregation", "type": "UnicodeDecodeError"}
+    assert "message" not in historical_step["evidence_error"]
+    canonical = verify_runs.read_verification_evidence(receipt_workspace / "evidence.jsonl")[-1]
+    assert canonical["status"] == "failed"
+    assert canonical["steps"][0]["process_exit"] == 0
+    assert canonical["steps"][0]["evidence_error"] == {"phase": "aggregation", "type": "UnicodeDecodeError"}
+    output = capsys.readouterr().err
+    assert "FAILED exit=1 diagnosis=pytest_evidence_unavailable" in output
+    stream = io.StringIO()
+    why._render(payload, stream)
+    assert "UnicodeDecodeError" in stream.getvalue()
+    assert "aggregation" in stream.getvalue()
+
+
+def test_clean_evidence_still_publishes_success(receipt_workspace: Path) -> None:
+    run = verify_runs.VerifyRun(tier="focused-test", argv=[], git_head="a" * 40, root=receipt_workspace)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+    _passing_step_evidence(artifacts.step_dir)
+    result = run.finish_step(step_id=artifacts.step_id, result={"exit": 0})
+    assert result is not None
+    assert result["exit"] == 0 and result["process_exit"] == 0 and result["status"] == "success"
+    assert result["statistics"]["ordinary_eligible"] is True
+    assert "evidence_error" not in result
+    assert json.loads(artifacts.statistics_path.read_text())["ok"] is True
+    assert json.loads((receipt_workspace / verify_runs.CURRENT_STATISTICS_PATH).read_text())["ok"] is True

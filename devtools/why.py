@@ -63,6 +63,10 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "Pytest exited without publishing its terminal summary, so the run has no end-of-session evidence.",
         "Check free space and permissions under the run's artifact directory, then re-run the same selection.",
     ),
+    "pytest_evidence_unavailable": Explanation(
+        "The verifier could not read, aggregate, or publish this step's pytest evidence.",
+        "Inspect the recorded evidence error and artifact directory, then re-run the same selection.",
+    ),
     "pytest_collection_only": Explanation(
         "Pytest collected tests without running them.",
         "Re-run without --collect-only to execute the selected tests.",
@@ -290,6 +294,13 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
             step_ending = _ending(step)
             if step_ending is not None:
                 print(f"      ended: {step_ending}", file=stream)
+            evidence_error = step.get("evidence_error")
+            if isinstance(evidence_error, Mapping):
+                print(
+                    f"      evidence: {evidence_error.get('phase')} {evidence_error.get('type')}: "
+                    f"{evidence_error.get('message')}",
+                    file=stream,
+                )
             output_path = step.get("output_path")
             if isinstance(output_path, str) and Path(output_path).is_file():
                 tail = Path(output_path).read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
