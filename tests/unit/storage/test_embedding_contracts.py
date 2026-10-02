@@ -457,6 +457,43 @@ def test_pending_archive_window_skips_session_larger_than_max_messages() -> None
         conn.close()
 
 
+@pytest.mark.parametrize(
+    ("max_messages", "max_sessions", "min_messages", "expected"),
+    [
+        (3, None, None, ["a"]),
+        (4, None, None, ["a"]),
+        (5, None, None, ["oversize"]),
+        (6, 2, None, ["oversize"]),
+        (4, None, 2, ["a"]),
+        (None, 2, None, ["oversize", "a"]),
+    ],
+)
+def test_archive_window_preserves_newest_ties_ceiling_and_prefix_stop(
+    max_messages: int | None, max_sessions: int | None, min_messages: int | None, expected: list[str]
+) -> None:
+    """A later smaller session cannot fill a prefix whose earlier member overflowed."""
+    conn = sqlite3.connect(":memory:")
+    try:
+        _setup_minimal_embedding_db(conn)
+        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
+        for sid, count, sort_key in (("oversize", 5, 30), ("b", 3, 20), ("a", 2, 20), ("c", 1, 10), ("d", 1, None)):
+            _insert_session(conn, sid, message_count=count)
+            conn.execute("UPDATE sessions SET sort_key_ms = ? WHERE session_id = ?", (sort_key, sid))
+        conn.commit()
+        for rebuild in (False, True):
+            rows = select_pending_archive_session_window(
+                conn,
+                status_table="",
+                max_messages=max_messages,
+                max_sessions=max_sessions,
+                min_messages=min_messages,
+                rebuild=rebuild,
+            )
+            assert [row.session_id for row in rows] == expected
+    finally:
+        conn.close()
+
+
 def test_pending_archive_window_counts_only_embeddable_prose() -> None:
     conn = sqlite3.connect(":memory:")
     try:

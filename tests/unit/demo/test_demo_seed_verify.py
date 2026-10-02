@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
-from polylogue.config import Source, load_polylogue_config
+from polylogue.config import Source
 from polylogue.demo import (
     DemoSeedTargetUnsafeError,
     apply_demo_post_ingest_augmentation,
@@ -17,7 +19,6 @@ from polylogue.demo import (
     verify_demo_archive,
 )
 from polylogue.demo.seed import (
-    DEMO_OWNERSHIP_MANIFEST_FILENAME,
     DEMO_SOURCE_DIRNAME,
     demo_source_specs,
     materialize_demo_source,
@@ -34,6 +35,7 @@ from polylogue.scenarios import (
     DEMO_HERMES_SESSION_ID,
     DEMO_SESSION_IDS,
 )
+from polylogue.storage.archive_identity import DEMO_OWNERSHIP_MANIFEST_FILENAME
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -173,41 +175,153 @@ async def test_seed_demo_archive_creates_ready_queryable_archive(tmp_path: Path)
 
 
 @pytest.mark.asyncio
-async def test_seed_demo_embedding_session_is_classified_fresh_not_pending(tmp_path: Path) -> None:
-    """The demo-seeded synthetic embedding must never look selectable for a paid re-embed.
+async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real enabled daemon selection must respect exact synthetic ownership."""
+    import asyncio
 
-    ``_seed_demo_embeddings`` writes vectors and a clean ``embedding_status``
-    row directly (no provider call, no ``embedding_derivation_state`` row was
-    ever created before this fix). Because the v3 archive uses the exact-key
-    freshness predicate (``_archive_embedding_freshness_predicate``) for every
-    production selector, a missing derivation-state row made
-    ``d.session_id IS NOT NULL`` always false, so the demo session was
-    classified pending forever regardless of the compatibility
-    ``embedding_status.needs_reindex`` flag. An embedding-enabled daemon
-    pointed at a demo archive would then attempt to re-embed content that was
-    deliberately seeded to be cost-free (polylogue PR #3067 review). Guards
-    that the demo session is excluded from the same real selector every
-    production call site shares.
-    """
+    from polylogue.daemon.embedding_owner import compose_embedding_convergence
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.storage.archive_identity import demo_owned_session_ids
+    from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
+    from polylogue.storage.embeddings.identity import EmbeddingRequestSpec
+    from polylogue.storage.embeddings.materialization import (
+        archive_embeddable_messages_relation,
+        count_archive_embedding_session_state,
+        embed_archive_session_sync,
+    )
+    from polylogue.storage.embeddings.preflight import read_embedding_work_counts
+    from polylogue.storage.embeddings.status_payload import embedding_status_payload
+    from tests.infra.embedding_compatibility import _Documents, _session
+    from tests.infra.embedding_config import embedding_config
 
-    archive_root = tmp_path / "archive"
-    await seed_demo_archive(archive_root, force=True)
-
-    cfg = load_polylogue_config()
+    root = tmp_path / "archive"
+    await seed_demo_archive(root, force=True)
+    cfg = embedding_config(sinex_mode="off")
     recipe = EmbeddingRecipe.current(model=cfg.embedding_model, dimensions=cfg.embedding_dimension)
-
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute("ATTACH DATABASE ? AS embeddings", (str(archive_root / "embeddings.db"),))
-        loaded, error = try_load_sqlite_vec(conn)
-        if not loaded:
-            pytest.skip(str(error) if error else "sqlite-vec extension is unavailable")
-        pending = select_pending_archive_session_window(
-            conn,
-            status_table="embeddings.embedding_status",
-            recipe=recipe,
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **kwargs: cfg)
+    provider = _Documents("voyage-4")
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", lambda **kwargs: provider)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+    composed = compose_embedding_convergence(
+        root / "index.db", compute_adapter=BoundedComputeAdapter(max_workers=1), write_bridge=bridge, config=cfg
+    )
+    result = await composed(None)
+    assert result.report is not None
+    assert result.report.work.computed == 0
+    assert provider.calls == []
+    assert embed_archive_session_sync(root / "index.db", provider, DEMO_EMBEDDING_PROSE_SESSION_ID).status == "deferred"
+    assert read_embedding_work_counts(root / "index.db", recipe=recipe)[1:] == (0, 0, 0)
+    status = embedding_status_payload(
+        SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db", archive_root=root)), include_detail=True
+    )
+    assert status is not None
+    assert status["retrieval_ready"] is False
+    assert status["status"] != "complete"
+    assert status["compute_missing_messages"] == 0
+    assert status["next_action"]["code"] == "acquisition_excluded"
+    assert status["next_action"]["command"] is None
+    assert (status["acquisition_excluded_messages"] or 0) > 0
+    for policy_config in (embedding_config(embedding_enabled=False), embedding_config(voyage_api_key=None)):
+        monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda config=policy_config, **kwargs: config)
+        policy_status = embedding_status_payload(
+            SimpleNamespace(config=SimpleNamespace(db_path=root / "index.db", archive_root=root)), include_detail=True
         )
+        assert policy_status is not None
+        assert policy_status["next_action"]["code"] == "acquisition_excluded"
+        assert policy_status["next_action"]["command"] is None
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **kwargs: cfg)
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
+        assert try_load_sqlite_vec(conn)[0]
+        state = count_archive_embedding_session_state(conn, status_table="embeddings.embedding_status", recipe=recipe)
+        assert state.pending_sessions > 0
+        assert (
+            select_pending_archive_session_window(conn, status_table="embeddings.embedding_status", recipe=recipe) == []
+        )
+        synthetic = EmbeddingRecipe.current(
+            model="demo-synthetic-embedding",
+            dimensions=1024,
+            provider="polylogue-demo",
+            model_revision="sha256-prose-v1",
+            normalization="none",
+            tool_implementation="polylogue.demo-sha256-prose-v1",
+        )
+        relation = archive_embeddable_messages_relation(conn, alias="m", recipe=synthetic)
+        rows = conn.execute(
+            f"SELECT m.text, m.content_hash, em.recipe_hash, em.output_contract_hash, em.model, em.vector_derivation_hash, r.message_content_hash FROM {relation} "
+            "JOIN embeddings.message_embedding_refs r ON r.message_id=m.message_id "
+            "JOIN embeddings.message_embeddings_meta em ON em.vector_derivation_hash=r.vector_derivation_hash"
+        ).fetchall()
+        assert rows
+        for text, content_hash, recipe_hash, output_hash, model, address, retained_content in rows:
+            assert (recipe_hash, output_hash, model) == (
+                synthetic.recipe_hash,
+                synthetic.output_contract_hash,
+                synthetic.model,
+            )
+            assert content_hash == retained_content
+            assert address == EmbeddingRequestSpec(synthetic, text).vector_derivation_hash
+        from array import array
 
-    assert DEMO_EMBEDDING_PROSE_SESSION_ID not in {item.session_id for item in pending}
+        from polylogue.demo.seed import _demo_embedding_vector
+
+        for text, _content_hash, _recipe_hash, _output_hash, _model, address, _retained_content in rows:
+            payload = conn.execute(
+                "SELECT embedding FROM embeddings.message_embeddings WHERE vector_derivation_hash = lower(hex(?))",
+                (address,),
+            ).fetchone()[0]
+            assert (
+                payload
+                == array("f", _demo_embedding_vector(EmbeddingRequestSpec(synthetic, text).normalized_input)).tobytes()
+            )
+        assert not synthetic.retrieval_compatible(recipe)
+    import httpx
+
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+
+    client_type = httpx.Client
+    query_requests: list[httpx.Request] = []
+
+    def serve(request: httpx.Request) -> httpx.Response:
+        query_requests.append(request)
+        return httpx.Response(200, json={"data": [{"embedding": [0.1] * 1024}]})
+
+    monkeypatch.setattr(
+        httpx,
+        "Client",
+        lambda **kwargs: client_type(transport=httpx.MockTransport(serve), **kwargs),
+    )
+    search = SqliteVecProvider("synthetic-key", db_path=root / "embeddings.db", archive_root=root, model="voyage-4")
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+
+    with pytest.raises(EmbeddingRetrievalNotReadyError) as unavailable:
+        search.query("Does a synthetic fixture belong to the hosted retrieval space?", limit=10)
+    assert unavailable.value.readiness_status == "empty"
+    assert query_requests == []
+    assert provider.calls == []
+
+    demo_ids = demo_owned_session_ids(root)
+    real_sid, _ids = _session(root)
+    assert real_sid not in demo_ids
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(root / "embeddings.db"),))
+        selected = select_pending_archive_session_window(
+            conn, status_table="embeddings.embedding_status", recipe=recipe
+        )
+        assert [row.session_id for row in selected] == [real_sid]
+    adapter = EmbeddingDerivationAdapter(root / "index.db", provider)
+    frame = SimpleNamespace(
+        source_revision=f"index-generation:{root / 'index.db'}",
+        scope=None,
+        recipe_version=lambda domain: adapter.recipe_version,
+    )
+    required, _cursor = adapter.required_page(frame, cursor=None, limit=100)
+    assert set(required) == {f"message:{mid}" for mid in _ids}
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

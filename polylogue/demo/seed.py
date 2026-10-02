@@ -12,7 +12,7 @@ from contextlib import closing, contextmanager
 from hashlib import sha256
 from pathlib import Path
 
-from polylogue.config import Source, load_polylogue_config
+from polylogue.config import Source
 from polylogue.core.errors import SchemaSkewError
 from polylogue.operations.canonical_archive_ingest import (
     ingest_sources_archive,
@@ -35,9 +35,14 @@ from polylogue.scenarios import (
 )
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.parsers.browser_capture import parse as parse_browser_capture
+from polylogue.storage.archive_identity import (
+    DEMO_OWNERSHIP_MANIFEST_FILENAME,
+    read_demo_ownership_manifest,
+)
 from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 from polylogue.storage.embeddings.identity import (
     EmbeddingRecipe,
+    EmbeddingRequestSpec,
     EmbeddingSourceDigest,
     embedding_derivation_key,
     message_embedding_derivation_key,
@@ -63,12 +68,6 @@ from .constructs import evaluate_demo_constructs
 from .models import DemoSeedResult
 
 DEMO_SOURCE_DIRNAME = "demo-fixture-world-source"
-
-# Written once, on the first call that ever touches a given archive root,
-# recording whether it held real content at that moment. Self-heal also
-# revalidates the recorded session set on each call. Older demo roots may
-# carry a false marker from before real-content refusal was unconditional.
-DEMO_OWNERSHIP_MANIFEST_FILENAME = "demo-archive-ownership.json"
 
 
 class DemoSeedTargetUnsafeError(RuntimeError):
@@ -264,17 +263,6 @@ def _guard_demo_seed_target(root: Path, *, explicit_root: bool, force: bool) -> 
     )
 
 
-def _read_demo_ownership_manifest(root: Path) -> dict[str, object] | None:
-    manifest_path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
-    if not manifest_path.exists():
-        return None
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
 def _record_demo_ownership_if_undetermined(root: Path) -> None:
     """Permanently record, on first touch, whether *root* held real content.
 
@@ -338,7 +326,7 @@ def _archive_root_is_demo_owned(root: Path) -> bool:
     that already held real content when first seeded (polylogue-wyvio).
     """
 
-    manifest = _read_demo_ownership_manifest(root)
+    manifest = read_demo_ownership_manifest(root)
     if manifest is None or manifest.get("demo_only") is not True:
         return False
     if not any(key in manifest for key, *_ in _DEMO_OWNED_ROW_IDS):
@@ -378,7 +366,7 @@ def _refresh_demo_ownership_session_ids(root: Path) -> None:
     (polylogue-dl6af gap 1).
     """
 
-    manifest = _read_demo_ownership_manifest(root)
+    manifest = read_demo_ownership_manifest(root)
     if manifest is None or manifest.get("demo_only") is not True:
         return
     manifest_path = root / DEMO_OWNERSHIP_MANIFEST_FILENAME
@@ -1373,10 +1361,10 @@ _DEMO_EMBEDDING_MODEL = "demo-synthetic-embedding"
 _DEMO_EMBEDDING_AT_MS = 1_767_225_700_000
 
 
-def _demo_embedding_vector(message_id: str) -> list[float]:
+def _demo_embedding_vector(text: str) -> list[float]:
     """Return a deterministic non-provider vector for demo-only embeddings."""
 
-    digest = sha256(message_id.encode("utf-8")).digest()
+    digest = sha256(text.encode("utf-8")).digest()
     return [((digest[index % len(digest)] / 255.0) * 2.0) - 1.0 for index in range(EMBEDDING_DIMENSION)]
 
 
@@ -1387,20 +1375,19 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
     embedding tier and status surfaces against non-empty rows while keeping the
     demo archive private-data-free and cost-free.
 
-    The synthetic vectors are keyed against the *currently configured*
-    embedding recipe (not the ``_DEMO_EMBEDDING_MODEL`` display label): a real
-    ``embedding_derivation_state`` row and matching per-message
-    ``recipe_hash``/``derivation_key``/``generation`` provenance are required
-    so the shared exact-key freshness predicate
-    (``_archive_embedding_freshness_predicate``) classifies this session as
-    already fresh. Without this, an embedding-enabled daemon pointed at a demo
-    archive would see the session as permanently pending and attempt a paid
-    re-embed of content that was deliberately seeded to be cost-free
-    (polylogue PR #3067 review).
+    The producer is a deterministic synthetic generator, outside Voyage's
+    retrieval space. The completed demo ownership manifest excludes its
+    sessions from acquisition; output eligibility still requires exact proof.
     """
 
-    cfg = load_polylogue_config()
-    recipe = EmbeddingRecipe.current(model=cfg.embedding_model, dimensions=cfg.embedding_dimension)
+    recipe = EmbeddingRecipe.current(
+        model=_DEMO_EMBEDDING_MODEL,
+        dimensions=EMBEDDING_DIMENSION,
+        provider="polylogue-demo",
+        model_revision="sha256-prose-v1",
+        normalization="none",
+        tool_implementation="polylogue.demo-sha256-prose-v1",
+    )
 
     embeddings_db = archive_root / "embeddings.db"
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
@@ -1415,7 +1402,7 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
         rows = index_conn.execute(
             f"""
             SELECT candidate.message_id, candidate.session_id, s.origin,
-                   candidate.vector_derivation_hash
+                   candidate.vector_derivation_hash, candidate.text, candidate.content_hash
             FROM {relation}
             JOIN sessions AS s
               ON s.session_id = candidate.session_id
@@ -1430,11 +1417,15 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 str(row["session_id"]),
                 str(row["origin"]),
                 bytes(row["vector_derivation_hash"]),
+                str(row["text"]),
+                bytes(row["content_hash"]),
             )
             for row in rows
         ]
         source_digest = EmbeddingSourceDigest()
-        for _message_id, _session_id, _origin, input_hash in sorted(embeddable, key=lambda item: item[3]):
+        for _message_id, _session_id, _origin, input_hash, _text, _content_hash in sorted(
+            embeddable, key=lambda item: item[3]
+        ):
             source_digest.update(input_hash)
         source_hash = source_digest.digest()
         writes = [
@@ -1442,7 +1433,7 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                 message_id=message_id,
                 session_id=session_id,
                 origin=origin,
-                embedding=_demo_embedding_vector(message_id),
+                embedding=_demo_embedding_vector(EmbeddingRequestSpec(recipe, text).normalized_input),
                 model=_DEMO_EMBEDDING_MODEL,
                 embedded_at_ms=_DEMO_EMBEDDING_AT_MS,
                 vector_derivation_hash=input_hash,
@@ -1453,8 +1444,10 @@ def _seed_demo_embeddings(archive_root: Path) -> None:
                     recipe=recipe,
                 ).digest(),
                 generation=1,
+                message_content_hash=content_hash,
+                output_contract_hash=recipe.output_contract_hash,
             )
-            for message_id, session_id, origin, input_hash in embeddable
+            for message_id, session_id, origin, input_hash, text, content_hash in embeddable
         ]
         upsert_message_embeddings(embeddings_conn, writes)
         session_derivation_key = embedding_derivation_key(
@@ -1743,7 +1736,6 @@ async def seed_demo_archive(
 
 
 __all__ = [
-    "DEMO_OWNERSHIP_MANIFEST_FILENAME",
     "DEMO_SOURCE_DIRNAME",
     "DemoSeedTargetUnsafeError",
     "apply_demo_post_ingest_augmentation",

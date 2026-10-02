@@ -19,7 +19,7 @@ def _snapshot(root: Path, state: str) -> sqlite3.Connection:
     seed_vector_archive(
         root,
         [("seed", "m1", "Synthetic current recipe prose.", [1.0] + [0.0] * 1023)],
-        model="voyage-4-lite" if state == "stale" else "voyage-4",
+        model="voyage-3" if state == "stale" else "voyage-4",
     )
     if state == "empty":
         with sqlite3.connect(root / "embeddings.db") as connection:
@@ -46,8 +46,6 @@ def test_snapshot_query_refuses_no_current_vectors_before_embedding(
     provider = SqliteVecProvider.from_vector_read_snapshot(
         voyage_key="fixture", connection=connection, model="voyage-4"
     )
-    monkeypatch.setattr(provider, "_ensure_vec_available", lambda: None)
-    monkeypatch.setattr(provider, "_ensure_tables", lambda: None)
 
     def refuse_purchase(*args: object, **kwargs: object) -> list[list[float]]:
         raise AssertionError("no current vectors: query embedding must not be purchased")
@@ -71,8 +69,6 @@ def test_snapshot_query_with_a_current_vector_proceeds_to_embedding(
     provider = SqliteVecProvider.from_vector_read_snapshot(
         voyage_key="fixture", connection=connection, model="voyage-4"
     )
-    monkeypatch.setattr(provider, "_ensure_vec_available", lambda: None)
-    monkeypatch.setattr(provider, "_ensure_tables", lambda: None)
     purchases: list[str] = []
 
     def record_purchase(texts: list[str], **_kwargs: object) -> list[list[float]]:

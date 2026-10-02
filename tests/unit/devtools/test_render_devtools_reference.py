@@ -72,3 +72,14 @@ def test_write_if_changed_uses_unique_temp_files_for_concurrent_writers(tmp_path
 
     assert output_path.read_text(encoding="utf-8").startswith("content ")
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_if_changed_atomically_replaces_invalid_utf8(tmp_path: Path) -> None:
+    """Treating undecodable prior output as comparable text prevents canonical publication."""
+    output_path = tmp_path / "reference.md"
+    output_path.write_bytes(b"\xff")
+    previous = output_path.stat().st_ino
+    write_if_changed(output_path, "canonical text\n")
+    assert output_path.read_text(encoding="utf-8") == "canonical text\n"
+    assert output_path.stat().st_ino != previous
+    assert list(tmp_path.glob("*.tmp")) == []

@@ -9,6 +9,7 @@ before a pointer or generation is reclaimed.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -20,7 +21,7 @@ import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -275,47 +276,60 @@ class EmbeddingGenerationStore:
     def _database_contract(self, path: Path, *, physical_root: Path | None = None) -> dict[str, Any]:
         """Derive the immutable contract carried by a published database."""
         self._validate_database(path)
-        try:
-            with sqlite_connection(f"file:{path}?mode=ro&immutable=1", uri=True) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash
-                    FROM message_embeddings_meta
-                    ORDER BY vector_derivation_hash
-                    """
-                ).fetchall()
-        except sqlite3.Error as exc:
-            raise EmbeddingGenerationError("cannot read embedding membership digest") from exc
         digest = hashlib.sha256()
-        # A recipe change is migrated in place, one bounded window of sessions
-        # per convergence pass, so one physical generation legitimately holds
-        # rows of the outgoing and incoming recipe at the same time.  The
-        # contract therefore records which recipes are present rather than
-        # demanding one; per-row recipe identity stays authoritative for
-        # freshness through `DerivationKey`.
         contracts: set[tuple[bytes, bytes, str, int]] = set()
-        models: set[str] = set()
         dimensions: set[int] = set()
         output_contracts: set[bytes] = set()
-        for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
-            value = bytes(vector_hash)
-            recipe_value = bytes(recipe_hash)
-            output_value = bytes(output_contract_hash)
-            if len(value) != 32:
-                raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
-            if len(recipe_value) != 32 or len(output_value) != 32:
-                raise EmbeddingGenerationError("embedding membership contains malformed recipe identity")
-            model_value = str(model)
-            dimension_value = int(dimension)
-            contracts.add((recipe_value, output_value, model_value, dimension_value))
-            models.add(model_value)
-            dimensions.add(dimension_value)
-            output_contracts.add(output_value)
-            digest.update(len(value).to_bytes(8, "big"))
-            digest.update(value)
-        digest.update(len(rows).to_bytes(8, "big"))
-        if len(models) > 1 or len(dimensions) > 1 or len(output_contracts) > 1:
+        row_count = 0
+        try:
+            with (
+                sqlite_connection(f"file:{path}?mode=ro&immutable=1", uri=True) as conn,
+                contextlib.closing(
+                    conn.execute(
+                        """SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash
+                       FROM message_embeddings_meta ORDER BY vector_derivation_hash"""
+                    )
+                ) as rows,
+            ):
+                for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
+                    value, recipe_value, output_value = (
+                        bytes(vector_hash),
+                        bytes(recipe_hash),
+                        bytes(output_contract_hash),
+                    )
+                    if len(value) != 32:
+                        raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
+                    if len(recipe_value) != 32 or len(output_value) != 32:
+                        raise EmbeddingGenerationError("embedding membership contains malformed recipe identity")
+                    model_value, dimension_value = str(model), int(dimension)
+                    contracts.add((recipe_value, output_value, model_value, dimension_value))
+                    dimensions.add(dimension_value)
+                    output_contracts.add(output_value)
+                    digest.update(len(value).to_bytes(8, "big"))
+                    digest.update(value)
+                    row_count += 1
+        except sqlite3.Error as exc:
+            raise EmbeddingGenerationError("cannot read embedding membership digest") from exc
+        digest.update(row_count.to_bytes(8, "big"))
+        if len(dimensions) > 1 or len(output_contracts) > 1:
             raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
+        if len({model for recipe, output, model, dimension in contracts}) > 1:
+            from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+            producers = []
+            for recipe, output, model, dimension in sorted(contracts):
+                selected = EmbeddingRecipe.current(model=model, dimensions=dimension)
+                producer = selected.proven_stored_producer(model=model, dimension=dimension, recipe_hash=recipe)
+                if producer is None or producer.output_contract_hash != output:
+                    raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
+                producers.append(producer)
+            if any(
+                not producers[0].retrieval_compatible(
+                    replace(producer, input_schema_version=producers[0].input_schema_version)
+                )
+                for producer in producers[1:]
+            ):
+                raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
 
         return {
             "recipe_hash": _recipe_membership(contracts),
