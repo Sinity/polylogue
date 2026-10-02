@@ -502,7 +502,9 @@ def test_writer_source_attachment_retains_reads_and_refuses_native_cursor_mutati
         connection.commit()
     with write_lease("test.attached-source", archive_root=tmp_path):
         with closing(
-            connection_profile.open_isolated_write_connection(tmp_path / "index.db", archive_root=tmp_path)
+            connection_profile.open_isolated_write_connection(
+                tmp_path / "index.db", purpose="test.attached-source", archive_root=tmp_path
+            )
         ) as index:
             connection_profile.attach_database(index, source, alias="source_tier")
             assert index.execute("SELECT value FROM source_tier.evidence").fetchone()[0] == "retained"
