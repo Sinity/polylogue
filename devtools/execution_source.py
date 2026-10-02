@@ -189,34 +189,58 @@ class ExecutionSourceGuard:
         from devtools.pytest_slot import STOP_KILL_GRACE_S, STOP_TERM_GRACE_S
 
         attempt = next((attempt for attempt in self.attempts if attempt["pid"] == process.pid), None)
-        if attempt is None or attempt["pidfd"] is None:
+        descriptor = attempt["pidfd"] if attempt is not None else None
+        borrowed = descriptor is None
+        if borrowed:
+            # Cancellation can arrive after Popen but before launch binding.
+            # Recover only exact direct-child custody for cleanup, never the
+            # missing original attempt authority. WNOWAIT leaves an exited
+            # child unreaped while its birth is pinned and revalidated.
+            from devtools.pytest_memory import _identity
+
             self.failure = "execution supervisor was not pinned"
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-            return
-        poller = select.poll()
-        descriptor = attempt["pidfd"]
-        poller.register(descriptor, select.POLLIN)
-        if not any(events & select.POLLIN for _fd, events in poller.poll(0)):
-            with contextlib.suppress(ProcessLookupError):
-                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
-            # The supervisor has both existing descendant cleanup graces; one
-            # dispatch second lets it publish closure after the final reap.
-            dead = any(
-                events & select.POLLIN
-                for _fd, events in poller.poll(int((STOP_TERM_GRACE_S + STOP_KILL_GRACE_S + 1) * 1000))
-            )
-            if not dead:
-                self.failure = "execution supervisor settlement did not complete"
+            try:
+                os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+                identity = _identity(process.pid, proc=Path("/proc"))
+                if identity is None:
+                    return
+                descriptor = os.pidfd_open(process.pid)
+                os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+                current = _identity(process.pid, proc=Path("/proc"))
+                if current is None or current.start_ticks != identity.start_ticks:
+                    os.close(descriptor)
+                    return
+            except OSError:
+                if descriptor is not None:
+                    os.close(descriptor)
+                return
+        assert descriptor is not None
+        try:
+            poller = select.poll()
+            poller.register(descriptor, select.POLLIN)
+            if not any(events & select.POLLIN for _fd, events in poller.poll(0)):
                 with contextlib.suppress(ProcessLookupError):
-                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
-                poller.poll(int(STOP_KILL_GRACE_S * 1000))
-        # This may run inside process.wait()'s signal handler. Kernel wait is
-        # exact and nonblocking; Popen's Python lock must not delay settlement.
-        with contextlib.suppress(ChildProcessError):
-            pid, status = os.waitpid(process.pid, os.WNOHANG)
-            if pid == process.pid:
-                process.returncode = os.waitstatus_to_exitcode(status)
+                    signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+                # The supervisor has both existing descendant cleanup graces; one
+                # dispatch second lets it publish closure after the final reap.
+                dead = any(
+                    events & select.POLLIN
+                    for _fd, events in poller.poll(int((STOP_TERM_GRACE_S + STOP_KILL_GRACE_S + 1) * 1000))
+                )
+                if not dead:
+                    self.failure = "execution supervisor settlement did not complete"
+                    with contextlib.suppress(ProcessLookupError):
+                        signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                    poller.poll(int(STOP_KILL_GRACE_S * 1000))
+            # This may run inside process.wait()'s signal handler. Kernel wait is
+            # exact and nonblocking; Popen's Python lock must not delay settlement.
+            with contextlib.suppress(ChildProcessError):
+                pid, status = os.waitpid(process.pid, os.WNOHANG)
+                if pid == process.pid:
+                    process.returncode = os.waitstatus_to_exitcode(status)
+        finally:
+            if borrowed:
+                os.close(descriptor)
 
     def finish(self) -> dict[str, Any]:
         if self.closed:

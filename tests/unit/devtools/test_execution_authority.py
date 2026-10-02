@@ -638,12 +638,12 @@ def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(
             assert receipt["execution_source"]["custody_settled"] is False
             assert receipt["execution_source"]["attempt_closures"] == []
             assert Path(observed["copy"]).exists()
-            # Later physical death cannot retroactively supply the missing
-            # attempt binding to the interrupted producer's receipt.
+            # Cancellation must settle physical custody before returning,
+            # without supplying the missing original attempt binding.
             poller = select.poll()
             assert observed_pidfd is not None
             poller.register(observed_pidfd, select.POLLIN)
-            assert any(events & select.POLLIN for _fd, events in poller.poll(10000))
+            assert any(events & select.POLLIN for _fd, events in poller.poll(0))
         else:
             assert receipt["execution_source"]["custody_settled"] is True
             assert len(receipt["execution_source"]["attempt_closures"]) == 1
