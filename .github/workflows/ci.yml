@@ -8,6 +8,11 @@ on:
         required: true
         default: false
         type: boolean
+      sqlite_identity_only:
+        description: "Run only the native macOS SQLite identity contract"
+        required: true
+        default: false
+        type: boolean
   push:
     branches: [master]
   pull_request:
@@ -27,6 +32,7 @@ concurrency:
 
 jobs:
   lint:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -49,7 +55,34 @@ jobs:
       - run: uv run ruff check polylogue/ tests/ devtools/
       - run: uv run ruff format --check polylogue/ tests/ devtools/
 
+  sqlite-identity-macos:
+    # Darwin must preserve live SQLite locks without Linux O_PATH or /proc.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.14"
+      - run: uv sync --extra dev --group audit --frozen
+      - name: Verify native SQLite identity, physical copy, and kernel locks
+        run: >-
+          uv run devtools test --runner isolated --on-default-branch -q -n 0
+          tests/unit/storage/test_sqlite_inode_locks.py
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_uses_descriptor_bound_database
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_refuses_without_descriptor_bound_path
+          tests/unit/storage/test_connection_profile.py::test_open_readonly_connection_rejects_immutable_with_descriptor
+        env:
+          POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
+      - name: Retain exact Darwin verification receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sqlite-identity-macos-receipt
+          path: .cache/verify/runs/
+          if-no-files-found: warn
+
   interactive-pty:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # PTY tests need a controlling terminal and must not share xdist workers.
     timeout-minutes: 15
     runs-on: ubuntu-latest
@@ -67,7 +100,7 @@ jobs:
     # Keep a generous job ceiling so pytest's per-test timeout can report the
     # actual stalled node.
     # Broad verification is explicitly requested, never triggered by publication.
-    if: github.event_name == 'workflow_dispatch' && inputs.run_full_suite == true
+    if: github.event_name == 'workflow_dispatch' && inputs.run_full_suite == true && inputs.sqlite_identity_only != true
     timeout-minutes: 90
     runs-on: ubuntu-latest
     strategy:
@@ -86,6 +119,7 @@ jobs:
           HYPOTHESIS_PROFILE: ci
 
   typecheck:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # Strict mypy over the clean subset of polylogue/*. The list of
     # legacy-dirty files is maintained in `pyproject.toml` under
     # `[tool.mypy] exclude` — shrinking that list is the mechanism for
@@ -101,6 +135,7 @@ jobs:
       - run: uv run mypy polylogue/
 
   demo-visual-verify:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -114,6 +149,7 @@ jobs:
           POLYLOGUE_FORCE_PLAIN: "1"
 
   web-first-party-auth:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     timeout-minutes: 20
     runs-on: ubuntu-latest
     steps:
@@ -152,6 +188,7 @@ jobs:
           POLYLOGUE_FORCE_PLAIN: "1"
 
   distribution:
+    if: github.event_name != 'workflow_dispatch' || inputs.sqlite_identity_only != true
     # Build wheel + sdist from the checkout, rebuild a wheel from the unpacked
     # sdist, install each into fresh venvs, and smoke the runtime entrypoints
     # (polylogue / polylogued / polylogue-mcp). Closes the distribution.wheel-ci

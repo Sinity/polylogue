@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import multiprocessing
@@ -958,36 +959,26 @@ class TestRebuildLeaseStatus:
                     pass
 
 
-def test_source_snapshot_opens_through_the_validated_descriptor_alias(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Descriptor opens use ``descriptor_alias_path``, not a hardcoded /proc/self/fd.
-
-    ``descriptor_alias_path`` probes /dev/fd as well as /proc/self/fd and
-    validates that the alias resolves to the same inode as the descriptor.
-    Anti-vacuity: with the literal ``f"file:/proc/self/fd/{fd}?mode=ro"``
-    restored, the recorder below is never called and the first assertion is
-    red; making the helper return None must also refuse rather than fall back,
-    which the second half asserts.
-    """
-    import polylogue.storage.index_generation as index_generation_module
+def test_source_snapshot_uses_portable_inode_custody(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing O_PATH must preserve source binding and refuse substituted entries."""
+    from polylogue.storage.sqlite.file_identity import SQLiteFileIdentity
 
     _archive(tmp_path)
-
-    calls: list[int] = []
-    from polylogue.storage.sqlite.connection_profile import descriptor_alias_path as real_alias
-
-    def _recording_alias(fd: int) -> Path | None:
-        calls.append(fd)
-        return real_alias(fd)
-
-    monkeypatch.setattr(index_generation_module, "descriptor_alias_path", _recording_alias)
+    monkeypatch.delattr(os, "O_PATH", raising=False)
     assert source_revision_snapshot(tmp_path)
-    assert calls
+    original = SQLiteFileIdentity.sqlite_path
+    selected = tmp_path / "source.db"
 
-    monkeypatch.setattr(index_generation_module, "descriptor_alias_path", lambda fd: None)
-    with pytest.raises(RuntimeError, match="no validated descriptor alias"):
+    def substitute_before_open(identity: SQLiteFileIdentity) -> Path:
+        selected.rename(tmp_path / "displaced-source.db")
+        with sqlite3.connect(selected) as replacement:
+            replacement.execute("CREATE TABLE unrelated(value TEXT)")
+        return original(identity)
+
+    monkeypatch.setattr(SQLiteFileIdentity, "sqlite_path", substitute_before_open)
+    with pytest.raises(OSError) as error:
         source_revision_snapshot(tmp_path)
+    assert error.value.errno == errno.ESTALE
 
 
 def _index_page_size(path: Path) -> int:

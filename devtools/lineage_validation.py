@@ -809,13 +809,13 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
     index_db = (args.index_db or config.db_path).expanduser().resolve()
     opened_index_files = open_index_file_set(index_db)
     opened_file_set = opened_index_files.__enter__()
-    opened_main_fd = opened_file_set.main_fd
+    opened_main_identity = opened_file_set.main_identity
     conn: Connection | None = None
     observer: Connection | None = None
     try:
-        conn = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        conn = open_readonly_connection(index_db, opened_main_identity=opened_main_identity)
         opened_file_set.capture_sidecars(index_db)
-        observer = open_readonly_connection(index_db, opened_main_fd=opened_main_fd)
+        observer = open_readonly_connection(index_db, opened_main_identity=opened_main_identity)
         assert conn is not None
         observer_data_version_before = _data_version(observer)
         opened_file_set.capture_sidecars(index_db)
@@ -826,8 +826,8 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         index_schema_version = _user_version(conn)
         snapshot_before = _snapshot_identity(
             index_db,
-            opened_main_fd=opened_main_fd,
-            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+            opened_main_identity=opened_main_identity,
+            opened_sidecar_identities=dict(opened_file_set.sidecar_identities),
         )
         link_columns = _table_columns(conn, "session_links")
         missing_link_columns = sorted(REQUIRED_SESSION_LINK_COLUMNS - link_columns)
@@ -922,8 +922,8 @@ def build_report(args: LineageValidationArgs) -> dict[str, Any]:
         opened_file_set.capture_sidecars(index_db)
         snapshot_after = _snapshot_identity(
             index_db,
-            opened_main_fd=opened_main_fd,
-            opened_sidecar_fds=dict(opened_file_set.sidecar_fds),
+            opened_main_identity=opened_main_identity,
+            opened_sidecar_identities=dict(opened_file_set.sidecar_identities),
         )
         observer_data_version_after = _data_version(observer)
         snapshot_identity = _snapshot_report_identity(

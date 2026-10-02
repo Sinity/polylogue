@@ -831,7 +831,7 @@ def test_audit_leaf_rejects_group_writable_main_and_sidecar_files(tmp_path: Path
 def test_audit_leaf_serializes_writers_across_the_main_and_sidecar_namespace(tmp_path: Path) -> None:
     """A second writer cannot validate then race the first SQLite namespace owner.
 
-    Anti-vacuity: without the nonblocking main-leaf lock, both contexts open
+    Anti-vacuity: without the nonblocking inode-keyed writer lock, both contexts open
     and can independently create or replace the audit sidecar namespace.
     """
 
