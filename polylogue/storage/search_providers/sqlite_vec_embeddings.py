@@ -30,16 +30,26 @@ class SqliteVecEmbeddingMixin:
         dimension: int
         voyage_key: str | None
 
+        @property
+        def document_recipe(self) -> EmbeddingRecipe: ...
+
+        @property
+        def query_recipe(self) -> EmbeddingRecipe: ...
+
     def _get_embeddings(
         self,
         texts: list[str],
         input_type: str = "document",
     ) -> list[list[float]]:
         """Get embeddings from Voyage AI."""
+        if input_type not in ("document", "query"):
+            raise SqliteVecError("embedding input_type must be document or query")
         if not texts:
             return []
         if not self.voyage_key:
             raise SqliteVecError("embedding acquisition requires a Voyage API key")
+        if not self.document_recipe.retrieval_compatible(self.query_recipe):
+            raise SqliteVecError("query and document recipes do not declare compatible retrieval contracts")
 
         @retry(
             stop=stop_after_attempt(5),
@@ -49,7 +59,7 @@ class SqliteVecEmbeddingMixin:
         )
         def _do_request(batch: list[str]) -> list[list[float]]:
             with httpx.Client(timeout=60.0) as client:
-                recipe = EmbeddingRecipe.current(model=self.model, dimensions=self.dimension, input_type=input_type)
+                recipe = self.query_recipe if input_type == "query" else self.document_recipe
                 payload = EmbeddingRequestSpec(recipe=recipe, input_text=batch[0]).provider_request
                 payload["input"] = [__import__("unicodedata").normalize("NFC", text) for text in batch]
 

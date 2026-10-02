@@ -84,6 +84,8 @@ def _render_preflight(env: AppEnv, report: PreflightReport) -> None:
     else:
         console.print(f"  Pending sessions: {report.pending_sessions:,}")
         console.print(f"  Pending messages:      {report.pending_messages:,}")
+    if report.binding_pending_messages is not None:
+        console.print(f"  Pending bindings:      {report.binding_pending_messages:,} (no provider computation)")
     console.print(f"  Estimated tokens:      ~{report.estimated_tokens:,}")
     console.print(f"  Estimated cost (USD):  ~${report.estimated_cost_usd:.4f}")
     if report.cost_cap_usd > 0:

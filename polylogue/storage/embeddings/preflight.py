@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
-from polylogue.storage.embeddings.identity import EmbeddingRecipe
+from polylogue.storage.embeddings.identity import (
+    EmbeddingRecipe,
+    available_embedding_predicate,
+    retained_embedding_predicate,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +36,7 @@ class PreflightReport:
     max_messages: int | None = None
     max_cost_usd: float | None = None
     min_messages: int | None = None
+    binding_pending_messages: int | None = None
 
 
 def message_window_for_cost(max_cost_usd: float | None) -> int | None:
@@ -63,7 +68,7 @@ def effective_cost_cap(config_cap_usd: float, run_cap_usd: float | None) -> floa
     return min(config_cap_usd, run_cap_usd)
 
 
-def read_pending_message_count(
+def read_embedding_work_counts(
     db_path: Path,
     *,
     rebuild: bool = False,
@@ -71,12 +76,13 @@ def read_pending_message_count(
     max_messages: int | None = None,
     min_messages: int | None = None,
     recipe: EmbeddingRecipe | None = None,
-) -> tuple[int, int, int]:
-    """Return ``(total_convs, pending_convs, pending_messages)``.
+) -> tuple[int, int, int, int | None]:
+    """Return total sessions, compute-pending sessions/messages and binding debt.
 
-    Pending = no ``embedding_status`` row, or ``needs_reindex = 1``.
-    Reading happens against a sync read connection so the command works even
-    when the daemon is not running.
+    Archive computation counts only eligible selected occurrences lacking a
+    proven output; binding debt counts free publication work separately.
+    Generic databases retain their status-row selection. The read contacts
+    no provider and works while the daemon is stopped.
     """
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -92,7 +98,7 @@ def read_pending_message_count(
         )
 
     if not db_path.exists():
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     conn = open_readonly_connection(db_path)
     try:
@@ -106,12 +112,12 @@ def read_pending_message_count(
                 max_sessions=max_sessions,
                 max_messages=max_messages,
             )
-            return total, len(pending), sum(item.message_count for item in pending)
+            return total, len(pending), sum(item.message_count for item in pending), None
         try:
             if rebuild:
                 pending_convs = total
                 pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
-                return total, pending_convs, pending_messages
+                return total, pending_convs, pending_messages, None
             pending_convs = int(
                 conn.execute(
                     """
@@ -139,7 +145,7 @@ def read_pending_message_count(
             pending_messages = int(conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0])
     finally:
         conn.close()
-    return total, pending_convs, pending_messages
+    return total, pending_convs, pending_messages, None
 
 
 def _archive_index_path(db_path: Path) -> Path | None:
@@ -172,13 +178,13 @@ def _read_archive_pending_message_count(
     max_messages: int | None = None,
     min_messages: int | None = None,
     recipe: EmbeddingRecipe | None = None,
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int | None]:
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
     conn = open_readonly_connection(index_db)
     try:
         if not _table_exists(conn, "sessions"):
-            return 0, 0, 0
+            return 0, 0, 0, 0
         embeddings_db = index_db.with_name("embeddings.db")
         if embeddings_db.exists():
             from polylogue.storage.sqlite.connection_profile import attach_readonly_database
@@ -187,21 +193,85 @@ def _read_archive_pending_message_count(
             status_table = "embeddings.embedding_status"
         else:
             status_table = ""
+        conn.execute("BEGIN")
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
-        pending = _select_archive_pending_window(
+        from polylogue.storage.embeddings.materialization import (
+            _configured_embedding_recipe,
+            archive_embeddable_messages_relation,
+        )
+        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+        selected_recipe = recipe or _configured_embedding_recipe()
+        from polylogue.storage.embeddings.materialization import archive_embedding_session_window_sql
+
+        compute_sql, compute_params = archive_embedding_session_window_sql(
             conn,
             status_table=status_table,
+            recipe=selected_recipe,
+            session_ids=(),
             rebuild=rebuild,
             max_sessions=max_sessions,
             max_messages=max_messages,
-            min_messages=min_messages or 1,
-            recipe=recipe,
+            min_messages=min_messages,
         )
-        pending_convs = len(pending)
-        pending_messages = sum(item[1] for item in pending)
+        relation = archive_embeddable_messages_relation(conn, alias="d", recipe=selected_recipe)
+        if not status_table:
+            row = conn.execute(
+                f"SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM ({compute_sql})", compute_params
+            ).fetchone()
+            return total, int(row[0]), int(row[1]), 0
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            raise RuntimeError(f"embedding work inspection unavailable: {error}")
+        available = available_embedding_predicate(
+            recipe=selected_recipe,
+            source="d",
+            refs="r",
+            meta="em",
+            vectors_table="embeddings.message_embeddings",
+            meta_table="embeddings.message_embeddings_meta",
+        )
+        retained = retained_embedding_predicate(
+            recipe=selected_recipe,
+            source="d",
+            refs="r",
+            meta="em",
+            vectors_table="embeddings.message_embeddings",
+        )
+        joins = """LEFT JOIN embeddings.message_embedding_refs AS r ON r.message_id = d.message_id
+                   LEFT JOIN embeddings.message_embeddings_meta AS em ON em.vector_derivation_hash = r.vector_derivation_hash"""
+        missing = f"NOT COALESCE({available}, 0)"
+        row = conn.execute(
+            f"""WITH selected_window AS ({compute_sql}), per_session AS (
+                SELECT d.session_id, SUM({missing}) AS missing_count
+                FROM {relation} {joins}
+                WHERE d.session_id IN (SELECT session_id FROM selected_window)
+                GROUP BY d.session_id
+                ) SELECT COALESCE(SUM(missing_count > 0), 0), COALESCE(SUM(missing_count), 0)
+                FROM per_session""",
+            compute_params,
+        ).fetchone()
+        pending_convs, pending_messages = int(row[0]), int(row[1])
+        binding_sql, binding_params = archive_embedding_session_window_sql(
+            conn,
+            status_table=status_table,
+            recipe=selected_recipe,
+            session_ids=(),
+            rebuild=True,
+            max_sessions=max_sessions,
+            max_messages=max_messages,
+            min_messages=min_messages,
+        )
+        row = conn.execute(
+            f"""SELECT COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0)
+                FROM {relation} {joins}
+                WHERE d.session_id IN (SELECT session_id FROM ({binding_sql}))""",
+            binding_params,
+        ).fetchone()
+        binding_pending_messages = int(row[0])
     finally:
         conn.close()
-    return total, pending_convs, pending_messages
+    return total, pending_convs, pending_messages, binding_pending_messages
 
 
 def _is_archive_index(path: Path) -> bool:
@@ -215,35 +285,6 @@ def _is_archive_index(path: Path) -> bool:
         return _table_exists(conn, "sessions")
     finally:
         conn.close()
-
-
-def _select_archive_pending_window(
-    conn: sqlite3.Connection,
-    *,
-    status_table: str,
-    rebuild: bool,
-    max_sessions: int | None,
-    max_messages: int | None,
-    min_messages: int | None = None,
-    recipe: EmbeddingRecipe | None = None,
-) -> list[tuple[str, int]]:
-    # Delegate to the canonical selector so the preflight window matches the
-    # window the backfill actually embeds — same newest-first ordering, same
-    # pending where-clause, same min-message floor. This previously kept a
-    # divergent oldest-first copy, so the preflight estimated a different
-    # (oldest, often empty-stub) window than what was embedded.
-    from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
-
-    pending = select_pending_archive_session_window(
-        conn,
-        status_table=status_table,
-        rebuild=rebuild,
-        max_sessions=max_sessions,
-        max_messages=max_messages,
-        min_messages=min_messages,
-        recipe=recipe,
-    )
-    return [(item.session_id, item.message_count) for item in pending]
 
 
 def build_preflight_report(
@@ -268,7 +309,7 @@ def build_preflight_report(
         dimensions=int(cfg.embedding_dimension),
     )
     effective_max_messages = effective_message_window(max_messages, max_cost_usd)
-    total, pending, pending_messages = read_pending_message_count(
+    total, pending, pending_messages, binding_pending_messages = read_embedding_work_counts(
         db_path,
         rebuild=rebuild,
         max_sessions=max_sessions,
@@ -282,6 +323,7 @@ def build_preflight_report(
         total_sessions=total,
         pending_sessions=pending,
         pending_messages=pending_messages,
+        binding_pending_messages=binding_pending_messages,
         estimated_tokens=estimated_tokens,
         estimated_cost_usd=estimated_cost,
         model=cfg.embedding_model,
@@ -323,6 +365,7 @@ def preflight_payload(report: PreflightReport) -> dict[str, object]:
         "total_sessions": report.total_sessions,
         "pending_sessions": report.pending_sessions,
         "pending_messages": report.pending_messages,
+        "binding_pending_messages": report.binding_pending_messages,
         "estimated_tokens": report.estimated_tokens,
         "estimated_cost_usd": report.estimated_cost_usd,
         "model": report.model,

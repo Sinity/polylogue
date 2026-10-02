@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import gc
 import sqlite3
-import sys
 import weakref
+from builtins import BaseExceptionGroup
 from pathlib import Path
 from typing import cast
 
@@ -41,7 +41,6 @@ def _count(tier: str, phase: str, inside: bool) -> int:
     )
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="physical descriptor observation uses Linux procfs")
 @pytest.mark.parametrize("route", ["cursor", "execute", "executemany", "executescript"])
 def test_measured_connection_settles_every_cursor_route_before_native_close(tmp_path: Path, route: str) -> None:
     path = tmp_path / "cursor.db"
@@ -61,9 +60,11 @@ def test_measured_connection_settles_every_cursor_route_before_native_close(tmp_
         assert next(cursor) == (1,)
     metadata = path.stat()
     identity = metadata.st_dev, metadata.st_ino
-    assert selected_file_descriptors(identity)
+    if Path("/proc/self/fd").is_dir():
+        assert selected_file_descriptors(identity)
     connection.close()
-    assert selected_file_descriptors(identity) == ()
+    if Path("/proc/self/fd").is_dir():
+        assert selected_file_descriptors(identity) == ()
     # The cursor remains reachable here: GC did not supply physical cleanup.
     with pytest.raises(sqlite3.ProgrammingError):
         cursor.fetchone()
@@ -101,7 +102,6 @@ def test_discarded_completed_cursors_are_not_pinned_by_the_connection(tmp_path: 
     connection.close()
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="physical descriptor observation uses Linux procfs")
 def test_execute_error_traceback_does_not_keep_native_descriptor_after_connection_close(tmp_path: Path) -> None:
     path = tmp_path / "error.db"
     connection = connect_measured(path)
@@ -118,9 +118,11 @@ def test_execute_error_traceback_does_not_keep_native_descriptor_after_connectio
     with pytest.raises(sqlite3.OperationalError) as failure:
         connection.execute("SELECT refuse(value) FROM evidence")
     assert failure.value.__traceback__ is not None
-    assert selected_file_descriptors(identity)
+    if Path("/proc/self/fd").is_dir():
+        assert selected_file_descriptors(identity)
     connection.close()
-    assert selected_file_descriptors(identity) == ()
+    if Path("/proc/self/fd").is_dir():
+        assert selected_file_descriptors(identity) == ()
     assert failure.value.__traceback__ is not None
     connection.close()
 
@@ -193,7 +195,6 @@ def test_checkpoint_and_blob_syncs_are_counted_at_the_syscalls(tmp_path: Path) -
     assert _count("source", "blob_directory_fsync", False) - before_directory >= 1
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="physical descriptor observation uses Linux procfs")
 @pytest.mark.parametrize("factory", [ConstructorStatementCursor, BeforeNativeInitCursor, InvalidReturnCursor])
 def test_plain_cursor_constructor_failure_keeps_exact_native_statement_in_creator_census(
     tmp_path: Path, factory: type[sqlite3.Cursor]
@@ -213,7 +214,8 @@ def test_plain_cursor_constructor_failure_keeps_exact_native_statement_in_creato
         cursors = live_connection_cursors(connection)
         assert len(cursors) == 1 and type(cursors[0]) is factory
     connection.close()
-    assert selected_file_descriptors(identity) == ()
+    if Path("/proc/self/fd").is_dir():
+        assert selected_file_descriptors(identity) == ()
     assert failure.value.__traceback__ is not None
     connection.close()
 
@@ -267,3 +269,54 @@ def test_native_cursor_admission_precedes_plain_factory_invocation(tmp_path: Pat
     assert calls == []
     assert live_connection_cursors(connection) == ()
     connection.close()
+
+
+def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path: Path) -> None:
+    import gc
+    import weakref
+
+    from polylogue.storage.io_phase_metrics import connect_measured, live_connection_cursors
+    from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+
+    path = tmp_path / "primitive-control.db"
+    connection = connect_measured(path)
+    connection.execute("CREATE TABLE evidence(value INTEGER)")
+    connection.executemany("INSERT INTO evidence VALUES (?)", [(1,), (2,)])
+    connection.commit()
+    metadata = path.stat()
+    identity = metadata.st_dev, metadata.st_ino
+    observe_descriptors = Path("/proc/self/fd").is_dir()
+    cursor = connection.cursor(factory=ControlledCursor)
+    assert isinstance(cursor, ControlledCursor)
+    cursor.execute("SELECT value FROM evidence ORDER BY value")
+    cursor.fetchone()
+    cursor.allow_cleanup.clear()
+    actual = weakref.ref(cursor)
+
+    def discard_close_error() -> None:
+        try:
+            connection.close()
+        except BaseExceptionGroup:
+            pass
+
+    try:
+        discard_close_error()
+        del cursor
+        gc.collect()
+        retained = actual()
+        assert retained is not None and retained.close_attempts == 1
+        assert live_connection_cursors(connection) == (retained,)
+        if observe_descriptors:
+            assert selected_file_descriptors(identity)
+        retained.allow_cleanup.set()
+        connection.close()
+        assert retained.close_attempts == 2
+        if observe_descriptors:
+            assert not selected_file_descriptors(identity)
+        del retained
+        gc.collect()
+        assert actual() is None
+    finally:
+        if retained_cursor := actual():
+            retained_cursor.allow_cleanup.set()
+        connection.close()

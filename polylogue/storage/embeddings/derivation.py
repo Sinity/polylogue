@@ -39,16 +39,21 @@ from polylogue.storage.embeddings.identity import (
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import (
+    EmbeddingAcquisitionExcludedError,
+    EmbeddingProvenanceError,
     EmbeddingWriteAdmission,
     _should_embed_archive_message,
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
+    embedding_acquisition_allowed,
+    embedding_acquisition_predicate,
     inline_embedding_admission,
     message_prose_sql,
 )
 from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     ArchiveEmbeddingWrite,
     replace_message_embedding_derivation,
+    upsert_message_embeddings,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
@@ -100,14 +105,27 @@ class EmbeddingMessageInput:
 
 
 @dataclass(frozen=True, slots=True)
+class EmbeddingStoredOutput:
+    """Exact purchased producer and payload proof for ref-only publication."""
+
+    vector_hash: bytes
+    model: str
+    dimension: int
+    recipe_hash: bytes
+    output_contract_hash: bytes
+    payload_hash: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class EmbeddingMessageReplacement:
-    """A computed message vector, or an empty replacement for a vanished key."""
+    """Computed output, a retained-output binding, or a vanished-key replacement."""
 
     key: str
     input_binding: str
     payload: EmbeddingMessageInput | None
     vector: list[float] | None = None
     empty: bool = False
+    retained_output: EmbeddingStoredOutput | None = None
 
     def close(self) -> None:
         """The computed vector values own no physical resources."""
@@ -148,23 +166,27 @@ def _message_input(
 
     if not table_exists(conn, "messages") or not table_exists(conn, "sessions"):
         return None
-    message_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
+    with contextlib.closing(conn.execute("PRAGMA table_info(messages)")) as cursor:
+        message_columns = {str(row[1]) for row in cursor}
     if "content_hash" not in message_columns:
         return None
     if table_exists(conn, "blocks"):
         prose = message_prose_sql("m", separator="char(10)||char(10)", block_types=("text",))
     else:
         prose = "m.text" if "text" in message_columns else "NULL"
-    row = conn.execute(
-        f"""
+    with contextlib.closing(
+        conn.execute(
+            f"""
         SELECT m.message_id, m.session_id, s.origin, m.content_hash, m.role, m.material_origin,
                m.message_type, {prose} AS text
         FROM messages AS m
         JOIN sessions AS s ON s.session_id = m.session_id
         WHERE m.message_id = ? AND {archive_embeddable_message_where("m")}
         """,
-        (message_id,),
-    ).fetchone()
+            (message_id,),
+        )
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     if row[3] is None or len(bytes(row[3])) != 32:
@@ -203,13 +225,18 @@ def reserve_embedding_message(
     store = EmbeddingGenerationStore(embeddings_path.parent, active_path=embeddings_path)
     with (
         store.writer_lock() as binding,
-        open_readonly_connection(
-            index_db_path,
-            timeout_class="background-read",
-            validate_schema=False,
+        contextlib.closing(
+            open_readonly_connection(
+                index_db_path,
+                timeout_class="background-read",
+                validate_schema=False,
+            )
         ) as conn,
     ):
-        return _message_input(conn, message_id, recipe, binding, index_generation)
+        payload = _message_input(conn, message_id, recipe, binding, index_generation)
+        if payload is not None and not embedding_acquisition_allowed(conn, payload.session_id):
+            raise EmbeddingAcquisitionExcludedError("demo_acquisition_excluded")
+        return payload
 
 
 def _current_input(
@@ -219,7 +246,9 @@ def _current_input(
     binding: EmbeddingGenerationBinding | None,
     index_generation: str,
 ) -> EmbeddingMessageInput | None:
-    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+    with contextlib.closing(
+        open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
+    ) as conn:
         return _message_input(conn, message_id, recipe, binding, index_generation)
 
 
@@ -285,12 +314,14 @@ class EmbeddingDerivationAdapter:
         scope = self._scope(frame)
         if scope == ():
             return (), None
-        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as conn:
             if not table_exists(conn, "messages"):
                 return (), None
             relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
             params: list[object] = []
-            predicates: list[str] = []
+            predicates: list[str] = [embedding_acquisition_predicate(conn, "desired")]
             if cursor is not None:
                 predicates.append("desired.message_id > ?")
                 params.append(cursor)
@@ -298,15 +329,18 @@ class EmbeddingDerivationAdapter:
                 predicates.append(f"desired.session_id IN ({', '.join('?' for _ in scope)})")
                 params.extend(scope)
             predicate = f"WHERE {' AND '.join(predicates)}" if predicates else ""
-            rows = conn.execute(
-                f"""
+            with contextlib.closing(
+                conn.execute(
+                    f"""
                 SELECT desired.message_id FROM {relation}
                 {predicate}
                 ORDER BY desired.message_id
                 LIMIT ?
                 """,
-                (*params, limit + 1),
-            ).fetchall()
+                    (*params, limit + 1),
+                )
+            ) as rows_cursor:
+                rows = rows_cursor.fetchall()
         keys = tuple(f"{_REQUIRED_KEY_PREFIX}{row[0]}" for row in rows[:limit])
         return keys, (str(rows[limit - 1][0]) if len(rows) > limit and keys else None)
 
@@ -317,7 +351,9 @@ class EmbeddingDerivationAdapter:
         scope = self._scope(frame)
         if scope == () or not self._embeddings_path.exists():
             return (), None
-        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as conn:
             if not table_exists(conn, "messages"):
                 return (), None
             attach_database(conn, self._embeddings_path, alias="embeddings")
@@ -333,8 +369,9 @@ class EmbeddingDerivationAdapter:
                 predicates.append(f"refs.session_id IN ({', '.join('?' for _ in scope)})")
                 params.extend(scope)
             predicate = f"AND {' AND '.join(predicates)}" if predicates else ""
-            rows = conn.execute(
-                f"""
+            with contextlib.closing(
+                conn.execute(
+                    f"""
                 SELECT refs.message_id
                 FROM embeddings.message_embedding_refs AS refs
                 LEFT JOIN {relation} ON desired.message_id = refs.message_id
@@ -342,8 +379,10 @@ class EmbeddingDerivationAdapter:
                 ORDER BY refs.message_id
                 LIMIT ?
                 """,
-                (*params, limit + 1),
-            ).fetchall()
+                    (*params, limit + 1),
+                )
+            ) as rows_cursor:
+                rows = rows_cursor.fetchall()
         keys = tuple(f"{_EXCESS_KEY_PREFIX}{row[0]}" for row in rows[:limit])
         return keys, (str(rows[limit - 1][0]) if len(rows) > limit and keys else None)
 
@@ -368,11 +407,14 @@ class EmbeddingDerivationAdapter:
         ) as conn:
             for start in range(0, len(ids), _MESSAGE_LOOKUP_CHUNK):
                 chunk = ids[start : start + _MESSAGE_LOOKUP_CHUNK]
-                for message_id, session_id in conn.execute(
-                    f"SELECT message_id, session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
-                    chunk,
-                ):
-                    sessions[message_keys[str(message_id)]] = str(session_id)
+                with contextlib.closing(
+                    conn.execute(
+                        f"SELECT message_id, session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
+                        chunk,
+                    )
+                ) as cursor:
+                    for message_id, session_id in cursor:
+                        sessions[message_keys[str(message_id)]] = str(session_id)
         return sessions
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
@@ -383,7 +425,9 @@ class EmbeddingDerivationAdapter:
         if not wanted:
             return {}
         statuses: dict[str, str] = {}
-        with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as index:
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as index:
             embeddings_attached = self._embeddings_path.exists()
             if embeddings_attached:
                 attach_database(index, self._embeddings_path, alias="embeddings")
@@ -406,12 +450,15 @@ class EmbeddingDerivationAdapter:
                     f"index-generation:{index_path}",
                 )
                 if current is None:
-                    if (
-                        has_refs
-                        and index.execute(
-                            "SELECT 1 FROM embeddings.message_embedding_refs WHERE message_id = ?", (message_id,)
-                        ).fetchone()
-                    ):
+                    retained = None
+                    if has_refs:
+                        with contextlib.closing(
+                            index.execute(
+                                "SELECT 1 FROM embeddings.message_embedding_refs WHERE message_id = ?", (message_id,)
+                            )
+                        ) as cursor:
+                            retained = cursor.fetchone()
+                    if retained is not None:
                         statuses[key] = "excess"
                     else:
                         statuses[key] = "missing" if excess else "valid"
@@ -419,8 +466,9 @@ class EmbeddingDerivationAdapter:
                 if not has_refs or not has_meta or not has_vectors:
                     statuses[key] = "missing"
                     continue
-                row = index.execute(
-                    """
+                with contextlib.closing(
+                    index.execute(
+                        """
                     SELECT refs.session_id, refs.origin, refs.vector_derivation_hash,
                            meta.recipe_hash, meta.output_contract_hash, meta.model, meta.dimension,
                            refs.message_content_hash,
@@ -433,8 +481,10 @@ class EmbeddingDerivationAdapter:
                       ON meta.vector_derivation_hash = refs.vector_derivation_hash
                     WHERE refs.message_id = ?
                     """,
-                    (message_id,),
-                ).fetchone()
+                        (message_id,),
+                    )
+                ) as cursor:
+                    row = cursor.fetchone()
                 if row is None:
                     statuses[key] = "missing"
                     continue
@@ -447,11 +497,14 @@ class EmbeddingDerivationAdapter:
                     if (
                         str(row[0]) == current.session_id
                         and str(row[1]) == current.origin
-                        and bytes(row[2]) == request.vector_derivation_hash
-                        and bytes(row[3]) == request.recipe.recipe_hash
-                        and bytes(row[4]) == request.recipe.output_contract_hash
-                        and str(row[5]) == request.recipe.model
-                        and int(row[6]) == request.recipe.dimensions
+                        and request.recipe.stored_output_matches(
+                            model=str(row[5]),
+                            dimension=int(row[6]),
+                            recipe_hash=bytes(row[3]),
+                            output_contract_hash=bytes(row[4]),
+                            vector_hash=bytes(row[2]),
+                            text=current.text,
+                        )
                         and int(row[8]) == 1
                         and row[7] is not None
                         and bytes(row[7]) == current.message_content_hash
@@ -488,6 +541,19 @@ class EmbeddingDerivationAdapter:
         )
         if reserved is None:
             return EmbeddingMessageReplacement(key=key, input_binding="", payload=None, empty=True)
+        retained = self._stored_output(reserved)
+        if retained is not None:
+            return EmbeddingMessageReplacement(
+                key=key,
+                input_binding=reserved.input_binding,
+                payload=reserved,
+                retained_output=retained,
+            )
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as conn:
+            if not embedding_acquisition_allowed(conn, reserved.session_id):
+                raise EmbeddingAcquisitionExcludedError("demo_acquisition_excluded")
         vectors = self._provider._get_embeddings([reserved.text], input_type=reserved.request.recipe.input_type)
         if len(vectors) != 1:
             raise RuntimeError("embedding provider returned a mismatched vector count")
@@ -496,6 +562,82 @@ class EmbeddingDerivationAdapter:
             input_binding=reserved.input_binding,
             payload=reserved,
             vector=vectors[0],
+        )
+
+    def _stored_output(self, reserved: EmbeddingMessageInput) -> EmbeddingStoredOutput | None:
+        """Read exact output proof without turning purchased bytes into computation."""
+        if reserved.binding is None:
+            return None
+        with contextlib.closing(
+            open_readonly_connection(Path(reserved.binding.database_path), validate_schema=False)
+        ) as conn:
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
+                raise RuntimeError(f"embedding output reuse unavailable: {error}")
+            return self._stored_output_on(conn, reserved)
+
+    def _stored_output_on(
+        self, conn: sqlite3.Connection, reserved: EmbeddingMessageInput
+    ) -> EmbeddingStoredOutput | None:
+        with contextlib.closing(
+            conn.execute(
+                """SELECT meta.model, meta.dimension, meta.recipe_hash
+               FROM message_embedding_refs AS refs
+               JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = refs.vector_derivation_hash
+               WHERE refs.message_id = ? AND refs.message_content_hash = ?""",
+                (reserved.message_id, reserved.message_content_hash),
+            )
+        ) as cursor:
+            retained = cursor.fetchone()
+        if (
+            retained is not None
+            and reserved.request.recipe.proven_stored_producer(
+                model=str(retained[0]), dimension=int(retained[1]), recipe_hash=bytes(retained[2])
+            )
+            is None
+        ):
+            raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+        with contextlib.closing(
+            conn.execute(
+                """SELECT meta.model, meta.dimension, meta.recipe_hash, meta.output_contract_hash, v.embedding
+               FROM message_embeddings_meta AS meta
+               LEFT JOIN message_embeddings AS v ON v.vector_derivation_hash = lower(hex(meta.vector_derivation_hash))
+               WHERE meta.vector_derivation_hash = ?""",
+                (reserved.request.vector_derivation_hash,),
+            )
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            return None
+        if (
+            reserved.request.recipe.proven_stored_producer(
+                model=str(row[0]), dimension=int(row[1]), recipe_hash=bytes(row[2])
+            )
+            is None
+        ):
+            raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+        if (
+            not reserved.request.recipe.stored_output_matches(
+                model=str(row[0]),
+                dimension=int(row[1]),
+                recipe_hash=bytes(row[2]),
+                output_contract_hash=bytes(row[3]),
+                vector_hash=reserved.request.vector_derivation_hash,
+                text=reserved.text,
+            )
+            or row[4] is None
+        ):
+            return None
+        blob = bytes(row[4])
+        if len(blob) != reserved.request.recipe.dimensions * 4:
+            raise RuntimeError("stored embedding output has invalid dimensions")
+        return EmbeddingStoredOutput(
+            vector_hash=reserved.request.vector_derivation_hash,
+            model=str(row[0]),
+            dimension=int(row[1]),
+            recipe_hash=bytes(row[2]),
+            output_contract_hash=bytes(row[3]),
+            payload_hash=hashlib.sha256(blob).digest(),
         )
 
     def publish(self, frame: object, replacement: EmbeddingMessageReplacement) -> bool:
@@ -508,8 +650,10 @@ class EmbeddingDerivationAdapter:
         require_write_lease("embedding message publication", archive_root=self._embeddings_path.parent)
         if replacement.payload is None:
             return self._retire_vanished_ref(replacement)
-        if replacement.vector is None:
-            raise ValueError("embedding replacement has no vector")
+        if replacement.vector is not None and replacement.retained_output is not None:
+            raise ValueError("computed and retained embedding outputs are mutually exclusive")
+        if replacement.vector is None and replacement.retained_output is None:
+            raise ValueError("embedding replacement has no vector or stored output proof")
         expected = replacement.payload
         if expected.binding is None:
             raise ValueError("computed embedding replacement lacks a generation binding")
@@ -539,22 +683,31 @@ class EmbeddingDerivationAdapter:
                     if not loaded:
                         raise RuntimeError(f"embedding vector publication unavailable: {error}")
                     now_ms = int(datetime.now(UTC).timestamp() * 1000)
-                    replace_message_embedding_derivation(
-                        conn,
-                        ArchiveEmbeddingWrite(
-                            message_id=current.message_id,
-                            session_id=current.session_id,
-                            origin=current.origin,
-                            message_content_hash=current.message_content_hash,
-                            embedding=replacement.vector,
-                            model=current.request.recipe.model,
-                            embedded_at_ms=now_ms,
-                            vector_derivation_hash=current.request.vector_derivation_hash,
-                            recipe_hash=current.request.recipe.recipe_hash,
-                            output_contract_hash=current.request.recipe.output_contract_hash,
-                            derivation_key=bytes.fromhex(current.input_binding),
-                        ),
+                    write = ArchiveEmbeddingWrite(
+                        message_id=current.message_id,
+                        session_id=current.session_id,
+                        origin=current.origin,
+                        message_content_hash=current.message_content_hash,
+                        embedding=[] if replacement.retained_output is not None else replacement.vector or [],
+                        model=replacement.retained_output.model
+                        if replacement.retained_output is not None
+                        else current.request.recipe.model,
+                        embedded_at_ms=now_ms,
+                        vector_derivation_hash=current.request.vector_derivation_hash,
+                        recipe_hash=replacement.retained_output.recipe_hash
+                        if replacement.retained_output is not None
+                        else current.request.recipe.recipe_hash,
+                        output_contract_hash=replacement.retained_output.output_contract_hash
+                        if replacement.retained_output is not None
+                        else current.request.recipe.output_contract_hash,
+                        derivation_key=bytes.fromhex(current.input_binding),
                     )
+                    if replacement.retained_output is not None:
+                        if self._stored_output_on(conn, current) != replacement.retained_output:
+                            return False
+                        upsert_message_embeddings(conn, (write,))
+                    else:
+                        replace_message_embedding_derivation(conn, write)
                 finally:
                     with contextlib.suppress(sqlite3.Error):
                         conn.close()
@@ -593,8 +746,13 @@ class EmbeddingDerivationAdapter:
                     archive_root=binding.archive_root,
                 )
                 try:
-                    with conn:
-                        conn.execute("DELETE FROM message_embedding_refs WHERE message_id = ?", (message_id,))
+                    with (
+                        conn,
+                        contextlib.closing(
+                            conn.execute("DELETE FROM message_embedding_refs WHERE message_id = ?", (message_id,))
+                        ),
+                    ):
+                        pass
                 finally:
                     with contextlib.suppress(sqlite3.Error):
                         conn.close()

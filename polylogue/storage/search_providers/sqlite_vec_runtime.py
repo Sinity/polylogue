@@ -14,9 +14,9 @@ from typing import TYPE_CHECKING
 from polylogue.core.errors import SchemaSkewError, SessionNotFoundError
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.embeddings.identity import (
-    VECTOR_DERIVATION_HASH_SQL_FUNCTION,
     EmbeddingRecipe,
     register_embedding_identity_sql,
+    retained_embedding_predicate,
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, SqliteVecUnavailableError, logger
 from polylogue.storage.sqlite.connection_profile import (
@@ -48,10 +48,9 @@ def _configure_current_embedding_messages(
 ) -> None:
     """Bind the current-index projection on an already-open vector reader.
 
-    The projection addresses vectors by the *whole* configured recipe, not by
-    model name: ``polylogue_vector_derivation_hash`` takes a registered recipe
-    hash (polylogue-crcst), so a model string here resolves to no recipe and
-    the projection raises instead of listing the current messages.
+    Current occurrences can use proven retained producers in the selected
+    retrieval space, or an exact selected-request output awaiting a binding.
+    Neither route rewrites a producer identity or certifies binding completion.
     """
 
     if register_identity:
@@ -70,15 +69,25 @@ def _configure_current_embedding_messages(
         );
         """
     )
+    loaded, error = try_load_sqlite_vec(conn)
+    if not loaded:
+        raise SqliteVecUnavailableError(f"sqlite-vec extension failed to load: {error}")
+    valid = retained_embedding_predicate(
+        recipe=recipe,
+        source="eligible",
+        refs="r",
+        meta="meta",
+        vectors_table="message_embeddings",
+    )
+    address = f"CASE WHEN COALESCE({valid}, 0) THEN r.vector_derivation_hash ELSE eligible.vector_derivation_hash END"
     conn.execute(
         f"""
-        INSERT INTO current_embedding_messages (
-            message_id, session_id, origin, vector_derivation_hash
-        )
-        SELECT eligible.message_id, eligible.session_id, eligible.origin,
-               {VECTOR_DERIVATION_HASH_SQL_FUNCTION}(?, eligible.text)
+        INSERT INTO current_embedding_messages (message_id, session_id, origin, vector_derivation_hash)
+        SELECT eligible.message_id, eligible.session_id, eligible.origin, {address}
         FROM (
-            SELECT m.message_id, m.session_id, s.origin,
+          SELECT prose_source.*, polylogue_vector_derivation_hash(X'{recipe.recipe_hash.hex()}', prose_source.text) AS vector_derivation_hash
+          FROM (
+            SELECT m.message_id, m.session_id, s.origin, m.content_hash,
                    (
                        SELECT GROUP_CONCAT(prose.text, char(10) || char(10))
                        FROM (
@@ -96,10 +105,19 @@ def _configure_current_embedding_messages(
               AND m.role IN ('user', 'assistant')
               AND m.material_origin IN ('human_authored', 'assistant_authored')
               AND m.word_count > 0
+          ) AS prose_source
         ) AS eligible
+        LEFT JOIN message_embedding_refs AS r ON r.message_id = eligible.message_id
+        LEFT JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = r.vector_derivation_hash
+        JOIN message_embeddings_meta AS chosen_meta ON chosen_meta.vector_derivation_hash = {address}
+        JOIN message_embeddings AS chosen_vector ON chosen_vector.vector_derivation_hash = lower(hex(chosen_meta.vector_derivation_hash))
         WHERE LENGTH(TRIM(COALESCE(eligible.text, ''))) >= 20
-        """,
-        (recipe.recipe_hash,),
+          AND polylogue_embedding_output_matches(
+              X'{recipe.recipe_hash.hex()}', chosen_meta.model, chosen_meta.dimension,
+              chosen_meta.recipe_hash, chosen_meta.output_contract_hash,
+              chosen_meta.vector_derivation_hash, eligible.text
+          )
+        """
     )
 
 

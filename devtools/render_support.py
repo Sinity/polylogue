@@ -10,7 +10,7 @@ def write_if_changed(output_path: Path, content: str) -> None:
     """Write content atomically when it differs from the current file."""
     try:
         current = output_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (FileNotFoundError, UnicodeDecodeError):
         current = None
     if current == content:
         return
