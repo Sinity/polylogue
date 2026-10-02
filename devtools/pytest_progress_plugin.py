@@ -320,10 +320,10 @@ def pytest_deselected(items: list[Any]) -> None:
         _DESELECTED_NODEIDS_SAMPLE.extend(str(getattr(item, "nodeid", item)) for item in items[:remaining])
 
 
-@pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
-    """Write the final selected test set after pytest deselection."""
-    del config
+@pytest.hookimpl
+def pytest_collection_finish(session: Any) -> None:
+    """Write the final selected test set after every deselection hook."""
+    items = session.items
     global _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD, _SELECTED_COUNT
     if _COLLECTION_STARTED_AT is not None:
         _COLLECTION_DURATION_S = round(time.monotonic() - _COLLECTION_STARTED_AT, 4)

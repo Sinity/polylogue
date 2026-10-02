@@ -19,8 +19,9 @@ honest about its reach:
 Collection uses the declared closed-world arguments from
 ``devtools.pytest_invocation`` -- the same values that define what the corpus
 *is* for every other managed lane -- and the checkout venv's interpreter. It
-loads neither testmon nor xdist: it writes no fingerprints and therefore
-leaves the checkout's corpus graph exactly as it found it.
+loads neither testmon nor xdist. Affected admission uses the same collection
+owner with testmon against a caller-owned temporary graph snapshot and records
+final selected node evidence. Neither route writes the checkout graph.
 
 Usage:
   devtools gate test-collection
@@ -30,17 +31,21 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
-from collections.abc import Sequence
+import tempfile
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from devtools.agent_env import HARNESS_RUN_ENV
 from devtools.pytest_invocation import (
     CLOSED_WORLD_COLLECTION_ARGS,
     IGNORED_COLLECTION_ARGS,
+    devtools_plugin_args,
     managed_plugin_args,
 )
 from devtools.required_gate import evidence_gate_result
@@ -65,14 +70,21 @@ _EXIT_NO_TESTS_COLLECTED = 5
 #: inside an agent job without an execution slot.
 COLLECTION_RUN_ID = "gate-test-collection"
 
-__all__ = ["COLLECTION_RUN_ID", "collection_command", "collection_env", "count_collected", "main"]
+__all__ = [
+    "COLLECTION_RUN_ID",
+    "collection_command",
+    "collection_env",
+    "CollectedSelection",
+    "collect_selection",
+    "main",
+]
 
 
 def collection_env() -> dict[str, str]:
     return {**os.environ, HARNESS_RUN_ENV: COLLECTION_RUN_ID}
 
 
-def collection_command(*, root: Path = ROOT, paths: Sequence[str] | None = None) -> list[str]:
+def collection_command(*, root: Path = ROOT, paths: Sequence[str] | None = None, testmon: bool = False) -> list[str]:
     """Return the declared collect-only invocation.
 
     ``paths`` narrows it to named files while keeping every other declared
@@ -88,32 +100,87 @@ def collection_command(*, root: Path = ROOT, paths: Sequence[str] | None = None)
         "-q",
         "--collect-only",
         *IGNORED_COLLECTION_ARGS,
-        *managed_plugin_args(testmon=False, xdist=False),
+        *managed_plugin_args(testmon=testmon, xdist=False),
         *roots,
         "-p",
         "no:randomly",
     ]
 
 
-def count_collected(paths: Sequence[str], *, root: Path = ROOT) -> int | None:
-    """How many tests the declared rules collect from ``paths``.
+@dataclass(frozen=True, slots=True)
+class CollectedSelection:
+    """Final collection evidence, with omitted identities explicitly visible."""
 
-    ``None`` when collection did not succeed -- an unimportable module, a
-    missing path, a refused interpreter. A caller that cannot get this number
-    has no bound on what those paths will execute, and ``None`` is that
-    answer rather than a zero that would read as "nothing there".
+    selected_count: int
+    nodeids: tuple[str, ...]
+    omitted: int
+
+
+def collect_selection(
+    *,
+    root: Path = ROOT,
+    paths: Sequence[str] | None = None,
+    datafile: Path | None = None,
+    nodeid_limit: int,
+    environment: Mapping[str, str],
+) -> CollectedSelection | None:
+    """Collect one actual launch against its supplied graph without executing it.
+
+    The original graph is never opened here: ``datafile`` is the caller-owned
+    admission snapshot. An unsuccessful collection or malformed evidence is
+    unavailable, never an empty selection.
     """
-    if not paths:
-        return 0
-    command = collection_command(root=root, paths=paths)
-    try:
-        completed = subprocess.run(command, cwd=root, capture_output=True, text=True, check=False, env=collection_env())
-    except OSError:
-        return None
-    if completed.returncode != 0:
-        return None
-    match = _COLLECTED_RE.search(f"{completed.stdout}\n{completed.stderr}")
-    return int(match.group(1)) if match else None
+    command = collection_command(root=root, paths=paths, testmon=datafile is not None)
+    command.extend(devtools_plugin_args(testmon=datafile is not None))
+    if datafile is not None:
+        from devtools.testmon_provision import TESTMON_ENVIRONMENT
+
+        command.extend(("--testmon", "--testmon-env=" + TESTMON_ENVIRONMENT, "--testmon-forceselect"))
+    with tempfile.TemporaryDirectory(prefix="polylogue-selection-") as temporary:
+        evidence = Path(temporary) / "selection.json"
+        env = dict(environment)
+        env.update(
+            {
+                HARNESS_RUN_ENV: COLLECTION_RUN_ID,
+                "POLYLOGUE_PYTEST_SELECTION_PATH": str(evidence),
+                "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT": str(nodeid_limit),
+            }
+        )
+        # Collection owns only its evidence, not the outer execution ledgers.
+        for name in (
+            "POLYLOGUE_PYTEST_EVENTS_PATH",
+            "POLYLOGUE_PYTEST_EVENTS_DIR",
+            "POLYLOGUE_PYTEST_SUMMARY_PATH",
+            "PYTEST_XDIST_WORKER",
+        ):
+            env.pop(name, None)
+        if datafile is not None:
+            env["TESTMON_DATAFILE"] = str(datafile)
+        else:
+            env.pop("TESTMON_DATAFILE", None)
+        try:
+            completed = subprocess.run(
+                command, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, env=env
+            )
+            if completed.returncode not in (0, _EXIT_NO_TESTS_COLLECTED):
+                return None
+            payload = json.loads(evidence.read_text(encoding="utf-8"))
+            count, omitted, nodes = (
+                payload[key] for key in ("selected_count", "selected_nodeids_omitted", "selected_nodeids")
+            )
+            if (
+                type(count) is not int
+                or type(omitted) is not int
+                or count < 0
+                or omitted < 0
+                or not isinstance(nodes, list)
+                or any(not isinstance(node, str) or not node for node in nodes)
+                or count != len(nodes) + omitted
+            ):
+                return None
+            return CollectedSelection(count, tuple(nodes), omitted)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
 
 
 def _failure_details(output: str, *, limit: int = 12) -> tuple[str, ...]:

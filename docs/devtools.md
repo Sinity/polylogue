@@ -125,6 +125,11 @@ These are the commands worth remembering during normal repo work:
 
 <!-- END GENERATED: devtools-command-catalog -->
 
+Corpus launches retain a qualified ceiling of two workers, including when live memory limits are unreadable. The observed charge model still reports its arithmetic prediction; a wider width fitting below `memory.high` does not establish that it can avoid the previously observed reclaim stall. Focused launches retain their separate charge profile and ceiling.
+
+Affected admission collects the final selected node IDs against a compatible snapshot of the checkout's testmon graph. New nodes in recorded files and each parametrization count as unknown when that environment has no execution record. Forced contract tests form a separate physical launch and are priced again when they overlap the affected launch. Collection writes only temporary graph and selection evidence; unsuccessful or incomplete evidence refuses admission. Recorded durations remain a floor for selections containing unknown nodes.
+
+
 ## Pattern Ratchet
 
 Pattern baselines use `path:sha1:context_sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:context_sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
