@@ -246,7 +246,8 @@ def test_managed_snapshot_settles_detached_children_before_source_publication(
 
         monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", sparse_sampler)
     detached = (
-        "import os, signal, sys, time\nfrom pathlib import Path\n"
+        "import ctypes, os, signal, sys, time\nfrom pathlib import Path\n"
+        "assert ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0\n"
         "def heartbeat(name):\n"
         "    path = Path('.cache/' + name)\n"
         "    path.with_name(name + '-pid').write_text(str(os.getpid()))\n"
@@ -283,7 +284,7 @@ def test_managed_snapshot_settles_detached_children_before_source_publication(
     heartbeat = root / ".cache/heartbeat"
     if new_userns:
         detached_pid = int((root / ".cache/heartbeat-pid").read_text())
-        assert detached_pid not in samplers[0].custody_births()
+        assert detached_pid not in samplers[0]._known_births
     terminal = heartbeat.read_text()
     time.sleep(0.1)
     assert heartbeat.read_text() == terminal
@@ -407,3 +408,212 @@ def test_verify_rerun_uses_the_graph_writers_hypothesis_budget(
     assert metadata["hypothesis_profile"] == "default"
     assert metadata["rerun"]["still_failed"]
     assert not metadata["rerun"]["flaky"]
+
+
+def test_managed_custody_leaves_an_actual_opaque_foreign_peer_alive(source_repository: Path) -> None:
+    """A same-UID/cgroup scan refuses or signals this unrelated opaque birth."""
+    import os
+    import sys
+    import time
+
+    root = source_repository
+    ready = root.parent / "peer-ready"
+    program = (
+        "import ctypes, time\nfrom pathlib import Path\n"
+        "assert ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0\n"
+        f"Path({str(ready)!r}).touch()\n"
+        "while True:\n    time.sleep(0.01)\n"
+    )
+    peer = subprocess.Popen([sys.executable, "-c", program])
+    try:
+        while not ready.exists():
+            assert peer.poll() is None
+            time.sleep(0.001)
+        proc = Path("/proc") / str(peer.pid)
+        assert proc.stat().st_uid == os.getuid()
+        assert "4294967295" not in (proc / "uid_map").read_text()
+        with pytest.raises(PermissionError):
+            (proc / "environ").read_bytes()
+        (root / "tests/nested/test_one.py").write_text(
+            "from pathlib import Path\ndef test_one():\n"
+            "    Path('.cache/child-cgroup').write_text(Path('/proc/self/cgroup').read_text())\n"
+        )
+        code, receipt = _record(root)
+        assert code == 0, receipt
+        assert receipt["execution_source"]["custody_settled"] is True
+        assert len(receipt["execution_source"]["attempt_closures"]) == 1
+        assert (root / ".cache/child-cgroup").read_text() == (proc / "cgroup").read_text()
+        assert peer.poll() is None
+    finally:
+        peer.terminate()
+        peer.wait()
+
+
+@pytest.mark.parametrize("loss", ["forced-kill", "wrong-token", "missing-closure"])
+def test_managed_custody_cannot_publish_without_its_exact_attempt_closure(
+    source_repository: Path, monkeypatch: pytest.MonkeyPatch, loss: str
+) -> None:
+    import os
+    import signal
+    import time
+
+    from devtools import execution_source
+
+    root = source_repository
+    guards: list[Any] = []
+    original = execution_source.ExecutionSourceGuard.launched_process
+    if loss == "forced-kill":
+        (root / "tests/nested/test_one.py").write_text(
+            "import time\nfrom pathlib import Path\ndef test_one():\n"
+            "    Path('.cache/ready-to-stop').touch()\n    while True:\n        time.sleep(0.01)\n"
+        )
+
+    def damage(guard: Any, process: subprocess.Popen[Any]) -> None:
+        original(guard, process)
+        guards.append(guard)
+        if loss == "forced-kill":
+            while not (root / ".cache/ready-to-stop").exists():
+                assert process.poll() is None
+                time.sleep(0.001)
+            os.kill(process.pid, signal.SIGKILL)
+        elif loss == "wrong-token":
+            guard.attempts[-1]["token"] = "wrong-attempt"
+        else:
+            # The wrapper writes its private record, then this exact receipt
+            # disappears before publication; wrapper death alone proves nothing.
+            process.wait()
+            closure = guard.attempts[-1]["closure"]
+            closure.seek(0)
+            closure.truncate()
+
+    monkeypatch.setattr(execution_source.ExecutionSourceGuard, "launched_process", damage)
+    code, receipt = _record(root)
+    assert code == 125, receipt
+    assert receipt["execution_source"]["status"] == "unavailable"
+    assert receipt["execution_source"]["custody_settled"] is False
+    assert guards[0].copy.exists()
+    assert not inspect_testmon_graph(root).usable
+
+
+def test_managed_child_cannot_inherit_or_reopen_the_private_closure_descriptor(
+    source_repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+    import os
+
+    root = source_repository
+    popen = subprocess.Popen
+
+    def observe(*args: Any, **kwargs: Any) -> Any:
+        command = args[0]
+        if isinstance(command, list) and len(command) == 5 and command[1:3] == ["-I", "-B"]:
+            config = json.loads(command[-1])
+            descriptor = config["receipt_fd"]
+            info = os.fstat(descriptor)
+            kwargs["env"] = {
+                **kwargs["env"],
+                "SYNTHETIC_CLOSURE_FD": str(descriptor),
+                "SYNTHETIC_CLOSURE_INODE": str(info.st_ino),
+                "SYNTHETIC_CLOSURE_DEVICE": str(info.st_dev),
+            }
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", observe)
+    (root / "tests/nested/test_one.py").write_text(
+        "import json, os, pytest\nfrom pathlib import Path\ndef test_one():\n"
+        "    fd = int(os.environ['SYNTHETIC_CLOSURE_FD'])\n"
+        "    try:\n        info = os.fstat(fd)\n"
+        "    except OSError:\n        pass\n"
+        "    else:\n        assert (info.st_dev, info.st_ino) != (int(os.environ['SYNTHETIC_CLOSURE_DEVICE']), int(os.environ['SYNTHETIC_CLOSURE_INODE']))\n"
+        "    pid = os.getppid()\n"
+        "    while pid:\n"
+        "        argv = Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\\0')\n"
+        "        if any(item.startswith(b'{\"command\"') for item in argv):\n"
+        "            with pytest.raises(PermissionError):\n                Path(f'/proc/{pid}/fd/{fd}').open('wb')\n"
+        "            break\n"
+        "        pid = int(Path(f'/proc/{pid}/stat').read_text().rpartition(')')[2].split()[1])\n"
+        "    else:\n        raise AssertionError('supervisor not found')\n"
+    )
+    code, receipt = _record(root)
+    assert code == 0, receipt
+    assert receipt["execution_source"]["custody_settled"] is True
+
+
+def test_in_slot_rerun_requires_two_physical_closures_and_keeps_initial_exit(source_repository: Path) -> None:
+    root = source_repository
+    (root / "tests/nested/test_one.py").write_text(
+        "from pathlib import Path\ndef test_one():\n"
+        "    sentinel = Path('.cache/failure-once')\n"
+        "    prior = sentinel.exists()\n    sentinel.touch()\n    assert prior\n"
+    )
+    code, receipt = _record(root, in_slot_rerun=True)
+    assert code == 1, receipt
+    assert receipt["execution_source"]["status"] == "stable"
+    closures = receipt["execution_source"]["attempt_closures"]
+    assert [closure["main_exit"] for closure in closures] == [1, 0]
+    assert len({closure["supervisor_pid"] for closure in closures}) == 2
+    assert inspect_testmon_graph(root).usable
+
+
+def test_managed_cancel_requests_kernel_settlement_of_opaque_detached_child(source_repository: Path) -> None:
+    import json
+    import os
+    import signal
+    import sys
+    import time
+
+    root = source_repository
+    checkout = Path(verify.__file__).parents[1]
+    ready, identity = root / ".cache/cancel-ready", root / ".cache/detached-pid"
+    detached = (
+        "import ctypes, os, time\nfrom pathlib import Path\n"
+        "assert ctypes.CDLL(None, use_errno=True).prctl(4, 0, 0, 0, 0) == 0\n"
+        "Path('.cache/detached-pid').write_text(str(os.getpid()))\n"
+        "while True:\n    time.sleep(0.01)\n"
+    )
+    program = (
+        "import subprocess, sys, time\nfrom pathlib import Path\n"
+        f"subprocess.Popen([sys.executable, '-c', {detached!r}], start_new_session=True)\n"
+        "while not Path('.cache/detached-pid').exists():\n    time.sleep(0.001)\n"
+        "Path('.cache/cancel-ready').touch()\n"
+        "while True:\n    time.sleep(0.01)\n"
+    )
+    launch, log = root / ".cache/cancel-launch.json", root / ".cache/cancel.log"
+    environment = {**os.environ, "POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE": "1"}
+    environment.pop("TESTMON_DATAFILE", None)
+    launch.write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-c", program],
+                "working_directory": str(root),
+                "environment": environment,
+                "log_path": str(log),
+            }
+        )
+    )
+    controller = (
+        "import sys\nfrom pathlib import Path\n"
+        f"sys.path.insert(0, {str(checkout)!r})\n"
+        "from devtools import pytest_slot\n"
+        "pytest_slot.admission_ledger = lambda _env: None\n"
+        "pytest_slot.admit_width = lambda argv, **_kwargs: (list(argv), None)\n"
+        f"raise SystemExit(pytest_slot._run_launch(Path({str(launch)!r})))\n"
+    )
+    waiter = subprocess.Popen([sys.executable, "-c", controller])
+    try:
+        while not ready.exists():
+            assert waiter.poll() is None
+            time.sleep(0.001)
+        detached_pid = int(identity.read_text())
+        waiter.send_signal(signal.SIGTERM)
+        assert waiter.wait(timeout=10) == 128 + signal.SIGTERM
+        receipt = json.loads(pytest_slot._slot_result_path(log).read_text())
+        assert receipt["status"] == "interrupted"
+        assert receipt["execution_source"]["status"] == "unavailable"
+        assert receipt["execution_source"]["custody_settled"] is True
+        assert len(receipt["execution_source"]["attempt_closures"]) == 1
+        assert not Path(f"/proc/{detached_pid}").exists()
+    finally:
+        if waiter.poll() is None:
+            waiter.kill()
+        waiter.wait()

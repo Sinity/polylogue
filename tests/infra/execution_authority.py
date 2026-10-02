@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -29,6 +30,8 @@ def source_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     (root / "neutral.py").write_text("def value():\n    return True\n")
     (root / "tests/test_other.py").write_text("from neutral import value\ndef test_other():\n    assert value()\n")
     checkout = Path(verify.__file__).parents[1]
+    (root / "devtools").mkdir(exist_ok=True)
+    (root / "devtools/execution_custody.py").write_bytes((checkout / "devtools/execution_custody.py").read_bytes())
     (root / ".venv").symlink_to(checkout / ".venv", target_is_directory=True)
     for arguments in (
         ["init", "-b", "feature"],
@@ -44,7 +47,9 @@ def source_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def record_graph(root: Path, *, profile: str = "default", subset: str | None = None) -> tuple[int, dict[str, Any]]:
+def record_graph(
+    root: Path, *, profile: str = "default", subset: str | None = None, in_slot_rerun: bool = False
+) -> tuple[int, dict[str, Any]]:
     command = verify._pytest_command(selection="all", worker_args=(), hypothesis_profile=profile, explicit_tests=())
     command = [argument for argument in command if not argument.startswith(("--junitxml=", "--polylogue-report-file="))]
     from devtools.pytest_stream_report import REPORT_FILE_OPTION
@@ -78,6 +83,23 @@ def record_graph(root: Path, *, profile: str = "default", subset: str | None = N
     artifacts = run.start_step(label="pytest (all)", cmd=command)
     command.append(report_file_argument(artifacts.step_dir / "pytest-report.json"))
     env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+    if in_slot_rerun:
+        from devtools.pytest_rerun import RERUN_IN_SLOT_ENV
+
+        env[RERUN_IN_SLOT_ENV] = json.dumps(
+            {
+                "report_path": str(artifacts.step_dir / "pytest-report.json"),
+                "step_dir": str(artifacts.step_dir),
+                "root": str(root),
+                "command": command,
+            }
+        )
+        launch, log = root / ".cache/launch.json", root / ".cache/launch.log"
+        launch.write_text(
+            json.dumps({"argv": command, "working_directory": str(root), "environment": env, "log_path": str(log)})
+        )
+        code = pytest_slot._run_launch(launch)
+        return code, json.loads(pytest_slot._slot_result_path(log).read_text())
     return pytest_slot._run_held(command, cwd=str(root), env=env, stdout=None, on_exit=lambda: None)
 
 

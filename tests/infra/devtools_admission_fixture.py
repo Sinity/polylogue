@@ -18,6 +18,8 @@ def seed_admission_graph(root: Path, *, checkout: Path) -> Path:
     testfile.write_text(
         "import pytest\nfrom neutral import value\ndef test_old():\n    assert value() == 1\n", encoding="utf-8"
     )
+    (root / "devtools").mkdir(exist_ok=True)
+    (root / "devtools/execution_custody.py").write_bytes((checkout / "devtools/execution_custody.py").read_bytes())
     (root / ".gitignore").write_text(".cache/\n__pycache__/\n.pytest_cache/\n.hypothesis/\n.benchmarks/\n")
     for arguments in (
         ["init", "-b", "feature"],

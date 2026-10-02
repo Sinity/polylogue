@@ -172,7 +172,7 @@ def collect_selection(
             if datafile is not None:
                 from devtools.execution_source import start_execution
                 from devtools.pytest_memory import CUSTODY_ENV
-                from devtools.pytest_slot import _focused_worktree_provenance, _group_reaped
+                from devtools.pytest_slot import _focused_worktree_provenance
 
                 env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
                 guard = start_execution(root, env)
@@ -180,7 +180,6 @@ def collect_selection(
                 assert guard is not None
                 execution_command = guard.command(command, env, provenance)
                 env[CUSTODY_ENV] = uuid.uuid4().hex
-                guard.observe_custody(env[CUSTODY_ENV])
                 process = subprocess.Popen(
                     execution_command,
                     cwd=root,
@@ -190,10 +189,8 @@ def collect_selection(
                     process_group=0,
                     pass_fds=guard.pass_fds,
                 )
-                guard.launched = True
+                guard.launched_process(process)
                 completed: subprocess.CompletedProcess[Any] = subprocess.CompletedProcess(command, process.wait())
-                if not _group_reaped(process.pid):
-                    guard.failure = "collection descendants remain alive"
             else:
                 completed = subprocess.run(
                     command, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, env=env
@@ -227,12 +224,10 @@ def collect_selection(
         finally:
             if guard is not None:
                 from devtools.execution_source import finish_execution
-                from devtools.pytest_slot import _group_reaped
 
                 guard.failure = guard.failure or "collection did not finish"
                 if process is not None:
-                    if not _group_reaped(process.pid):
-                        guard.failure = "collection descendants remain alive"
+                    guard.stop(process)
                     if process.poll() is not None:
                         process.wait()
                 finish_execution(guard, env)

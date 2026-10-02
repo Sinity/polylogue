@@ -15,11 +15,8 @@ compared against.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
-import select
-import signal
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -62,13 +59,12 @@ _MEASURES: Final[tuple[str, ...]] = ("rss_kib", "pss_kib", "private_kib", "swap_
 class _Identity:
     start_ticks: int
     group: int
-    state: str
 
 
 def _identity(pid: int, *, proc: Path) -> _Identity | None:
     try:
         fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
-        return _Identity(int(fields[19]), int(fields[2]), fields[0])
+        return _Identity(int(fields[19]), int(fields[2]))
     except (OSError, IndexError, ValueError):
         return None
 
@@ -95,188 +91,6 @@ def _marker_matches(pid: int, marker: str, *, proc: Path) -> bool | None:
             return not oversized and pending == expected
     except OSError:
         return None
-
-
-def _outside_user_namespace(pid: int, *, proc: Path) -> bool | None:
-    """Prove an unmapped ancestor/peer, never infer it from differing maps.
-
-    uid_map reads across namespaces are relative to the reader. A child can
-    map only IDs mapped in its parent, so an unmapped start cannot describe
-    our descendant. Empty, malformed or unreadable mappings prove nothing.
-    See user_namespaces(7), User and group ID mappings.
-    """
-    outside = False
-    rows = 0
-    invalid_uid = (1 << 32) - 1
-    try:
-        with (proc / str(pid) / "uid_map").open() as handle:
-            for line in handle:
-                fields = line.split()
-                if len(fields) != 3:
-                    return None
-                first, mapped, count = map(int, fields)
-                if not (0 <= first < invalid_uid and 0 <= mapped <= invalid_uid and 0 < count <= invalid_uid - first):
-                    return None
-                if mapped != invalid_uid and count > invalid_uid - mapped:
-                    return None
-                outside |= mapped == invalid_uid
-                rows += 1
-    except (OSError, ValueError):
-        return None
-    return outside if rows else None
-
-
-def settle_custody(
-    marker: str,
-    *,
-    started_ticks: int,
-    known_births: Mapping[int, int],
-    term_grace_s: float,
-    kill_grace_s: float,
-    proc: Path = Path("/proc"),
-) -> str | None:
-    """Physically settle exact launch ownership, including detached children.
-
-    Births before the fresh marker cannot inherit it. Unreadable eligible
-    ownership stays unavailable. pidfds bind signals and death to one birth;
-    rescanning after settlement catches forks made before that birth died.
-    """
-    births = dict(known_births)
-    pinned: dict[int, tuple[_Identity, int]] = {}
-    unavailable = False
-    dead_births: set[tuple[int, int]] = set()
-    raced = False
-    try:
-        for termination, grace in ((signal.SIGTERM, term_grace_s), (signal.SIGKILL, kill_grace_s)):
-            deadline = time.monotonic() + grace
-            while True:
-                owned: list[int] = []
-                raced = False
-                try:
-                    for entry in proc.iterdir():
-                        if not entry.name.isdigit():
-                            continue
-                        pid = int(entry.name)
-                        identity = _identity(pid, proc=proc)
-                        if identity is None:
-                            try:
-                                raced |= entry.stat().st_uid == os.getuid()
-                            except FileNotFoundError:
-                                raced = True
-                            continue
-                        known = births.get(pid) == identity.start_ticks
-                        if not known and identity.start_ticks < started_ticks:
-                            continue
-                        if identity.state in {"Z", "X"}:
-                            birth = (pid, identity.start_ticks)
-                            raced |= birth not in dead_births
-                            dead_births.add(birth)
-                            continue
-                        matched = _marker_matches(pid, marker, proc=proc)
-                        owns = known or matched is True
-                        if not owns and matched is False:
-                            after = _identity(pid, proc=proc)
-                            if after is None or after.start_ticks != identity.start_ticks:
-                                raced = True
-                            else:
-                                proof = pinned.pop(pid, None)
-                                if proof is not None:
-                                    os.close(proof[1])
-                            continue
-                        if not owns:
-                            try:
-                                if entry.stat().st_uid != os.getuid():
-                                    continue
-                            except FileNotFoundError:
-                                raced = True
-                                continue
-                            outside = _outside_user_namespace(pid, proc=proc)
-                            after = _identity(pid, proc=proc)
-                            if after is None or after.start_ticks != identity.start_ticks:
-                                raced = True
-                                continue
-                            if outside is True:
-                                proof = pinned.pop(pid, None)
-                                if proof is not None:
-                                    os.close(proof[1])
-                                continue
-                        # A foreign bwrap startup can temporarily make environ
-                        # unreadable. Pin its birth without signalling it; only
-                        # readability or exact death can settle that uncertainty.
-                        if owns:
-                            births[pid] = identity.start_ticks
-                        else:
-                            raced = True
-                        proof = pinned.get(pid)
-                        if proof is None or proof[0].start_ticks != identity.start_ticks:
-                            if proof is not None:
-                                pinned.pop(pid)
-                                os.close(proof[1])
-                            try:
-                                descriptor = os.pidfd_open(pid)
-                            except OSError:
-                                raced = True
-                                continue
-                            after = _identity(pid, proc=proc)
-                            if after is None or after.start_ticks != identity.start_ticks:
-                                os.close(descriptor)
-                                raced = True
-                                continue
-                            pinned[pid] = identity, descriptor
-                        if owns:
-                            owned.append(pid)
-                except (OSError, ValueError):
-                    unavailable = True
-                if not owned and not raced:
-                    deaths = select.poll()
-                    for _proof, descriptor in pinned.values():
-                        deaths.register(descriptor, select.POLLIN)
-                    dead = {descriptor for descriptor, events in deaths.poll(0) if events & select.POLLIN}
-                    raced = any(descriptor not in dead for _proof, descriptor in pinned.values())
-                    if not raced:
-                        return "execution custody coverage unavailable" if unavailable else None
-                for pid in owned:
-                    try:
-                        signal.pidfd_send_signal(pinned[pid][1], termination)
-                    except ProcessLookupError:
-                        pass
-                    except OSError:
-                        unavailable = True
-                if time.monotonic() >= deadline:
-                    break
-                poller = select.poll()
-                for _proof, descriptor in pinned.values():
-                    poller.register(descriptor, select.POLLIN)
-                poller.poll(max(1, int(min(0.05, deadline - time.monotonic()) * 1000)))
-        evidence = []
-        for pid, (identity_proof, descriptor) in pinned.items():
-            poller = select.poll()
-            poller.register(descriptor, select.POLLIN)
-            physically_dead = any(events & select.POLLIN for _descriptor, events in poller.poll(0))
-            current = _identity(pid, proc=proc)
-            same_birth = current is not None and current.start_ticks == identity_proof.start_ticks
-            marker_state = _marker_matches(pid, marker, proc=proc) if same_birth else None
-            evidence.append(
-                {
-                    "pid": pid,
-                    "start_ticks": identity_proof.start_ticks,
-                    "state": "exited"
-                    if physically_dead
-                    else "reused"
-                    if current is not None and not same_birth
-                    else "live",
-                    "proc_state": current.state if same_birth and current is not None else None,
-                    "marker": "owned" if marker_state is True else "foreign" if marker_state is False else "unreadable",
-                    "owned_birth": births.get(pid) == identity_proof.start_ticks,
-                }
-            )
-        return "execution custody did not settle: " + json.dumps(
-            {"scan_raced": raced, "coverage_unavailable": unavailable, "births": evidence}, sort_keys=True
-        )
-    finally:
-        for _identity_proof, descriptor in pinned.values():
-            with contextlib.suppress(OSError):
-                os.close(descriptor)
 
 
 def _rollup(pid: int, *, proc: Path) -> dict[str, int] | None:
@@ -393,11 +207,6 @@ class ProcessGroupMemorySampler:
         if thread is not None:
             thread.join(timeout=self._interval_s * 4)
         return self.persist()
-
-    def custody_births(self) -> dict[int, int]:
-        """Untruncated identity proofs retained by the actual sampler."""
-        with self._sample_lock:
-            return {pid: proof[0] for pid, proof in self._known_births.items()}
 
     def _loop(self) -> None:
         while not self._stop.is_set():

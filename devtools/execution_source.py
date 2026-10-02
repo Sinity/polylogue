@@ -12,17 +12,19 @@ import contextlib
 import fcntl
 import json
 import os
+import select
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
-import time
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 
 from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS, effective_hypothesis_profile
-from devtools.pytest_memory import ProcessGroupMemorySampler, settle_custody
 from devtools.pytest_rerun import testmon_rerun_environment
 from devtools.testmon_provision import testmon_environment
 from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
@@ -42,9 +44,7 @@ class ExecutionSourceGuard:
         self.bindings: list[str] = []
         self.digest: str | None = None
         self.launched = False
-        self.custody_marker: str | None = None
-        self.started_ticks = 0
-        self.sampler: ProcessGroupMemorySampler | None = None
+        self.attempts: list[dict[str, Any]] = []
         self.custody_settled = False
         self.bytecode = Path(tempfile.mkdtemp(prefix=".bytecode-", dir=self.copy))
         try:
@@ -110,7 +110,7 @@ class ExecutionSourceGuard:
         # The boundary owns this descriptor through child settlement.
         info = self.resources.enter_context(tempfile.TemporaryFile(dir="/realm/tmp/work"))  # noqa: SIM115
         self.infos.append(info)
-        return [
+        boundary = [
             "bwrap",
             "--info-fd",
             str(info.fileno()),
@@ -139,13 +139,80 @@ class ExecutionSourceGuard:
             *command,
         ]
 
-    def observe_custody(self, marker: str) -> None:
-        self.custody_marker = marker
-        self.started_ticks = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+        # The supervisor is a declared source input. It is copied independently
+        # and sealed before launch; Python never rereads mutable checkout code.
+        supervisor = (self.copy / "devtools/execution_custody.py").read_bytes()
+        executable = os.memfd_create("polylogue-execution-custody", os.MFD_ALLOW_SEALING)
+        self.fds.append(executable)
+        with os.fdopen(os.dup(executable), "wb") as stream:
+            stream.write(supervisor)
+        fcntl.fcntl(
+            executable,
+            fcntl.F_ADD_SEALS,
+            fcntl.F_SEAL_WRITE | fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL,
+        )
+        closure = self.resources.enter_context(tempfile.TemporaryFile(dir="/realm/tmp/work"))  # noqa: SIM115
+        token = uuid.uuid4().hex
+        from devtools.pytest_slot import STOP_KILL_GRACE_S, STOP_TERM_GRACE_S
+
+        config = {
+            "command": boundary,
+            "child_fds": [*(int(self.bindings[index + 1]) for index in range(0, len(self.bindings), 3)), info.fileno()],
+            "receipt_fd": closure.fileno(),
+            "token": token,
+            "term_grace_s": STOP_TERM_GRACE_S,
+            "kill_grace_s": STOP_KILL_GRACE_S,
+        }
+        self.attempts.append({"closure": closure, "token": token, "pid": None, "pidfd": None})
+        return [sys.executable, "-I", "-B", f"/proc/self/fd/{executable}", json.dumps(config)]
 
     @property
     def pass_fds(self) -> tuple[int, ...]:
-        return (*self.fds, *(info.fileno() for info in self.infos))
+        return (
+            *self.fds,
+            *(info.fileno() for info in self.infos),
+            *(attempt["closure"].fileno() for attempt in self.attempts),
+        )
+
+    def launched_process(self, process: subprocess.Popen[Any]) -> None:
+        self.launched = True
+        attempt = self.attempts[-1]
+        attempt["pid"] = process.pid
+        attempt["pidfd"] = os.pidfd_open(process.pid)
+
+    def stop(self, process: subprocess.Popen[Any]) -> None:
+        """Request settlement without reentering Popen's wait lock in a signal."""
+        from devtools.pytest_slot import STOP_KILL_GRACE_S, STOP_TERM_GRACE_S
+
+        attempt = next((attempt for attempt in self.attempts if attempt["pid"] == process.pid), None)
+        if attempt is None or attempt["pidfd"] is None:
+            self.failure = "execution supervisor was not pinned"
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            return
+        poller = select.poll()
+        descriptor = attempt["pidfd"]
+        poller.register(descriptor, select.POLLIN)
+        if not any(events & select.POLLIN for _fd, events in poller.poll(0)):
+            with contextlib.suppress(ProcessLookupError):
+                signal.pidfd_send_signal(descriptor, signal.SIGTERM)
+            # The supervisor has both existing descendant cleanup graces; one
+            # dispatch second lets it publish closure after the final reap.
+            dead = any(
+                events & select.POLLIN
+                for _fd, events in poller.poll(int((STOP_TERM_GRACE_S + STOP_KILL_GRACE_S + 1) * 1000))
+            )
+            if not dead:
+                self.failure = "execution supervisor settlement did not complete"
+                with contextlib.suppress(ProcessLookupError):
+                    signal.pidfd_send_signal(descriptor, signal.SIGKILL)
+                poller.poll(int(STOP_KILL_GRACE_S * 1000))
+        # This may run inside process.wait()'s signal handler. Kernel wait is
+        # exact and nonblocking; Popen's Python lock must not delay settlement.
+        with contextlib.suppress(ChildProcessError):
+            pid, status = os.waitpid(process.pid, os.WNOHANG)
+            if pid == process.pid:
+                process.returncode = os.waitstatus_to_exitcode(status)
 
     def finish(self) -> dict[str, Any]:
         if self.closed:
@@ -161,24 +228,42 @@ class ExecutionSourceGuard:
                 self.failure = "readonly boundary setup was not proved"
             finally:
                 info.close()
-        if self.custody_marker is not None:
-            from devtools.pytest_slot import STOP_KILL_GRACE_S, STOP_TERM_GRACE_S
-
+        closures = []
+        for attempt in self.attempts:
+            closure, descriptor = attempt["closure"], attempt["pidfd"]
             try:
-                settlement = settle_custody(
-                    self.custody_marker,
-                    started_ticks=self.started_ticks,
-                    known_births=self.sampler.custody_births() if self.sampler is not None else {},
-                    term_grace_s=STOP_TERM_GRACE_S,
-                    kill_grace_s=STOP_KILL_GRACE_S,
+                closure.seek(0)
+                proof = json.load(closure)
+                poller = select.poll()
+                if descriptor is None:
+                    raise ValueError("supervisor birth was not pinned")
+                poller.register(descriptor, select.POLLIN)
+                dead = any(events & select.POLLIN for _fd, events in poller.poll(0))
+                if (
+                    not isinstance(proof, dict)
+                    or proof.get("token") != attempt["token"]
+                    or proof.get("supervisor_pid") != attempt["pid"]
+                    or proof.get("closed") is not True
+                    or proof.get("proof") != "waitpid_echild"
+                    or not isinstance(proof.get("main_exit"), int)
+                    or proof.get("failure") is not None
+                    or not dead
+                ):
+                    raise ValueError("kernel child closure was not proved")
+                closures.append(
+                    {
+                        "supervisor_pid": proof["supervisor_pid"],
+                        "proof": proof["proof"],
+                        "main_exit": proof["main_exit"],
+                    }
                 )
-            except OSError as exc:
-                settlement = f"execution custody coverage failed: {exc}"
-            self.custody_settled = settlement is None
-            if settlement is not None:
-                self.failure = settlement
-        elif self.launched:
-            self.failure = "execution custody was not identified"
+            except (OSError, ValueError) as exc:
+                self.failure = f"execution custody unavailable: {exc}"
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                closure.close()
+        self.custody_settled = bool(self.attempts) and len(closures) == len(self.attempts)
         for fd in self.fds:
             try:
                 os.close(fd)
@@ -197,6 +282,7 @@ class ExecutionSourceGuard:
             "reason": self.failure or (None if self.launched else "execution never launched"),
             "git_worktree_content_sha256": self.digest,
             "custody_settled": self.custody_settled,
+            "attempt_closures": closures,
         }
 
 
