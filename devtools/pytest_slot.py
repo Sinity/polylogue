@@ -193,16 +193,21 @@ def _job_termination(reference: str | None) -> dict[str, Any] | None:
 
 
 def termination_metadata(outcome: SlotOutcome) -> dict[str, Any]:
-    """Step fields naming what ended a queued run from outside it.
+    """Step fields recording execution authority and external termination.
 
     A systemd-oomd kill is the typed ``oom_killed`` diagnosis, not the missing
     report or bare exit 137 it otherwise leaves.
     """
+    metadata: dict[str, Any] = {}
+    if isinstance(outcome.receipt, Mapping) and isinstance(outcome.receipt.get("execution_source"), Mapping):
+        metadata["execution_source"] = outcome.receipt["execution_source"]
+        if outcome.receipt["execution_source"].get("status") != "stable":
+            metadata.update({"diagnosis": "execution_source_unavailable", "worktree_provenance_unknown": True})
     termination = outcome.termination
     if not termination:
-        return {}
+        return metadata
     killer = termination.get("killer")
-    metadata: dict[str, Any] = {"termination_killer": killer, "termination_unit": termination.get("unit")}
+    metadata.update({"termination_killer": killer, "termination_unit": termination.get("unit")})
     if killer == "oom-kill":
         metadata.update({"diagnosis": OOM_KILLED_DIAGNOSIS, "termination_reason": OOM_KILLED_DIAGNOSIS})
     return metadata
@@ -1203,8 +1208,22 @@ def _run_held_admitted(
         # A previous run of this pid may have left one; reading that would
         # report someone else's interruption.
         _slot_result_path(result_path).unlink(missing_ok=True)
+    from devtools.execution_source import finish_execution, start_execution
+
+    guard = start_execution(Path(cwd), env)
+    try:
+        worktree_provenance = _focused_worktree_provenance(cwd, env)
+    except BaseException:
+        finish_execution(guard, env)
+        raise
     child_environment = {**env, CUSTODY_ENV: uuid.uuid4().hex}
-    process = subprocess.Popen(command, cwd=cwd, env=child_environment, stdout=stdout, stderr=stdout, process_group=0)
+    try:
+        process = subprocess.Popen(
+            command, cwd=cwd, env=child_environment, stdout=stdout, stderr=stdout, process_group=0
+        )
+    except BaseException:
+        finish_execution(guard, env)
+        raise
     try:
         sampler = ProcessGroupMemorySampler(
             process.pid,
@@ -1228,6 +1247,7 @@ def _run_held_admitted(
                 os.killpg(process.pid, signal.SIGKILL)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=STOP_KILL_GRACE_S)
+        finish_execution(guard, env)
         raise
     try:
         sampler.start()
@@ -1243,10 +1263,13 @@ def _run_held_admitted(
                 process.wait(timeout=STOP_KILL_GRACE_S)
         with contextlib.suppress(Exception):
             sampler.stop()
+        finish_execution(guard, env)
         raise
 
     def preserve(signal_number: int) -> None:
         """Write the terminated run's receipt before anything is disposed."""
+        if guard is not None:
+            guard.failure = "execution interrupted"
         if on_interrupt is not None:
             on_interrupt()
         if result_path is None:
@@ -1292,6 +1315,11 @@ def _run_held_admitted(
             terminal_status = "passed" if returncode == 0 else "failed"
     finally:
         memory = sampler.stop()
+        if guard is not None and _group_alive(process.pid):
+            guard.failure = "execution descendants remain alive"
+        stability = finish_execution(guard, env)
+    if stability is not None and stability["status"] != "stable":
+        returncode = 125
     return returncode, _slot_receipt(
         status="success" if returncode == 0 else "failed",
         profile=profile,
@@ -1299,7 +1327,17 @@ def _run_held_admitted(
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
-        extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
+        extra={
+            "worktree_provenance": worktree_provenance
+            if stability is None or stability["status"] == "stable"
+            else None,
+            "execution_source": stability,
+            **(
+                {"diagnosis": "execution_source_unavailable"}
+                if stability is not None and stability["status"] != "stable"
+                else {}
+            ),
+        },
     )
 
 
@@ -1700,6 +1738,9 @@ def _run_launch(launch_path: Path) -> int:
         if terminating:
             return
         terminating = True
+        if guard is not None:
+            guard.failure = "execution interrupted"
+            finish_execution(guard, environment)
         if child is not None and child.poll() is None:
             with contextlib.suppress(ProcessLookupError, PermissionError):
                 os.killpg(child.pid, signal.SIGTERM)
@@ -1729,8 +1770,11 @@ def _run_launch(launch_path: Path) -> int:
             _print_result(receipt)
         os._exit(128 + signal_number)
 
+    guard = None
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
     ledger = None
+    from devtools.execution_source import finish_execution, start_execution
+
     try:
         ledger = admission_ledger(environment)
         command, sizing = admit_width(
@@ -1764,6 +1808,8 @@ def _run_launch(launch_path: Path) -> int:
                 log.write((note + "\n").encode())
                 log.flush()
             try:
+                guard = start_execution(Path(launch["working_directory"]), environment)
+                worktree_provenance = _focused_worktree_provenance(launch["working_directory"], environment)
                 environment[CUSTODY_ENV] = uuid.uuid4().hex
                 child = subprocess.Popen(
                     command,
@@ -1824,6 +1870,12 @@ def _run_launch(launch_path: Path) -> int:
                         with contextlib.suppress(subprocess.TimeoutExpired):
                             child.wait(timeout=STOP_KILL_GRACE_S)
                 memory = sampler.stop() if sampler is not None else None
+        if guard is not None and any(_group_alive(group) for group in started_groups):
+            guard.failure = "execution descendants remain alive"
+        stability = finish_execution(guard, environment)
+        guard = None
+        if stability is not None and stability["status"] != "stable":
+            returncode = 125
         receipt = _slot_receipt(
             status="success" if returncode == 0 else "failed",
             profile=profile,
@@ -1832,7 +1884,17 @@ def _run_launch(launch_path: Path) -> int:
             sizing=sizing,
             memory=memory,
             log_path=log_path,
-            extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
+            extra={
+                "worktree_provenance": worktree_provenance
+                if stability is None or stability["status"] == "stable"
+                else None,
+                "execution_source": stability,
+                **(
+                    {"diagnosis": "execution_source_unavailable"}
+                    if stability is not None and stability["status"] != "stable"
+                    else {}
+                ),
+            },
         )
         # Written as well as printed: the waiting client reads the file, and the
         # job's stdout is the result artifact.
@@ -1842,6 +1904,7 @@ def _run_launch(launch_path: Path) -> int:
         return returncode
 
     finally:
+        finish_execution(guard, environment)
         if ledger is not None:
             ledger.release()
         for number, handler in previous.items():

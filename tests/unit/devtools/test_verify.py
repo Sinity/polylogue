@@ -30,8 +30,9 @@ from devtools import (
     worker_memory,
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument
-from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
+from devtools.testmon_provision import TestmonGraphStatus
 from devtools.testmon_provision import testmon_datafile as _testmon_datafile
+from devtools.testmon_provision import testmon_environment as _testmon_environment
 from devtools.verification_admission import AFFECTED_MAX_SELECTED_TESTS, AFFECTED_MAX_UNRECORDED_FILES
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
@@ -1946,7 +1947,7 @@ def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
 
     assert "pytest-testmon" in command
     assert "--testmon" in command
-    assert f"--testmon-env={TESTMON_ENVIRONMENT}" in command
+    assert f"--testmon-env={_testmon_environment(verify.ROOT)}" in command
     assert "--testmon-noselect" in command
     assert "--testmon-forceselect" not in command
 
@@ -2002,7 +2003,7 @@ def test_complete_corpus_run_records_a_usable_testmon_graph(tmp_path: Path) -> N
         recorded = connection.execute("SELECT count(*) FROM test_execution").fetchone()[0]
         environments = [row[0] for row in connection.execute("SELECT environment_name FROM environment")]
     assert recorded == 2
-    assert environments == [TESTMON_ENVIRONMENT]
+    assert environments == [_testmon_environment(verify.ROOT)]
 
 
 def test_two_verify_runs_in_one_checkout_do_not_share_a_report_spool(

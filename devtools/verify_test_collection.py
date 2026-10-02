@@ -133,9 +133,15 @@ def collect_selection(
     command = collection_command(root=root, paths=paths, testmon=datafile is not None)
     command.extend(devtools_plugin_args(testmon=datafile is not None))
     if datafile is not None:
-        from devtools.testmon_provision import TESTMON_ENVIRONMENT
+        from devtools.testmon_provision import testmon_environment
 
-        command.extend(("--testmon", "--testmon-env=" + TESTMON_ENVIRONMENT, "--testmon-forceselect"))
+        command.extend(
+            (
+                "--testmon",
+                "--testmon-env=" + testmon_environment(root, environment.get("HYPOTHESIS_PROFILE")),
+                "--testmon-forceselect",
+            )
+        )
     with tempfile.TemporaryDirectory(prefix="polylogue-selection-") as temporary:
         evidence = Path(temporary) / "selection.json"
         env = dict(environment)

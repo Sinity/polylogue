@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, testmon_datafile
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, testmon_datafile, testmon_environment
 from devtools.verify_test_collection import collection_command
 
 
@@ -22,7 +22,7 @@ def seed_admission_graph(root: Path, *, checkout: Path) -> Path:
     datafile.parent.mkdir(parents=True)
     command = collection_command(root=checkout, paths=["tests"], testmon=True)
     command.remove("--collect-only")
-    command.extend(("--testmon", "--testmon-env=" + TESTMON_ENVIRONMENT, "--testmon-noselect"))
+    command.extend(("--testmon", "--testmon-env=" + testmon_environment(root), "--testmon-noselect"))
     env = dict(os.environ)
     env.update(
         {
