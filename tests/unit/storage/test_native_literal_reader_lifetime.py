@@ -139,10 +139,8 @@ def test_failed_external_parent_close_preserves_actual_native_custody(
     from polylogue.storage.sqlite import connection_profile
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
-    original_factory = connection_profile.connect_measured
-
     def controlled_factory(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        return original_factory(database, *args, factory=ControlledConnection, **kwargs)
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
 
     monkeypatch.setattr(connection_profile, "connect_measured", controlled_factory)
     owner: NativeSQLCustodyOwner | None = None
