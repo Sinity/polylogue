@@ -22,6 +22,7 @@ from polylogue.pipeline import ids
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
 from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
 from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
 from tests.infra.reference_sessions import reference_session
 from tests.infra.sqlite_cursor_settlement import ControlledConnection, ControlledCursor
@@ -279,13 +280,10 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
-    from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.archive_templates import bootstrap_archive_root
 
     root = tmp_path / "archive"
     root.mkdir()
-    with write_lease("test.fixture.archive", archive_root=root):
-        bootstrap_archive_root(root)
+    await run_archive_fixture_write(root, lambda: bootstrap_archive_root(root))
     handles: list[WorkerSettlementConnection] = []
     parents: list[SQLCustodyOwner] = []
     actual_connect = sqlite3.connect
@@ -396,7 +394,6 @@ def test_nested_native_settlement_preserves_outer_sql_but_closes_new_parent_chil
     from polylogue.core.sql_settlement import SQLSettlementRetry, capture_native_sql_owners, settle_native_sql
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.archive_templates import bootstrap_archive_root
 
     with write_lease("test.fixture.archive", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
@@ -428,11 +425,8 @@ async def test_nested_compute_future_retains_parent_reservation_until_its_new_re
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.archive_templates import bootstrap_archive_root
 
-    with write_lease("test.fixture.archive", archive_root=tmp_path):
-        bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     actual_connect = sqlite3.connect
     handles: list[WorkerSettlementConnection] = []
     parents: list[ArchiveStore] = []
@@ -567,9 +561,8 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
     from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.write_lease import write_lease
-    from tests.infra.archive_templates import bootstrap_archive_root
 
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     # Source admission happens on the physical worker too. The event loop
     # cannot grant a synchronous mutation lease or transfer SQL ownership.
     payload = (
