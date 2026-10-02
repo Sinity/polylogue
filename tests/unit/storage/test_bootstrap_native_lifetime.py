@@ -189,3 +189,124 @@ def test_measured_connection_retains_failed_cursor_without_native_owner(tmp_path
         if retained_cursor := actual():
             retained_cursor.allow_cleanup.set()
         connection.close()
+
+
+@pytest.mark.parametrize("route", ["initialize", "constructor", "parent_slot"])
+def test_original_temp_archive_survives_pre_parent_or_terminal_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    import gc
+    import tempfile
+    import weakref
+
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    cursors: list[ControlledCursor] = []
+    injected = OSError("synthetic original terminal close failure")
+    initialize = bootstrap.initialize_archive_tier
+    set_authorizer = _MeasuredConnection.set_authorizer
+    blocked = True
+    selected_file = None
+
+    def block_statement(connection: sqlite3.Connection) -> None:
+        cursor = connection.cursor(factory=ControlledCursor)
+        assert isinstance(cursor, ControlledCursor)
+        cursor.execute("SELECT 1 UNION ALL SELECT 2")
+        cursor.fetchone()
+        cursor.cleanup_failure = injected
+        cursor.allow_cleanup.clear()
+        cursors.append(cursor)
+
+    def initialize_with_statement(connection: sqlite3.Connection, tier: ArchiveTier) -> None:
+        initialize(connection, tier)
+        block_statement(connection)
+
+    def constructor_with_statement(connection: sqlite3.Connection, callback: object) -> None:
+        set_authorizer(connection, callback)
+        block_statement(connection)
+        raise ValueError("synthetic failure before bootstrap receives its connection")
+
+    def begin() -> tuple[
+        Path, weakref.ReferenceType[tempfile.TemporaryDirectory[str]], profiles.NativeSQLCustodyOwner | ArchiveStore
+    ]:
+        nonlocal selected_file
+        directory = tempfile.TemporaryDirectory(dir=tmp_path, prefix="original-archive-")
+        root = Path(directory.name)
+        reference = weakref.ref(directory)
+        owner = None
+        with write_lease("test.original-temp-archive", archive_root=root):
+            with retain_native_sql_lifetimes(directory):
+                if route == "parent_slot":
+                    bootstrap_archive_root(root)
+                    owner = ArchiveStore.open_existing(root, read_only=False)
+                    owner._hold_replay_publisher_slot()
+                    selected_file = owner._replay_publisher_lock_file
+                    assert selected_file is not None
+                    actual_close = selected_file.close
+
+                    def close_file() -> None:
+                        if blocked:
+                            raise injected
+                        actual_close()
+
+                    monkeypatch.setattr(selected_file, "close", close_file)
+                    with pytest.raises(ArchiveStoreSettlementError):
+                        owner.close()
+                else:
+                    monkeypatch.setattr(bootstrap, "_TIER_PROTOTYPES", {})
+                    monkeypatch.setattr(bootstrap, "_record_tier_prototype", lambda *_args: None)
+                    if route == "initialize":
+                        monkeypatch.setattr(bootstrap, "initialize_archive_tier", initialize_with_statement)
+                        tier = ArchiveTier.INDEX
+                    else:
+                        monkeypatch.setattr(_MeasuredConnection, "set_authorizer", constructor_with_statement)
+                        tier = ArchiveTier.SOURCE
+                    try:
+                        bootstrap.initialize_archive_database(root / f"{tier.value}.db", tier, expected_version=1)
+                    except profiles.NativeConnectionSettlementError as failure:
+                        owner = failure.owner
+                    else:
+                        pytest.fail("actual retained statement did not block physical cleanup")
+        assert owner is not None
+        return root, reference, owner
+
+    root, reference, owner = begin()
+    # Drop errors and contextmanager tracebacks before observing retention:
+    # only the original native obligation may keep the directory alive.
+    injected.__traceback__ = injected.__cause__ = injected.__context__ = None
+    gc.collect()
+    directory = reference()
+    try:
+        assert directory is not None and root.is_dir()
+        assert retained_native_sql_owners_for_lifetime(directory)
+        del directory
+        if route == "parent_slot":
+            assert isinstance(owner, ArchiveStore)
+            assert selected_file is not None and not selected_file.closed
+            assert owner._replay_publisher_lock_file is selected_file
+        else:
+            assert isinstance(owner, profiles.NativeSQLCustodyOwner)
+            assert owner.connection is not None and cursors[0].close_attempts == 1
+        blocked = False
+        for cursor in cursors:
+            cursor.allow_cleanup.set()
+        owner.close()
+        if route == "parent_slot":
+            assert selected_file.closed
+        else:
+            assert isinstance(owner, profiles.NativeSQLCustodyOwner)
+            assert owner.connection is None and cursors[0].close_attempts == 2
+        gc.collect()
+        assert reference() is None and not root.exists()
+    finally:
+        blocked = False
+        for cursor in cursors:
+            cursor.allow_cleanup.set()
+        owner.close()
+        if remaining := reference():
+            remaining.cleanup()

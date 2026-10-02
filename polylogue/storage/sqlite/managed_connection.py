@@ -17,6 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
 
@@ -31,7 +32,7 @@ def sqlite_connection(*args: Any, **kwargs: Any) -> Iterator[sqlite3.Connection]
     database = args[0] if args else kwargs.pop("database")
     assert_population_admitted(database)
     connection = connect_measured(database, *args[1:], **kwargs)
-    owner = NativeSQLCustodyOwner(connection)
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         with connection:
             yield connection

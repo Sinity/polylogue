@@ -1658,3 +1658,102 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                 assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone() is None
                 assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone() is None
                 assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='request-history'").fetchone()
+
+
+@pytest.mark.parametrize("native_owner", [False, True])
+def test_settlement_callbacks_wait_for_original_custody_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, native_owner: bool
+) -> None:
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
+
+    with write_lease("test.callback-custody-release", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        selected: NativeSQLCustodyOwner | ArchiveStore
+        if native_owner:
+            selected = NativeSQLCustodyOwner(connect_measured(":memory:"))
+            custody = selected.custody
+            error_type = NativeConnectionSettlementError
+        else:
+            selected = ArchiveStore.open_existing(tmp_path, read_only=False)
+            selected._enter_mutation_lease()
+            custody = selected._sql_custody
+            error_type = ArchiveStoreSettlementError
+        assert custody is not None
+        completions: list[str] = []
+        selected.retain_settlement_callback(lambda: completions.append("complete"))
+        release = ArchiveWriteCustody.release_sql_owner
+        blocked = True
+
+        def guarded_release(original: ArchiveWriteCustody, owner: object) -> None:
+            if original is custody and owner is selected and blocked:
+                raise OSError("synthetic original physical custody release fault")
+            release(original, owner)
+
+        monkeypatch.setattr(ArchiveWriteCustody, "release_sql_owner", guarded_release)
+        try:
+            with pytest.raises(error_type):
+                selected.close()
+            assert completions == [] and selected in custody.retained_sql_owners_on_current_thread()
+            assert (
+                selected.custody if isinstance(selected, NativeSQLCustodyOwner) else selected._sql_custody
+            ) is custody
+            blocked = False
+            selected.close()
+            assert completions == ["complete"] and selected not in custody.retained_sql_owners_on_current_thread()
+            selected.close()
+            assert completions == ["complete"]
+        finally:
+            blocked = False
+            selected.close()
+
+
+@pytest.mark.parametrize("failed_resource", ["file", "sql"])
+def test_archive_retains_actual_replay_slot_file_until_close_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_resource: str
+) -> None:
+    import fcntl
+
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, native_sql_children
+
+    with write_lease("test.replay-slot-close", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        archive = ArchiveStore.open_existing(tmp_path, read_only=False)
+        archive._hold_replay_publisher_slot()
+        lock_file = archive._replay_publisher_lock_file
+        assert lock_file is not None
+        close_file = lock_file.close
+        close_sql = NativeSQLCustodyOwner.close
+        selected_sql = next(child for child in native_sql_children(archive) if child.connection is archive._conn)
+        blocked = True
+        completions: list[str] = []
+        archive.retain_settlement_callback(lambda: completions.append("complete"))
+
+        def guarded_close() -> None:
+            if blocked and failed_resource == "file":
+                raise OSError("synthetic actual replay file close fault")
+            close_file()
+
+        def guarded_sql_close(owner: NativeSQLCustodyOwner) -> None:
+            if owner is selected_sql and blocked and failed_resource == "sql":
+                raise NativeConnectionSettlementError(owner, OSError("synthetic original SQL close fault"))
+            close_sql(owner)
+
+        monkeypatch.setattr(lock_file, "close", guarded_close)
+        monkeypatch.setattr(NativeSQLCustodyOwner, "close", guarded_sql_close)
+        try:
+            with pytest.raises(ArchiveStoreSettlementError):
+                archive.close()
+            assert archive._replay_publisher_lock_file is lock_file and not lock_file.closed and completions == []
+            with open(lock_file.name, "a+b") as contender:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            blocked = False
+            archive.close()
+            assert lock_file.closed and archive._replay_publisher_slot is None and completions == ["complete"]
+        finally:
+            blocked = False
+            archive.close()

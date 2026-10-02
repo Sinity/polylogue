@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
     from polylogue.storage.sqlite.population_admission import _PopulationAdmission
 
+from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_BASELINE_DDL_BY_TIER,
@@ -328,7 +329,11 @@ def _restore_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, require
 
         source = open_readonly_connection(prototype.resolve(strict=True), immutable=True, validate_schema=False)
         source_owner = NativeSQLCustodyOwner(
-            source, lifetime_dependencies=(_TIER_PROTOTYPE_DIR,) if _TIER_PROTOTYPE_DIR is not None else ()
+            source,
+            lifetime_dependencies=(
+                *current_native_sql_lifetimes(),
+                *((_TIER_PROTOTYPE_DIR,) if _TIER_PROTOTYPE_DIR is not None else ()),
+            ),
         )
         try:
             source.backup(conn)
@@ -369,7 +374,7 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
 
         target = connect_measured(staging)
-        target_owner = NativeSQLCustodyOwner(target, lifetime_dependencies=(directory,))
+        target_owner = NativeSQLCustodyOwner(target, lifetime_dependencies=(*current_native_sql_lifetimes(), directory))
         try:
             conn.backup(target)
         except BaseException as primary:
@@ -716,7 +721,7 @@ def initialize_archive_database(
             if tier is ArchiveTier.SOURCE
             else connect_measured(path)
         )
-        owner = NativeSQLCustodyOwner(conn)
+        owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     else:
         if page_size is not None:
             raise ValueError("page_size is a creation-time choice; it cannot be applied to an existing tier")
@@ -731,7 +736,7 @@ def initialize_archive_database(
             if tier is ArchiveTier.SOURCE
             else connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
         )
-        owner = NativeSQLCustodyOwner(conn)
+        owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     primary: BaseException | None = None
     try:
         if page_size is not None:

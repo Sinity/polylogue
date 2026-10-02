@@ -269,7 +269,23 @@ class NativeSQLCustodyOwner:
         self._terminal_parent = terminal_parent
         self.scratch_directory = scratch_directory
         self._connection_identity = id(connection)
-        self._lifetime_dependencies: list[object] = list(lifetime_dependencies)
+        # A terminal registration cannot hand off its handle. Capture the
+        # existing artifact context there; temporary idle constructors keep
+        # their current handoff semantics and capture only on failure.
+        terminal_registration = (
+            terminal_parent is not None
+            or scratch_directory is not None
+            or leaf is not None
+            or cache_entry is not None
+            or frame is not None
+            or bool(anchored_descriptors)
+        )
+        dependencies = (
+            (*current_native_sql_lifetimes(), *lifetime_dependencies)
+            if terminal_registration
+            else lifetime_dependencies
+        )
+        self._lifetime_dependencies: list[object] = list({id(item): item for item in dependencies}.values())
         self._settlement_callbacks: list[Callable[[], None]] = []
         self.leaf = leaf
         self.cache_entry = cache_entry
@@ -407,7 +423,8 @@ class NativeSQLCustodyOwner:
         if self._settled:
             raise RuntimeError("a settled native owner cannot retain an artifact")
         with _LIVE_NATIVE_SQL_OWNERS_LOCK:
-            self._lifetime_dependencies.append(dependency)
+            if all(retained is not dependency for retained in self._lifetime_dependencies):
+                self._lifetime_dependencies.append(dependency)
 
     def retain_settlement_callback(self, callback: Callable[[], None]) -> None:
         """Notify this actual handle's successful creator-owned settlement."""
@@ -437,14 +454,20 @@ class NativeSQLCustodyOwner:
             try:
                 settle_connection_cursors(connection)
             except BaseException as error:
+                failures.append(error)
+            if failures:
                 if self.frame is not None:
                     live_ids = {id(cursor) for cursor in live_connection_cursors(connection)}
                     self.frame._cursors = {cursor for cursor in self.frame._cursors if id(cursor) in live_ids}
                     with _LIVE_READ_FRAMES_LOCK:
                         _LIVE_READ_FRAMES.add(self.frame)
-                # Do not retry a failed statement in this terminal call, or
-                # roll back/close a connection while its statements remain live.
-                raise NativeConnectionSettlementError(self, error) from error
+                # Native children settle before rollback/connection close.
+                failure = (
+                    failures[0]
+                    if len(failures) == 1
+                    else BaseExceptionGroup("Native SQL children remain unsettled", failures)
+                )
+                raise NativeConnectionSettlementError(self, failure) from failure
             if self.frame is not None:
                 self.frame._cursors.clear()
             try:
@@ -521,7 +544,14 @@ class NativeSQLCustodyOwner:
             else:
                 self.scratch_directory = None
         resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
-        if resources_settled and not failures:
+        if resources_settled and self.custody is not None:
+            try:
+                self.custody.release_sql_owner(self)
+            except BaseException as error:
+                failures.append(error)
+            else:
+                self.custody = None
+        if resources_settled and self.custody is None and not failures:
             for callback in tuple(self._settlement_callbacks):
                 try:
                     callback()
@@ -530,13 +560,6 @@ class NativeSQLCustodyOwner:
                 else:
                     self._settlement_callbacks.remove(callback)
         callbacks_settled = not self._settlement_callbacks
-        if resources_settled and callbacks_settled and self.custody is not None:
-            try:
-                self.custody.release_sql_owner(self)
-            except BaseException as error:
-                failures.append(error)
-            else:
-                self.custody = None
         self._settled = resources_settled and callbacks_settled and self.custody is None
         if self._settled and self._terminal_parent is None:
             with _LIVE_NATIVE_SQL_OWNERS_LOCK:
@@ -550,6 +573,12 @@ class NativeSQLCustodyOwner:
 
 
 def _close_failed_native_construction(owner: NativeSQLCustodyOwner, primary: BaseException) -> None:
+    # Construction may fail before the receiving parent registers the idle
+    # handle. Preserve its original artifact context on this same creator
+    # before cleanup can fail, without attaching obligations to a handoff.
+    if not owner._settled:
+        for dependency in current_native_sql_lifetimes():
+            owner.retain_lifetime(dependency)
     try:
         owner.close()
     except NativeConnectionSettlementError as cleanup:
@@ -1561,7 +1590,9 @@ def _attach_sibling_tiers(conn: sqlite3.Connection, *, archive_root: Path) -> No
                 sibling_conn = open_readonly_connection(
                     sibling, tier=tier, validate_schema=False, timeout_class="background-read"
                 )
-                sibling_owner = NativeSQLCustodyOwner(sibling_conn)
+                sibling_owner = NativeSQLCustodyOwner(
+                    sibling_conn, lifetime_dependencies=current_native_sql_lifetimes()
+                )
                 try:
                     # An attached sibling keeps the absent-tier read answer; a
                     # writer that mutates a tier opens that tier directly.
@@ -1774,7 +1805,9 @@ def owned_daemon_connection(
     archive_root: str | Path,
 ) -> Iterator[sqlite3.Connection]:
     """Keep one-shot daemon SQL in the admitted worker's actual custody."""
-    owner = NativeSQLCustodyOwner(open_daemon_connection(path, archive_root=archive_root))
+    owner = NativeSQLCustodyOwner(
+        open_daemon_connection(path, archive_root=archive_root), lifetime_dependencies=current_native_sql_lifetimes()
+    )
     try:
         connection = owner.connection
         assert connection is not None
@@ -2165,7 +2198,7 @@ def one_shot_diagnostic_read(
         validate_schema=False,
         timeout_class="interactive-read",
     )
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield conn
     except BaseException as primary:
@@ -2905,7 +2938,7 @@ def connection_context(
     Opens a connection with write pragmas, yields it, and closes on exit.
     """
     conn = open_connection(path, timeout=timeout, archive_root=archive_root)
-    owner = NativeSQLCustodyOwner(conn)
+    owner = NativeSQLCustodyOwner(conn, lifetime_dependencies=current_native_sql_lifetimes())
     try:
         yield conn
     except BaseException as primary:
