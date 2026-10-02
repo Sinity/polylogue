@@ -1,122 +1,185 @@
-"""Observe mutations of declared checkout sources across managed execution.
+"""Bind managed execution to a private readonly copy of declared source bytes.
 
-Linux inotify queues mutations even when bytes are restored before the next
-sample. Overflow, watch removal and unavailable observation refuse authority.
-Generated ignored files are outside the declared source contract.
+Filesystem notifications cannot prove execution stability (mmap and aliases can
+write without a watched event). The child instead sees independent copied
+inodes, mounted readonly at the original checkout path and every copy alias.
+Only declared runtime bindings remain writable inside that checkout.
 """
 
 from __future__ import annotations
 
-import ctypes
+import contextlib
 import fcntl
+import json
 import os
-import struct
+import shutil
+import stat
 import subprocess
-from collections.abc import Mapping
+import tempfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import IO, Any
+
+from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS
+from devtools.pytest_rerun import testmon_rerun_environment
+from devtools.testmon_provision import testmon_environment
+from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
 
 
 class ExecutionSourceGuard:
     def __init__(self, root: Path) -> None:
-        self.root = root
-        self.fd = -1
-        self.directories: dict[int, Path] = {}
-        self.paths: set[Path] = set()
+        self.root = root.absolute()
+        self.copy = Path(tempfile.mkdtemp(prefix="polylogue-source-", dir="/realm/tmp/work"))
         self.failure: str | None = None
         self.closed = False
         self.previous_unavailable = False
         self.graph_lock: int | None = None
+        self.fds: list[int] = []
+        self.infos: list[IO[bytes]] = []
+        self.resources = contextlib.ExitStack()
+        self.bindings: list[str] = []
+        self.digest: str | None = None
+        self.launched = False
         try:
-            libc = ctypes.CDLL(None, use_errno=True)
-            self.fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
-            if self.fd < 0:
-                raise OSError(ctypes.get_errno(), "inotify initialization failed")
             listed = subprocess.run(
                 ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
                 cwd=root,
                 capture_output=True,
                 check=True,
             )
-            self.paths = {Path(os.fsdecode(name)) for name in listed.stdout.split(b"\0") if name}
-            directories = {Path(".")}
-            for path in self.paths:
-                if (root / path).is_symlink():
-                    raise OSError("declared symlink source cannot be observed")
-                directories.update(path.parents)
-            # Parents first. A new/replaced directory after registration is
-            # itself a mutation; no recursive late-registration race is accepted.
-            for directory in sorted(directories, key=lambda path: len(path.parts)):
-                target = root / directory
-                if not target.is_dir():
+            paths = sorted(set(listed.stdout.split(b"\0")) - {b""})
+            for name in paths:
+                if Path(os.fsdecode(name)).parts[0] in {".git", ".venv", ".cache"}:
+                    raise OSError("declared source overlaps a runtime binding")
+                source, destination = self.root / os.fsdecode(name), self.copy / os.fsdecode(name)
+                try:
+                    mode = source.lstat().st_mode
+                except FileNotFoundError:
                     continue
-                watch = libc.inotify_add_watch(self.fd, os.fsencode(target), 0x00000FC6)
-                if watch < 0:
-                    raise OSError(ctypes.get_errno(), "source watch registration failed")
-                self.directories[watch] = directory
-        except (AttributeError, OSError, subprocess.CalledProcessError) as exc:
+                if not stat.S_ISREG(mode):
+                    raise OSError("declared source is not a regular file")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                # Copy bytes, never links: writes through original hardlink or
+                # mmap aliases cannot change the executed cohort.
+                shutil.copyfile(source, destination)
+                destination.chmod(stat.S_IMODE(mode))
+            self.digest = git_worktree_content_sha256(self.copy, paths=paths)
+            if self.digest is None:
+                raise OSError("copied source could not be identified")
+            # Keep these owners at their declared paths after the root overlay.
+            # The fd preserves the original inode even for a worktree .git file
+            # or a venv symlink whose textual path now resolves in the copy.
+            for binding, writable in ((".git", False), (".venv", False), (".cache", True)):
+                original = self.root / binding
+                if binding == ".cache":
+                    original.mkdir(exist_ok=True)
+                if not original.exists():
+                    continue
+                destination = self.copy / binding
+                if original.is_dir():
+                    destination.mkdir(exist_ok=True)
+                else:
+                    destination.touch()
+                fd = os.open(original, os.O_PATH)
+                self.fds.append(fd)
+                self.bindings.extend(["--bind-fd" if writable else "--ro-bind-fd", str(fd), str(self.root / binding)])
+        except (OSError, subprocess.CalledProcessError) as exc:
             self.failure = str(exc)
+
+    def command(
+        self, command: Sequence[str], environment: Mapping[str, str], provenance: Mapping[str, Any] | None
+    ) -> list[str]:
+        from devtools.pytest_slot import PytestSlotUnavailableError
+
+        if provenance is None or provenance.get("git_worktree_content_sha256") != self.digest:
+            self.failure = "copied source differs from admitted execution content"
+        declared = testmon_rerun_environment(list(command))
+        if declared is not None:
+            profile = environment.get("HYPOTHESIS_PROFILE", "default").strip() or "default"
+            for index, argument in enumerate(command):
+                if argument.startswith("--hypothesis-profile="):
+                    profile = argument.split("=", 1)[1]
+                elif argument == "--hypothesis-profile" and index + 1 < len(command):
+                    profile = command[index + 1]
+            if declared != testmon_environment(self.copy, profile):
+                self.failure = "executed policy differs from declared testmon environment"
+        if self.failure:
+            raise PytestSlotUnavailableError(self.failure)
+        # The boundary owns this descriptor through child settlement.
+        info = self.resources.enter_context(tempfile.TemporaryFile(dir="/realm/tmp/work"))  # noqa: SIM115
+        self.infos.append(info)
+        return [
+            "bwrap",
+            "--info-fd",
+            str(info.fileno()),
+            "--die-with-parent",
+            "--bind",
+            "/",
+            "/",
+            "--dev-bind",
+            "/dev",
+            "/dev",
+            "--ro-bind",
+            str(self.copy),
+            str(self.copy),
+            "--ro-bind",
+            str(self.copy),
+            str(self.root),
+            *self.bindings,
+            "--chdir",
+            str(self.root),
+            "--",
+            *command,
+        ]
+
+    @property
+    def pass_fds(self) -> tuple[int, ...]:
+        return (*self.fds, *(info.fileno() for info in self.infos))
 
     def finish(self) -> dict[str, Any]:
         if self.closed:
-            return {"status": "unavailable", "observer": "inotify", "reason": "observer already closed"}
+            return {"status": "unavailable", "observer": "readonly_snapshot", "reason": "boundary already closed"}
         self.closed = True
+        for info in self.infos:
+            try:
+                info.seek(0)
+                setup = json.load(info)
+                if not isinstance(setup, dict) or not isinstance(setup.get("child-pid"), int):
+                    self.failure = "readonly boundary setup was not proved"
+            except (OSError, ValueError):
+                self.failure = "readonly boundary setup was not proved"
+            finally:
+                info.close()
+        for fd in self.fds:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                self.failure = f"boundary descriptor cleanup failed: {exc}"
+        self.fds.clear()
+        self.resources.close()
         try:
-            while self.fd >= 0:
-                try:
-                    events = os.read(self.fd, 65536)
-                except BlockingIOError:
-                    break
-                if not events:
-                    self.failure = "source event stream closed"
-                    break
-                offset = 0
-                while offset < len(events):
-                    watch, mask, _cookie, length = struct.unpack_from("iIII", events, offset)
-                    name = os.fsdecode(events[offset + 16 : offset + 16 + length].split(b"\0", 1)[0])
-                    offset += 16 + length
-                    if mask & (0x00004000 | 0x00008000 | 0x00000800 | 0x00000400):
-                        self.failure = "source event coverage lost"
-                        continue
-                    path = self.directories.get(watch, Path(".")) / name
-                    if path in self.paths:
-                        self.failure = "declared source mutated during execution"
-                    else:
-                        ignored = subprocess.run(
-                            [
-                                "git",
-                                "check-ignore",
-                                "--no-index",
-                                "--quiet",
-                                "--",
-                                path.as_posix() + ("/" if mask & 0x40000000 else ""),
-                            ],
-                            cwd=self.root,
-                            check=False,
-                        )
-                        if ignored.returncode != 0:
-                            self.failure = f"declared source membership changed during execution: {path}"
-        except (OSError, ValueError, struct.error) as exc:
-            self.failure = str(exc)
-        finally:
-            if self.fd >= 0:
-                os.close(self.fd)
-                self.fd = -1
-        return {"status": "unavailable" if self.failure else "stable", "observer": "inotify", "reason": self.failure}
+            shutil.rmtree(self.copy)
+        except OSError as exc:
+            self.failure = f"boundary source cleanup failed: {exc}"
+        return {
+            "status": "unavailable" if self.failure or not self.launched else "stable",
+            "observer": "readonly_snapshot",
+            "reason": self.failure or (None if self.launched else "execution never launched"),
+            "git_worktree_content_sha256": self.digest,
+        }
 
 
 def start_execution(root: Path, environment: Mapping[str, str]) -> ExecutionSourceGuard | None:
     if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
         return None
     guard = ExecutionSourceGuard(root)
-    guard.previous_unavailable = False
     if environment.get("TESTMON_DATAFILE"):
         marker = Path(environment["TESTMON_DATAFILE"] + ".authority-unavailable")
         try:
             guard.graph_lock = os.open(str(marker) + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
             fcntl.flock(guard.graph_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             guard.previous_unavailable = marker.exists()
-            marker.write_text("execution source observation has not completed", encoding="utf-8")
+            marker.write_text("execution source authority has not completed", encoding="utf-8")
         except OSError:
             guard.finish()
             if guard.graph_lock is not None:
@@ -127,7 +190,44 @@ def start_execution(root: Path, environment: Mapping[str, str]) -> ExecutionSour
     return guard
 
 
-def finish_execution(guard: ExecutionSourceGuard | None, environment: Mapping[str, str]) -> dict[str, Any] | None:
+def complete_execution(command: Sequence[str], environment: Mapping[str, str], returncode: int) -> bool:
+    """An actual terminal complete run, rather than the caller's noselect intent."""
+    if (
+        environment.get("POLYLOGUE_TESTMON_COMPLETE") != "1"
+        or "--testmon-noselect" not in command
+        or "--collect-only" in command
+    ):
+        return False
+    corpus = CLOSED_WORLD_COLLECTION_ARGS
+    if not any(tuple(command[index : index + len(corpus)]) == corpus for index in range(len(command))):
+        return False
+    selection = environment.get("POLYLOGUE_PYTEST_SELECTION_PATH")
+    if not selection:
+        return False
+    try:
+        step_dir = Path(selection).parent
+        run_id = environment.get("POLYLOGUE_VERIFY_RUN_ID")
+        if not run_id:
+            return False
+        for name in ("selection.json", "summary.json"):
+            artifact = json.loads((step_dir / name).read_text())
+            if not isinstance(artifact, dict) or artifact.get("run_id") != run_id:
+                return False
+        evidence = aggregate_pytest_statistics(
+            Path(selection).parent, command=command, step_result={"exit": returncode}
+        )
+    except (OSError, ValueError):
+        return False
+    return (
+        bool(evidence["ordinary_eligible"])
+        and evidence["deselected_count"] == 0
+        and evidence["selected_count"] == evidence["terminal_count"]
+    )
+
+
+def finish_execution(
+    guard: ExecutionSourceGuard | None, environment: Mapping[str, str], *, complete: bool = False
+) -> dict[str, Any] | None:
     if guard is None:
         return None
     evidence = guard.finish()
@@ -136,10 +236,14 @@ def finish_execution(guard: ExecutionSourceGuard | None, environment: Mapping[st
             marker = Path(environment["TESTMON_DATAFILE"] + ".authority-unavailable")
             if evidence["status"] != "stable":
                 marker.write_text(str(evidence["reason"]), encoding="utf-8")
-            elif not guard.previous_unavailable or environment.get("POLYLOGUE_TESTMON_COMPLETE") == "1":
+            elif not guard.previous_unavailable or complete:
                 marker.unlink(missing_ok=True)
     except OSError as exc:
-        evidence = {"status": "unavailable", "observer": "inotify", "reason": f"authority publication failed: {exc}"}
+        evidence = {
+            "status": "unavailable",
+            "observer": "readonly_snapshot",
+            "reason": f"authority publication failed: {exc}",
+        }
     finally:
         if guard.graph_lock is not None:
             os.close(guard.graph_lock)

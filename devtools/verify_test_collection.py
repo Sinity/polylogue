@@ -40,6 +40,7 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from devtools.agent_env import HARNESS_RUN_ENV
 from devtools.pytest_invocation import (
@@ -164,10 +165,41 @@ def collect_selection(
             env["TESTMON_DATAFILE"] = str(datafile)
         else:
             env.pop("TESTMON_DATAFILE", None)
+        guard = None
         try:
-            completed = subprocess.run(
-                command, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, env=env
-            )
+            if datafile is not None:
+                from devtools.execution_source import start_execution
+                from devtools.pytest_slot import _focused_worktree_provenance, _group_reaped
+
+                env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
+                guard = start_execution(root, env)
+                provenance = _focused_worktree_provenance(str(root), env)
+                assert guard is not None
+                execution_command = guard.command(command, env, provenance)
+                process = subprocess.Popen(
+                    execution_command,
+                    cwd=root,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    env=env,
+                    process_group=0,
+                    pass_fds=guard.pass_fds,
+                )
+                guard.launched = True
+                completed: subprocess.CompletedProcess[Any] = subprocess.CompletedProcess(command, process.wait())
+                if not _group_reaped(process.pid):
+                    guard.failure = "collection descendants remain alive"
+            else:
+                completed = subprocess.run(
+                    command, cwd=root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, env=env
+                )
+            if guard is not None:
+                from devtools.execution_source import finish_execution
+
+                stability = finish_execution(guard, env)
+                guard = None
+                if stability is None or stability["status"] != "stable":
+                    return None
             if completed.returncode not in (0, _EXIT_NO_TESTS_COLLECTED):
                 return None
             payload = json.loads(evidence.read_text(encoding="utf-8"))
@@ -185,8 +217,13 @@ def collect_selection(
             ):
                 return None
             return CollectedSelection(count, tuple(nodes), omitted)
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             return None
+        finally:
+            if guard is not None:
+                from devtools.execution_source import finish_execution
+
+                finish_execution(guard, env)
 
 
 def _failure_details(output: str, *, limit: int = 12) -> tuple[str, ...]:

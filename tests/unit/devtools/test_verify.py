@@ -66,6 +66,9 @@ def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
         def wait(self, timeout: float | None = None) -> int:
             return self.returncode
 
+    from devtools import execution_source
+
+    monkeypatch.setattr(execution_source, "start_execution", lambda *_args: None)
     monkeypatch.setattr(subprocess, "Popen", FakeProcess)
     # This fixture exercises adjudication after a synthetic launch. Physical
     # admission has independent actual-route controls and must not depend on

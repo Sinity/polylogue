@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from devtools import pytest_slot, verify
-from devtools.execution_source import ExecutionSourceGuard
 from devtools.testmon_provision import inspect_testmon_graph
 from devtools.testmon_provision import testmon_datafile as _testmon_datafile
 from devtools.verify_runs import git_worktree_content_sha256
 from tests.infra.execution_authority import record_graph as _record
 from tests.infra.execution_authority import source_repository as _source_repository
+
+pytestmark = pytest.mark.uses_real_clock
 
 
 @pytest.fixture
@@ -72,74 +74,148 @@ def test_rename_keeps_removed_python_source_authority(source_repository: Path) -
     assert verify._selection_for_changes(changed) == "affected"
 
 
-def test_managed_transient_execution_voids_receipt_and_retains_graph(source_repository: Path) -> None:
-    """Endpoint equality alone accepts executed temporary code and its graph."""
-    root = source_repository
-    recorded = _record(root)
-    assert recorded[0] == 0, recorded
-    (root / "tests/nested/test_one.py").write_text(
-        "from pathlib import Path\n"
-        "def test_one():\n"
-        "    path = Path('helper.py')\n    original = path.read_bytes()\n"
-        "    try:\n        path.write_text('def value():\\n    return 42\\n')\n"
-        "        namespace = {}\n        exec(compile(path.read_bytes(), str(path), 'exec'), namespace)\n"
-        "        assert namespace['value']() == 42\n"
-        "    finally:\n        path.write_bytes(original)\n"
-    )
-    before = git_worktree_content_sha256(root)
-    exit_code, receipt = _record(root)
-    assert git_worktree_content_sha256(root) == before
-    assert exit_code == 125
-    assert receipt["diagnosis"] == "execution_source_unavailable"
-    assert receipt["execution_source"]["status"] == "unavailable"
-    assert receipt["worktree_provenance"] is None
-    metadata = pytest_slot.termination_metadata(pytest_slot.SlotOutcome(exit_code, "held", receipt=receipt))
-    assert metadata["diagnosis"] == "execution_source_unavailable"
-    assert metadata["worktree_provenance_unknown"] is True
-    assert _testmon_datafile(root).exists()
-    assert not inspect_testmon_graph(root).usable
-
-
-@pytest.mark.parametrize("mutation", ["replace", "new-directory", "watch-loss"])
-def test_source_observer_refuses_membership_and_coverage_loss(source_repository: Path, mutation: str) -> None:
-    root = source_repository
-    guard = ExecutionSourceGuard(root)
-    if mutation == "replace":
-        temporary = root / "replacement.py"
-        temporary.write_bytes((root / "helper.py").read_bytes())
-        temporary.replace(root / "helper.py")
-    elif mutation == "new-directory":
-        directory = root / "new_sources"
-        directory.mkdir()
-        (directory / "new.py").write_text("value = 1\n")
-    else:
-        (root / "tests/nested").rename(root / "tests/moved")
-    assert guard.finish()["status"] == "unavailable"
-
-
-@pytest.mark.parametrize("failure", ["overflow", "read-fault"])
-def test_source_observer_retains_unavailable_coverage(
-    source_repository: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+def test_managed_snapshot_executes_admitted_bytes_despite_transient_mmap_restore(
+    source_repository: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A lost event stream cannot be replaced by equal content samples."""
-    import os
-    import struct
+    """An endpoint-only boundary executes the temporary mmap value instead."""
+    import mmap
+    import threading
 
-    guard = ExecutionSourceGuard(source_repository)
-    original = os.read
-    pending = True
+    root = source_repository
+    (root / "helper.py").write_text("value = 1\n")
+    (root / "tests/nested/test_one.py").write_text(
+        "import os, time\nfrom pathlib import Path\n"
+        "def test_one():\n"
+        "    gate = Path(os.environ['SYNTHETIC_GATE'])\n"
+        "    gate.with_suffix('.ready').touch()\n"
+        "    while not gate.exists():\n        time.sleep(0.01)\n"
+        "    import helper\n    assert helper.value == 1\n"
+        "    gate.with_suffix('.done').touch()\n"
+    )
+    gate = root.parent / "gate"
+    monkeypatch.setenv("SYNTHETIC_GATE", str(gate))
+    before = git_worktree_content_sha256(root)
+    errors: list[BaseException] = []
 
-    def read(fd: int, count: int) -> bytes:
-        nonlocal pending
-        if fd == guard.fd and pending:
-            pending = False
-            if failure == "read-fault":
-                raise OSError("synthetic stream fault")
-            return struct.pack("iIII", -1, 0x00004000, 0, 0)
-        return original(fd, count)
+    def mutate() -> None:
+        import time
 
-    monkeypatch.setattr(os, "read", read)
-    assert guard.finish()["status"] == "unavailable"
+        try:
+            while not gate.with_suffix(".ready").exists():
+                time.sleep(0.01)
+            with (root / "helper.py").open("r+b") as stream, mmap.mmap(stream.fileno(), 0) as mapping:
+                mapping[:] = b"value = 2\n"
+                mapping.flush()
+                gate.touch()
+                while not gate.with_suffix(".done").exists():
+                    time.sleep(0.01)
+                mapping[:] = b"value = 1\n"
+                mapping.flush()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=mutate, daemon=True)
+    thread.start()
+    exit_code, receipt = _record(root)
+    thread.join(timeout=5)
+    assert not thread.is_alive() and not errors
+    assert exit_code == 0, receipt
+    assert git_worktree_content_sha256(root) == before
+    assert receipt["execution_source"]["status"] == "stable"
+    assert receipt["execution_source"]["observer"] == "readonly_snapshot"
+    assert receipt["worktree_provenance"]["git_worktree_content_sha256"] == before
+    assert inspect_testmon_graph(root).usable
+
+
+@pytest.mark.parametrize("mutation", ["write", "replace", "new-directory"])
+def test_managed_snapshot_refuses_source_writes(source_repository: Path, mutation: str) -> None:
+    root = source_repository
+    action = {
+        "write": "Path('helper.py').write_text('value = 2')",
+        "replace": "Path('.cache/replacement.py').replace('helper.py')",
+        "new-directory": "Path('new_sources').mkdir()",
+    }[mutation]
+    (root / ".cache/replacement.py").write_text("value = 2")
+    (root / "tests/nested/test_one.py").write_text(
+        "import pytest\nfrom pathlib import Path\ndef test_one():\n"
+        "    with pytest.raises(OSError):\n        " + action + "\n"
+    )
+    assert _record(root)[0] == 0
+
+
+@pytest.mark.parametrize("race", ["membership", "policy"])
+def test_managed_snapshot_rejects_membership_and_policy_admission_races(
+    source_repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    race: str,
+) -> None:
+    from devtools import execution_source
+
+    root = source_repository
+    original = execution_source.ExecutionSourceGuard.__init__
+
+    def start(guard: Any, checkout: Path) -> None:
+        # Policy changes after argv was keyed but before the copy; membership
+        # changes after the manifest copy but before provenance identification.
+        if race == "policy":
+            (root / "tests/nested/conftest.py").write_text("# new policy\n")
+        original(guard, checkout)
+        if race == "membership":
+            (root / "late").mkdir()
+            (root / "late/source.py").write_text("value = 1")
+
+    monkeypatch.setattr(execution_source.ExecutionSourceGuard, "__init__", start)
+    with pytest.raises(pytest_slot.PytestSlotUnavailableError):
+        _record(root)
+    assert Path(str(_testmon_datafile(root)) + ".authority-unavailable").exists()
+
+
+@pytest.mark.parametrize("stage", ["provenance", "launch", "sampler"])
+def test_setup_failure_cannot_clear_prior_graph_taint(
+    source_repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    root = source_repository
+    assert _record(root)[0] == 0
+    marker = Path(str(_testmon_datafile(root)) + ".authority-unavailable")
+    marker.write_text("prior unavailable execution")
+    original = subprocess.Popen
+    identify = pytest_slot._focused_worktree_provenance
+    calls = 0
+
+    def fail_launch(*args: Any, **kwargs: Any) -> Any:
+        if kwargs.get("process_group") == 0:
+            raise OSError("synthetic launch failure")
+        return original(*args, **kwargs)
+
+    def fail_provenance(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("synthetic provenance failure")
+        return identify(*args, **kwargs)
+
+    def fail_sampler(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("synthetic sampler failure")
+
+    with monkeypatch.context() as patch:
+        if stage == "launch":
+            patch.setattr(subprocess, "Popen", fail_launch)
+        elif stage == "provenance":
+            patch.setattr(pytest_slot, "_focused_worktree_provenance", fail_provenance)
+        else:
+            patch.setattr(pytest_slot, "ProcessGroupMemorySampler", fail_sampler)
+        with pytest.raises(OSError):
+            _record(root)
+    assert marker.exists()
+    assert not inspect_testmon_graph(root).usable
+    # A completed subset cannot restore full-graph authority either.
+    assert _record(root, subset="tests/test_other.py")[0] == 0
+    assert marker.exists()
+    assert _record(root)[0] == 0
+    assert not marker.exists()
+    assert inspect_testmon_graph(root).usable
 
 
 def test_verify_rerun_uses_the_graph_writers_hypothesis_budget(

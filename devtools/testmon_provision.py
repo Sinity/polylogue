@@ -1,8 +1,8 @@
 """The checkout-local pytest-testmon graph: where it lives and whether it works.
 
 One datafile per checkout, at ``.cache/testmon/testmondata``, under environments
-bound to declared pytest configuration, conftest policies and Hypothesis profile. Every managed pytest run traces into it and writes back, so
-the graph is advanced rather than recomputed. A worktree is provisioned by
+bound to declared pytest configuration, conftest policies and Hypothesis profile.
+Managed affected and complete runs trace into it, advancing the graph. A worktree is provisioned by
 copying master's datafile: paths are repo-relative and fingerprints are by
 content, so a copy is valid immediately.
 
@@ -53,7 +53,9 @@ def testmon_environment(root: Path, profile: str | None = None) -> str:
     profile = profile or os.environ.get("HYPOTHESIS_PROFILE", "default").strip() or "default"
     paths = {"pyproject.toml", "pytest.ini", "tox.ini", "setup.cfg", "conftest.py"}
     paths.update(path.relative_to(root).as_posix() for path in (root / "tests").rglob("conftest.py"))
-    digest = hashlib.sha256(profile.encode())
+    digest = hashlib.sha256()
+    digest.update(len(profile.encode()).to_bytes(8, "big"))
+    digest.update(profile.encode())
     for name in sorted(paths):
         digest.update(len(name.encode()).to_bytes(8, "big"))
         digest.update(name.encode())

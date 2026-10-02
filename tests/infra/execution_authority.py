@@ -44,12 +44,15 @@ def source_repository(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def record_graph(root: Path, *, profile: str = "default") -> tuple[int, dict[str, Any]]:
+def record_graph(root: Path, *, profile: str = "default", subset: str | None = None) -> tuple[int, dict[str, Any]]:
     command = verify._pytest_command(selection="all", worker_args=(), hypothesis_profile=profile, explicit_tests=())
     command = [argument for argument in command if not argument.startswith(("--junitxml=", "--polylogue-report-file="))]
     from devtools.pytest_stream_report import REPORT_FILE_OPTION
 
     command = [argument for argument in command if not argument.startswith(REPORT_FILE_OPTION + "=")]
+    if subset is not None:
+        command.remove("tests")
+        command.append(subset)
     env = dict(os.environ)
     verify._normalize_managed_pytest_environment(env, command)
     for name in tuple(env):
@@ -65,6 +68,13 @@ def record_graph(root: Path, *, profile: str = "default") -> tuple[int, dict[str
             "POLYLOGUE_TESTMON_COMPLETE": "1",
         }
     )
+    from devtools.pytest_stream_report import report_file_argument
+    from devtools.verify_runs import VerifyRun, env_for_pytest_step
+
+    run = VerifyRun(tier="all", argv=[], git_head=None, root=root)
+    artifacts = run.start_step(label="pytest (all)", cmd=command)
+    command.append(report_file_argument(artifacts.step_dir / "pytest-report.json"))
+    env = env_for_pytest_step(env, run=run, artifacts=artifacts)
     return pytest_slot._run_held(command, cwd=str(root), env=env, stdout=None, on_exit=lambda: None)
 
 

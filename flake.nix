@@ -615,6 +615,7 @@
           pkgs.uv
           devtoolsCli
           pkgs.git
+          pkgs.bubblewrap
           pkgs.ruff
           pkgs.ast-grep
           pkgs.scc
