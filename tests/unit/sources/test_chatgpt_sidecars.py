@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -483,7 +484,7 @@ def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
     fail_closes = [failed_close]
 
     class FaultConnection(sqlite3.Connection):
-        def execute(self, sql: str, *args: object, **kwargs: object) -> sqlite3.Cursor:
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             if sql.startswith(failed_statement):
                 raise sqlite3.OperationalError("synthetic asset setup fault")
             return super().execute(sql, *args, **kwargs)
@@ -493,11 +494,13 @@ def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
                 raise sqlite3.OperationalError("synthetic asset close fault")
             super().close()
 
-    def connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         kwargs["factory"] = FaultConnection
-        return original_connect(path, *args, **kwargs)
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
 
-    def open_writer(path: Path, **kwargs: object) -> object:
+    def open_writer(path: Path, **kwargs: Any) -> object:
         dependencies = kwargs["lifetime_dependencies"]
         assert isinstance(dependencies, tuple) and isinstance(dependencies[0], ChatGPTAssetIndex)
         captured.append(dependencies[0])
@@ -568,7 +571,7 @@ def test_streamed_sidecar_cancellation_rolls_back_partial_input(monkeypatch: pyt
     cancelled = threading.Event()
     insert = index._insert_library if library else index._insert_name
 
-    def cancel_after_insert(*args: object) -> None:
+    def cancel_after_insert(*args: Any) -> None:
         insert(*args)
         cancelled.set()
 
@@ -585,7 +588,9 @@ def test_streamed_sidecar_cancellation_rolls_back_partial_input(monkeypatch: pyt
         assert cancelled.is_set()
         cancelled.clear()
         index.seal()
-        assert index.resolve_dat("file-old").name == "old.txt"
+        retained = index.resolve_dat("file-old")
+        assert retained is not None
+        assert retained.name == "old.txt"
         assert index.resolve_dat("file-new-0") is None
     finally:
         compute_cancel.reset(token)
@@ -667,9 +672,11 @@ def test_asset_lookup_failed_native_close_retains_index_until_actual_settlement(
                 raise sqlite3.OperationalError("synthetic asset lookup close fault")
             super().close()
 
-    def connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         kwargs["factory"] = FaultReader
-        return original_connect(path, *args, **kwargs)
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     try:

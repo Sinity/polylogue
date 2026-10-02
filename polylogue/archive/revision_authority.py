@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -193,7 +193,7 @@ class ParserCensusIdentityMeasurement:
     identities_match: bool
     observed_count: int
 
-    def iter_keys(self, *, observed: bool) -> Iterator[str]:
+    def iter_keys(self, *, observed: bool) -> Generator[str, None, None]:
         with closing(
             self.connection.execute(
                 "SELECT logical_key FROM census_identity WHERE kind=? ORDER BY logical_key", (int(not observed),)
@@ -202,7 +202,7 @@ class ParserCensusIdentityMeasurement:
             for row in rows:
                 yield str(row[0])
 
-    def iter_durable_bindings(self) -> Iterator[tuple[str, str | None]]:
+    def iter_durable_bindings(self) -> Generator[tuple[str, str | None], None, None]:
         """Yield canonical identity and its exact captured membership spelling."""
         with closing(
             self.connection.execute(

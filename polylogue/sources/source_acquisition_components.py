@@ -959,11 +959,12 @@ def zip_acquisition_fingerprint(provider: Provider, *, preserved_only: bool = Fa
     from .dispatch import bound_location_provider
     from .origin_specs import retained_enumeration_fingerprint
 
+    location_provider = bound_location_provider(provider)
     return hashlib.sha256(
         json.dumps(
             (
                 retained_enumeration_fingerprint(),
-                bound_location_provider(provider).value if bound_location_provider(provider) is not None else None,
+                location_provider.value if location_provider is not None else None,
                 preserved_only,
             ),
             separators=(",", ":"),

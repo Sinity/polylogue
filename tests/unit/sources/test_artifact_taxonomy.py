@@ -1065,19 +1065,19 @@ def test_late_message_establishes_session_document() -> None:
 
 def test_late_provider_record_prevents_extracted_corpus_refusal() -> None:
     """A wire envelope beyond the former prefix disqualifies the corpus rule."""
-    payload: JSONValue = [{"source_file": "transcript.jsonl", "text": "copied"} for _ in range(32)] + [
-        {"type": "user", "message": {"role": "user", "content": "wire"}}
-    ]
+    payload: list[JSONValue] = [{"source_file": "transcript.jsonl", "text": "copied"} for _ in range(32)]
+    payload.append({"type": "user", "message": {"role": "user", "content": "wire"}})
     artifact = classify_artifact(payload, provider=Provider.CLAUDE_CODE)
     assert artifact.kind is not ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS
 
 
 def test_late_session_document_prevents_all_hook_stream_refusal() -> None:
     """Complete stream predicates cannot refuse mixed input from its hook prefix."""
-    payload: JSONValue = [
+    payload: list[JSONValue] = [
         {"event_type": "started", "session_id": "synthetic", "timestamp": "2026-01-01", "provider": "claude-code"}
         for _ in range(32)
-    ] + [{"messages": [{"role": "user", "content": "conversation"}]}]
+    ]
+    payload.append({"messages": [{"role": "user", "content": "conversation"}]})
     artifact = classify_artifact(payload, provider=Provider.UNKNOWN)
     assert artifact.parse_as_session
     assert artifact.kind is not ArtifactKind.HOOK_EVENT

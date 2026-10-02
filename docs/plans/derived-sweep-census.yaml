@@ -744,3 +744,10 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM attachments WHERE ref_count <= 0 after the refs this session dropped were recounted; it removes rows nothing references and never rewrites a retained one"
+  - file: "polylogue/sources/decoder_zip.py"
+    function: "process_zip"
+    subject: "addressing_mode"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "The parser-owned raw value is assigned its captured whole-member reading before canonical ZIP admission; no stored derived output is substituted or corrected."

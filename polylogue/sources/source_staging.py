@@ -258,9 +258,10 @@ class StagedInputMember:
     content_revision: str
 
     def __post_init__(self) -> None:
+        identity_fields: tuple[object, ...] = self.file_identity
         if (
-            len(self.file_identity) != 3
-            or any(type(value) is not int for value in self.file_identity)
+            len(identity_fields) != 3
+            or any(type(value) is not int for value in identity_fields)
             or self.file_identity[2] != stat.S_IFREG
             or self.content_kind not in {"bytes", "sqlite"}
             or len(self.content_revision) != 64
@@ -503,10 +504,10 @@ def bind_source_input(
 def stage_source_input(source: Path, staging_root: Path, *, check_stop: Callable[[], None]) -> Path:
     """Capture into one private slot and publish its streamed outside receipt last."""
     from polylogue.core.durable_fs import sync_directory
+    from polylogue.core.provider_identity import profile_root_for_artifact
     from polylogue.sources.parsers.hermes_identity import (
         CapturedHermesProfile,
         capture_profile_namespace,
-        profile_root_for_artifact,
     )
     from polylogue.sources.sqlite_export import _control_bytes, _identity
     from polylogue.sources.sqlite_snapshot import _snapshot_sqlite_database_bound, is_sqlite_path

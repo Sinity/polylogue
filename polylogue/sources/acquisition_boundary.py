@@ -158,7 +158,7 @@ class BoundRecordValidator:
 
 
 @contextmanager
-def _record_evidence_file():
+def _record_evidence_file() -> Iterator[IO[bytes]]:
     with tempfile.TemporaryFile(mode="w+b", prefix="polylogue-origin-record-") as handle:
         yield handle
 
@@ -203,7 +203,7 @@ class _RecordEvidence:
         self._lifetime.close()
 
     def validate(self, bound: Provider | None, *, record: bool) -> None:
-        from .dispatch import detector_registry
+        from .origin_specs import detector_registry
 
         try:
             for sequence in (False, True) if record else (False,):

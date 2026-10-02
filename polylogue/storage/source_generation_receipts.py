@@ -9,7 +9,7 @@ raws while the supplied snapshots remain the authority for every witness.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -63,7 +63,7 @@ class SourceGenerationLogicalReceipt:
     expected_session_id: str
     accepted_raw_id: str | None
     # Consume under the enclosing raw receipt's pinned Index snapshot.
-    application_ids: Iterator[str]
+    application_ids: Generator[str, None, None]
     head_session_ids: tuple[str, ...]
     session_ids: tuple[str, ...]
     blockers: tuple[SourceGenerationBlocker, ...]
@@ -174,7 +174,7 @@ def iter_source_item_raw_receipts(
     source_generation_id: str,
     source_item_id: str,
     check_stop: Callable[[], None] | None = None,
-) -> Iterator[SourceGenerationRawReceipt]:
+) -> Generator[SourceGenerationRawReceipt, None, None]:
     """Stream unique raw witnesses through an owned disk key set on the same snapshots."""
     with scratch_connection_context(prefix="polylogue-source-raws-", filename="keys.db") as keys:
         keys.execute("PRAGMA journal_mode=DELETE")
@@ -278,7 +278,7 @@ def _raw_receipt(
     raw_id: str,
     *,
     check_stop: Callable[[], None] | None,
-) -> Iterator[SourceGenerationRawReceipt]:
+) -> Generator[SourceGenerationRawReceipt, None, None]:
     with closing(
         source_conn.execute(
             "SELECT raw_id, source_index, parsed_at_ms, logical_source_key, revision_kind, "
@@ -347,7 +347,7 @@ def _raw_receipt(
             parser_complete = False
             parser_blockers = (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
 
-        def logical_receipts() -> Iterator[SourceGenerationLogicalReceipt]:
+        def logical_receipts() -> Generator[SourceGenerationLogicalReceipt, None, None]:
             if not measured.durable_valid:
                 return
             with closing(measured.iter_durable_bindings()) as bindings:
@@ -460,11 +460,12 @@ def _logical_receipt(
 ) -> SourceGenerationLogicalReceipt:
     origin, separator, native_id = logical_key.partition(":")
     if not separator or not native_id:
+        empty_application_ids: tuple[str, ...] = ()
         return SourceGenerationLogicalReceipt(
             logical_source_key=logical_key,
             expected_session_id="",
             accepted_raw_id=None,
-            application_ids=iter(()),
+            application_ids=(value for value in empty_application_ids),
             head_session_ids=(),
             session_ids=(),
             blockers=(SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,),
@@ -545,7 +546,7 @@ def _logical_receipt(
                 pass
             valid_application_count = 0
 
-    def application_ids() -> Iterator[str]:
+    def application_ids() -> Generator[str, None, None]:
         with closing(
             index_conn.execute(
                 "SELECT decision_id FROM main.raw_revision_applications "
@@ -794,7 +795,7 @@ def _byte_append_chain_is_exact(
 
 def _source_predecessor_rows(
     source_conn: sqlite3.Connection, *, raw_id: str, check_stop: Callable[[], None] | None
-) -> Iterator[tuple[object, ...]]:
+) -> Generator[tuple[object, ...], None, None]:
     """Walk one Source snapshot with bounded disk deduplication and cooperative cancellation."""
     with scratch_connection_context(prefix="polylogue-byte-chain-", filename="visited.db") as visited:
         visited.execute("PRAGMA journal_mode=DELETE")

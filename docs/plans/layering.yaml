@@ -86,7 +86,7 @@ writer_modules:
           interruption: atomic
       entrypoints:
         [apply_source_raw_state_update, bind_source_raw_revision, record_capture_mode_observation,
-        record_excised_blob_hash, record_raw_container_coordinate, refine_raw_origin,
+        record_excised_blob_hash, record_raw_container_coordinate, record_raw_profile_identity, refine_raw_origin,
         delete_source_hook_event, write_source_blob_refs, write_source_hook_event,
         write_source_hook_event_batch, write_source_raw_session,
         write_source_raw_session_blob_ref, upsert_raw_artifact]
@@ -95,7 +95,7 @@ writer_modules:
         - tier: source
           durability: durable
           interruption: atomic
-      entrypoints: [publish_source_generation, seal_source_generation, transition_source_item,
+      entrypoints: [prepare_source_manifest, publish_acquired_zip_input, publish_source_generation, seal_source_generation, transition_source_item,
         record_source_item_raw_member, record_source_item_member_disposition,
         complete_source_item_enumeration, publish_frozen_source_manifest,
         begin_prepared_source_manifest, append_prepared_source_inputs,

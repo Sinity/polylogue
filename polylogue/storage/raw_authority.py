@@ -14,7 +14,7 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,7 +49,7 @@ def _writer(path: Path, *, archive_root: Path) -> sqlite3.Connection:
     return open_isolated_write_connection(path, purpose=f"raw authority({path})", archive_root=archive_root)
 
 
-def iter_parser_census_logical_keys(logical_keys_json: object) -> Iterator[str]:
+def iter_parser_census_logical_keys(logical_keys_json: object) -> Generator[str, None, None]:
     """Validate the existing ordered receipt while yielding one canonical key.
 
     Canonical duplicate detection belongs to the shared disk measurement.

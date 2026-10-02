@@ -19,6 +19,7 @@ from polylogue.sources.revision_backfill import (
     RetainedPreparationRetryableError,
     RevisionCensusResult,
 )
+from polylogue.storage.derived.raw import RawObservationReplacement
 from polylogue.storage.index_generation import IndexGeneration
 from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
@@ -157,7 +158,7 @@ def replay_retained_components(
                 started = False
                 previous_failures = len(failures)
 
-                def publish(replacement=replacement) -> bool:
+                def publish(replacement: RawObservationReplacement = replacement) -> bool:
                     nonlocal started
                     started = True
                     return adapter.publish(frame, replacement)

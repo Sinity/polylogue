@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import ijson
 
@@ -200,8 +201,10 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
 
     provider = Provider.from_string(_normalize_payload_provider_hint(record) or record.source_name or "")
     scan: JSONLSessionArtifactScan | None = None
+    artifact: ArtifactClassification | None
+    wire_format: Literal["json", "jsonl"]
     with blob_path.open("rb") as handle:
-        provider, _detail = detect_provider_from_raw_stream_evidence(handle, record.source_path, provider)
+        provider, detection_detail = detect_provider_from_raw_stream_evidence(handle, record.source_path, provider)
         handle.seek(0)
         try:
             artifact = classify_artifact_stream(
@@ -234,7 +237,7 @@ def _inspect_payload_envelope(record: RawSessionRecord, *, blob_store: BlobStore
         from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail
 
         with suppress(ValueError):
-            diagnostic_payload, _failures, _detail = _sample_jsonl_payload_with_detail(
+            diagnostic_payload, _failures, sample_detail = _sample_jsonl_payload_with_detail(
                 blob_path,
                 max_samples=64,
                 max_record_bytes=_INSPECTION_PREFIX_BYTES,

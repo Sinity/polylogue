@@ -7,6 +7,7 @@ import io
 import os
 import sqlite3
 import subprocess
+import tempfile
 from contextlib import closing
 from pathlib import Path
 from typing import IO, Any, cast
@@ -294,7 +295,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
         if operation == "staging_receipt"
         else None
     )
-    original_directory = sqlite_export.tempfile.TemporaryDirectory
+    original_directory = tempfile.TemporaryDirectory
     scratch_paths: list[Path] = []
 
     def temporary_directory(*args: Any, **kwargs: Any) -> Any:
@@ -302,7 +303,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
         scratch_paths.append(Path(directory.name))
         return directory
 
-    monkeypatch.setattr(sqlite_export.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", temporary_directory)
     original = subprocess.Popen
     children: list[subprocess.Popen[bytes]] = []
 
@@ -318,7 +319,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
     def fail_callback(*_args: Any) -> None:
         raise failure()
 
-    monkeypatch.setattr(sqlite_export.subprocess, "Popen", launch)
+    monkeypatch.setattr(subprocess, "Popen", launch)
     with pytest.raises(failure):
         if operation == "export":
             sqlite_export.write_logical_export(source, FailingSink())
@@ -568,7 +569,7 @@ def test_sqlite_directory_frontier_refuses_a_substituted_ancestor_with_the_same_
     external = tmp_path / "external"
     external.mkdir()
     os.link(source, external / source.name)
-    original = source_snapshot._logical_export_digest_bound
+    original = sqlite_export._logical_export_digest_bound
     attacked = False
 
     def substitute(path: Path, **kwargs: Any) -> str:
@@ -610,7 +611,7 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
         else None
     )
     original = subprocess.Popen
-    original_directory = sqlite_export.tempfile.TemporaryDirectory
+    original_directory = tempfile.TemporaryDirectory
     children: list[subprocess.Popen[bytes]] = []
     scratch_paths: list[Path] = []
 
@@ -638,8 +639,8 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
         scratch_paths.append(Path(directory.name))
         return directory
 
-    monkeypatch.setattr(sqlite_export.subprocess, "Popen", launch)
-    monkeypatch.setattr(sqlite_export.tempfile, "TemporaryDirectory", temporary_directory)
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", temporary_directory)
     with pytest.raises(OSError) as failure:
         if operation == "export":
             sqlite_export.logical_export_bytes(source)
@@ -747,7 +748,7 @@ def test_failed_receipt_publication_preserves_the_previous_generation_and_retry(
             raise OSError(errno.EIO, "synthetic receipt publication failure")
         replace(source, target)
 
-    monkeypatch.setattr(source_staging.os, "replace", fail_receipt)
+    monkeypatch.setattr(os, "replace", fail_receipt)
     with pytest.raises(OSError) as failure:
         source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
     assert failure.value.errno == errno.EIO
@@ -756,7 +757,7 @@ def test_failed_receipt_publication_preserves_the_previous_generation_and_retry(
     with single_staged_binding(first) as binding:
         assert binding.source_path == original
         assert sqlite_snapshot.member_export_scope(binding.source_path).tables == ("threads", "thread_spawn_edges")
-    monkeypatch.setattr(source_staging.os, "replace", replace)
+    monkeypatch.setattr(os, "replace", replace)
     second = source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
     with single_staged_binding(second) as binding:
         snapshot = sqlite_snapshot.snapshot_sqlite_to_blob(

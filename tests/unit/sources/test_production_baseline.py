@@ -1055,7 +1055,7 @@ def test_explicit_sqlite_import_retains_its_original_coordinate_outside_watch_ro
     original = workspace_env["home_dir"] / ".codex" / "state_5.sqlite"
     _write_codex_state_db(original)
     staged = stage_source_input(original, import_staging_root(archive_root), check_stop=lambda: None)
-    assert all(not staged.is_relative_to(source.root) for source in daemon_watch_sources() if source.root is not None)
+    assert all(not staged.is_relative_to(source.root) for source in daemon_watch_sources())
     spool = discover_ingest_input_spool(staged, source_path=str(original), check_stop=lambda: None)
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     try:

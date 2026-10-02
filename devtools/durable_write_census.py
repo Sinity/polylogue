@@ -998,11 +998,18 @@ class DurableWriteCensus:
             self._runtime_persistent_tables = frozenset(
                 creation.table for creation in self._runtime_creations.values() if creation.disposition == "persistent"
             )
-        runtime_persistent_tables = self._runtime_persistent_tables
         table_tiers = self._table_tiers
         sites = self._sites
         helpers = self._helpers
         values = _string_values(tree)
+        # Private modules cannot acquire archive authority from another
+        # creator that happens to use the same relation name. Match the
+        # runtime-DDL observation boundary before classifying rewrites.
+        runtime_persistent_tables = (
+            self._runtime_persistent_tables
+            if _is_archive_storage_module(relative) or _writes_archive_table(tree, values, table_tiers)
+            else frozenset()
+        )
         scopes = _scopes(tree)
         self._paths[relative] = path
         self._called_names[relative] = frozenset(

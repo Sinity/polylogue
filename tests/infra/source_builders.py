@@ -538,9 +538,9 @@ def observe_source_generation_receipt(
     from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
 
     items = []
-    retired = []
+    retired: list[SimpleNamespace] = []
     cursor = None
-    marker_missing = set()
+    marker_missing: set[str] = set()
     while True:
         page = source_generation_receipt_page(source, source_generation_id=source_generation_id, after=cursor)
         if not page.items:

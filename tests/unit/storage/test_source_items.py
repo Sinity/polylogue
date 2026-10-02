@@ -6,7 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import TypedDict
 
@@ -198,7 +198,9 @@ def test_completion_uses_disk_rows_and_same_uncommitted_source_membership(monkey
     conn.execute("BEGIN")
     for number in range(4097):
         _raw_member(conn, item, f"record:{number:05d}")
-    actual_factory = source_items.scratch_connection_context
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    actual_factory = scratch_connection_context
     observed: list[tuple[str, int, int, str]] = []
 
     @contextmanager
@@ -279,7 +281,8 @@ async def test_async_completion_cancellation_drains_worker_and_rolls_back() -> N
             _raw_member(owner._conn, item, "record:0")
             return item
 
-        item = await owner._execute(initialize)
+        execute: Callable[[Callable[[], str]], Awaitable[str]] = owner._execute
+        item = await execute(initialize)
         entered = asyncio.Event()
         release = threading.Event()
         loop = asyncio.get_running_loop()

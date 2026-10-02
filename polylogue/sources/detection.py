@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from importlib import import_module
-from typing import BinaryIO, Protocol, cast
+from typing import IO, Protocol, cast
 
 from polylogue.core.enums import Origin, Provider
 
@@ -142,14 +142,16 @@ class CompiledDetectorRegistry:
                 first = next(events, None)
                 if first is None:
                     continue
+
+                def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
+                    return predicate([item])
+
                 with ExitStack() as stack:
                     root_rule = (
                         DetectorProjection(
                             item=rule,
                             array_fold="any" if mode is DetectionMode.SEQUENCE_RECORD_STREAM else "first",
-                            array_predicate=(lambda item, predicate=compiled.predicate: predicate([item]))
-                            if mode is DetectionMode.SEQUENCE_RECORD_STREAM
-                            else None,
+                            array_predicate=array_predicate if mode is DetectionMode.SEQUENCE_RECORD_STREAM else None,
                         )
                         if array_input
                         else rule
@@ -157,22 +159,25 @@ class CompiledDetectorRegistry:
                     payload = _project(events, first[0], first[1], root_rule, stack)
                     if not compiled.predicate(payload):
                         continue
-                    provider = (
+                    resolved_provider: object = (
                         binding.fixed_provider
                         if compiled.provider_resolver is None
                         else compiled.provider_resolver(payload)
                     )
                     if (
                         compiled.provider_resolver is not None
-                        and provider is not None
-                        and (not isinstance(provider, Provider) or provider not in binding.dynamic_provider_allowlist)
+                        and resolved_provider is not None
+                        and (
+                            not isinstance(resolved_provider, Provider)
+                            or resolved_provider not in binding.dynamic_provider_allowlist
+                        )
                     ):
                         raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
-                    return provider, binding.evidence_label
+                    return cast(Provider | None, resolved_provider), binding.evidence_label
         return None, None
 
     def detect_stream(
-        self, handle: BinaryIO, *, check_stop: Callable[[], None] | None = None
+        self, handle: IO[bytes], *, check_stop: Callable[[], None] | None = None
     ) -> tuple[Provider | None, str | None]:
         """Apply the same registry order to complete parser-declared projections.
 
@@ -199,12 +204,12 @@ class CompiledDetectorRegistry:
                     rule = factory()
                     if not isinstance(rule, DetectorProjection):
                         raise DetectorBindingError(f"{binding.binding_id}: invalid stream projection")
+
+                    def array_predicate(item: object, predicate: Predicate = compiled.predicate) -> bool:
+                        return predicate([item])
+
                     handle.seek(start)
-                    stream_predicate = (
-                        (lambda item, predicate=compiled.predicate: predicate([item]))
-                        if mode is DetectionMode.SEQUENCE_RECORD_STREAM
-                        else None
-                    )
+                    stream_predicate = array_predicate if mode is DetectionMode.SEQUENCE_RECORD_STREAM else None
                     shape, payload = project_detection_input(
                         handle, rule, stream_predicate=stream_predicate, check_stop=check_stop
                     )
@@ -212,18 +217,21 @@ class CompiledDetectorRegistry:
                         continue
                     if not compiled.predicate(payload):
                         continue
-                    provider = (
+                    resolved_provider: object = (
                         binding.fixed_provider
                         if compiled.provider_resolver is None
                         else compiled.provider_resolver(payload)
                     )
                     if (
                         compiled.provider_resolver is not None
-                        and provider is not None
-                        and (not isinstance(provider, Provider) or provider not in binding.dynamic_provider_allowlist)
+                        and resolved_provider is not None
+                        and (
+                            not isinstance(resolved_provider, Provider)
+                            or resolved_provider not in binding.dynamic_provider_allowlist
+                        )
                     ):
                         raise DetectorBindingError(f"{binding.binding_id}: invalid projected dynamic provider")
-                    return provider, binding.evidence_label
+                    return cast(Provider | None, resolved_provider), binding.evidence_label
             return None, None
         finally:
             handle.seek(start)

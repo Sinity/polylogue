@@ -10,6 +10,7 @@ import io
 import json
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import given, settings
@@ -578,14 +579,16 @@ def test_nonseekable_taxonomy_failed_native_close_retains_replay_artifact(
 
     actual_connect = sqlite3.connect
 
-    def connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         if str(database).endswith("bytes.db"):
             kwargs["factory"] = ControlledConnection
             connection = actual_connect(database, *args, **kwargs)
             assert isinstance(connection, ControlledConnection)
             connection.close_failure = sqlite3.OperationalError("synthetic replay close failure")
             return connection
-        return actual_connect(database, *args, **kwargs)
+        result = actual_connect(database, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     caller = BinaryPipe(b'{"metadata":1}\n')

@@ -58,6 +58,57 @@ def test_runtime_persistent_creation_then_rewrite_is_not_hidden_by_missing_canon
     assert _rules(tmp_path, declaration) == set()
 
 
+def test_private_name_collision_preserves_creator_boundary_and_archive_writes(tmp_path: Path) -> None:
+    """A private name collision cannot lend another module runtime authority."""
+    _module(
+        tmp_path,
+        "def mutate(conn):\n"
+        '    conn.execute("CREATE TABLE shared_private (value TEXT)")\n'
+        '    conn.execute("UPDATE shared_private SET value = 1")\n',
+    )
+    outside = tmp_path / "polylogue" / "operations" / "private_spool.py"
+    outside.parent.mkdir(parents=True)
+    private_body = (
+        "def mutate(conn):\n"
+        '    conn.execute("CREATE TABLE shared_private (value TEXT)")\n'
+        '    conn.execute("UPDATE shared_private SET value = 1")\n'
+    )
+    outside.write_text(private_body, encoding="utf-8")
+    declaration = _declaration(
+        tmp_path,
+        "package: polylogue\nruntime_tables:\n"
+        '  - file: "polylogue/storage/sqlite/archive_tiers/writer.py"\n'
+        '    function: "mutate"\n'
+        '    table: "shared_private"\n'
+        "    disposition: disposable_scratch\n"
+        '    reason: "Private disk spool owned by this storage creator."\n'
+        "writes: []\n",
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert {(row.file, row.table) for row in observation.runtime_creations} == {
+        ("polylogue/storage/sqlite/archive_tiers/writer.py", "shared_private")
+    }
+    assert {(row.file, row.tier) for row in observation.sites} == {
+        ("polylogue/storage/sqlite/archive_tiers/writer.py", "runtime")
+    }
+    assert _rules(tmp_path, declaration) == set()
+
+    # Actual archive writes outside storage retain both archive detection and
+    # their own runtime relation census, even when the relation name collides.
+    outside.write_text(
+        private_body + '    conn.execute("UPDATE assertions SET updated_at_ms = 1")\n',
+        encoding="utf-8",
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert ("polylogue/operations/private_spool.py", "shared_private") in {
+        (row.file, row.table) for row in observation.runtime_creations
+    }
+    assert ("polylogue/operations/private_spool.py", "assertions", "user") in {
+        (row.file, row.table, row.tier) for row in observation.sites
+    }
+    assert "runtime_persistent_table_rewrite_undeclared" in _rules(tmp_path, declaration)
+
+
 def test_temporary_and_in_memory_scratch_creations_have_non_archive_dispositions(tmp_path: Path) -> None:
     """Temp and private-memory relations never acquire an invented durable tier.
 

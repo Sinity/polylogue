@@ -8,7 +8,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Literal, TypeAlias, cast
+from typing import IO, TYPE_CHECKING, Literal, TypeAlias, cast
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope, has_chatgpt_native_payload
 from polylogue.core.binary_signatures import detect_binary_signature
@@ -520,7 +520,7 @@ def detect_provider(
 
 
 def detect_provider_from_stream_evidence(
-    handle: BinaryIO,
+    handle: IO[bytes],
     *,
     expected: Provider | str | None = None,
     check_stop: Callable[[], None] | None = None,
@@ -535,7 +535,7 @@ def detect_provider_from_stream_evidence(
 
 
 def detect_provider_from_raw_stream_evidence(
-    handle: BinaryIO,
+    handle: IO[bytes],
     stream_name: str,
     fallback_provider: Provider,
     *,

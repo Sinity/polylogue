@@ -9,11 +9,11 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Buffer, Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, BinaryIO, Protocol, cast
+from typing import IO, TYPE_CHECKING, Protocol, cast
 
 import ijson
 
@@ -551,9 +551,9 @@ def jsonl_prefix_record_count(handle: IO[bytes], prefix_size: int, *, stop: Call
     line_has_content = False
     while remaining > 0:
         if stop is not None and stop():
-            from polylogue.sources.prepared_jsonl import VerificationCancelledError
+            from polylogue.core.compute import DaemonOperationCancelled
 
-            raise VerificationCancelledError("partial JSONL prefix record count")
+            raise DaemonOperationCancelled("partial JSONL prefix record count")
         chunk = handle.read(min(_JSONL_TAIL_READ_BYTES, remaining))
         if not chunk:
             break
@@ -680,16 +680,17 @@ class _JsonlParsePrefix(io.RawIOBase):
         remaining = self._size - self.tell()
         return self._handle.read(remaining if size < 0 else min(size, remaining))
 
-    def readinto(self, buffer: bytearray | memoryview) -> int:
-        data = self.read(len(buffer))
-        buffer[: len(data)] = data
+    def readinto(self, buffer: Buffer) -> int:
+        view = memoryview(buffer).cast("B")
+        data = self.read(len(view))
+        view[: len(data)] = data
         return len(data)
 
 
 @contextmanager
 def jsonl_parse_input_of_handle(
-    handle: BinaryIO, *, check_stop: Callable[[], None] | None = None
-) -> Iterator[BinaryIO]:
+    handle: IO[bytes], *, check_stop: Callable[[], None] | None = None
+) -> Iterator[IO[bytes]]:
     """Expose the existing accepted-prefix law and restore the caller's offset.
 
     A malformed finished record remains in the view. Only the boundary owner
@@ -704,7 +705,7 @@ def jsonl_parse_input_of_handle(
             yield handle
         else:
             view = _JsonlParsePrefix(handle, prefix_size)
-            yield cast(BinaryIO, view)
+            yield cast(IO[bytes], view)
     finally:
         if view is not None:
             view.close()

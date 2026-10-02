@@ -11,12 +11,12 @@ from __future__ import annotations
 import codecs
 import io
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from decimal import Decimal
 from json import JSONDecodeError
-from typing import BinaryIO, Literal, Protocol
+from typing import IO, Literal, Protocol
 
 import ijson
 
@@ -198,7 +198,9 @@ def _project_value(
 ) -> tuple[object, bool]:
     if rule is None:
         if scalarish_depth is not None:
-            shape = {} if event == "start_map" else [] if event == "start_array" else None
+            shape: dict[str, object] | list[object] | None = (
+                {} if event == "start_map" else [] if event == "start_array" else None
+            )
             return shape, _consume_scalarish(events, event, scalarish_depth)
         return _skip(events, event), True
     if event == "start_map":
@@ -334,7 +336,7 @@ def _document_projection(
 
 
 def project_detection_input(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     stream_predicate: Callable[[object], bool] | None = None,
@@ -409,12 +411,12 @@ def project_detection_input(
 
 
 def iter_projected_jsonl_records(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     check_stop: Callable[[], None] | None = None,
     on_decode_failure: Callable[[Exception], None] | None = None,
-) -> Iterator[object]:
+) -> Generator[object, None, None]:
     """Project each complete JSONL value while consuming every physical line.
 
     The caller owns the original handle. A supplied failure observer permits
@@ -450,7 +452,7 @@ def iter_projected_jsonl_records(
 
 
 def iter_projected_document_records(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     encoding: str = "utf-8",

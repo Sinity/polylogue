@@ -104,12 +104,13 @@ class CapturedSourceInputIdentity:
     profile_source_path: str
 
     def __post_init__(self) -> None:
-        for value in (
+        coordinate_fields: tuple[object, ...] = (
             self.canonical_source_path,
             self.semantic_source_path,
             self.profile_root,
             self.profile_source_path,
-        ):
+        )
+        for value in coordinate_fields:
             if (
                 not isinstance(value, str)
                 or not Path(value).is_absolute()
@@ -1233,7 +1234,8 @@ def _measure_source_item_enumeration(
             "CREATE TABLE ordinals(ordinal INTEGER PRIMARY KEY, accepted INTEGER, "
             "member_name TEXT, disposition TEXT, diagnostic TEXT)"
         )
-        for coordinate in record_coordinates:
+        coordinates: Iterable[object] = record_coordinates
+        for coordinate in coordinates:
             checkpoint()
             if not isinstance(coordinate, str) or not coordinate.strip():
                 raise ValueError("enumeration coordinates must be distinct and nonempty")

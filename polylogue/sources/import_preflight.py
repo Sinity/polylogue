@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import IO, TYPE_CHECKING, Any
 
 from polylogue.core.enums import Provider
 from polylogue.sources.decoder_zip import (
@@ -205,7 +205,7 @@ def _preflight_zip(
     acc: _PreflightAccumulator,
     *,
     label: str,
-    handle: BinaryIO | None = None,
+    handle: IO[bytes] | None = None,
     check_stop: Callable[[], None] | None = None,
 ) -> None:
     try:
@@ -234,7 +234,7 @@ def _preflight_zip(
 
 
 def _preflight_json_handle(
-    handle: BinaryIO, acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
+    handle: IO[bytes], acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
 ) -> None:
     import ijson
 
@@ -269,7 +269,7 @@ __all__ = [
 
 
 def _preflight_handle(
-    handle: BinaryIO, semantic_path: Path, *, check_stop: Callable[[], None] | None = None
+    handle: IO[bytes], semantic_path: Path, *, check_stop: Callable[[], None] | None = None
 ) -> ImportPreflightResult:
     """Inspect the actual accepted byte descriptor in its fresh reader process."""
     acc = _PreflightAccumulator(str(semantic_path))

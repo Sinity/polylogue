@@ -42,7 +42,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import IO, TYPE_CHECKING
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 
@@ -236,7 +236,7 @@ class ChatGPTAssetIndex:
             (self._key(file_id), json.dumps(name)),
         )
 
-    def load_stream(self, source: BinaryIO, *, library: bool) -> bool:
+    def load_stream(self, source: IO[bytes], *, library: bool) -> bool:
         """Project complete sidecar fields into the same indexed authority.
 
         A savepoint prevents malformed trailing syntax or a CRC failure from
@@ -273,7 +273,7 @@ class ChatGPTAssetIndex:
             if first is None:
                 raise ValueError("empty ChatGPT sidecar input")
             event, value = first
-            claimed = event != "null"
+            claimed = event not in ("null",)
             with ExitStack() as stack:
                 if library and event == "start_array":
                     rule = DetectorProjection(
@@ -399,7 +399,9 @@ class ChatGPTAssetIndex:
             "SELECT key FROM assets WHERE asset=? AND rendition=1 ORDER BY key",
             (self._key(asset),),
         ):
-            yield bytes(row[0]).decode("utf-8", "surrogatepass")
+            key = row[0]
+            assert isinstance(key, bytes)
+            yield key.decode("utf-8", "surrogatepass")
 
     def seal(self) -> None:
         if not self._sealed:
@@ -596,11 +598,17 @@ class _AssetBlobs(Mapping[str, tuple[str, int]]):
         rows = self.index._rows("SELECT hash, size FROM assets WHERE key=?", (self.index._key(key),))
         if not rows:
             raise KeyError(key)
-        return str(rows[0][0]), int(rows[0][1])
+        digest, size = rows[0]
+        assert isinstance(size, int)
+        return str(digest), size
 
     def __iter__(self) -> Iterator[str]:
         for row in self.index._paged_rows("SELECT key FROM assets ORDER BY key"):
-            yield bytes(row[0]).decode("utf-8", "surrogatepass")
+            key = row[0]
+            assert isinstance(key, bytes)
+            yield key.decode("utf-8", "surrogatepass")
 
     def __len__(self) -> int:
-        return int(self.index._rows("SELECT COUNT(*) FROM assets")[0][0])
+        count = self.index._rows("SELECT COUNT(*) FROM assets")[0][0]
+        assert isinstance(count, int)
+        return count

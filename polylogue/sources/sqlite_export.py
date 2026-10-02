@@ -43,11 +43,11 @@ import struct
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from polylogue.sources.source_staging import SourceInputBinding
@@ -246,7 +246,7 @@ class _SourceDescriptors:
                 raise OSError(errno.ESTALE, "SQLite opened an unbound source descriptor", self.name)
 
 
-def _read_exact(stream: BinaryIO, count: int) -> bytes:
+def _read_exact(stream: IO[bytes], count: int) -> bytes:
     payload = bytearray()
     while len(payload) < count:
         try:
@@ -259,7 +259,7 @@ def _read_exact(stream: BinaryIO, count: int) -> bytes:
     return bytes(payload)
 
 
-def _write_frame(stream: BinaryIO, kind: bytes, payload: bytes = b"") -> None:
+def _write_frame(stream: IO[bytes], kind: bytes, payload: bytes = b"") -> None:
     stream.write(_FRAME_HEADER.pack(kind, len(payload)))
     stream.write(payload)
     stream.flush()
@@ -310,9 +310,10 @@ def _decode_control(payload: bytes) -> dict[str, Any]:
 
 def _decode_shape(payload: bytes) -> dict[str, list[str]]:
     result = _decode_control(payload)
+    items: Iterable[tuple[object, object]] = result.items()
     if not all(
         isinstance(key, str) and isinstance(value, list) and all(isinstance(column, str) for column in value)
-        for key, value in result.items()
+        for key, value in items
     ):
         raise OSError(errno.EPROTO, "invalid SQLite worker shape")
     return result
@@ -794,6 +795,10 @@ def _source_worker_main() -> None:
             if request.get("progress"):
                 _WorkerSink().write(b"")
 
+        def sql_progress() -> int:
+            progress()
+            return 0
+
         _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         if request["operation"] == "shape":
             export_shape = _export_shape_at(request["directory"], source.name, accepted[""])
@@ -851,9 +856,9 @@ def _source_worker_main() -> None:
                 proof.validate()
                 _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 if request.get("progress"):
-                    conn.set_progress_handler(lambda: (progress(), 0)[1], 1000)
+                    conn.set_progress_handler(sql_progress, 1000)
                     if grouping is not None:
-                        grouping.connection.set_progress_handler(lambda: (progress(), 0)[1], 1000)
+                        grouping.connection.set_progress_handler(sql_progress, 1000)
                 # Sorting a complete source or preview denominator must spill
                 # regardless of the SQLite build's default TEMP policy. Main
                 # descriptor proof precedes SQL; no transaction or TEMP object
@@ -899,6 +904,7 @@ def _source_worker_main() -> None:
                         )
                     )
                 elif request["operation"] == "backup" and output is not None:
+                    assert output_identity is not None
                     retained_revision = _HashingSink(progress if request.get("progress") else None)
                     _write_export_connection(conn, retained_revision, scope, schema)
                     conn.backup(output, pages=256, progress=lambda *_counts: progress())
@@ -1330,7 +1336,7 @@ def logical_source_shape(path: Path, *, immutable: bool = False) -> dict[str, tu
     return {table: tuple(columns) for table, columns in result.items()}
 
 
-def _iter_export_handle(handle: BinaryIO) -> Iterator[tuple[LogicalExportHeader | dict[str, Any] | list[Any], str]]:
+def _iter_export_handle(handle: IO[bytes]) -> Iterator[tuple[LogicalExportHeader | dict[str, Any] | list[Any], str]]:
     yield _parse_header(handle.readline()), "header"
     for line in handle:
         if not line.strip():
