@@ -304,8 +304,9 @@ def test_proven_detached_identity_survives_unreadable_marker(tmp_path: Path) -> 
     sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
     sampler.sample()
     (child / "environ").unlink()
+    _process(proc, 101, pgid=900, pss_kib=1100 * KIB)
     sampler.sample()
-    assert sampler.snapshot()["peak"]["pss_kib"] == 800 * KIB
+    assert sampler.snapshot()["peak"]["pss_kib"] == 1200 * KIB
     assert {entry["pid"] for entry in sampler.snapshot()["processes"]} == {100, 101}
 
 
@@ -366,17 +367,28 @@ def test_custody_marker_comparison_streams_large_fields(tmp_path: Path, monkeypa
 
 @pytest.mark.uses_real_clock("observes actual admitted controller and detached child processes")
 @pytest.mark.parametrize("route", ["held", "queued"])
+@pytest.mark.parametrize("reparent_before_sample", [False, True])
 def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     route: str,
+    reparent_before_sample: bool,
 ) -> None:
     from devtools import pytest_slot
     from devtools.worker_memory import FOCUSED_CHARGE
-    from tests.infra.memory_attribution_fixture import DETACHED_PROGRAM
+    from tests.infra.memory_attribution_fixture import DETACHED_PROGRAM, wait_until_detached_child_is_reparented
 
     if not Path("/proc/self/stat").exists():
         pytest.skip("actual procfs custody observation is unavailable")
+    observed_reparenting: list[tuple[int, int]] = []
+    if reparent_before_sample:
+        original_sampler = pytest_slot.ProcessGroupMemorySampler
+
+        def after_reparenting(pgid: int, **kwargs: Any) -> ProcessGroupMemorySampler:
+            observed_reparenting.append(wait_until_detached_child_is_reparented(tmp_path))
+            return original_sampler(pgid, **kwargs)
+
+        monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", after_reparenting)
     monkeypatch.setenv(CUSTODY_ENV, "ambient-parent")
     peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
     environment = {**os.environ, "POLYLOGUE_PYTEST_RUN_ID": "neutral-receipt", CUSTODY_ENV: "ambient-parent"}
@@ -407,7 +419,12 @@ def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
         identities = json.loads((tmp_path / "identities.json").read_text())
         assert code == 0
         pids = {entry["pid"] for entry in receipt["memory"]["processes"]}
-        assert identities["controller"] in pids and identities["detached"] in pids, pids
+        assert identities["detached"] in pids, pids
+        if reparent_before_sample:
+            assert observed_reparenting == [(identities["controller"], identities["detached"])]
+            assert identities["controller"] not in pids, pids
+        else:
+            assert identities["controller"] in pids, pids
         assert peer.pid not in pids and os.getpid() not in pids, pids
         assert identities["custody"] != "ambient-parent" and identities["receipt"] == "neutral-receipt"
         assert os.environ[CUSTODY_ENV] == environment[CUSTODY_ENV] == "ambient-parent"
@@ -458,3 +475,33 @@ def test_reused_owned_pid_keeps_separate_birth_identity(tmp_path: Path) -> None:
     document = sampler.snapshot()
     assert document["processes_seen"] == 2
     assert {(entry["pid"], entry["start_ticks"]) for entry in document["processes"]} == {(100, 1000), (100, 99999)}
+
+
+def test_enumeration_fault_preserves_proven_birth_for_resumed_marker_fault(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    child = _process(proc, 101, pgid=900, pss_kib=700 * KIB)
+    (child / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    original = Path.iterdir
+
+    def denied(path: Path) -> Any:
+        if path == proc:
+            raise PermissionError("neutral enumeration fault")
+        return original(path)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "iterdir", denied)
+        sampler.sample()
+    (child / "environ").unlink()
+    _process(proc, 101, pgid=900, pss_kib=1400 * KIB)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["peak"]["pss_kib"] == 1500 * KIB
+    assert document["incomplete"]
+    assert document["processes_seen"] == 2
+    assert {entry["pid"] for entry in document["processes"]} == {100, 101}

@@ -279,6 +279,25 @@ class ProcessGroupMemorySampler:
                     totals[measure] += rollup[measure]
         except OSError:
             incomplete = True
+        # Enumeration and permission faults are not proof that a previously
+        # owned process exited. Retire only an absent proc entry or new birth.
+        for pid, proof in self._known_births.items():
+            if pid in known:
+                continue
+            current = _identity(pid, proc=self._proc)
+            if current is not None:
+                if current.start_ticks == proof[0]:
+                    known[pid] = proof
+                    incomplete = True
+                continue
+            try:
+                (self._proc / str(pid) / "stat").stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
+            known[pid] = proof
+            incomplete = True
         available = _mem_available_mib(self._meminfo)
         with self._lock:
             self._incomplete |= incomplete

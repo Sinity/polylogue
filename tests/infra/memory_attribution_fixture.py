@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
 from typing import BinaryIO
 
 DETACHED_PROGRAM = r"""
@@ -31,3 +34,17 @@ class EnvironmentReader:
     def read(self, size: int = -1) -> bytes:
         self.sizes.append(size)
         return self.handle.read(size)
+
+
+def wait_until_detached_child_is_reparented(root: Path) -> tuple[int, int]:
+    """Observe the real child's parent transition before acquiring its sampler."""
+    identities = root / "identities.json"
+    while not identities.exists():
+        time.sleep(0.01)
+    values = json.loads(identities.read_text())
+    controller, detached = values["controller"], values["detached"]
+    while True:
+        fields = (Path("/proc") / str(detached) / "stat").read_text().rpartition(")")[2].split()
+        if int(fields[1]) != controller:
+            return controller, detached
+        time.sleep(0.01)
