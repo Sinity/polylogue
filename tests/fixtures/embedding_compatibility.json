@@ -1,0 +1,4 @@
+{
+  "retained": "An authored design decision keeps exact purchased producer identity and independent evidence occurrences.",
+  "missing": "A newly authored explanation must acquire its vector from the actual selected document producer."
+}

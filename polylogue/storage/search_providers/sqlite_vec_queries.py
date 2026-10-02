@@ -11,6 +11,7 @@ import httpx
 
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.storage.runtime import MessageRecord
+from polylogue.storage.search_providers.sqlite_vec_runtime import _assert_vec0_dimension
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
 
 # Per-seed-message neighbor fanout used to grow the candidate pool before
@@ -161,11 +162,9 @@ class SqliteVecQueryMixin:
         across sessions surfaces every eligible message rather than an
         arbitrary predecessor mapping.
         """
-        self._ensure_vec_available()
-        self._ensure_tables()
-
-        conn = self._get_connection()
+        conn = self._get_read_connection()
         try:
+            _assert_vec0_dimension(conn, self.dimension)
             # Configuration alone is not readiness. Before purchasing a query
             # embedding, prove the current-recipe message projection addresses
             # at least one stored vector; an empty or wholly stale store is not

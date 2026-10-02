@@ -135,10 +135,13 @@ def test_vector_written_under_one_root_is_a_hit_under_a_fresh_root(
         pending_before = select_pending_archive_session_window(
             conn, status_table="embeddings.embedding_status", session_ids=[fresh_session]
         )
-    # The session ledger is per-root, so the fresh session is selected once...
-    assert [pending.session_id for pending in pending_before] == [fresh_session]
+    # Exact purchased outputs are available independently of occurrence binding.
+    assert pending_before == []
+    from polylogue.storage.embeddings.preflight import read_embedding_work_counts
 
-    # ...but converging it finds every vector already present and spends no provider call.
+    assert read_embedding_work_counts(fresh_root / "index.db") == (1, 0, 0, 1)
+
+    # Publishing the missing occurrence binding spends no provider call.
     outcome = embed_archive_session_sync(fresh_root / "index.db", provider, fresh_session)
     assert outcome.status == "embedded"
     assert len(provider.calls) == 1, "fresh root re-embedded unchanged text"

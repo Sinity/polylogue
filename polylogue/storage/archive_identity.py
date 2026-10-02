@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import socket
 import stat
@@ -50,6 +51,39 @@ _DURABLE_TIER_NAMES: frozenset[ArchiveTierName] = frozenset({"source", "user", "
 
 class ArchiveLocationError(RuntimeError):
     """A configured archive does not name one coherent active file set."""
+
+
+DEMO_OWNERSHIP_MANIFEST_FILENAME = "demo-archive-ownership.json"
+
+
+def read_demo_ownership_manifest(root: Path) -> dict[str, object] | None:
+    """Read the demo seeder's existing archive ownership evidence."""
+    try:
+        payload = json.loads((root / DEMO_OWNERSHIP_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def demo_owned_session_ids(root: Path) -> frozenset[str]:
+    """Exact completed seed membership, independent of later real arrivals.
+
+    A first-touch flag cannot exclude acquisition. All completed ownership
+    baselines must be present and well formed; absent, partial, or malformed
+    evidence grants no exclusion. Stale ids exclude only their exact ids.
+    """
+    manifest = read_demo_ownership_manifest(root)
+    if manifest is None or manifest.get("demo_only") is not True:
+        return frozenset()
+    for key in ("demo_session_ids", "demo_raw_ids", "demo_assertion_ids"):
+        ids = manifest.get(key)
+        if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids):
+            return frozenset()
+    session_ids = manifest["demo_session_ids"]
+    assert isinstance(session_ids, list)
+    return frozenset(session_ids)
 
 
 def resolve_active_index_path(archive_root: Path) -> Path:

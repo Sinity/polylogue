@@ -18,12 +18,17 @@ from typing_extensions import TypedDict
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.timestamps import iso_from_epoch_ms
-from polylogue.storage.embeddings.identity import EmbeddingRecipe
+from polylogue.storage.embeddings.identity import (
+    EmbeddingRecipe,
+    available_embedding_predicate,
+    retained_embedding_predicate,
+)
 from polylogue.storage.embeddings.materialization import (
     archive_embeddable_message_where,
     archive_embeddable_messages_relation,
     archive_embedding_blocked_counts_sql,
     archive_embedding_messages_table_ref,
+    embedding_acquisition_predicate,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.search_providers.sqlite_vec_support import (
@@ -156,6 +161,9 @@ class EmbeddingStatusPayload(TypedDict):
     pending_sessions: int | None
     pending_messages: int | None
     pending_messages_exact: bool
+    acquisition_excluded_messages: int | None
+    compute_missing_messages: int | None
+    binding_pending_messages: int | None
     candidate_prose_messages: int | None
     candidate_prose_messages_exact: bool
     embedding_coverage_percent: float | None
@@ -587,24 +595,23 @@ def _authoritative_archive_embedding_state(
             reason=f"sqlite_vec_unavailable: {error}" if error is not None else "sqlite_vec_unavailable",
         )
     relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=recipe)
+    valid = retained_embedding_predicate(
+        recipe=recipe,
+        source="d",
+        refs="r",
+        meta="em",
+        vectors_table=vectors_table,
+    )
     sql = f"""
         WITH desired_messages AS (
-            SELECT message_id, session_id, content_hash, vector_derivation_hash FROM {relation}
+            SELECT message_id, session_id, content_hash, origin, text, vector_derivation_hash FROM {relation}
         ), per_session AS (
             SELECT d.session_id,
                    COUNT(*) AS required_count,
                    SUM(CASE WHEN r.message_id IS NOT NULL
                               AND r.session_id = d.session_id
                               AND r.message_content_hash = d.content_hash
-                              AND r.vector_derivation_hash = d.vector_derivation_hash
-                              AND em.recipe_hash = ?
-                              AND em.output_contract_hash = ?
-                              AND em.model = ?
-                              AND em.dimension = ?
-                              AND EXISTS(
-                                SELECT 1 FROM {vectors_table} AS vectors
-                                WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
-                              )
+                              AND {valid}
                             THEN 1 ELSE 0 END) AS valid_count
             FROM desired_messages AS d
             LEFT JOIN {refs_table} AS r ON r.message_id = d.message_id
@@ -619,13 +626,7 @@ def _authoritative_archive_embedding_state(
         FROM sessions AS s
         LEFT JOIN per_session AS p ON p.session_id = s.session_id
         """
-    params = (
-        recipe.recipe_hash,
-        recipe.output_contract_hash,
-        recipe.model,
-        recipe.dimensions,
-    )
-    rows = _rows_with_timeout(conn, sql, params=params, timeout_ms=timeout_ms)
+    rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
     if not rows:
         return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
     counts: tuple[int, int, int, int] = tuple(_payload_int(value) for value in rows[0])  # type: ignore[assignment]
@@ -697,7 +698,7 @@ def _freshness_status(status: str, stats: EmbeddingStatsSnapshot) -> str:
 def _retrieval_ready(stats: EmbeddingStatsSnapshot) -> bool:
     if stats.embedded_messages is None:
         return False
-    return stats.embedded_messages > stats.stale_messages
+    return stats.embedded_messages > stats.stale_messages or bool(stats.binding_pending_messages)
 
 
 def _estimated_cost(message_count: int) -> float:
@@ -716,12 +717,26 @@ def _next_action(
     stale_messages: int,
     failure_count: int,
     blocked_sessions: int,
+    compute_missing_messages: int | None,
+    acquisition_excluded_messages: int | None,
 ) -> EmbeddingNextActionPayload:
     if total_sessions <= 0:
         return {
             "code": "archive_empty",
             "command": None,
             "reason": "Archive contains no sessions to embed.",
+        }
+    if (
+        not retrieval_ready
+        and compute_missing_messages == 0
+        and acquisition_excluded_messages
+        and not failure_count
+        and not blocked_sessions
+    ):
+        return {
+            "code": "acquisition_excluded",
+            "command": None,
+            "reason": "Completed demo ownership excludes acquisition; synthetic vectors do not establish configured retrieval readiness.",
         }
     if has_voyage_api_key is None:
         return {
@@ -854,6 +869,8 @@ def _payload_from_stats(
             pending_sessions=pending_sessions,
             blocked_sessions=blocked_sessions,
         )
+        if stats.binding_pending_messages and status in ("none", "complete"):
+            status = "partial"
         if stats.failure_count > 0 and status == "complete":
             status = "partial"
         retrieval_ready = _retrieval_ready(stats)
@@ -897,6 +914,9 @@ def _payload_from_stats(
         "pending_sessions": pending_sessions if measurable else None,
         "pending_messages": stats.pending_messages if (measurable and pending_messages_exact) else None,
         "pending_messages_exact": pending_messages_exact and measurable,
+        "acquisition_excluded_messages": stats.acquisition_excluded_messages if measurable else None,
+        "compute_missing_messages": stats.compute_missing_messages if measurable else None,
+        "binding_pending_messages": stats.binding_pending_messages if measurable else None,
         "candidate_prose_messages": stats.candidate_prose_messages,
         "candidate_prose_messages_exact": stats.candidate_prose_messages_exact,
         "embedding_coverage_percent": (round(coverage_percent, 1) if coverage_percent is not None else None),
@@ -932,6 +952,8 @@ def _payload_from_stats(
             stale_messages=stats.stale_messages,
             failure_count=stats.failure_count,
             blocked_sessions=blocked_sessions,
+            compute_missing_messages=stats.compute_missing_messages,
+            acquisition_excluded_messages=stats.acquisition_excluded_messages,
         ),
     }
 
@@ -1034,6 +1056,8 @@ def _archive_embedding_status_payload(
         # pending_sessions = total_sessions set in that same branch. The
         # detail pass still downgrades this to False when one of its own
         # queries times out.
+        acquisition_excluded_messages = None
+        compute_missing_messages = binding_pending_messages = None
         pending_messages_exact = include_detail
         coverage_unmeasurable_reason = None if authoritative_state.measurable else authoritative_state.reason
         if authoritative_state.counts is None:
@@ -1054,11 +1078,15 @@ def _archive_embedding_status_payload(
         # keys -- the `blocked` branch of its freshness predicate, the same one
         # that keeps them out of the catchup work set -- so surface that
         # classification rather than counting them as ordinary backlog.
-        blocked_sessions, blocked_unembedded_messages = _blocked_archive_embedding_counts(
-            conn,
-            status_table=status_table,
-            recipe=recipe,
-            timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
+        blocked_sessions, blocked_unembedded_messages = (
+            _blocked_archive_embedding_counts(
+                conn,
+                status_table=status_table,
+                recipe=recipe,
+                timeout_ms=detail_timeout_ms if include_detail else metadata_timeout_ms,
+            )
+            if authoritative_state.measurable
+            else (0, 0)
         )
         # A blocked key was counted as not-valid above, so it is a subset of
         # the pending set; clamping keeps embedded + pending + blocked equal to
@@ -1190,12 +1218,6 @@ def _archive_embedding_status_payload(
             meta_join = (
                 f"LEFT JOIN {meta_table} em ON em.vector_derivation_hash = r.vector_derivation_hash" if has_meta else ""
             )
-            vector_present = (
-                f"EXISTS(SELECT 1 FROM {vectors_table} AS vectors "
-                "WHERE vectors.vector_derivation_hash = lower(hex(r.vector_derivation_hash)))"
-                if vectors_table
-                else "0"
-            )
             total_messages = _scalar_int_with_timeout(
                 conn,
                 f"SELECT COUNT(*) FROM {messages_ref}",
@@ -1211,31 +1233,19 @@ def _archive_embedding_status_payload(
             if has_refs and embedded_messages == 0:
                 pending_messages = total_messages
             elif has_refs and has_ref_semantics and has_meta and vectors_table:
+                valid = retained_embedding_predicate(
+                    recipe=recipe,
+                    source="m",
+                    refs="r",
+                    meta="em",
+                    vectors_table=vectors_table,
+                )
                 exact_pending_messages = _scalar_int_with_timeout(
                     conn,
-                    f"""
-                    SELECT COUNT(*)
-                    FROM {messages_ref}
+                    f"""SELECT COUNT(*) FROM {messages_ref}
                     LEFT JOIN {refs_table} r ON r.message_id = m.message_id
                     {meta_join}
-                    WHERE (
-                        r.message_id IS NULL
-                        OR r.vector_derivation_hash != m.vector_derivation_hash
-                        OR r.message_content_hash IS NOT m.content_hash
-                        OR em.vector_derivation_hash IS NULL
-                        OR em.recipe_hash != ?
-                        OR em.output_contract_hash != ?
-                        OR em.model != ?
-                        OR em.dimension != ?
-                        OR NOT {vector_present}
-                      )
-                    """,
-                    params=(
-                        recipe.recipe_hash,
-                        recipe.output_contract_hash,
-                        recipe.model,
-                        recipe.dimensions,
-                    ),
+                    WHERE NOT COALESCE({valid}, 0)""",
                     timeout_ms=detail_timeout_ms,
                 )
                 if exact_pending_messages is None:
@@ -1245,7 +1255,51 @@ def _archive_embedding_status_payload(
                     pending_messages = exact_pending_messages
             else:
                 pending_messages = total_messages
+            if authoritative_state.measurable and has_refs and has_ref_semantics and has_meta and vectors_table:
+                available = available_embedding_predicate(
+                    recipe=recipe,
+                    source="m",
+                    refs="r",
+                    meta="em",
+                    vectors_table=vectors_table,
+                    meta_table=meta_table,
+                )
+                retained = retained_embedding_predicate(
+                    recipe=recipe,
+                    source="m",
+                    refs="r",
+                    meta="em",
+                    vectors_table=vectors_table,
+                )
+                acquisition_allowed = embedding_acquisition_predicate(conn, "m")
+                work_rows = _rows_with_timeout(
+                    conn,
+                    f"""SELECT
+                    COALESCE(SUM(NOT COALESCE({available}, 0) AND {acquisition_allowed}), 0),
+                    COALESCE(SUM(COALESCE({available}, 0) AND NOT COALESCE({retained}, 0)), 0),
+                    COALESCE(SUM(NOT {acquisition_allowed}), 0)
+                    FROM {messages_ref}
+                    LEFT JOIN {refs_table} AS r ON r.message_id = m.message_id
+                    {meta_join}""",
+                    timeout_ms=detail_timeout_ms,
+                )
+                if work_rows:
+                    compute_missing_messages, binding_pending_messages, acquisition_excluded_messages = (
+                        _payload_int(value) for value in work_rows[0]
+                    )
+            elif not has_refs and not has_meta:
+                acquisition_allowed = embedding_acquisition_predicate(conn, "m")
+                excluded = _scalar_int_with_timeout(
+                    conn,
+                    f"SELECT COUNT(*) FROM {messages_ref} WHERE NOT {acquisition_allowed}",
+                    timeout_ms=detail_timeout_ms,
+                )
+                acquisition_excluded_messages = excluded
+                compute_missing_messages = None if excluded is None else total_messages - excluded
+                binding_pending_messages = 0
             if blocked_unembedded_messages:
+                if compute_missing_messages is not None:
+                    compute_missing_messages = max(compute_missing_messages - blocked_unembedded_messages, 0)
                 # Same basis as the session clamp: these required messages
                 # belong to terminally refused keys, so they are blocked, not
                 # queued work.
@@ -1292,6 +1346,9 @@ def _archive_embedding_status_payload(
             embedded_messages=embedded_messages,
             pending_sessions=pending_sessions,
             pending_messages=pending_messages,
+            acquisition_excluded_messages=acquisition_excluded_messages,
+            compute_missing_messages=compute_missing_messages,
+            binding_pending_messages=binding_pending_messages,
             candidate_prose_messages=candidate_prose_messages,
             candidate_prose_messages_exact=candidate_prose_messages_exact,
             stale_messages=stale_messages,
@@ -1302,8 +1359,8 @@ def _archive_embedding_status_payload(
             dimension_counts=dimension_counts,
             retrieval_bands={},
             failure_count=failure_count,
-            total_estimated_cost_usd=_estimated_cost(pending_messages)
-            if include_detail and pending_messages_exact
+            total_estimated_cost_usd=_estimated_cost(compute_missing_messages)
+            if include_detail and compute_missing_messages is not None
             else None,
         )
     finally:
