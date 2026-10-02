@@ -430,7 +430,6 @@ def test_a_seed_covering_more_files_but_fewer_tests_does_not_replace_the_local_g
     local_tests = ("tests/test_a.py::test_a", "tests/test_a.py::test_b", "tests/test_a.py::test_c")
     _record_tests(local, local_tests)
 
-    assert testmon_provision.unrecorded_test_files(local_root) == ("tests/test_b.py",)
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is False
     assert testmon_provision.recorded_test_names(local) == frozenset(local_tests)
 
@@ -564,30 +563,3 @@ def test_declared_test_files_match_the_collection_rules(tmp_path: Path) -> None:
     assert testmon_provision.declared_test_files(tmp_path) == frozenset(
         {"tests/unit/test_alpha.py", "tests/unit/beta_test.py", "tests/fuzz/fuzz_gamma.py"}
     )
-
-
-def test_a_file_the_graph_never_recorded_is_reported(tmp_path: Path) -> None:
-    """Testmon runs an unrecorded test as unknown, so it is not in any bound.
-
-    The graph below records one of the two declared files. The unrecorded one
-    is exactly the part of a selecting run the graph's own count cannot see.
-
-    Anti-vacuity: compare recorded *tests* instead of recorded files and the
-    file with no execution rows is silently absent from both sides, so this
-    returns nothing and the caller's count stays short. Return ``()`` instead
-    of ``None`` for an absent datafile and the last assertion goes red --
-    "unreadable" and "none missing" must not be the same answer.
-    """
-    _write_test_files(tmp_path, ["tests/unit/test_recorded.py", "tests/unit/test_new.py"])
-    assert testmon_provision.unrecorded_test_files(tmp_path) is None
-
-    path = _seed_with_testmon(tmp_path)
-    connection = sqlite3.connect(path)
-    with contextlib.closing(connection):
-        connection.execute(
-            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (1, ?, 0.1, 0, 0)",
-            ("tests/unit/test_recorded.py::test_one",),
-        )
-        connection.commit()
-
-    assert testmon_provision.unrecorded_test_files(tmp_path) == ("tests/unit/test_new.py",)

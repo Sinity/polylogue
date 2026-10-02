@@ -99,11 +99,14 @@ def current_environment_key() -> tuple[str, str]:
     return packages, version
 
 
-def inspect_testmon_graph(root: Path) -> TestmonGraphState:
+def inspect_testmon_graph(root: Path, *, datafile: Path | None = None) -> TestmonGraphState:
     """Report whether the local datafile can back a selecting run."""
-    data_path = testmon_datafile(root)
-    if not data_path.is_file() or data_path.stat().st_size == 0:
-        return TestmonGraphState(TestmonGraphStatus.ABSENT, "no testmon datafile")
+    data_path = testmon_datafile(root) if datafile is None else datafile
+    try:
+        if not data_path.is_file() or data_path.stat().st_size == 0:
+            return TestmonGraphState(TestmonGraphStatus.ABSENT, "no testmon datafile")
+    except OSError as exc:
+        return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile cannot be inspected: {exc}")
     try:
         connection = sqlite3.connect(data_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
     except sqlite3.Error as exc:
@@ -260,32 +263,6 @@ def declared_test_files(root: Path) -> frozenset[str]:
             continue
         found.add(relative)
     return frozenset(found)
-
-
-def unrecorded_test_files(root: Path) -> tuple[str, ...] | None:
-    """Declared test files the graph has no execution for, in path order.
-
-    Testmon deselects only what it has recorded; an unrecorded test is
-    unknown and runs. So these files are exactly the part of a selecting run
-    that the graph's own selection count cannot see, and counting a selection
-    without them reports a bound the run does not have.
-
-    ``None`` when the graph cannot be read at all, which is a different answer
-    from "none are missing" and must not be folded into it.
-    """
-    path = testmon_datafile(root)
-    if not path.is_file():
-        return None
-    try:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
-        with contextlib.closing(connection):
-            recorded = {
-                str(row[0]).split("::", 1)[0]
-                for row in connection.execute("SELECT DISTINCT test_name FROM test_execution")
-            }
-    except sqlite3.Error:
-        return None
-    return tuple(sorted(declared_test_files(root) - recorded))
 
 
 def recorded_test_names(datafile: Path) -> frozenset[str] | None:

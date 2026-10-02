@@ -22,6 +22,7 @@ from devtools import (
     agent_env,
     gate,
     pytest_rerun,
+    pytest_slot,
     required_gate,
     verify,
     verify_runs,
@@ -65,6 +66,11 @@ def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
             return self.returncode
 
     monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    # This fixture exercises adjudication after a synthetic launch. Physical
+    # admission has independent actual-route controls and must not depend on
+    # the live host or acquire a real reservation for this FakeProcess.
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "resize_worker_argument", lambda argv, **_kwargs: (list(argv), None))
 
 
 def _outside_the_pytest_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -861,12 +867,33 @@ def _stub_affected_graph(
     datafile.parent.mkdir(parents=True, exist_ok=True)
     sqlite3.connect(datafile).close()
     monkeypatch.setattr(verify, "snapshot_testmon_graph", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        verify, "inspect_testmon_graph", lambda *_args, **_kwargs: SimpleNamespace(usable=True, full_rerun_cause=None)
+    )
     monkeypatch.setattr(testmon.db, "DB", lambda *_a, **_k: SimpleNamespace(con=SimpleNamespace(close=lambda: None)))
     monkeypatch.setattr(
         testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected, recorded), raising=False
     )
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root: unrecorded_files)
-    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
+    from devtools.verify_test_collection import CollectedSelection
+
+    monkeypatch.setattr(verify, "declared_test_files", lambda _root: frozenset(unrecorded_files))
+
+    def collect(**kwargs: Any) -> CollectedSelection | None:
+        if unrecorded_tests is None:
+            return None
+        paths = kwargs.get("paths")
+        if paths:
+            nodes = tuple(
+                name
+                for name in (*selected, *recorded)
+                if any(name == path or name.startswith(path + "[") for path in paths)
+            )
+            return CollectedSelection(len(nodes), nodes, 0) if nodes else None
+        unknown = tuple(f"tests/unit/a.py::test_new[{index}]" for index in range(unrecorded_tests))
+        nodes = (*selected, *unknown)
+        return CollectedSelection(len(nodes), nodes, 0)
+
+    monkeypatch.setattr(verify, "collect_selection", collect)
 
 
 def test_the_estimate_counts_forced_contract_tests(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -919,20 +946,11 @@ def test_an_agents_only_selection_reason_names_the_contract_document() -> None:
 
 
 def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """The plan's size is what launches, not what the graph happens to know.
+    """Unknown nodes are included in the actual launch count and receipt.
 
-    Testmon deselects only recorded tests, so every test in a file the graph
-    has no execution for runs as unknown. A freshly initialized or interrupted
-    graph therefore reported a tiny bounded plan and launched the corpus --
-    exactly the required-check timeout the admission cap exists to refuse.
-    Measured on this checkout at 2026-09-22: 10 of 1,353 declared test files
-    had no recorded execution, worth 68 tests, none of which appeared in the
-    admitted count.
-
-    Anti-vacuity: return ``len(selected)`` instead of ``len(selected) +
-    unrecorded_tests`` and the first case's count drops to 2 while the run
-    still executes 70; the second case then reports 2 and is admitted, so both
-    assertions below go red.
+    Removing the unknown selected identities understates the first plan and
+    admits the oversized second plan. New nodes share a recorded filename in
+    the stub, so filename subtraction cannot recover their count.
     """
     graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
     _stub_affected_graph(
@@ -963,7 +981,6 @@ def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.
 @pytest.mark.parametrize(
     ("unrecorded_files", "unrecorded_tests", "expected"),
     [
-        (None, 0, "recorded test files could not be read"),
         (tuple(f"tests/unit/test_{index}.py" for index in range(AFFECTED_MAX_UNRECORDED_FILES + 1)), 0, "more than"),
         (("tests/unit/new.py",), None, "could not be collected"),
     ],
@@ -971,22 +988,16 @@ def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.
 def test_an_unpriceable_unknown_set_refuses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    unrecorded_files: tuple[str, ...] | None,
+    unrecorded_files: tuple[str, ...],
     unrecorded_tests: int | None,
     expected: str,
 ) -> None:
-    """Each way of failing to price the unknown set is its own typed refusal.
-
-    Anti-vacuity: fold any of these into ``0`` and the estimator reports a
-    bounded plan it did not measure -- a silent truncation of the answer,
-    which is the one thing this admission is not allowed to do.
-    """
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root: unrecorded_files)
-    monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
-
-    counted, reason = verify._unrecorded_selection_term(tmp_path)
-
-    assert counted is None
+    _stub_affected_graph(
+        monkeypatch, tmp_path, selected=(), unrecorded_files=unrecorded_files, unrecorded_tests=unrecorded_tests
+    )
+    graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
+    count, _seconds, reason, _unknown = verify._estimate_affected_selection(tmp_path, graph)
+    assert count is None
     assert reason is not None and expected in reason
 
 
@@ -1129,7 +1140,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph, _forced=(): (selected_count, 1.0, None, 0),
+        lambda _root, _graph, _forced=(), **_kwargs: (selected_count, 1.0, None, 0),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
@@ -2227,3 +2238,96 @@ def test_verify_names_an_oomd_killed_pytest_step(monkeypatch: pytest.MonkeyPatch
     assert metadata["diagnosis"] == "oom_killed"
     assert metadata["termination_killer"] == "oom-kill"
     assert metadata["termination_unit"] == "unit.service"
+
+
+def test_actual_admission_counts_new_parametrized_nodes_in_a_recorded_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filename coverage cannot hide newly collected nodes or a second launch."""
+    from devtools import verify_test_collection
+    from devtools.testmon_provision import inspect_testmon_graph
+    from devtools.toolchain import venv_python
+    from tests.infra.devtools_admission_fixture import seed_admission_graph
+
+    checkout = Path(__file__).resolve().parents[3]
+    testfile = seed_admission_graph(tmp_path, checkout=checkout)
+    testfile.write_text(
+        testfile.read_text() + '\n@pytest.mark.parametrize("label", ["alpha@value", "beta"])\n'
+        "def test_new(label):\n    assert label\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_test_collection, "venv_python", lambda **_kwargs: venv_python(root=checkout))
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(tmp_path), str(checkout))))
+    graph = inspect_testmon_graph(tmp_path)
+    assert graph.status is TestmonGraphStatus.USABLE and graph.full_rerun_cause is None
+    connection = sqlite3.connect(_testmon_datafile(tmp_path))
+    cursor = connection.execute(
+        "SELECT duration FROM test_execution WHERE test_name=?", ("tests/test_nodes.py::test_old",)
+    )
+    try:
+        original_duration = cursor.fetchone()[0]
+    finally:
+        cursor.close()
+        connection.close()
+    before = _testmon_datafile(tmp_path).read_bytes()
+    count, seconds, error, unknown = verify._estimate_affected_selection(tmp_path, graph)
+    assert (count, error, unknown) == (3, None, 2), (count, error, unknown)
+    assert seconds == original_duration, (seconds, original_duration)
+    forced = "tests/test_nodes.py::test_new"
+    count, seconds, error, unknown = verify._estimate_affected_selection(tmp_path, graph, (forced, forced))
+    assert (count, error, unknown) == (5, None, 4), (count, error, unknown)
+    assert seconds == original_duration, (seconds, original_duration)
+    assert _testmon_datafile(tmp_path).read_bytes() == before
+    decision = verify._affected_admission(root=tmp_path, graph=graph, forced_tests=(forced,))
+    assert decision.to_payload()["selected_count"] == 5
+    assert decision.to_payload()["unrecorded_tests"] == 4
+
+
+@pytest.mark.parametrize("state", [TestmonGraphStatus.UNUSABLE, TestmonGraphStatus.ABSENT])
+def test_unavailable_graph_never_collects_or_claims_a_zero_selection(
+    state: TestmonGraphStatus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(**_kwargs: Any) -> None:
+        raise AssertionError("unavailable graph dispatched collection")
+
+    monkeypatch.setattr(verify, "collect_selection", forbidden)
+    graph = SimpleNamespace(status=state, full_rerun_cause=None, reason="unavailable")
+    decision = verify._affected_admission(root=tmp_path, graph=graph)
+    assert decision.status == "unknown"
+    assert decision.selected_count is None
+
+
+@pytest.mark.parametrize("corruption", ["version", "bytes"])
+def test_actual_changed_graph_refuses_before_selector_dispatch(
+    corruption: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools.testmon_provision import inspect_testmon_graph
+    from tests.infra.devtools_admission_fixture import seed_admission_graph
+
+    checkout = Path(__file__).resolve().parents[3]
+    seed_admission_graph(tmp_path, checkout=checkout)
+    graph = inspect_testmon_graph(tmp_path)
+    assert graph.usable
+    path = _testmon_datafile(tmp_path)
+    if corruption == "version":
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute("PRAGMA user_version=999")
+            connection.commit()
+        finally:
+            connection.close()
+    else:
+        path.write_bytes(b"not a sqlite graph")
+
+    def forbidden(**_kwargs: Any) -> None:
+        raise AssertionError("changed graph dispatched collection")
+
+    monkeypatch.setattr(verify, "collect_selection", forbidden)
+    decision = verify._affected_admission(root=tmp_path, graph=graph)
+    assert decision.status == "unknown"
+    assert decision.selected_count is None

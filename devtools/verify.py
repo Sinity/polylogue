@@ -40,7 +40,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import rerun_failed_once, testmon_rerun_environment
+from devtools.pytest_rerun import report_nodeid_to_selector, rerun_failed_once, testmon_rerun_environment
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -56,15 +56,16 @@ from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
     TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
+    declared_test_files,
     inspect_testmon_graph,
     primary_worktree,
     snapshot_testmon_graph,
     sync_testmon_graph,
     testmon_datafile,
-    unrecorded_test_files,
 )
 from devtools.toolchain import venv_python
 from devtools.verification_admission import (
+    AFFECTED_MAX_SELECTED_TESTS,
     AFFECTED_MAX_UNRECORDED_FILES,
     AFFECTED_MAX_WORKERS,
     AffectedAdmission,
@@ -90,7 +91,7 @@ from devtools.verify_runs import (
     reconcile_and_record_abandoned_verify_runs,
     verify_history_path,
 )
-from devtools.verify_test_collection import count_collected
+from devtools.verify_test_collection import collect_selection
 from devtools.worker_memory import CHARGE_PROFILE_ENV, CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
@@ -426,54 +427,14 @@ def _selection_reason(selection: str, changed_paths: frozenset[str] | None = Non
     return None
 
 
-def _unrecorded_selection_term(root: Path) -> tuple[int | None, str | None]:
-    """How many tests the graph has never recorded, and why that is unknown.
-
-    Testmon deselects only what it has recorded, so every test in a file the
-    graph has no execution for is unknown and runs. Those tests are part of
-    the plan being admitted and none of them appear in the graph's own
-    selection, which is how a freshly initialized or interrupted graph
-    reported a two-test plan and launched the corpus. They are priced by
-    collecting exactly those files under the declared closed-world rules.
-
-    Beyond :data:`AFFECTED_MAX_UNRECORDED_FILES` the graph is not a partial
-    oracle but an absent one; the answer is a refusal naming the corpus
-    boundary, not a longer collection.
-    """
-    unrecorded = unrecorded_test_files(root)
-    if unrecorded is None:
-        return None, "the testmon graph's recorded test files could not be read"
-    if not unrecorded:
-        return 0, None
-    if len(unrecorded) > AFFECTED_MAX_UNRECORDED_FILES:
-        return None, (
-            f"the testmon graph records no execution for {len(unrecorded)} test files, "
-            f"more than the {AFFECTED_MAX_UNRECORDED_FILES} this estimate will price"
-        )
-    counted = count_collected(unrecorded, root=root)
-    if counted is None:
-        return None, f"the {len(unrecorded)} test files the graph does not record could not be collected"
-    return counted, None
-
-
 def _estimate_affected_selection(
-    root: Path, graph: Any, forced_tests: Sequence[str] = ()
+    root: Path, graph: Any, forced_tests: Sequence[str] = (), *, hypothesis_profile: str | None = None
 ) -> tuple[int | None, float | None, str | None, int | None]:
-    """Estimate the exact testmon selection without launching pytest.
+    """Price final selected nodes against the same compatible graph snapshot.
 
-    Testmon mutates its database while it determines stable tests, so this
-    uses a SQLite backup in a temporary directory.  The live checkout graph
-    and archive are never written.  ``None`` means the selection could not be
-    proven; admission then refuses rather than silently widening the scope.
-
-    The fourth element is how much of the count is unrecorded-and-therefore-
-    unknown tests, kept separate so the receipt can say where the plan's size
-    came from.
-
-    ``forced_tests`` are node ids the run adds outside testmon (the contract
-    document step). Their recorded items -- every parametrization -- count
-    toward the plan; a forced node the graph never recorded makes the plan
-    unmeasured rather than silently smaller.
+    Each physical launch is counted separately. Within a launch, normalized
+    node IDs are distinct, including parametrizations. Unknown nodes carry no
+    invented duration; recorded durations remain a measured floor.
     """
     if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
         return None, None, None, None
@@ -482,9 +443,6 @@ def _estimate_affected_selection(
     source = testmon_datafile(root)
     if not source.is_file():
         return None, None, "the testmon graph disappeared before admission", None
-    unrecorded_tests, unrecorded_error = _unrecorded_selection_term(root)
-    if unrecorded_tests is None:
-        return None, None, unrecorded_error, None
     try:
         from testmon import db as testmon_db
         from testmon.testmon_core import TestmonData
@@ -493,41 +451,64 @@ def _estimate_affected_selection(
             destination = Path(temporary) / "testmondata"
             if not snapshot_testmon_graph(source, destination):
                 return None, None, "the testmon graph could not be snapshotted for admission", None
+            snapshot_state = inspect_testmon_graph(root, datafile=destination)
+            if not snapshot_state.usable or snapshot_state.full_rerun_cause:
+                return None, None, "the admission snapshot is unreadable or incompatible with this environment", None
             database = testmon_db.DB(str(destination), readonly=False)
             try:
                 data = TestmonData.for_local_run(rootdir=str(root), database=database, environment=TESTMON_ENVIRONMENT)
                 if data.system_packages_change:
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
-                data.determine_stable()
-                selected = set(data.unstable_test_names) | set(data.failing_tests)
-                # The forced step runs its tests again even when the affected
-                # step also selected them, so each launch is counted: a list,
-                # not a union with ``selected``.
-                launched = list(selected)
-                for nodeid in forced_tests:
-                    recorded = {name for name in data.all_tests if name == nodeid or name.startswith(f"{nodeid}[")}
-                    if not recorded:
-                        return None, None, f"the forced test {nodeid} has no recorded execution", None
-                    launched.extend(recorded)
-                durations = [data.all_tests[name].get("duration") for name in launched]
-                estimated = (
-                    None if any(value is None for value in durations) else sum(float(value) for value in durations)
-                )
-                # The unknown tests are part of what launches, so they are part
-                # of the count the cap is applied to. They have no recorded
-                # duration, so the seconds estimate stays the graph's alone and
-                # is a floor rather than a prediction.
-                return len(launched) + unrecorded_tests, estimated, None, unrecorded_tests
+                recorded = {report_nodeid_to_selector(name): value for name, value in data.all_tests.items()}
+                recorded_files = {name.split("::", 1)[0] for name in recorded}
+                missing_files = declared_test_files(root) - recorded_files
+                if len(missing_files) > AFFECTED_MAX_UNRECORDED_FILES:
+                    return (
+                        None,
+                        None,
+                        (
+                            f"the testmon graph records no execution for {len(missing_files)} test files, "
+                            f"more than the {AFFECTED_MAX_UNRECORDED_FILES} this estimate will price"
+                        ),
+                        None,
+                    )
             finally:
                 database.con.close()
+            environment = dict(os.environ)
+            _normalize_managed_pytest_environment(environment, ())
+            if hypothesis_profile is not None:
+                environment["HYPOTHESIS_PROFILE"] = hypothesis_profile
+            launches: list[tuple[Sequence[str] | None, Path | None]] = [(None, destination)]
+            if forced_tests:
+                launches.append((tuple(dict.fromkeys(forced_tests)), None))
+            launched: list[str] = []
+            for paths, snapshot in launches:
+                selection = collect_selection(
+                    root=root,
+                    paths=paths,
+                    datafile=snapshot,
+                    nodeid_limit=AFFECTED_MAX_SELECTED_TESTS + 1,
+                    environment=environment,
+                )
+                if selection is None:
+                    return None, None, "the actual selected test nodes could not be collected", None
+                if selection.omitted:
+                    return None, None, "the selected-node evidence exceeds the affected selection boundary", None
+                launched.extend(sorted({report_nodeid_to_selector(name) for name in selection.nodeids}))
+            unknown = sum(name not in recorded for name in launched)
+            durations = [recorded[name].get("duration") for name in launched if name in recorded]
+            estimated = None if any(value is None for value in durations) else sum(float(value) for value in durations)
+            return len(launched), estimated, None, unknown
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
         return None, None, "the affected selection could not be measured from the graph", None
 
 
-def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] = ()) -> AffectedAdmission:
+def _affected_admission(
+    *, root: Path, graph: Any, forced_tests: Sequence[str] = (), hypothesis_profile: str | None = None
+) -> AffectedAdmission:
     """Build the bounded affected admission decision and its measurement note."""
     selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(
-        root, graph, forced_tests
+        root, graph, forced_tests, hypothesis_profile=hypothesis_profile
     )
     decision = admit_affected_selection(
         graph_status=str(getattr(graph, "status", "unknown")),
@@ -1431,7 +1412,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             admission: AffectedAdmission | None = None
             if selection == "affected":
                 admission = _affected_admission(
-                    root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+                    root=ROOT,
+                    graph=graph,
+                    forced_tests=_forced_tests(selection, changed_paths),
+                    hypothesis_profile=args.hypothesis_profile,
                 )
             run.record_selection(
                 selection_mode=selection,

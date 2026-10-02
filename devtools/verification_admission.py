@@ -21,7 +21,7 @@ AFFECTED_MAX_ESTIMATED_SECONDS: Final = 15 * 60
 #: How wide an affected run may be admitted. The time/selection budgets above
 #: are this module's own policy, but width is not: an affected run occupies the
 #: same ``agentctl-pytest.slice`` as the corpus run, so the memory owner
-#: (``worker_memory.width_within`` over that slice's MemoryHigh) bounds both.
+#: (``worker_memory.CORPUS_MAX_WORKERS``) bounds both.
 #: This was a hand-set ``4`` maintained independently of that bound, free to
 #: admit the *selective* run wider than the full corpus in the same cgroup.
 #: Taking the minimum keeps this module free to be stricter than memory allows

@@ -47,6 +47,18 @@ def _no_receipt_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", ".cache/verify/history.jsonl")
 
 
+@pytest.fixture
+def isolated_focused_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Synthetic main calls own their receipts and current-event mirror."""
+    from tests.infra.devtools_admission_fixture import make_focused_checkout
+
+    root = make_focused_checkout(tmp_path / "checkout")
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(run_tests, "ROOT", root)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    return root
+
+
 def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
     step = run._payload["steps"][-1]
     step_dir = run.run_dir / "steps" / step["step_id"]
@@ -338,7 +350,7 @@ def test_parse_outliers_supports_default_and_explicit_limits() -> None:
     assert run_tests._parse_outliers(["--outliers=3"]) == (3, [])
 
 
-def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch, isolated_focused_checkout: Path) -> None:
     captured: dict[str, Any] = {}
 
     def fake_run_pytest(cmd: list[str], **kwargs: Any) -> SlotOutcome:
@@ -486,6 +498,7 @@ def test_run_uses_the_requested_runner(monkeypatch: pytest.MonkeyPatch, runner: 
 
 def test_main_preserves_relative_selection_from_subdirectory(
     monkeypatch: pytest.MonkeyPatch,
+    isolated_focused_checkout: Path,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -507,6 +520,7 @@ def test_main_preserves_relative_selection_from_subdirectory(
 def test_main_preserves_path_valued_options_from_subdirectory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    isolated_focused_checkout: Path,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -741,6 +755,7 @@ def test_normalize_selection_paths_preserves_pytest_symlinks_and_optional_debug(
 
 def test_main_preserves_keyword_and_marker_values_from_tests_directory(
     monkeypatch: pytest.MonkeyPatch,
+    isolated_focused_checkout: Path,
 ) -> None:
     captured: list[str] = []
     monkeypatch.chdir(run_tests.ROOT / "tests")
@@ -794,7 +809,7 @@ def test_main_finalizes_runner_exception_after_open_step(
     assert history["steps"][0]["exit"] == 125
 
 
-def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_returns_pytest_exit_code(monkeypatch: pytest.MonkeyPatch, isolated_focused_checkout: Path) -> None:
     def _fake_run(label: str, cmd: list[str], **kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         return 5, 0.01, {"diagnosis": "pytest_failed"}
 

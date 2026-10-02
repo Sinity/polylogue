@@ -72,17 +72,11 @@ def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
 
 
 def test_the_managed_width_fits_the_pytest_pool_by_construction() -> None:
-    """The corpus command cannot ask for more memory than its slice allows.
-
-    Anti-vacuity: declare ``CORPUS_MAX_WORKERS`` as a literal wider than
-    ``width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)`` and this goes red -- a run
-    that wide parks above ``memory.high``, crawls under allocation throttling,
-    and holds the host's one pytest slot until systemd-oomd kills it.
-    """
+    """Corpus invocation retains the qualified width, independently of arithmetic fit."""
     command = build_verify_steps(quick=False, selection="all")[-1][1]
     workers = int(command[command.index("-n") + 1])
 
-    assert workers >= 1
+    assert workers == 2
     assert MEASURED_CHARGE.charge_mib(workers) <= PYTEST_SLICE_MEMORY_HIGH_MIB
 
 
