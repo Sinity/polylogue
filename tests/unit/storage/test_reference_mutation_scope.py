@@ -223,9 +223,7 @@ def test_batch_reuses_one_durable_reference_census(
         connection = original_open(seal, name, path)
         if name == "user":
             connection.set_trace_callback(
-                lambda sql: (
-                    assertion_queries.append(sql) if sql.startswith("SELECT assertion_id, kind, scope_ref,") else None
-                )
+                lambda sql: assertion_queries.append(sql) if sql == 'SELECT rowid FROM "assertions"' else None
             )
         return connection
 
@@ -1859,6 +1857,7 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
                     blocked_cursor.allow_cleanup.set()
                 if selected is not None:
                     selected.close()
+
 
 def test_user_reference_array_census_does_not_fetch_complete_json_cells(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
