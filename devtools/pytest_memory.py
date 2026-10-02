@@ -230,13 +230,13 @@ class ProcessGroupMemorySampler:
         incomplete = False
         try:
             entries = self._proc.iterdir()
-            for entry in entries:
-                if not entry.name.isdigit():
+            for process_path in entries:
+                if not process_path.name.isdigit():
                     continue
-                pid = int(entry.name)
+                pid = int(process_path.name)
                 identity = _identity(pid, proc=self._proc)
                 if identity is None:
-                    if entry.exists():
+                    if process_path.exists():
                         incomplete = True
                         if pid in self._known_births:
                             known[pid] = self._known_births[pid]
@@ -247,7 +247,9 @@ class ProcessGroupMemorySampler:
                 matched: bool | None = False
                 if self._custody_marker is not None:
                     matched = _marker_matches(pid, self._custody_marker, proc=self._proc)
-                    incomplete |= matched is None and not previously_proven and not group_owned and entry.exists()
+                    incomplete |= (
+                        matched is None and not previously_proven and not group_owned and process_path.exists()
+                    )
                 owned = previously_proven or group_owned or matched is True
                 if not owned:
                     continue
@@ -260,7 +262,7 @@ class ProcessGroupMemorySampler:
                 after = _identity(pid, proc=self._proc)
                 if after is None or after.start_ticks != identity.start_ticks:
                     # Exit and PID reuse cannot attach bytes to the old identity.
-                    incomplete |= after is not None or entry.exists()
+                    incomplete |= after is not None or process_path.exists()
                     known.pop(pid, None)
                     continue
                 if group_owned and not previously_proven and matched is not True:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import BinaryIO
 
-DETACHED_PROGRAM = """
+DETACHED_PROGRAM = r"""
 import json, os, pathlib, subprocess, sys, time
 root = pathlib.Path(sys.argv[1])
 child_code = 'import pathlib,sys,time; payload=bytearray(8*1024*1024); root=pathlib.Path(sys.argv[1]); (root/"ready").touch();\nwhile not (root/"stop").exists(): time.sleep(0.01)'
