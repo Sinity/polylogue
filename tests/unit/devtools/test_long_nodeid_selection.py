@@ -172,11 +172,11 @@ def test_concurrent_failure_hooks_preserve_both_original_selectors(
         assert len(original_load()) == 2
 
 
-@pytest.mark.parametrize("contents", ["{not-json", "[]"])
-def test_recording_replaces_an_invalid_map(_map_path: Path, contents: str) -> None:
+@pytest.mark.parametrize("contents", [b"{not-json", b"[]", b"\xff", b"\xe2\x82", b"\xc0\xaf", b"\xed\xa0\x80"])
+def test_recording_replaces_an_invalid_map(_map_path: Path, contents: bytes) -> None:
     """Invalid cache contents cannot prevent a later failed selector being recorded."""
     _map_path.parent.mkdir(parents=True)
-    _map_path.write_text(contents, encoding="utf-8")
+    _map_path.write_bytes(contents)
     harness_conftest._record_long_nodeids({_SHORTENED: _ORIGINAL})
     assert harness_conftest._load_long_nodeid_map() == {_SHORTENED: _ORIGINAL}
 
