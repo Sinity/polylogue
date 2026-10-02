@@ -18,6 +18,7 @@ from polylogue.archive.context_models import (
     context_image_sha256,
 )
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 ContextDeliveryWriteOutcome: TypeAlias = Literal["recorded", "idempotent"]
 
@@ -129,7 +130,8 @@ def write_context_delivery(
         return replace(existing, outcome="idempotent")
 
     timestamp = _now_ms() if delivered_at_ms is None else delivered_at_ms
-    conn.execute(
+    with connection_cursor(
+        conn,
         """
         INSERT INTO context_deliveries (
             snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
@@ -155,7 +157,8 @@ def write_context_delivery(
             actor,
             timestamp,
         ),
-    )
+    ):
+        pass
     envelope = read_context_delivery(conn, snapshot_ref)
     if envelope is None:
         raise RuntimeError("context delivery insert did not round-trip")
@@ -164,7 +167,8 @@ def write_context_delivery(
 
 def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> ArchiveContextDeliveryEnvelope | None:
     normalized = _normalized_ref(snapshot_ref, field="snapshot_ref", kinds=frozenset({"context-snapshot"}))
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         """
         SELECT snapshot_ref, recipient_ref, run_ref, boundary, inheritance_mode,
                context_image_json, context_image_sha256, segment_refs_json,
@@ -173,7 +177,8 @@ def read_context_delivery(conn: sqlite3.Connection, snapshot_ref: str) -> Archiv
         FROM context_deliveries WHERE snapshot_ref = ?
         """,
         (normalized,),
-    ).fetchone()
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     try:
@@ -225,7 +230,8 @@ def list_context_deliveries(
     if limit is not None:
         query += " LIMIT ?"
         params.append(limit)
-    rows = conn.execute(query, params).fetchall()
+    with connection_cursor(conn, query, params) as cursor:
+        rows = cursor.fetchall()
     return [item for row in rows if (item := read_context_delivery(conn, str(row[0]))) is not None]
 
 
