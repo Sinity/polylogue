@@ -130,7 +130,7 @@ def test_concurrent_failure_hooks_preserve_both_original_selectors(
         return loaded
 
     def flock(fd: int, operation: int) -> None:
-        if threading.current_thread().name == "nodeid-second" and operation == fcntl.LOCK_EX:
+        if keep_lock and threading.current_thread().name == "nodeid-second" and operation == fcntl.LOCK_EX:
             second_attempted.set()
         if keep_lock:
             original_flock(fd, operation)
