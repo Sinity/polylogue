@@ -12,9 +12,12 @@ from devtools.verify_test_collection import collection_command
 
 def seed_admission_graph(root: Path, *, checkout: Path) -> Path:
     (root / "tests").mkdir()
+    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
     (root / "neutral.py").write_text("def value():\n    return 1\n", encoding="utf-8")
     testfile = root / "tests/test_nodes.py"
-    testfile.write_text("from neutral import value\ndef test_old():\n    assert value() == 1\n", encoding="utf-8")
+    testfile.write_text(
+        "import pytest\nfrom neutral import value\ndef test_old():\n    assert value() == 1\n", encoding="utf-8"
+    )
     datafile = testmon_datafile(root)
     datafile.parent.mkdir(parents=True)
     command = collection_command(root=checkout, paths=["tests"], testmon=True)

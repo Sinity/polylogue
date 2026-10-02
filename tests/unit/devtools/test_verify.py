@@ -22,6 +22,7 @@ from devtools import (
     agent_env,
     gate,
     pytest_rerun,
+    pytest_slot,
     required_gate,
     verify,
     verify_runs,
@@ -65,6 +66,11 @@ def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
             return self.returncode
 
     monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+    # This fixture exercises adjudication after a synthetic launch. Physical
+    # admission has independent actual-route controls and must not depend on
+    # the live host or acquire a real reservation for this FakeProcess.
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "resize_worker_argument", lambda argv, **_kwargs: (list(argv), None))
 
 
 def _outside_the_pytest_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2247,7 +2253,7 @@ def test_actual_admission_counts_new_parametrized_nodes_in_a_recorded_file(
     checkout = Path(__file__).resolve().parents[3]
     testfile = seed_admission_graph(tmp_path, checkout=checkout)
     testfile.write_text(
-        testfile.read_text() + '\nimport pytest\n@pytest.mark.parametrize("label", ["alpha@value", "beta"])\n'
+        testfile.read_text() + '\n@pytest.mark.parametrize("label", ["alpha@value", "beta"])\n'
         "def test_new(label):\n    assert label\n",
         encoding="utf-8",
     )
