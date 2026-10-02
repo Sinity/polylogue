@@ -382,7 +382,7 @@ def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
         pytest.skip("actual procfs custody observation is unavailable")
     observed_reparenting: list[tuple[int, int]] = []
     if reparent_before_sample:
-        original_sampler = pytest_slot.ProcessGroupMemorySampler
+        original_sampler = ProcessGroupMemorySampler
 
         def after_reparenting(pgid: int, **kwargs: Any) -> ProcessGroupMemorySampler:
             observed_reparenting.append(wait_until_detached_child_is_reparented(tmp_path))
