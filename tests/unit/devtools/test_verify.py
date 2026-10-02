@@ -2261,17 +2261,26 @@ def test_actual_admission_counts_new_parametrized_nodes_in_a_recorded_file(
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join((str(tmp_path), str(checkout))))
     graph = inspect_testmon_graph(tmp_path)
     assert graph.status is TestmonGraphStatus.USABLE and graph.full_rerun_cause is None
+    connection = sqlite3.connect(_testmon_datafile(tmp_path))
+    cursor = connection.execute(
+        "SELECT duration FROM test_execution WHERE test_name=?", ("tests/test_nodes.py::test_old",)
+    )
+    try:
+        original_duration = cursor.fetchone()[0]
+    finally:
+        cursor.close()
+        connection.close()
     before = _testmon_datafile(tmp_path).read_bytes()
     count, seconds, error, unknown = verify._estimate_affected_selection(tmp_path, graph)
-    assert (count, error, unknown) == (2, None, 2)
-    assert seconds == 0.0
+    assert (count, error, unknown) == (3, None, 2), (count, error, unknown)
+    assert seconds == original_duration, (seconds, original_duration)
     forced = "tests/test_nodes.py::test_new"
     count, seconds, error, unknown = verify._estimate_affected_selection(tmp_path, graph, (forced, forced))
-    assert (count, error, unknown) == (4, None, 4)
-    assert seconds == 0.0
+    assert (count, error, unknown) == (5, None, 4), (count, error, unknown)
+    assert seconds == original_duration, (seconds, original_duration)
     assert _testmon_datafile(tmp_path).read_bytes() == before
     decision = verify._affected_admission(root=tmp_path, graph=graph, forced_tests=(forced,))
-    assert decision.to_payload()["selected_count"] == 4
+    assert decision.to_payload()["selected_count"] == 5
     assert decision.to_payload()["unrecorded_tests"] == 4
 
 
