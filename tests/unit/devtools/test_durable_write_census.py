@@ -7,7 +7,10 @@ AST census rather than a test-local imitation of it.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
+
+import pytest
 
 from devtools import repo_root
 from devtools.durable_write_census import (
@@ -279,4 +282,76 @@ def test_production_membership_creator_is_temporary_on_its_owned_reader() -> Non
             "polylogue/storage/sqlite/archive_tiers/write.py::_acompact_content_membership_ratio::membership"
         )
         for violation in collect_violations(repo_root=root)
+    )
+
+
+def test_private_witness_hydration_is_not_a_general_scratch_rewrite_exemption(tmp_path: Path) -> None:
+    _module(tmp_path, "def hydrate(conn):\n    conn.execute('DELETE FROM raw_sessions')\n")
+    declaration = _declaration(
+        tmp_path,
+        "package: polylogue\nwrites:\n"
+        "  - file: polylogue/storage/sqlite/archive_tiers/writer.py\n"
+        "    function: hydrate\n    table: raw_sessions\n    kind: delete\n"
+        "    tier: source\n    classification: private_witness_hydration\n"
+        "    reason: Claimed private scratch baseline.\n",
+    )
+    assert _rules(tmp_path, declaration) == {"private_witness_hydration_site_invalid"}
+    assert len(census_package(tmp_path / "polylogue", repo_root=tmp_path).sites) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["none", "live_receiver", "rowid", "tables", "retained_tier", "missing_restore", "restore_order", "hydration"],
+)
+def test_private_witness_hydration_requires_the_reviewed_same_key_shape(tmp_path: Path, mutation: str) -> None:
+    tree = ast.parse((repo_root() / "polylogue/storage/sqlite/reference_seal.py").read_text())
+    owner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "PreparedIndexMutation")
+    method = next(
+        node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "_seed_source_controls"
+    )
+    loop = next(node for node in method.body if isinstance(node, ast.For))
+    phase = next(node for node in loop.body if isinstance(node, ast.With))
+    if mutation == "live_receiver":
+        deletion = phase.body[0]
+        assert isinstance(deletion, ast.With)
+        call = deletion.items[0].context_expr
+        assert isinstance(call, ast.Call)
+        call.args[0] = ast.parse("self._observers['source'].connection", mode="eval").body
+    elif mutation == "rowid":
+        deletion = phase.body[0]
+        assert isinstance(deletion, ast.With)
+        call = deletion.items[0].context_expr
+        assert isinstance(call, ast.Call) and isinstance(call.args[1], ast.JoinedStr)
+        call.args[1].values[-1] = ast.Constant(" WHERE rowid=2")
+    elif mutation == "tables":
+        loop.iter = ast.parse("('raw_existence_journal_control', 'raw_sessions')", mode="eval").body
+    elif mutation == "retained_tier":
+        retained = loop.body[0]
+        assert isinstance(retained, ast.Assign) and isinstance(retained.value, ast.Call)
+        retained.value.args[0] = ast.Constant("user")
+    elif mutation == "missing_restore":
+        phase.body[1] = ast.Pass()
+    elif mutation == "restore_order":
+        phase.body[0], phase.body[1] = phase.body[1], phase.body[0]
+    elif mutation == "hydration":
+        phase.items[0].context_expr = ast.parse("self._ordinary_write_phase()", mode="eval").body
+    path = tmp_path / "polylogue/storage/sqlite/reference_seal.py"
+    path.parent.mkdir(parents=True)
+    ast.fix_missing_locations(method)
+    path.write_text(
+        "class PreparedIndexMutation:\n" + "\n".join("    " + line for line in ast.unparse(method).splitlines()) + "\n"
+    )
+    declaration = _declaration(
+        tmp_path,
+        "package: polylogue\nwrites:\n"
+        "  - file: polylogue/storage/sqlite/reference_seal.py\n"
+        "    function: PreparedIndexMutation._seed_source_controls\n"
+        "    table: '?'\n    kind: delete\n    tier: unresolved\n"
+        "    classification: private_witness_hydration\n"
+        "    reason: Exact original private seed restoration.\n",
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert len(observation.sites) == 1
+    assert _rules(tmp_path, declaration) == (
+        set() if mutation == "none" else {"private_witness_hydration_site_invalid"}
     )

@@ -507,12 +507,6 @@
     ]
   },
   {
-    "file": "polylogue/storage/sqlite/queries/raw_writes.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/storage/sqlite/queries/sessions_writes.py",
     "tiers": [
       "index"

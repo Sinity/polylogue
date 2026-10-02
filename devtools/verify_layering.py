@@ -60,7 +60,6 @@ _CREATE_TABLE_RE = re.compile(
     r"CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
-_SQL_EXECUTION_METHODS = frozenset({"execute", "executemany", "executescript"})
 _WRITER_SURFACE_CONTRACTS = {
     "source": ("durable", "atomic"),
     "index": ("rebuildable", "replayable"),
@@ -409,8 +408,12 @@ def _package_pass(
             continue
         if path in import_wanted:
             file_imports[path] = _module_imports(tree)
-        if path in census_files and result.census_mutation_files is not None and _mutation_calls(tree):
-            result.census_mutation_files[relative] = _mutation_tiers(tree)
+        if (
+            path in census_files
+            and result.census_mutation_files is not None
+            and _mutation_calls(tree, relative=relative)
+        ):
+            result.census_mutation_files[relative] = _mutation_tiers(tree, relative=relative)
         if durable is not None and path in durable_files:
             durable.observe(tree, path=path, relative=relative)
         if derived is not None and path in derived_files:
@@ -690,12 +693,18 @@ def _string_assignments(
     return values
 
 
-def _mutation_sql(node: ast.Call, *, values: dict[str, tuple[str, ...]]) -> str | None:
-    if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
+def _mutation_sql(
+    node: ast.Call,
+    *,
+    values: dict[str, tuple[str, ...]],
+    executions: dict[ast.Call, durable_write.SQLExecution] | None = None,
+) -> str | None:
+    if executions is None:
+        executions = durable_write.sql_execution_calls(node)
+    execution = executions.get(node)
+    if execution is None:
         return None
-    if not node.args:
-        return None
-    sql = "".join(_string_fragments(node.args[0], values))
+    sql = "".join(_string_fragments(execution.argument, values))
     return sql if sql and _SQL_MUTATION_RE.search(sql) else None
 
 
@@ -714,11 +723,18 @@ def _archive_table_tiers() -> dict[str, str]:
 
 
 def _scoped_mutation_calls(
-    tree: ast.AST, inherited: dict[str, tuple[str, ...]] | None = None
+    tree: ast.AST,
+    inherited: dict[str, tuple[str, ...]] | None = None,
+    executions: dict[ast.Call, durable_write.SQLExecution] | None = None,
 ) -> Iterator[tuple[ast.Call, str]]:
+    if executions is None:
+        executions = durable_write.sql_execution_calls(tree)
     values = _string_assignments(tree, inherited)
     for node in _function_scope_nodes(tree):
-        if isinstance(node, ast.Call) and (sql := _mutation_sql(node, values=values)) is not None:
+        if (
+            isinstance(node, ast.Call)
+            and (sql := _mutation_sql(node, values=values, executions=executions)) is not None
+        ):
             yield node, sql
 
     def children(node: ast.AST) -> Iterator[ast.AST]:
@@ -729,24 +745,31 @@ def _scoped_mutation_calls(
                 yield from children(child)
 
     for child in children(tree):
-        yield from _scoped_mutation_calls(child, inherited if isinstance(tree, ast.ClassDef) else values)
+        yield from _scoped_mutation_calls(child, inherited if isinstance(tree, ast.ClassDef) else values, executions)
 
 
-def _mutation_calls(tree: ast.AST) -> tuple[ast.Call, ...]:
-    return tuple(node for node, _ in _scoped_mutation_calls(tree))
+def _mutation_calls(tree: ast.AST, *, relative: str = "") -> tuple[ast.Call, ...]:
+    return tuple(
+        node
+        for node, _ in _scoped_mutation_calls(
+            tree, executions=durable_write.sql_execution_calls(tree, relative=relative)
+        )
+    )
 
 
-def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
+def _mutation_tiers(tree: ast.AST, *, relative: str = "") -> frozenset[str]:
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
     table_tiers = _archive_table_tiers()
     if isinstance(tree, ast.FunctionDef | ast.AsyncFunctionDef):
         values = _string_assignments(tree)
         sql_statements = (
             sql
             for node in _function_scope_nodes(tree)
-            if isinstance(node, ast.Call) and (sql := _mutation_sql(node, values=values)) is not None
+            if isinstance(node, ast.Call)
+            and (sql := _mutation_sql(node, values=values, executions=executions)) is not None
         )
     else:
-        sql_statements = (sql for _, sql in _scoped_mutation_calls(tree))
+        sql_statements = (sql for _, sql in _scoped_mutation_calls(tree, executions=executions))
     return frozenset(
         tier
         for sql in sql_statements
@@ -754,8 +777,9 @@ def _mutation_tiers(tree: ast.AST) -> frozenset[str]:
     )
 
 
-def _function_mutation_tiers(tree: ast.Module) -> dict[str, frozenset[str]]:
+def _function_mutation_tiers(tree: ast.Module, *, relative: str = "") -> dict[str, frozenset[str]]:
     """Keep inherited SQL constants with their actual lexical body."""
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
     table_tiers = _archive_table_tiers()
     result: dict[str, frozenset[str]] = {}
 
@@ -766,7 +790,7 @@ def _function_mutation_tiers(tree: ast.Module) -> dict[str, frozenset[str]]:
             for expression in _function_scope_nodes(node):
                 if (
                     isinstance(expression, ast.Call)
-                    and (sql := _mutation_sql(expression, values=values)) is not None
+                    and (sql := _mutation_sql(expression, values=values, executions=executions)) is not None
                     and (table := _mutation_table(sql)) is not None
                     and (tier := table_tiers.get(table)) is not None
                 ):
@@ -884,7 +908,7 @@ def _imported_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
+def _imported_sql_execution_lines(tree: ast.Module, *, relative: str = "") -> list[int]:
     """Find execute calls whose SQL text is hidden behind an import.
 
     The layering gate cannot classify an imported constant against this
@@ -892,15 +916,14 @@ def _imported_sql_execution_lines(tree: ast.Module) -> list[int]:
     change to the statement cannot bypass the writer inventory.
     """
     imported = _imported_names(tree)
+    executions = durable_write.sql_execution_calls(tree, relative=relative)
     return sorted(
         node.lineno
         for node in walk_module(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _SQL_EXECUTION_METHODS
-        and node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id in imported
+        and (execution := executions.get(node)) is not None
+        and isinstance(execution.argument, ast.Name)
+        and execution.argument.id in imported
     )
 
 
@@ -1046,13 +1069,17 @@ def _entrypoint_tiers(
     specs: dict[str, WriterModuleSpec],
     *,
     follow_imports: bool = True,
+    relative: str = "",
     functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] | None = None,
     imported_modules: dict[str, str] | None = None,
     direct_tiers: dict[str, frozenset[str]] | None = None,
 ) -> frozenset[str]:
-    functions = functions or _function_definitions(tree)
-    imported_modules = imported_modules or _imported_writer_modules(tree)
-    direct_tiers = direct_tiers or _function_mutation_tiers(tree)
+    if functions is None:
+        functions = _function_definitions(tree)
+    if imported_modules is None:
+        imported_modules = _imported_writer_modules(tree)
+    if direct_tiers is None:
+        direct_tiers = _function_mutation_tiers(tree, relative=relative)
     classes = {
         name.rpartition(".")[0] for name in functions if "." in name and name.rpartition(".")[0] not in functions
     }
@@ -1070,7 +1097,7 @@ def _entrypoint_tiers(
                 if spec is not None:
                     tiers.update(surface.tier for surface in spec.surfaces)
                 continue
-            tiers.update(direct_tiers[name])
+            tiers.update(direct_tiers.get(name, frozenset()))
             calls = _receiver_calls(function, qualified=name, functions=functions, classes=classes, incoming=incoming)
             for called_name, arguments in calls.items():
                 if called_name not in functions and called_name not in imported_modules:
@@ -1163,9 +1190,9 @@ def _census_mutation_files(repo_root: Path, policy: WriterModulePolicy) -> dict[
                 tree = parse_path(py_file)
             except (SyntaxError, UnicodeDecodeError):
                 continue
-            if not _mutation_calls(tree):
+            if not _mutation_calls(tree, relative=rel):
                 continue
-            found[rel] = _mutation_tiers(tree)
+            found[rel] = _mutation_tiers(tree, relative=rel)
     return found
 
 
@@ -1227,7 +1254,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
     declarations = {
         rel: _parse_writer_module_declaration(tree, file=rel, marker=policy.marker) for rel, (_, tree) in files.items()
     }
-    mutation_files = {rel for rel, (_, tree) in files.items() if _mutation_calls(tree)}
+    mutation_files = {rel for rel, (_, tree) in files.items() if _mutation_calls(tree, relative=rel)}
 
     for rel in sorted(mutation_files):
         spec = specs.get(rel)
@@ -1285,7 +1312,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
             continue
 
         expected_tiers = tuple(surface.tier for surface in spec.surfaces)
-        for line in _imported_sql_execution_lines(tree):
+        for line in _imported_sql_execution_lines(tree, relative=spec.path):
             violations.append(
                 {
                     "file": spec.path,
@@ -1293,7 +1320,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                     "rule": "writer_module_imported_sql_opaque",
                 }
             )
-        observed_tiers = _mutation_tiers(tree)
+        observed_tiers = _mutation_tiers(tree, relative=spec.path)
         unexpected_tiers = sorted(observed_tiers.difference(expected_tiers))
         if unexpected_tiers:
             violations.append(
@@ -1317,7 +1344,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
         functions = _function_definitions(tree)
         imported_modules = _imported_writer_modules(tree)
-        direct_tiers = _function_mutation_tiers(tree)
+        direct_tiers = _function_mutation_tiers(tree, relative=spec.path)
 
         if len(declaration.tiers) > 1:
             if not _contract_is_audited(declaration, spec, policy):
@@ -1339,6 +1366,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                         tree,
                         entrypoint,
                         specs,
+                        relative=spec.path,
                         functions=functions,
                         imported_modules=imported_modules,
                         direct_tiers=direct_tiers,
@@ -1376,6 +1404,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                 name,
                 specs,
                 follow_imports=False,
+                relative=spec.path,
                 functions=functions,
                 imported_modules=imported_modules,
                 direct_tiers=direct_tiers,
@@ -1405,6 +1434,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
                 entrypoint,
                 specs,
                 follow_imports=False,
+                relative=spec.path,
                 functions=functions,
                 imported_modules=imported_modules,
                 direct_tiers=direct_tiers,
