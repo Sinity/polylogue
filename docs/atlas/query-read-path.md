@@ -24,9 +24,9 @@ are part of the route contract (`polylogue/archive/query/transaction.py:1-100`).
 
 Use generated session, message, and block identities for exact reads. Use
 public `origin` filters, not provider-wire names. Lineage-aware reads compose
-parent prefixes and report depth-limit, cycle, or dangling-branch-point status rather
+parent prefixes and report cycle or dangling-branch-point status rather
 than silently claiming completeness
-(`polylogue/storage/sqlite/archive_tiers/write.py:2543-2625`).
+(`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 
 ## Scoped ranked reads
 

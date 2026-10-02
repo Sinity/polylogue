@@ -5,8 +5,11 @@
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape; the pipeline normalizes provider records into
 parsed sessions before the storage writer lowers them
-(`polylogue/sources/dispatch.py:1-80`; `polylogue/sources/detection.py:76-104`;
-`polylogue/pipeline/services/ingest_batch/_core.py:1179-1243`).
+(`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
+`ingest_record` in
+`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
+in the same file at `1037-1089`;
+`_materialize_parsed_sessions` in the same file at `896-959`).
 
 ## Detection and parse route
 
@@ -15,20 +18,22 @@ parsed sessions before the storage writer lowers them
    `compile_detector_registry` validates them and sorts them per
    `DetectionMode` by `(mode_rank or detector_tightness, local_rank,
    binding_id)`; `CompiledDetectorRegistry.detect` returns the first predicate
-   that claims the payload (`polylogue/sources/detection.py:82-104`;
+   that claims the payload (`polylogue/sources/detection.py:88-105`;
    `polylogue/sources/detection.py:196-227`).
 3. The selected provider parser emits normalized sessions, messages, blocks,
    tool uses, tool results, and lineage hints.
 4. `write_parsed_session_to_archive` computes public origin and identities,
    writes the parsed tree, and resolves asserted parent links
-   (`polylogue/storage/sqlite/archive_tiers/write.py:1108-1124`).
+   (`write_parsed_session_to_archive` in
+   `polylogue/storage/sqlite/archive_tiers/write.py:2119`).
 5. The daemon converger materializes FTS, embeddings, and insight read models.
 
 ## Detector tightness order
 
 Lower number runs first. Tightness must be unique among executable
 `OriginSpec`s, which is enforced at spec validation
-(`polylogue/sources/origin_specs.py:1448-1451`). Current executable order:
+(`OriginSpecRegistry.diagnostics` in
+`polylogue/sources/origin_specs.py:1452-1462`). Current executable order:
 
 | Tightness | Origin |
 | --- | --- |
@@ -74,22 +79,31 @@ provider (`docs/provider-origin-identity.md:15-30`;
   prose is not an outcome oracle.
 - Parser inference cannot overwrite a hook-authoritative lineage edge: when
   `_authoritative_parent_claim` returns a hook-asserted parent, the write
-  replaces the parser's `parent_session_provider_id` with it and promotes the
-  session to `SessionKind.SUBAGENT`
-  (`polylogue/storage/sqlite/archive_tiers/write.py:846-867`).
+  uses that parent for lineage resolution. A hook parent with no parser parent
+  promotes the session to `SessionKind.SUBAGENT`
+  (`_prepared_message_context` in
+  `polylogue/storage/sqlite/archive_tiers/write.py:1655-1698`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
-  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1108`).
+  write choke point (`write_parsed_session_to_archive` in
+  `polylogue/storage/sqlite/archive_tiers/write.py:2119`).
 - Batch ingest keeps source membership and precedence checks read-only:
   `_core.py` opens one read-only `source.db` handle per batch, and
   `revision_authority_refuses_write` reads `raw_session_memberships` through
   it, while index publication and later blob-publication receipt consumption
   each open their own archive-root-bound write connection
-  (`polylogue/pipeline/services/ingest_batch/_core.py:2956-2971`;
+  (`_process_ingest_batch_sync` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:3528-3543`;
+  `revision_authority_refuses_write` in
   `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:202-212`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:3080-3095`).
+  `_open_sync_connection` in
+  `polylogue/pipeline/services/ingest_batch/_core.py:215-245`). After index
+  commit, `_process_ingest_batch_sync` opens the source-tier transaction with
+  `archive_root=archive_root` and calls `consume_blob_publication_receipt`
+  for each pending attachment receipt
+  (`polylogue/pipeline/services/ingest_batch/_core.py:3656-3673`;
+  `polylogue/storage/blob_publication.py:553-564`).
 
 ## Gotchas
 
