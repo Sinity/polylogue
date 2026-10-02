@@ -653,6 +653,7 @@ def test_selective_package_upgrade_reports_each_clients_currency(
     from click.testing import CliRunner
 
     from polylogue.agent_integration import assets, installer
+    from polylogue.agent_integration.spec import ASSET_VERSION
     from polylogue.cli.commands import agent
     from tests.infra.agent_asset_package import copy_agent_package
 
@@ -662,11 +663,13 @@ def test_selective_package_upgrade_reports_each_clients_currency(
     manager.install(_options(polylogue, server))
     original_state = json.loads(manager.state_path.read_text())
     assert manager.doctor()["ok"] is True
+    current_version = ASSET_VERSION
     if upgrade == "digest":
         manual = package / "standing-manual.md"
         manual.write_text(manual.read_text() + "\nNeutral package revision B.\n")
     else:
-        monkeypatch.setattr(installer, "ASSET_VERSION", installer.ASSET_VERSION + "-neutral-B")
+        current_version += "-neutral-B"
+        monkeypatch.setattr(installer, "ASSET_VERSION", current_version)
     before_reinstall = manager.status()
     assert before_reinstall["asset_current"] is False
     assert all(row["asset_current"] is False for row in cast(list[dict[str, object]], before_reinstall["clients"]))
@@ -677,7 +680,7 @@ def test_selective_package_upgrade_reports_each_clients_currency(
     for name in stale:
         assert after_state["clients"][name] == original_state["clients"][name]
     assert after_state["asset_digest"] == agent_asset_digest()
-    assert after_state["content_version"] == installer.ASSET_VERSION
+    assert after_state["content_version"] == current_version
     # Native evidence is still intact; stale package provenance is independent.
     for observe in (manager.status, manager.doctor):
         payload = observe()
