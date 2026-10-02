@@ -1476,6 +1476,20 @@ class PreparedIndexMutation:
         """Prepare the existing durable Source capability without opening Index."""
         return cls(None, archive_root=archive_root, input_demand=input_demand, _source_only=True)
 
+    def has_tier_capability(self, tier: str) -> bool:
+        """Query captured proof capability, never tier availability or new authority.
+
+        Within an original read window its entry/exit currency bracket owns
+        freshness. Outside that window all retained observers must be current
+        and unpinned before an unavailable capability can be reported.
+        """
+        self._require_new_work()
+        if tier not in {"index", "source", "user", "audit"}:
+            raise ReferenceSealError("capability query requires a declared original proof tier")
+        if not self._original_reads_active:
+            self.validate_observers_current()
+        return tier in self._capabilities
+
     def _require_capability(self, tier: str) -> None:
         if tier not in self._capabilities:
             raise ReferenceSealError(f"original mutation witness has no {tier} capability")
