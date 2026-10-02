@@ -16,11 +16,14 @@ fixture declaration until a real wire format is intentionally adopted.
 from __future__ import annotations
 
 import ast
+import contextlib
 import gzip
 import hashlib
 import json
 import os
 import re
+import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, lru_cache
@@ -256,9 +259,8 @@ def _source_signature(path: Path) -> tuple[str, str, int]:
     signatures are memoized by path. Source-mutating test harnesses and
     developer tools must call ``_invalidate_source_signatures`` after writes.
     """
-    stat = path.stat()
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    return str(path), digest, stat.st_size
+    source = path.read_bytes()
+    return str(path), hashlib.sha256(source).hexdigest(), len(source)
 
 
 def _invalidate_source_signatures() -> None:
@@ -284,105 +286,79 @@ def _module_path(base: Path) -> Path | None:
     return package_init.resolve() if package_init.is_file() else None
 
 
-#: Bump when edge resolution below changes shape; it is part of the disk key.
+#: Bump when lexical import-edge resolution changes.
 _IMPORT_EDGE_MEMO_VERSION = 1
-#: Import edges memoized across processes, keyed by ``label\0content digest``.
-#: ``None`` until the memo file has been consulted once.
-_IMPORT_EDGES: dict[str, list[str]] | None = None
-_IMPORT_EDGES_ADDED = False
 
 
-def _import_edge_memo_path() -> Path | None:
-    """Where the cross-process import-edge memo lives, or None where none can."""
-    root = _SOURCE_ROOT / ".cache" / "source-fingerprints"
+def _source_memo_root() -> Path | None:
+    """Shared advisory state, independent of the checkout or package location."""
+    cache_home = os.environ.get("XDG_CACHE_HOME")
+    root = (Path(cache_home) if cache_home else Path.home() / ".cache") / "polylogue" / "source-fingerprints"
     try:
         root.mkdir(parents=True, exist_ok=True)
     except OSError:
         return None
-    return root / f"import-edges-v{_IMPORT_EDGE_MEMO_VERSION}.json"
+    return root
 
 
-def _load_import_edges() -> dict[str, list[str]]:
-    """The memo as it stands on disk, read at most once per process."""
-    global _IMPORT_EDGES
-    if _IMPORT_EDGES is not None:
-        return _IMPORT_EDGES
-    edges: dict[str, list[str]] = {}
-    memo = _import_edge_memo_path()
+def _source_memo_key(signatures: tuple[tuple[str, str, int], ...], namespace: str, version: int) -> str:
+    """Cover lexical location, observed bytes, normalization, and Python AST format."""
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "version": version,
+                "python": sys.implementation.cache_tag,
+                "namespace": namespace,
+                "signatures": [
+                    (_fingerprint_path_label(Path(path)), digest, size) for path, digest, size in signatures
+                ],
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _publish_source_memo(memo: Path, payload: str) -> None:
+    """Concurrent writers publish whole entries; unavailable advisory state is harmless."""
+    scratch: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=memo.parent, prefix=".memo-", delete=False
+        ) as stream:
+            scratch = Path(stream.name)
+            stream.write(payload)
+        scratch.replace(memo)
+    except OSError:
+        pass
+    finally:
+        if scratch is not None:
+            with contextlib.suppress(OSError):
+                scratch.unlink(missing_ok=True)
+
+
+@lru_cache(maxsize=2048)
+def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
+    """Resolve content-addressed lexical import edges against this checkout.
+
+    One entry per source revision avoids loading or rewriting the history of
+    other checkouts. Resolving module bases on every cache miss preserves
+    imports that appear or disappear without changing the importing file.
+    """
+    root = _source_memo_root()
+    key = _source_memo_key((signature,), "import-edges", _IMPORT_EDGE_MEMO_VERSION)
+    memo = root / f"edges-{key}.json" if root is not None else None
+    bases = None
     if memo is not None:
         try:
             loaded = json.loads(memo.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             loaded = None
-        if isinstance(loaded, dict):
-            edges = {
-                key: [str(item) for item in value]
-                for key, value in loaded.items()
-                if isinstance(key, str) and isinstance(value, list)
-            }
-    _IMPORT_EDGES = edges
-    return edges
-
-
-def _flush_import_edges() -> None:
-    """Publish edges this process learned, merged over whatever is on disk now.
-
-    A concurrent writer's entries are kept: every key names a file's exact
-    contents, so two processes that both parsed a file agree on its value and
-    the merge can only lose an addition, never record a wrong edge.
-    """
-    global _IMPORT_EDGES_ADDED
-    if not _IMPORT_EDGES_ADDED or _IMPORT_EDGES is None:
-        return
-    memo = _import_edge_memo_path()
-    if memo is None:
-        _IMPORT_EDGES_ADDED = False
-        return
-    merged = dict(_IMPORT_EDGES)
-    try:
-        existing = json.loads(memo.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        existing = None
-    if isinstance(existing, dict):
-        for key, value in existing.items():
-            if isinstance(key, str) and isinstance(value, list):
-                merged.setdefault(key, [str(item) for item in value])
-    try:
-        scratch = memo.with_name(f"{memo.name}.{os.getpid()}.tmp")
-        scratch.write_text(json.dumps(merged, sort_keys=True), encoding="utf-8")
-        scratch.replace(memo)
-    except OSError:
-        pass
-    _IMPORT_EDGES_ADDED = False
-
-
-def _import_edge_key(signature: tuple[str, str, int]) -> str:
-    """Identify one file's edges by where it sits and what it contains.
-
-    The content digest alone would not do: two byte-identical modules in
-    different packages resolve their relative imports to different files.
-    """
-    return f"{_fingerprint_path_label(Path(signature[0]))}\0{signature[1]}"
-
-
-@lru_cache(maxsize=2048)
-def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
-    """Return local Python dependencies of one parser-semantic source file.
-
-    Parsing the closure is the dominant cost of importing the archive tiers --
-    about 9.6 s of a 14 s single-file pytest collection, paid again by every
-    xdist worker and every CLI start -- so the edges outlive the process in a
-    memo keyed by each file's contents. An edited file has a new key and is
-    re-parsed; nothing invalidates by time.
-    """
-    global _IMPORT_EDGES_ADDED
-    edges = _load_import_edges()
-    key = _import_edge_key(signature)
-    bases = edges.get(key)
+        if isinstance(loaded, list) and all(isinstance(item, str) for item in loaded):
+            bases = loaded
     if bases is None:
         bases = list(_import_bases(signature))
-        edges[key] = bases
-        _IMPORT_EDGES_ADDED = True
+        if memo is not None:
+            _publish_source_memo(memo, json.dumps(bases))
     found = {resolved for label in bases if (resolved := _module_path(_source_path(label, _SOURCE_ROOT))) is not None}
     return tuple(sorted(str(item) for item in found))
 
@@ -397,7 +373,8 @@ def _import_bases(signature: tuple[str, str, int]) -> tuple[str, ...]:
     while the parse stays memoized.
     """
     path = Path(signature[0])
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    source = _observed_source_bytes(signature)
+    tree = ast.parse(source.decode("utf-8"))
     bases: set[Path] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
@@ -428,7 +405,6 @@ def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
             pending.append(Path(dependency))
-    _flush_import_edges()
     return tuple(sorted(found))
 
 
@@ -454,26 +430,12 @@ _FINGERPRINT_ALGORITHM_VERSION = 5
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
-    """Where this exact set of source signatures memoizes its fingerprint.
-
-    Parsing and normalizing the closure of parser sources costs tens of
-    seconds of CPU per process; every test worker and every CLI start paid
-    it. The signatures encode each source's content digest, so a memo keyed
-    by them is invalidated by any edit. Returns None where no cache
-    directory can exist (installed packages), which falls back to computing.
-    """
-    root = _SOURCE_ROOT / ".cache" / "source-fingerprints"
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except OSError:
+    """Address a fingerprint by relative labels and bytes across checkouts."""
+    root = _source_memo_root()
+    if root is None:
         return None
-    digest = hashlib.sha256(
-        json.dumps(
-            {"version": _FINGERPRINT_ALGORITHM_VERSION, "namespace": namespace, "signatures": signatures},
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
-    return root / f"{digest}.txt"
+    digest = _source_memo_key(signatures, namespace, _FINGERPRINT_ALGORITHM_VERSION)
+    return root / f"fingerprint-{digest}.txt"
 
 
 @lru_cache(maxsize=128)
@@ -482,18 +444,13 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], na
     if memo is not None:
         try:
             cached = memo.read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, UnicodeError):
             cached = ""
-        if len(cached) == 64:
+        if re.fullmatch(r"[0-9a-f]{64}", cached):
             return cached
     fingerprint = _fingerprint_sources_compute(signatures, namespace)
     if memo is not None:
-        try:
-            scratch = memo.with_name(f"{memo.name}.{id(signatures)}.tmp")
-            scratch.write_text(fingerprint, encoding="utf-8")
-            scratch.replace(memo)
-        except OSError:
-            pass
+        _publish_source_memo(memo, fingerprint)
     return fingerprint
 
 
@@ -501,12 +458,19 @@ class FingerprintSourceChangedError(RuntimeError):
     """Source bytes no longer match the observation that would key the memo."""
 
 
+def _observed_source_bytes(signature: tuple[str, str, int]) -> bytes:
+    path_string, expected_digest, expected_size = signature
+    source = Path(path_string).read_bytes()
+    if len(source) != expected_size or hashlib.sha256(source).hexdigest() != expected_digest:
+        raise FingerprintSourceChangedError(f"source changed while fingerprinting: {path_string}")
+    return source
+
+
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
-    for path_string, expected_digest, expected_size in signatures:
-        source = Path(path_string).read_bytes()
-        if len(source) != expected_size or hashlib.sha256(source).hexdigest() != expected_digest:
-            raise FingerprintSourceChangedError(f"source changed while fingerprinting: {path_string}")
+    for signature in signatures:
+        path_string = signature[0]
+        source = _observed_source_bytes(signature)
         tree = ast.parse(source.decode("utf-8"))
         normalized = _DocstringStripper().visit(tree)
         if (

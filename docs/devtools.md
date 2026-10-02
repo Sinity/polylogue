@@ -159,6 +159,24 @@ nonexecution diagnoses remain alongside this evidence error. `devtools why`
 shows the recorded error; the canonical receipt carries only its phase and
 type, without local paths or exception text.
 
+## Checkout entry
+
+The devshell configures Git hooks only for the entered checkout. It anchors
+`core.hooksPath` to the common checkout's `.githooks`, enables worktree config,
+and pins the current worktree's override. Each scope is written only when its
+value differs. Entering a worktree leaves sibling worktree configs untouched.
+Direnv uses the flake's bytecode and cleanup setup without repeating it.
+
+Source fingerprint and lexical import-edge memos are disposable shared state
+under `$XDG_CACHE_HOME/polylogue/source-fingerprints`, or
+`~/.cache/polylogue/source-fingerprints` when XDG cache home is unset. Keys cover
+repository-relative labels, exact source bytes, the algorithm version, Python's
+AST format, and the fingerprint namespace. Equal source trees share entries;
+changed content misses. Import edges store lexical bases and resolve them in
+the current tree, so adding or removing an imported module still changes the
+closure. Entries publish atomically with unique temporary files. An unavailable
+or malformed memo recomputes the result; there is no checkout-local memo route.
+
 ## Local State Layout
 
 - `.cache/`: disposable cache state.

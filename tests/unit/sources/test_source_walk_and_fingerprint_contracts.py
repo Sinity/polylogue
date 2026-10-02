@@ -1,10 +1,13 @@
 """Source discovery, source walk, and derived-identity fingerprint contracts."""
 
 import json
+import sys
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from io import BytesIO
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
@@ -44,8 +47,7 @@ def fingerprint_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     source.write_text(case("fingerprints", "before"), encoding="utf-8")
     monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", tmp_path)
     monkeypatch.setattr(origin_specs, "_LOWERING_FINGERPRINT_PATHS", ("candidate.py",))
-    monkeypatch.setattr(origin_specs, "_IMPORT_EDGES", None)
-    monkeypatch.setattr(origin_specs, "_IMPORT_EDGES_ADDED", False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "shared-cache"))
     origin_specs._invalidate_source_signatures()
     origin_specs._fingerprint_sources_cached.cache_clear()
     try:
@@ -74,7 +76,10 @@ def test_changed_source_cannot_poison_fingerprint_memo(
         local_patch.setattr(origin_specs, "_source_signature", observe_then_change)
         with pytest.raises(origin_specs.FingerprintSourceChangedError):
             origin_specs.lowering_fingerprint()
-    assert not list((fingerprint_source.parent / ".cache/source-fingerprints").glob("*.txt"))
+    memo_root = origin_specs._source_memo_root()
+    assert memo_root is not None
+    assert not list(memo_root.glob("fingerprint-*.txt"))
+    assert not list(memo_root.glob("edges-*.json"))
 
 
 def test_sql_replacement_operands_move_fingerprint(fingerprint_source: Path) -> None:
@@ -147,3 +152,103 @@ def test_source_walk_follows_a_linked_tree_and_stops_at_a_cycle(tmp_path: Path) 
     (root / "linked").symlink_to(export, target_is_directory=True)
     (root / "loop").symlink_to(root, target_is_directory=True)
     assert _iter_source_entries(root) == [root / "linked/session.jsonl", root / "loop"]
+
+
+def test_equal_checkouts_share_fingerprint_and_lexical_edge_memos(
+    fingerprint_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absolute checkout keys or missing edge reuse make the second read reparse."""
+    first = origin_specs.lowering_fingerprint()
+    second_root = tmp_path / "second"
+    second_root.mkdir()
+    (second_root / fingerprint_source.name).write_bytes(fingerprint_source.read_bytes())
+    origin_specs._invalidate_source_signatures()
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", second_root)
+
+    def refuse(*_args: object) -> str:
+        raise AssertionError("reparsed identical checkout bytes")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(origin_specs, "_fingerprint_sources_compute", refuse)
+        guarded.setattr(origin_specs, "_import_bases", refuse)
+        assert origin_specs.lowering_fingerprint() == first
+    (second_root / fingerprint_source.name).write_text(case("fingerprints", "after"), encoding="utf-8")
+    origin_specs._invalidate_source_signatures()
+    assert origin_specs.lowering_fingerprint() != first
+
+
+def test_memo_keys_cover_path_namespace_version_and_python(
+    fingerprint_source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dropping any coordinate would share results between incompatible requests."""
+    signature = origin_specs._source_signature(fingerprint_source)
+    key = origin_specs._source_memo_key((signature,), "first", 1)
+    assert origin_specs._source_memo_key((signature,), "second", 1) != key
+    assert origin_specs._source_memo_key((signature,), "first", 2) != key
+    other_path = (str(fingerprint_source.with_name("other.py")), *signature[1:])
+    assert origin_specs._source_memo_key((other_path,), "first", 1) != key
+    monkeypatch.setattr(sys.implementation, "cache_tag", "different-python-ast")
+    assert origin_specs._source_memo_key((signature,), "first", 1) != key
+
+
+@pytest.mark.parametrize("fault", ["unwritable", "publish", "invalid-text", "invalid-digest"])
+def test_advisory_cache_faults_preserve_fingerprint(
+    fingerprint_source: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    """A cache refusal or malformed entry must compute the same semantic result."""
+    expected = origin_specs.lowering_fingerprint()
+    signature = origin_specs._source_signature(fingerprint_source)
+    memo = origin_specs._fingerprint_memo_path((signature,), "lowering")
+    assert memo is not None
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    if fault == "unwritable":
+        blocked = tmp_path / "blocked-cache"
+        blocked.write_text("file", encoding="utf-8")
+        monkeypatch.setenv("XDG_CACHE_HOME", str(blocked))
+        origin_specs._invalidate_source_signatures()
+    elif fault == "publish":
+        memo.unlink()
+
+        def refuse_publication(*_args: object) -> None:
+            raise PermissionError("advisory publication unavailable")
+
+        monkeypatch.setattr(Path, "replace", refuse_publication)
+    elif fault == "invalid-text":
+        memo.write_bytes(b"\xff")
+    else:
+        memo.write_text("x" * 64, encoding="utf-8")
+    assert origin_specs.lowering_fingerprint() == expected
+    root = origin_specs._source_memo_root()
+    if root is not None:
+        assert not list(root.glob(".memo-*"))
+
+
+def test_concurrent_memo_publications_keep_whole_entries(
+    fingerprint_source: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Colliding temporary names or aggregate overwrites lose concurrent publications."""
+    signature = origin_specs._source_signature(fingerprint_source)
+    barrier = Barrier(4)
+    publish = origin_specs._publish_source_memo
+
+    def concurrent_publish(memo: Path, payload: str) -> None:
+        barrier.wait()
+        publish(memo, payload)
+
+    monkeypatch.setattr(origin_specs, "_publish_source_memo", concurrent_publish)
+    # Two writers agree on one key; two others publish independent keys.
+    namespaces = ("one", "one", "two", "three")
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        results = list(
+            workers.map(lambda name: origin_specs._fingerprint_sources_cached((signature,), name), namespaces)
+        )
+    assert results[0] == results[1]
+    root = origin_specs._source_memo_root()
+    assert root is not None
+    for namespace, expected in zip(namespaces, results, strict=True):
+        memo = origin_specs._fingerprint_memo_path((signature,), namespace)
+        assert memo is not None
+        assert memo.read_text(encoding="utf-8") == expected
+    assert not list(root.glob(".memo-*"))
