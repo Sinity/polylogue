@@ -5,9 +5,9 @@ controller, one worker or their sum exceeded the budget the width was chosen
 against, and therefore whether the next run should be narrower or the workload
 lighter.
 
-The unit of attribution is the managed pytest cgroup. This includes xdist
-workers and children that detach from the controller's process group while
-remaining charged to the same memory ceiling. ``smaps_rollup`` is read rather
+Attribution follows the actual launched process group and its inherited
+child-only custody marker. Shared cgroup membership is never ownership. The
+marker retains detached children, including those reparented before a sample. ``smaps_rollup`` is read rather
 than ``statm`` because workers share the controller's pages: RSS counts every
 copy, and only PSS sums across processes to something the ceiling can be
 compared against.
@@ -20,10 +20,12 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
 __all__ = [
+    "CUSTODY_ENV",
     "MAX_ATTRIBUTED_PROCESSES",
     "SAMPLE_INTERVAL_S",
     "ProcessGroupMemorySampler",
@@ -33,6 +35,8 @@ __all__ = [
 #: spikes that get a run killed; a coarser interval reports the plateau the
 #: kill did not happen at.
 SAMPLE_INTERVAL_S: Final = 0.5
+#: A fresh actual-launch identity, inherited only by its children and rerun.
+CUSTODY_ENV: Final = "POLYLOGUE_PYTEST_CUSTODY"
 #: How many processes the receipt names, worst first. A corpus run forks
 #: thousands of short-lived children over hours, and a receipt that grows with
 #: them is not a receipt.
@@ -51,51 +55,42 @@ _ROLLUP_FIELDS: Final[dict[str, str]] = {
 _MEASURES: Final[tuple[str, ...]] = ("rss_kib", "pss_kib", "private_kib", "swap_kib")
 
 
-def _cgroup_members(pgid: int, *, proc: Path, cgroup_root: Path) -> list[int]:
-    """Every live pid in the process's cgroup, including detached children."""
+@dataclass(frozen=True, slots=True)
+class _Identity:
+    start_ticks: int
+    group: int
+
+
+def _identity(pid: int, *, proc: Path) -> _Identity | None:
     try:
-        cgroup_text = (proc / "self" / "cgroup").read_text(encoding="utf-8")
-    except OSError:
-        cgroup_text = ""
-    v2_path = next((line.rpartition(":")[2] for line in cgroup_text.splitlines() if line.startswith("0::")), None)
-    if v2_path is not None:
-        procs = cgroup_root / v2_path.lstrip("/") / "cgroup.procs"
-        try:
-            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
-        except (OSError, ValueError):
-            return []
-    memory_path = next(
-        (
-            fields[2]
-            for line in cgroup_text.splitlines()
-            if len(fields := line.split(":", 2)) == 3 and "memory" in fields[1].split(",")
-        ),
-        None,
-    )
-    if memory_path is not None:
-        procs = cgroup_root / "memory" / memory_path.lstrip("/") / "cgroup.procs"
-        try:
-            return [int(pid) for pid in procs.read_text().split() if pid.isdigit()]
-        except (OSError, ValueError):
-            return []
-    # Synthetic procfs fixtures have no cgroup file; the process-group reader
-    # keeps those deterministic while real Linux procfs uses cgroup membership.
-    members: list[int] = []
+        fields = (proc / str(pid) / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
+        return _Identity(int(fields[19]), int(fields[2]))
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _marker_matches(pid: int, marker: str, *, proc: Path) -> bool | None:
+    """Compare one environment field without retaining arbitrary environment values."""
+    expected = (CUSTODY_ENV + "=" + marker).encode()
+    pending = b""
+    oversized = False
     try:
-        entries = list(proc.iterdir())
+        with (proc / str(pid) / "environ").open("rb") as handle:
+            while chunk := handle.read(65536):
+                parts = chunk.split(b"\0")
+                for index, part in enumerate(parts):
+                    if not oversized:
+                        if len(pending) + len(part) > len(expected):
+                            pending, oversized = b"", True
+                        else:
+                            pending += part
+                    if index < len(parts) - 1:
+                        if not oversized and pending == expected:
+                            return True
+                        pending, oversized = b"", False
+            return not oversized and pending == expected
     except OSError:
-        return members
-    for entry in entries:
-        name = entry.name
-        if not name.isdigit():
-            continue
-        try:
-            fields = (entry / "stat").read_text(encoding="utf-8", errors="replace").rpartition(")")[2].split()
-            if int(fields[2]) == pgid:
-                members.append(int(name))
-        except (OSError, IndexError, ValueError):
-            continue
-    return members
+        return None
 
 
 def _rollup(pid: int, *, proc: Path) -> dict[str, int] | None:
@@ -151,7 +146,7 @@ class ProcessGroupMemorySampler:
         *,
         interval_s: float = SAMPLE_INTERVAL_S,
         proc: Path = Path("/proc"),
-        cgroup_root: Path = Path("/sys/fs/cgroup"),
+        custody_marker: str | None = None,
         meminfo: Path = Path("/proc/meminfo"),
         snapshot_path: Path | None = None,
         snapshot_context: Callable[[], Mapping[str, Any]] | None = None,
@@ -159,7 +154,12 @@ class ProcessGroupMemorySampler:
         self._pgid = pgid
         self._interval_s = interval_s
         self._proc = proc
-        self._cgroup_root = cgroup_root
+        self._custody_marker = custody_marker
+        leader = _identity(pgid, proc=proc)
+        self._leader_start = leader.start_ticks if leader is not None else None
+        self._known_births: dict[int, tuple[int, bool]] = {}
+        self._sample_lock = threading.Lock()
+        self._incomplete = False
         self._meminfo = meminfo
         self._snapshot_path = snapshot_path
         self._snapshot_context = snapshot_context
@@ -172,7 +172,7 @@ class ProcessGroupMemorySampler:
         self._aggregate_peak: dict[str, int] = dict.fromkeys(_MEASURES, 0)
         self._peak_processes = 0
         self._peak_at_s: float | None = None
-        self._per_pid: dict[int, dict[str, Any]] = {}
+        self._per_pid: dict[tuple[int, int], dict[str, Any]] = {}
         self._processes_seen = 0
         self._available_at_start = _mem_available_mib(meminfo)
         self._available_minimum = self._available_at_start
@@ -192,8 +192,10 @@ class ProcessGroupMemorySampler:
         following it keeps that attempt's memory in the run's peaks and
         per-process attribution rather than leaving it unmeasured.
         """
-        with self._lock:
+        with self._sample_lock, self._lock:
+            leader = _identity(pgid, proc=self._proc)
             self._pgid = pgid
+            self._leader_start = leader.start_ticks if leader is not None else None
         # Observed at once: a rerun that ends within one interval would
         # otherwise never be sampled.
         self.sample()
@@ -212,25 +214,95 @@ class ProcessGroupMemorySampler:
             self._stop.wait(self._interval_s)
 
     def sample(self) -> None:
-        """Take one measurement of the group. The sampling thread calls this."""
+        """Take one identity-bound measurement, serialized with other samples."""
+        with self._sample_lock:
+            self._sample()
+
+    def _sample(self) -> None:
         elapsed = time.monotonic() - self._started
         totals = dict.fromkeys(_MEASURES, 0)
-        readings: list[tuple[int, dict[str, int]]] = []
+        readings: list[tuple[int, int, str, dict[str, int]]] = []
         with self._lock:
-            pgid = self._pgid
-        for pid in _cgroup_members(pgid, proc=self._proc, cgroup_root=self._cgroup_root):
-            rollup = _rollup(pid, proc=self._proc)
-            if rollup is None:
+            pgid, leader_start = self._pgid, self._leader_start
+        leader = _identity(pgid, proc=self._proc)
+        group_proven = leader_start is not None and leader is not None and leader.start_ticks == leader_start
+        known: dict[int, tuple[int, bool]] = {}
+        incomplete = False
+        try:
+            entries = self._proc.iterdir()
+            for process_path in entries:
+                if not process_path.name.isdigit():
+                    continue
+                pid = int(process_path.name)
+                identity = _identity(pid, proc=self._proc)
+                if identity is None:
+                    if process_path.exists():
+                        incomplete = True
+                        if pid in self._known_births:
+                            known[pid] = self._known_births[pid]
+                    continue
+                previous = self._known_births.get(pid)
+                previously_proven = previous is not None and previous[0] == identity.start_ticks
+                group_owned = group_proven and identity.group == pgid
+                matched: bool | None = False
+                if self._custody_marker is not None:
+                    matched = _marker_matches(pid, self._custody_marker, proc=self._proc)
+                    incomplete |= (
+                        matched is None and not previously_proven and not group_owned and process_path.exists()
+                    )
+                owned = previously_proven or group_owned or matched is True
+                if not owned:
+                    continue
+                known[pid] = (
+                    identity.start_ticks,
+                    previous[1] if previously_proven and previous is not None else False,
+                )
+                rollup = _rollup(pid, proc=self._proc)
+                command = _command(pid, proc=self._proc)
+                after = _identity(pid, proc=self._proc)
+                if after is None or after.start_ticks != identity.start_ticks:
+                    # Exit and PID reuse cannot attach bytes to the old identity.
+                    incomplete |= after is not None or process_path.exists()
+                    known.pop(pid, None)
+                    continue
+                if group_owned and not previously_proven and matched is not True:
+                    current_leader = _identity(pgid, proc=self._proc)
+                    if current_leader is None or current_leader.start_ticks != leader_start:
+                        incomplete = True
+                        known.pop(pid, None)
+                        continue
+                if rollup is None:
+                    incomplete = True
+                    continue
+                readings.append((pid, identity.start_ticks, command, rollup))
+                for measure in _MEASURES:
+                    totals[measure] += rollup[measure]
+        except OSError:
+            incomplete = True
+        # Enumeration and permission faults are not proof that a previously
+        # owned process exited. Retire only an absent proc entry or new birth.
+        for pid, proof in self._known_births.items():
+            if pid in known:
                 continue
-            readings.append((pid, rollup))
-            for measure in _MEASURES:
-                totals[measure] += rollup[measure]
+            current = _identity(pid, proc=self._proc)
+            if current is not None:
+                if current.start_ticks == proof[0]:
+                    known[pid] = proof
+                    incomplete = True
+                continue
+            try:
+                (self._proc / str(pid) / "stat").stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass
+            known[pid] = proof
+            incomplete = True
         available = _mem_available_mib(self._meminfo)
         with self._lock:
+            self._incomplete |= incomplete
             self._samples += 1
-            if not readings:
-                return
-            self._observed += 1
+            self._observed += bool(readings)
             previous_pss = self._aggregate_peak["pss_kib"]
             # Keep each metric's peak independently. PSS determines which
             # moment names the group peak, but RSS/private/swap can spike at
@@ -241,16 +313,23 @@ class ProcessGroupMemorySampler:
             if totals["pss_kib"] > previous_pss:
                 self._peak_processes = len(readings)
                 self._peak_at_s = round(elapsed, 1)
-            for pid, rollup in readings:
-                entry = self._per_pid.get(pid)
-                if entry is None:
+            for pid, start_ticks, command, rollup in readings:
+                key = (pid, start_ticks)
+                if not known[pid][1]:
                     self._processes_seen += 1
-                    entry = {"pid": pid, "command": _command(pid, proc=self._proc)}
+                    known[pid] = (start_ticks, True)
+                entry = self._per_pid.get(key)
+                if entry is None:
+                    entry = {"pid": pid, "start_ticks": start_ticks, "command": command}
                     entry.update({f"peak_{measure}": 0 for measure in _MEASURES})
-                    self._per_pid[pid] = entry
+                    self._per_pid[key] = entry
                 for measure in _MEASURES:
                     if rollup[measure] > entry[f"peak_{measure}"]:
                         entry[f"peak_{measure}"] = rollup[measure]
+                if len(self._per_pid) > MAX_ATTRIBUTED_PROCESSES:
+                    worst = min(self._per_pid, key=lambda member: int(self._per_pid[member]["peak_pss_kib"]))
+                    self._per_pid.pop(worst)
+            self._known_births = known
             if available is not None and (self._available_minimum is None or available < self._available_minimum):
                 self._available_minimum = available
         self.persist()
@@ -263,6 +342,9 @@ class ProcessGroupMemorySampler:
                 "kind": "polylogue.pytest-memory",
                 "process_group": self._pgid,
                 "interval_s": self._interval_s,
+                "attribution_scope": "launched_group_and_inherited_marker"
+                if self._custody_marker
+                else "launched_group",
                 "samples": self._samples,
                 "observed_samples": self._observed,
                 "peak": {
@@ -277,6 +359,8 @@ class ProcessGroupMemorySampler:
                     "minimum": self._available_minimum,
                 },
             }
+            if self._incomplete:
+                document["incomplete"] = "some process identity, custody, or memory evidence was unreadable or changed"
             if self._observed == 0:
                 # A run too short to sample, or a procfs this process may not
                 # read: either way the receipt says so rather than reporting a

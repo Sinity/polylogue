@@ -38,6 +38,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,7 +46,7 @@ from typing import IO, Any, Final
 
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
-from devtools.pytest_memory import ProcessGroupMemorySampler
+from devtools.pytest_memory import CUSTODY_ENV, ProcessGroupMemorySampler
 from devtools.pytest_memory_admission import (
     EX_TEMPFAIL,
     RESOURCE_NOT_READY,
@@ -1202,10 +1203,12 @@ def _run_held_admitted(
         # A previous run of this pid may have left one; reading that would
         # report someone else's interruption.
         _slot_result_path(result_path).unlink(missing_ok=True)
-    process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
+    child_environment = {**env, CUSTODY_ENV: uuid.uuid4().hex}
+    process = subprocess.Popen(command, cwd=cwd, env=child_environment, stdout=stdout, stderr=stdout, process_group=0)
     try:
         sampler = ProcessGroupMemorySampler(
             process.pid,
+            custody_marker=child_environment[CUSTODY_ENV],
             snapshot_path=telemetry_path,
             snapshot_context=lambda: {
                 "status": terminal_status,
@@ -1761,6 +1764,7 @@ def _run_launch(launch_path: Path) -> int:
                 log.write((note + "\n").encode())
                 log.flush()
             try:
+                environment[CUSTODY_ENV] = uuid.uuid4().hex
                 child = subprocess.Popen(
                     command,
                     cwd=launch["working_directory"],
@@ -1775,6 +1779,7 @@ def _run_launch(launch_path: Path) -> int:
                 started_groups.append(child.pid)
                 sampler = ProcessGroupMemorySampler(
                     child.pid,
+                    custody_marker=environment[CUSTODY_ENV],
                     snapshot_path=telemetry_path,
                     snapshot_context=lambda: {
                         "status": terminal_status,
