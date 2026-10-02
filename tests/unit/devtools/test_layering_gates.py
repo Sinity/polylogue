@@ -11,14 +11,17 @@ import ast
 import dataclasses
 import json
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from devtools import required_gate, verify_layering
+from devtools import gate, required_gate, verify, verify_layering, verify_runs
 from devtools.sqlite_degradation import census_sqlite_degradation_anchors
+from devtools.testmon_provision import TestmonGraphState, TestmonGraphStatus
+from devtools.toolchain import venv_bin
 
 
 def _root_imports(repo_root: Path, target: str) -> tuple[dict[str, set[str]], tuple[str, ...]]:
@@ -213,6 +216,118 @@ def test_layering_gate_never_writes_the_checkout_without_prune_flag(
     payload = json.loads(capsys.readouterr().out)
     assert "layering_baseline_stale" in {violation["rule"] for violation in payload["violations"]}
     assert ratchet.read_bytes() == before
+
+
+@pytest.mark.uses_real_clock
+def test_whole_quick_preserves_tracked_stale_baselines_and_reports_their_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Unconditional pruning changes Git content and voids this actual quick receipt.
+
+    This integration control runs the real quick plan and layering subprocess.
+    Unrelated gate processes are stubbed; the real all-gate proof is recorded
+    separately by the task's declared quick run.
+    """
+    _write_ratchet_fixture(
+        tmp_path,
+        baseline_entries=[
+            {"target": "polylogue/cli", "file": "polylogue/cli/commands.py", "import": "polylogue.storage"},
+            {"target": "polylogue/cli", "file": "polylogue/cli/gone.py", "import": "polylogue.storage.gone"},
+        ],
+    )
+    plans = tmp_path / "docs/plans"
+    sqlite_baseline = plans / "sqlite-degradation-baseline.json"
+    sqlite_baseline.write_text(
+        json.dumps({"anchors": [{"file": "polylogue/storage/gone.py", "digest": "1" * 40}]}), encoding="utf-8"
+    )
+    with (plans / "layering.yaml").open("a", encoding="utf-8") as handle:
+        handle.write(
+            "sqlite_degradation:\n  baseline: docs/plans/sqlite-degradation-baseline.json\n  roots: [polylogue]\n"
+        )
+    (tmp_path / ".gitignore").write_text(".cache/\n__pycache__/\n", encoding="utf-8")
+    for args in (
+        ["init", "--initial-branch=test/stale-baseline"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-m",
+            "Synthetic stale baseline",
+        ],
+    ):
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+    tracked = (
+        subprocess.run(["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True, check=True)
+        .stdout.decode()
+        .split("\0")
+    )
+    before = {relative: (tmp_path / relative).read_bytes() for relative in tracked if relative}
+    content = verify_runs.git_worktree_content_sha256(tmp_path)
+    assert content is not None
+    original_bin = venv_bin
+    checkout = verify.ROOT
+    monkeypatch.setattr(gate, "venv_bin", lambda name, *, root: original_bin(name, root=checkout))
+    monkeypatch.setattr(gate, "venv_python", lambda *, root: sys.executable)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(verify_runs.VERIFY_HISTORY_PATH_ENV, str(tmp_path / ".cache/history.jsonl"))
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(tmp_path / ".cache/evidence.jsonl"))
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda *_args: None)
+    monkeypatch.setattr(verify, "_declared_agentctl_operation", lambda _args: None)
+    monkeypatch.setattr(verify, "validate_authority_matrix", lambda: None)
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    monkeypatch.setattr(
+        verify, "inspect_testmon_graph", lambda _root: TestmonGraphState(TestmonGraphStatus.ABSENT, "fixture")
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    from polylogue.context import failure_seed
+
+    monkeypatch.setattr(failure_seed, "write_failure_seed", lambda **_kwargs: None)
+    run_process = verify._run_gate_process
+
+    def gate_process(command: list[str], *, env: Any) -> subprocess.CompletedProcess[str]:
+        if "devtools.verify_layering" in command:
+            return run_process(command, env=env)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(verify, "_run_gate_process", gate_process)
+    expected_labels = {item.label for item in gate.quick_gates()}
+    assert verify._main(["--quick", "--json"]) == 1
+    output = capsys.readouterr()
+    payload = json.loads(output.out)
+    assert payload["diagnosis"] == "gate_semantic_violation"
+    assert payload["status"] == "failed"
+    assert {step["name"] for step in payload["steps"]} == expected_labels
+    failed = [step for step in payload["steps"] if step["exit"]]
+    assert [step["name"] for step in failed] == ["gate layering"]
+    detail = (tmp_path / failed[0]["output_path"]).read_text(encoding="utf-8")
+    assert "layering_baseline_stale" in detail
+    assert "polylogue/cli/gone.py" in detail and "polylogue.storage.gone" in detail
+    assert "sqlite_degradation_baseline_stale" in detail
+    assert "polylogue/storage/gone.py:" + "1" * 40 in detail
+    assert "devtools gate layering --prune-baselines" in detail
+    assert "checkout_moved_during_run" not in output.out
+    assert {relative: (tmp_path / relative).read_bytes() for relative in before} == before
+    assert verify_runs.git_worktree_content_sha256(tmp_path) == content
+    assert (
+        subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=all"],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        == ""
+    )
+    recorded = json.loads((tmp_path / payload["artifact_dir"] / "run.json").read_text(encoding="utf-8"))
+    assert recorded["diagnosis"] == payload["diagnosis"]
+    assert recorded["git_head"] == recorded["final_git_head"]
+    assert recorded["git_dirty"] is False and recorded["final_git_dirty"] is False
 
 
 def test_fixed_layering_violation_is_not_exempt_when_reintroduced(
