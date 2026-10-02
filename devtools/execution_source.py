@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import IO, Any
 
-from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS
+from devtools.pytest_invocation import CLOSED_WORLD_COLLECTION_ARGS, effective_hypothesis_profile
 from devtools.pytest_rerun import testmon_rerun_environment
 from devtools.testmon_provision import testmon_environment
 from devtools.verify_runs import aggregate_pytest_statistics, git_worktree_content_sha256
@@ -95,12 +95,7 @@ class ExecutionSourceGuard:
             self.failure = "copied source differs from admitted execution content"
         declared = testmon_rerun_environment(list(command))
         if declared is not None:
-            profile = environment.get("HYPOTHESIS_PROFILE", "default").strip() or "default"
-            for index, argument in enumerate(command):
-                if argument.startswith("--hypothesis-profile="):
-                    profile = argument.split("=", 1)[1]
-                elif argument == "--hypothesis-profile" and index + 1 < len(command):
-                    profile = command[index + 1]
+            profile, _source = effective_hypothesis_profile(command, environment, default="default")
             if declared != testmon_environment(self.copy, profile):
                 self.failure = "executed policy differs from declared testmon environment"
         if self.failure:

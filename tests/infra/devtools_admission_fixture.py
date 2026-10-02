@@ -18,6 +18,13 @@ def seed_admission_graph(root: Path, *, checkout: Path) -> Path:
     testfile.write_text(
         "import pytest\nfrom neutral import value\ndef test_old():\n    assert value() == 1\n", encoding="utf-8"
     )
+    (root / ".gitignore").write_text(".cache/\n__pycache__/\n.pytest_cache/\n.hypothesis/\n.benchmarks/\n")
+    for arguments in (
+        ["init", "-b", "feature"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"],
+    ):
+        subprocess.run(["git", *arguments], cwd=root, capture_output=True, check=True)
     datafile = testmon_datafile(root)
     datafile.parent.mkdir(parents=True)
     command = collection_command(root=checkout, paths=["tests"], testmon=True)

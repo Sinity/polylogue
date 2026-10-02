@@ -2,8 +2,8 @@
 
 One datafile per checkout, at ``.cache/testmon/testmondata``, under environments
 bound to declared pytest configuration, conftest policies and Hypothesis profile.
-Managed affected and complete runs trace into it, advancing the graph. A worktree is provisioned by
-copying master's datafile: paths are repo-relative and fingerprints are by
+Managed affected and complete runs trace into it, advancing the graph. A
+worktree is provisioned by copying master's datafile: paths are repo-relative and fingerprints are by
 content, so a copy is valid immediately.
 
 An absent datafile is not a failure — the next run seeds it. A datafile that
@@ -163,9 +163,11 @@ def inspect_testmon_graph(root: Path, *, datafile: Path | None = None, profile: 
                         raise sqlite3.DatabaseError(f"incompatible {table} columns")
                 recorded_tests = 0
                 source_dependencies = 0
+                packages, version = current_environment_key()
                 environment = connection.execute(
-                    "SELECT id, system_packages, python_version FROM environment WHERE environment_name = ? ORDER BY id DESC",
-                    (testmon_environment(root, profile),),
+                    "SELECT id, system_packages, python_version FROM environment WHERE environment_name = ? "
+                    "ORDER BY (system_packages = ? AND python_version = ?) DESC, id DESC",
+                    (testmon_environment(root, profile), packages, version),
                 ).fetchone()
                 if environment is None:
                     return TestmonGraphState(
@@ -215,7 +217,6 @@ def inspect_testmon_graph(root: Path, *, datafile: Path | None = None, profile: 
         )
     cause = None
     if environment is not None:
-        packages, version = current_environment_key()
         if environment[2] != version:
             cause = f"the interpreter changed ({environment[2]} -> {version})"
         elif environment[1] != packages:
@@ -325,12 +326,13 @@ def recorded_test_names(datafile: Path, *, environment: str) -> frozenset[str] |
     try:
         connection = sqlite3.connect(datafile.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
         with contextlib.closing(connection):
+            packages, version = current_environment_key()
             return frozenset(
                 str(row[0])
                 for row in connection.execute(
                     "SELECT DISTINCT test_name FROM test_execution JOIN environment ON environment.id = test_execution.environment_id "
-                    "WHERE environment_name = ?",
-                    (environment,),
+                    "WHERE environment_name = ? AND system_packages = ? AND python_version = ?",
+                    (environment, packages, version),
                 )
             )
     except sqlite3.Error:

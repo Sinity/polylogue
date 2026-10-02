@@ -58,6 +58,9 @@ def record_graph(root: Path, *, profile: str = "default", subset: str | None = N
     for name in tuple(env):
         if name.startswith("POLYLOGUE_PYTEST_"):
             env.pop(name)
+    for name in tuple(env):
+        if name.startswith("PYTEST_XDIST") or name == "PYTEST_CURRENT_TEST":
+            env.pop(name)
     env.pop("POLYLOGUE_SUITE_COST_DIR", None)
     env.update(
         {

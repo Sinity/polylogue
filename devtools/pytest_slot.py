@@ -1217,6 +1217,8 @@ def _run_held_admitted(
         if guard is not None and worktree_provenance is not None:
             worktree_provenance["capture_source"] = "readonly_snapshot"
     except BaseException:
+        if guard is not None:
+            guard.failure = "execution setup failed"
         finish_execution(guard, env)
         raise
     child_environment = {**env, CUSTODY_ENV: uuid.uuid4().hex}
@@ -1231,6 +1233,8 @@ def _run_held_admitted(
             pass_fds=guard.pass_fds if guard is not None else (),
         )
     except BaseException:
+        if guard is not None:
+            guard.failure = "execution setup failed"
         finish_execution(guard, env)
         raise
     if guard is not None:
@@ -1249,6 +1253,8 @@ def _run_held_admitted(
             },
         )
     except BaseException:
+        if guard is not None:
+            guard.failure = "execution sampler setup failed"
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
@@ -1264,6 +1270,8 @@ def _run_held_admitted(
     try:
         sampler.start()
     except BaseException:
+        if guard is not None:
+            guard.failure = "execution sampler setup failed"
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(process.pid, signal.SIGTERM)
         try:
@@ -1328,10 +1336,16 @@ def _run_held_admitted(
             returncode = process.wait()
             terminal_status = "passed" if returncode == 0 else "failed"
     finally:
-        memory = sampler.stop()
-        if guard is not None and not _group_reaped(process.pid):
-            guard.failure = "execution descendants remain alive"
-        stability = finish_execution(guard, env, complete=complete_execution(command, env, returncode))
+        try:
+            memory = sampler.stop()
+        except BaseException:
+            if guard is not None:
+                guard.failure = "execution sampler settlement failed"
+            raise
+        finally:
+            if guard is not None and not _group_reaped(process.pid):
+                guard.failure = "execution descendants remain alive"
+            stability = finish_execution(guard, env, complete=complete_execution(command, env, returncode))
     if stability is not None and stability["status"] != "stable":
         returncode = 125
     return returncode, _slot_receipt(
@@ -1938,6 +1952,7 @@ def _run_launch(launch_path: Path) -> int:
 
     finally:
         if guard is not None:
+            guard.failure = guard.failure or "execution did not finish"
             for group in started_groups:
                 if not _group_reaped(group):
                     guard.failure = "execution descendants remain alive"

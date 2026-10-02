@@ -377,6 +377,27 @@ def _record_tests(path: Path, node_ids: tuple[str, ...]) -> None:
     connection.close()
 
 
+def test_graph_readers_use_current_package_environment_instead_of_newest_or_union(tmp_path: Path) -> None:
+    """An intervening incompatible writer cannot hide or enlarge current coverage."""
+    graph = _seed_with_testmon(tmp_path)
+    _record_tests(graph, ("tests/test_current.py::test_current",))
+    with sqlite3.connect(graph) as connection:
+        cursor = connection.execute(
+            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
+            (_testmon_environment(tmp_path), "synthetic-other-packages", "synthetic-other-python"),
+        )
+        connection.execute(
+            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, 1, 0, 0)",
+            (cursor.lastrowid, "tests/test_other.py::test_other"),
+        )
+    state = inspect_testmon_graph(tmp_path)
+    assert state.usable and state.full_rerun_cause is None
+    assert state.recorded_tests == 1
+    assert testmon_provision.recorded_test_names(graph, environment=_testmon_environment(tmp_path)) == frozenset(
+        {"tests/test_current.py::test_current"}
+    )
+
+
 def _two_file_worktree(root: Path) -> Path:
     (root / "tests").mkdir(parents=True)
     for name in ("test_a.py", "test_b.py"):

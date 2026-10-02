@@ -166,6 +166,7 @@ def collect_selection(
         else:
             env.pop("TESTMON_DATAFILE", None)
         guard = None
+        process: subprocess.Popen[Any] | None = None
         try:
             if datafile is not None:
                 from devtools.execution_source import start_execution
@@ -222,7 +223,14 @@ def collect_selection(
         finally:
             if guard is not None:
                 from devtools.execution_source import finish_execution
+                from devtools.pytest_slot import _group_reaped
 
+                guard.failure = guard.failure or "collection did not finish"
+                if process is not None:
+                    if not _group_reaped(process.pid):
+                        guard.failure = "collection descendants remain alive"
+                    if process.poll() is not None:
+                        process.wait()
                 finish_execution(guard, env)
 
 
