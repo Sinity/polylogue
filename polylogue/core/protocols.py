@@ -19,9 +19,11 @@ inlined directly rather than inherited from a now-deleted shared base.
 from __future__ import annotations
 
 import builtins
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator
+from contextlib import AbstractContextManager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, TypeVar, runtime_checkable
 
 if TYPE_CHECKING:
     import sqlite3
@@ -60,6 +62,23 @@ class ArchiveRootOwner(Protocol):
     def archive_root(self) -> Path: ...
 
 
+_SimilarityT = TypeVar("_SimilarityT")
+
+
+@dataclass(frozen=True, slots=True)
+class ScopedVectorQuery:
+    """Exact full-scope session order, with one actual message witness per row.
+
+    Rows carry message IDs and ascending minimum L2 distance. The complete
+    ranking relation is evaluated before traversal; the consumer still owns
+    recording successful full consumption separately from this exactness proof.
+    """
+
+    rows: Iterator[tuple[str, float]]
+    exact: bool = True
+    population: str = "eligible-sessions"
+
+
 @runtime_checkable
 class VectorProvider(Protocol):
     """Vector search provider for semantic similarity.
@@ -92,8 +111,8 @@ class VectorProvider(Protocol):
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
         """Rank messages by similarity to a stored session's own embeddings.
 
-        Reads ``session_id``'s already-materialized message vectors and KNN-searches
-        them against the store, returning ranked ``(message_id, distance)`` hits with
+        Reads ``session_id``'s already-materialized message vectors and scores
+        each occurrence by its minimum L2 distance over all seed outputs, returning ranked ``(message_id, distance)`` hits with
         the seed session's own messages excluded (so the seed never ranks against
         itself). No re-embedding occurs — only stored vectors are read. Raises a typed
         error when the seed session has no stored embeddings, never silently returning
@@ -101,22 +120,41 @@ class VectorProvider(Protocol):
         """
         ...
 
-    async def read_session_similarity(
+    def scoped_query(
         self,
-        session_id: str,
+        session_ids: Iterable[str],
+        *,
+        index_connection: sqlite3.Connection,
+        configure_connection: Callable[[sqlite3.Connection], None],
+        check_cancelled: Callable[[], None],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+    ) -> AbstractContextManager[ScopedVectorQuery]:
+        """Rank all supplied eligible sessions, then traverse their witnesses.
+
+        Exactly one seed is required. Session seeds use all distinct retained
+        outputs and exclude their own session; text seeds acquire one query
+        embedding. The borrowed canonical index frame remains caller-owned.
+        The context settles provider cursors and owned handles on every exit.
+        """
+        ...
+
+    async def read_similarity(
+        self,
         *,
         index_path: Path,
-        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        text: str | None = None,
+        seed_session_id: str | None = None,
         limit: int = 10,
-    ) -> dict[str, object]:
-        """Count, rank and project retained hits on one selected index snapshot.
+    ) -> _SimilarityT:
+        """Rank sessions and project them on the same selected index snapshot.
 
-        The provider owns dispatch: acquire owned handles in one worker, and use
-        externally owned handles on their creating thread. Invoke ``project``
-        on the same thread and SQLite handle used for counting
-        and ranking, with ``archive_index`` bound to ``index_path``. Release any
-        provider-owned handle on every exit; leave externally owned handles open.
-        This operation never acquires embeddings.
+        Exactly one seed is required. Text acquires one query embedding; session
+        seeds use all distinct retained outputs without acquisition. Select one
+        best actual occurrence per session before the page limit. The provider
+        dispatches owned snapshots to a worker and keeps borrowed snapshots on
+        their creating thread. Projection finishes before owned handles close.
         """
         ...
 
@@ -365,6 +403,7 @@ class RawValidationStore(Protocol):
 
 __all__ = [
     "VectorProvider",
+    "ScopedVectorQuery",
     "ProgressCallback",
     "SessionOutputStore",
     "SessionArchiveStatsStore",

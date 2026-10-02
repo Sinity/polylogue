@@ -8,6 +8,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ from polylogue.storage.embeddings.identity import (
 )
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, SqliteVecUnavailableError, logger
 from polylogue.storage.sqlite.connection_profile import (
+    READ_CONNECTION_PROFILE,
     GenerationToken,
     attach_readonly_database,
     open_connection,
@@ -45,6 +47,7 @@ def _configure_current_embedding_messages(
     recipe: EmbeddingRecipe,
     attach_index: bool = True,
     register_identity: bool = True,
+    index_connection: sqlite3.Connection | None = None,
 ) -> None:
     """Bind the current-index projection on an already-open vector reader.
 
@@ -53,14 +56,20 @@ def _configure_current_embedding_messages(
     Neither route rewrites a producer identity or certifies binding completion.
     """
 
+    if index_connection is not None:
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("DROP TABLE IF EXISTS temp.current_embedding_messages")
+            cursor.execute("DROP TABLE IF EXISTS temp.current_embedding_inputs")
     if register_identity:
         register_embedding_identity_sql(conn, recipe=recipe)
     if attach_index:
         if index_path is None:
             raise ValueError("embedding projection attachment requires an explicit index path")
-        conn.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
-    conn.execute(
-        """
+        with closing(conn.cursor()) as cursor:
+            cursor.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
+    with closing(conn.cursor()) as cursor:
+        cursor.execute(
+            """
         CREATE TEMP TABLE current_embedding_messages (
             message_id TEXT PRIMARY KEY,
             session_id TEXT NOT NULL,
@@ -68,7 +77,7 @@ def _configure_current_embedding_messages(
             vector_derivation_hash BLOB NOT NULL
         );
         """
-    )
+        )
     loaded, error = try_load_sqlite_vec(conn)
     if not loaded:
         raise SqliteVecUnavailableError(f"sqlite-vec extension failed to load: {error}")
@@ -80,32 +89,48 @@ def _configure_current_embedding_messages(
         vectors_table="message_embeddings",
     )
     address = f"CASE WHEN COALESCE({valid}, 0) THEN r.vector_derivation_hash ELSE eligible.vector_derivation_hash END"
-    conn.execute(
-        f"""
-        INSERT INTO current_embedding_messages (message_id, session_id, origin, vector_derivation_hash)
-        SELECT eligible.message_id, eligible.session_id, eligible.origin, {address}
-        FROM (
-          SELECT prose_source.*, polylogue_vector_derivation_hash(X'{recipe.recipe_hash.hex()}', prose_source.text) AS vector_derivation_hash
-          FROM (
-            SELECT m.message_id, m.session_id, s.origin, m.content_hash,
+    index_schema = "archive_index." if index_connection is None else ""
+    input_sql = f"""
+SELECT m.message_id, m.session_id, s.origin, m.content_hash,
                    (
                        SELECT GROUP_CONCAT(prose.text, char(10) || char(10))
                        FROM (
                            SELECT b.text
-                           FROM archive_index.blocks b
+                           FROM {index_schema}blocks b
                            WHERE b.message_id = m.message_id
                              AND b.block_type = 'text'
                              AND b.text IS NOT NULL
                            ORDER BY b.position
                        ) AS prose
                    ) AS text
-            FROM archive_index.messages m
-            JOIN archive_index.sessions s ON s.session_id = m.session_id
+            FROM {index_schema}messages m
+            JOIN {index_schema}sessions s ON s.session_id = m.session_id
             WHERE m.message_type = 'message'
               AND m.role IN ('user', 'assistant')
               AND m.material_origin IN ('human_authored', 'assistant_authored')
               AND m.word_count > 0
-          ) AS prose_source
+    """
+    prose_relation = f"FROM ({input_sql}) AS prose_source"
+    if index_connection is not None:
+        # The archive owner lends the exact already-pinned evidence frame.
+        # Only this provider's TEMP copy and cursors belong to this operation.
+        with closing(conn.cursor()) as destination, closing(index_connection.cursor()) as source:
+            destination.execute(
+                "CREATE TEMP TABLE current_embedding_inputs ("
+                "message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, origin TEXT NOT NULL, "
+                "content_hash BLOB, text TEXT)"
+            )
+            source.execute(input_sql)
+            destination.executemany("INSERT INTO current_embedding_inputs VALUES (?, ?, ?, ?, ?)", source)
+        prose_relation = "FROM current_embedding_inputs AS prose_source"
+    with closing(conn.cursor()) as cursor:
+        cursor.execute(
+            f"""
+        INSERT INTO current_embedding_messages (message_id, session_id, origin, vector_derivation_hash)
+        SELECT eligible.message_id, eligible.session_id, eligible.origin, {address}
+        FROM (
+          SELECT prose_source.*, polylogue_vector_derivation_hash(X'{recipe.recipe_hash.hex()}', prose_source.text) AS vector_derivation_hash
+          {prose_relation}
         ) AS eligible
         LEFT JOIN message_embedding_refs AS r ON r.message_id = eligible.message_id
         LEFT JOIN message_embeddings_meta AS meta ON meta.vector_derivation_hash = r.vector_derivation_hash
@@ -118,7 +143,7 @@ def _configure_current_embedding_messages(
               chosen_meta.vector_derivation_hash, eligible.text
           )
         """
-    )
+        )
 
 
 def require_vector_seed_session(connection: sqlite3.Connection, session_id: str) -> None:
@@ -152,6 +177,7 @@ def open_vector_read_snapshot(
     recipe: EmbeddingRecipe,
     configure_connection: Callable[[sqlite3.Connection], None] | None = None,
     defer_projection: bool = False,
+    index_connection: sqlite3.Connection | None = None,
 ) -> sqlite3.Connection:
     """Open one explicit, read-only vector snapshot for a pinned operation.
 
@@ -169,7 +195,11 @@ def open_vector_read_snapshot(
     selected_generation = GenerationToken(device=selected_stat.st_dev, inode=selected_stat.st_ino)
     opening_thread_id = threading.get_ident()
     with _vector_projection_errors():
-        conn = open_readonly_connection(embeddings_path, validate_schema=False)
+        conn = open_readonly_connection(
+            embeddings_path,
+            validate_schema=False,
+            profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
+        )
     conn.row_factory = sqlite3.Row
     try:
         if configure_connection is not None:
@@ -181,10 +211,11 @@ def open_vector_read_snapshot(
             register_embedding_identity_sql(conn, recipe=recipe)
             # Each persistent database has its own read-only URI.
             attach_readonly_database(conn, selected_index, alias="archive_index")
-            conn.execute("BEGIN")
-            conn.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
-            conn.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
-            attached = conn.execute("PRAGMA database_list").fetchall()
+            with closing(conn.cursor()) as cursor:
+                cursor.execute("BEGIN")
+                cursor.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
+                cursor.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
+                attached = cursor.execute("PRAGMA database_list").fetchall()
             attached_index = next((row[2] for row in attached if row[1] == "archive_index"), None)
             current_stat = selected_index.stat()
             current_generation = GenerationToken(device=current_stat.st_dev, inode=current_stat.st_ino)
@@ -202,14 +233,19 @@ def open_vector_read_snapshot(
                 opening_thread_id,
             )
             if not defer_projection:
-                prepare_vector_read_projection(conn, recipe=recipe)
+                prepare_vector_read_projection(conn, recipe=recipe, index_connection=index_connection)
         return conn
     except BaseException:
         conn.close()
         raise
 
 
-def prepare_vector_read_projection(connection: sqlite3.Connection, *, recipe: EmbeddingRecipe) -> None:
+def prepare_vector_read_projection(
+    connection: sqlite3.Connection,
+    *,
+    recipe: EmbeddingRecipe,
+    index_connection: sqlite3.Connection | None = None,
+) -> None:
     """Build the derived lookup after publication exclusion has been released."""
     if not connection.in_transaction:
         raise SqliteVecError("semantic projection requires an already pinned read transaction")
@@ -221,6 +257,7 @@ def prepare_vector_read_projection(connection: sqlite3.Connection, *, recipe: Em
             recipe=recipe,
             attach_index=False,
             register_identity=False,
+            index_connection=index_connection,
         )
 
 
@@ -326,7 +363,13 @@ class SqliteVecRuntimeMixin:
 
         return conn
 
-    def _get_read_connection(self, *, index_path: Path | None = None) -> sqlite3.Connection:
+    def _get_read_connection(
+        self,
+        *,
+        index_path: Path | None = None,
+        index_connection: sqlite3.Connection | None = None,
+        configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> sqlite3.Connection:
         """Read retained vectors without acquiring a writable tier handle."""
         if self._snapshot_connection is not None:
             if index_path is not None:
@@ -337,10 +380,26 @@ class SqliteVecRuntimeMixin:
                     or GenerationToken(device=stat.st_dev, inode=stat.st_ino) != self._snapshot_index_identity
                 ):
                     raise SqliteVecError("operation vector snapshot does not match the requested archive index")
+            if index_connection is not None:
+                prepare_vector_read_projection(
+                    self._snapshot_connection,
+                    recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
+                    index_connection=index_connection,
+                )
             return self._snapshot_connection
         self._assert_lifecycle_binding()
         assert self.archive_root is not None
-        selected = index_path if index_path is not None else resolve_active_index_path(self.archive_root)
+        if index_path is None and index_connection is not None:
+            with closing(index_connection.cursor()) as cursor:
+                selected_file = next(
+                    (str(row[2]) for row in cursor.execute("PRAGMA database_list") if row[1] == "main"),
+                    None,
+                )
+            if not selected_file:
+                raise SqliteVecError("canonical archive frame has no selected index file")
+            selected = Path(selected_file)
+        else:
+            selected = index_path if index_path is not None else resolve_active_index_path(self.archive_root)
         try:
             selected.resolve(strict=True).relative_to(self.archive_root.resolve(strict=True))
         except ValueError as exc:
@@ -349,6 +408,8 @@ class SqliteVecRuntimeMixin:
             embeddings_path=self.db_path,
             index_path=selected,
             recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
+            index_connection=index_connection,
+            configure_connection=configure_connection,
         )
 
     def _release_connection(self, conn: sqlite3.Connection) -> None:
@@ -404,22 +465,23 @@ class SqliteVecRuntimeMixin:
 def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
     """Read the dimension of the existing vec0 table, if it exists."""
     try:
-        has_table = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
-        ).fetchone()
-        if has_table is None:
-            return None
-        # SQLite vec0 stores dimension in the CREATE VIRTUAL TABLE DDL.
-        ddl_row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
-        ).fetchone()
+        with closing(conn.cursor()) as cursor:
+            has_table = cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+            ).fetchone()
+            if has_table is None:
+                return None
+            # SQLite vec0 stores dimension in the CREATE VIRTUAL TABLE DDL.
+            ddl_row = cursor.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+            ).fetchone()
         if ddl_row is None or ddl_row["sql"] is None:
             return None
         import re
 
         match = re.search(r"float\[(\d+)\]", str(ddl_row["sql"]))
         return int(match.group(1)) if match else None
-    except (sqlite3.OperationalError, TypeError, ValueError):
+    except (TypeError, ValueError):
         return None
 
 

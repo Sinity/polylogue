@@ -3,21 +3,19 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager, closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
 
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_runtime import _assert_vec0_dimension
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
-
-# Per-seed-message neighbor fanout used to grow the candidate pool before
-# deduplicating to messages. Bounds the number of MATCH queries issued for a
-# large seed session to a fixed, representative sample.
-_SESSION_SEED_FANOUT = 20
+from polylogue.storage.sqlite.connection_profile import readonly_temp_staging
 
 
 class SqliteVecQueryMixin:
@@ -46,7 +44,13 @@ class SqliteVecQueryMixin:
 
         def _get_connection(self) -> sqlite3.Connection: ...
 
-        def _get_read_connection(self) -> sqlite3.Connection: ...
+        def _get_read_connection(
+            self,
+            *,
+            index_path: Path | None = None,
+            index_connection: sqlite3.Connection | None = None,
+            configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+        ) -> sqlite3.Connection: ...
 
         def _release_connection(self, conn: sqlite3.Connection) -> None: ...
 
@@ -154,131 +158,183 @@ class SqliteVecQueryMixin:
             return self._query_unlocked(text, limit)
 
     def _query_unlocked(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Find semantically similar messages.
-
-        ``message_embeddings`` is keyed by ``vector_derivation_hash`` (content-
-        addressed, deduped), not ``message_id``: a MATCH hit is resolved through
-        the connection's current-index projection, so identical content shared
-        across sessions surfaces every eligible message rather than an
-        arbitrary predecessor mapping.
-        """
+        if limit <= 0:
+            return []
         conn = self._get_read_connection()
         try:
-            _assert_vec0_dimension(conn, self.dimension)
-            # Configuration alone is not readiness. Before purchasing a query
-            # embedding, prove the current-recipe message projection addresses
-            # at least one stored vector; an empty or wholly stale store is not
-            # an empty search. ``message_embeddings_meta`` is the writer's own
-            # vector-existence authority and joins on its BLOB primary key.
-            current_vector = conn.execute(
-                """SELECT 1
-                   FROM current_embedding_messages AS r
-                   JOIN message_embeddings_meta AS meta
-                     ON meta.vector_derivation_hash = r.vector_derivation_hash
-                   LIMIT 1"""
-            ).fetchone()
-            if current_vector is None:
-                raise EmbeddingRetrievalNotReadyError(
-                    "semantic retrieval has no vectors for the current archive messages and recipe; "
-                    "run embedding status and backfill before retrying",
-                    readiness_status="empty",
-                )
-            embeddings = self._get_embeddings([text], input_type="query")
-            if not embeddings:
-                return []
-            query_embedding = _serialize_f32(embeddings[0])
-
-            rows = conn.execute(
-                """
-                SELECT r.message_id AS message_id, hits.distance AS distance
-                FROM (
-                    SELECT vector_derivation_hash, distance
-                    FROM message_embeddings
-                    WHERE embedding MATCH ?
-                      AND k = ?
-                ) AS hits
-                JOIN current_embedding_messages AS r
-                  ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
-                ORDER BY hits.distance
-                """,
-                (query_embedding, limit),
-            ).fetchall()
-            return [(row["message_id"], row["distance"]) for row in rows]
+            embedding = self._query_vector(conn, text)
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(self._distance_sql(session_grain=False), (embedding, max(limit, 0)))
+                return [(str(row["message_id"]), float(row["distance"])) for row in cursor]
         finally:
             self._release_connection(conn)
 
     def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Run the provider route under managed lifecycle admission."""
+        """Rank occurrences by their closest distance to any stored seed output."""
         with self._lifecycle_admission():
             return self._query_by_session_unlocked(session_id, limit)
 
     def _query_by_session_unlocked(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
-        """Rank messages by similarity to a stored session's own embeddings.
-
-        Fetches every stored vector for ``session_id`` and KNN-searches a bounded,
-        representative sample of them against the store. Hits belonging to the seed
-        session itself are dropped so the seed never ranks against its own messages;
-        each surviving message keeps its closest (smallest) distance across the seed
-        vectors. Returns ranked ``(message_id, distance)`` ascending by distance.
-
-        Raises :class:`SqliteVecError` when the seed session has no stored
-        embeddings (including when the vector table does not exist yet) so the caller
-        fails typed rather than returning an empty/unfiltered listing.
-        """
         conn = self._get_read_connection()
         try:
-            seed_rows: list[sqlite3.Row] = []
-            try:
-                seed_rows = conn.execute(
-                    """
-                    SELECT DISTINCT me.vector_derivation_hash AS vector_derivation_hash, me.embedding AS embedding
-                    FROM current_embedding_messages AS r
-                    JOIN message_embeddings AS me
-                      ON lower(hex(r.vector_derivation_hash)) = me.vector_derivation_hash
-                    WHERE r.session_id = ?
-                    """,
-                    (session_id,),
-                ).fetchall()
-            except sqlite3.OperationalError as exc:
-                raise SqliteVecError("stored session vectors could not be read") from exc
-            if not seed_rows:
-                raise SqliteVecError(
-                    f"session {session_id!r} has no stored message embeddings; cannot run session-seeded similarity"
+            _assert_vec0_dimension(conn, self.dimension)
+            self._require_seed(conn, session_id)
+            with closing(conn.cursor()) as cursor:
+                cursor.execute(
+                    self._distance_sql(session_grain=False, session_seed=True),
+                    (session_id, session_id, session_id, max(limit, 0)),
                 )
-
-            k = max(limit, 1)
-            best_distance: dict[str, float] = {}
-            for seed_row in seed_rows[:_SESSION_SEED_FANOUT]:
-                embedding_blob = bytes(seed_row["embedding"])
-                neighbors = conn.execute(
-                    """
-                    SELECT r.message_id AS message_id, r.session_id AS session_id, hits.distance AS distance
-                    FROM (
-                        SELECT vector_derivation_hash, distance
-                        FROM message_embeddings
-                        WHERE embedding MATCH ?
-                          AND k = ?
-                    ) AS hits
-                    JOIN current_embedding_messages AS r
-                      ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
-                    ORDER BY hits.distance
-                    """,
-                    (embedding_blob, k),
-                ).fetchall()
-                for neighbor in neighbors:
-                    if str(neighbor["session_id"]) == session_id:
-                        continue
-                    message_id = str(neighbor["message_id"])
-                    distance = float(neighbor["distance"])
-                    if message_id not in best_distance or distance < best_distance[message_id]:
-                        best_distance[message_id] = distance
-
-            ranked = sorted(best_distance.items(), key=lambda item: (item[1], item[0]))
-            return ranked[:limit]
+                return [(str(row["message_id"]), float(row["distance"])) for row in cursor]
         except sqlite3.Error as exc:
             raise SqliteVecError("stored session vectors could not be read") from exc
         finally:
             self._release_connection(conn)
+
+    def _query_vector(self, conn: sqlite3.Connection, text: str, *, scoped: bool = False) -> bytes:
+        _assert_vec0_dimension(conn, self.dimension)
+        scope = "JOIN scoped_vector_sessions USING (session_id)" if scoped else ""
+        with closing(conn.cursor()) as cursor:
+            current = cursor.execute(f"SELECT 1 FROM current_embedding_messages {scope} LIMIT 1").fetchone()
+        if current is None:
+            raise EmbeddingRetrievalNotReadyError(
+                "semantic retrieval has no vectors for the current archive messages and recipe",
+                readiness_status="empty",
+            )
+        embeddings = self._get_embeddings([text], input_type="query")
+        if not embeddings:
+            raise SqliteVecError("query embedding provider returned no vector")
+        return _serialize_f32(embeddings[0])
+
+    @staticmethod
+    def _require_seed(conn: sqlite3.Connection, session_id: str) -> None:
+        with closing(conn.cursor()) as cursor:
+            found = cursor.execute(
+                "SELECT 1 FROM current_embedding_messages WHERE session_id = ? LIMIT 1", (session_id,)
+            ).fetchone()
+        if found is None:
+            raise SqliteVecError(
+                f"session {session_id!r} has no stored message embeddings; cannot run session-seeded similarity"
+            )
+
+    @staticmethod
+    def _distance_sql(
+        *,
+        session_grain: bool,
+        session_seed: bool = False,
+        scoped: bool = False,
+    ) -> str:
+        # Scope belongs to occurrences. Shared output addresses are scored once,
+        # then restored to every qualifying occurrence before session reduction.
+        scope = "JOIN scoped_vector_sessions AS scope ON scope.session_id = r.session_id" if scoped else ""
+        seed = (
+            """seed_outputs AS MATERIALIZED (
+            SELECT DISTINCT me.embedding
+            FROM current_embedding_messages r
+            JOIN message_embeddings me ON me.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
+            WHERE r.session_id = ?
+        ),"""
+            if session_seed
+            else ""
+        )
+        exclude = "WHERE r.session_id != ?" if session_seed else ""
+        score = (
+            "MIN(vec_distance_L2(me.embedding, seed.embedding))" if session_seed else "vec_distance_L2(me.embedding, ?)"
+        )
+        seed_join = "CROSS JOIN seed_outputs seed" if session_seed else ""
+        group = "GROUP BY me.vector_derivation_hash" if session_seed else ""
+        final = (
+            """SELECT message_id, distance FROM witnesses WHERE witness_rank = 1
+            ORDER BY distance, session_id, message_id"""
+            if session_grain
+            else """SELECT message_id, distance FROM occurrences
+            ORDER BY distance, message_id LIMIT ?"""
+        )
+        return f"""WITH {seed}
+            eligible_outputs AS MATERIALIZED (
+                SELECT DISTINCT r.vector_derivation_hash FROM current_embedding_messages r {scope} {exclude}
+            ), distances AS MATERIALIZED (
+                SELECT me.vector_derivation_hash, {score} AS distance
+                FROM eligible_outputs output
+                JOIN message_embeddings me ON me.vector_derivation_hash = lower(hex(output.vector_derivation_hash))
+                {seed_join} {group}
+            ), occurrences AS (
+                SELECT r.message_id, r.session_id, distances.distance
+                FROM current_embedding_messages r {scope}
+                JOIN distances ON distances.vector_derivation_hash = lower(hex(r.vector_derivation_hash))
+                {exclude}
+            ), witnesses AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY distance, message_id) AS witness_rank
+                FROM occurrences
+            ) {final}"""
+
+    @contextmanager
+    def scoped_query(
+        self,
+        session_ids: Iterable[str],
+        *,
+        index_connection: sqlite3.Connection,
+        configure_connection: Callable[[sqlite3.Connection], None],
+        check_cancelled: Callable[[], None],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+    ) -> Iterator[ScopedVectorQuery]:
+        """Traverse an exact full-scope session ranking under one owned cursor."""
+        if (text is None) == (seed_session_id is None):
+            raise ValueError("scoped vector query requires exactly one seed")
+        if text is not None and not self.voyage_key:
+            raise EmbeddingRetrievalNotReadyError(
+                "text retrieval requires embedding acquisition credentials", readiness_status="disabled"
+            )
+        check_cancelled()
+        with self._lifecycle_admission():
+            conn = self._get_read_connection(
+                index_connection=index_connection,
+                configure_connection=configure_connection,
+            )
+            try:
+                with readonly_temp_staging(conn), closing(conn.cursor()) as staging:
+                    staging.execute("DROP TABLE IF EXISTS temp.scoped_vector_sessions")
+                    staging.execute("CREATE TEMP TABLE scoped_vector_sessions (session_id TEXT PRIMARY KEY)")
+                    staging.executemany(
+                        "INSERT OR IGNORE INTO scoped_vector_sessions VALUES (?)", ((sid,) for sid in session_ids)
+                    )
+                check_cancelled()
+                with closing(conn.cursor()) as cursor:
+                    if seed_session_id is not None:
+                        _assert_vec0_dimension(conn, self.dimension)
+                        self._require_seed(conn, seed_session_id)
+                    if cursor.execute("SELECT 1 FROM scoped_vector_sessions LIMIT 1").fetchone() is None:
+                        yield ScopedVectorQuery(rows=iter(()))
+                        return
+                    if seed_session_id is not None:
+                        args = (seed_session_id, seed_session_id, seed_session_id)
+                    else:
+                        assert text is not None
+                        args = (self._query_vector(conn, text, scoped=True),)
+                    cursor.execute(
+                        self._distance_sql(session_grain=True, session_seed=seed_session_id is not None, scoped=True),
+                        args,
+                    )
+
+                    def rows() -> Iterator[tuple[str, float]]:
+                        while batch := cursor.fetchmany(200):
+                            check_cancelled()
+                            yield from ((str(row["message_id"]), float(row["distance"])) for row in batch)
+
+                    yield ScopedVectorQuery(rows=rows())
+            finally:
+                # Cleanup is not query work. Suspend only this connection's
+                # handler while dropping our TEMP scope, then restore the
+                # caller's existing guard before releasing its borrowed frame.
+                conn.set_progress_handler(None, 0)
+                try:
+                    with readonly_temp_staging(conn), closing(conn.cursor()) as cursor:
+                        cursor.execute("DROP TABLE IF EXISTS temp.scoped_vector_sessions")
+                finally:
+                    try:
+                        configure_connection(conn)
+                    finally:
+                        self._release_connection(conn)
 
     def count_session_embeddings(self, session_id: str) -> int:
         """Run the provider route under managed lifecycle admission."""
@@ -296,16 +352,17 @@ class SqliteVecQueryMixin:
         conn = self._get_read_connection()
         try:
             try:
-                row = conn.execute(
-                    """
+                with closing(conn.cursor()) as cursor:
+                    row = cursor.execute(
+                        """
                     SELECT COUNT(DISTINCT r.vector_derivation_hash) AS count
                     FROM message_embedding_refs AS r
                     JOIN message_embeddings_meta AS m
                       ON m.vector_derivation_hash = r.vector_derivation_hash
                     WHERE r.session_id = ?
                     """,
-                    (session_id,),
-                ).fetchone()
+                        (session_id,),
+                    ).fetchone()
             except sqlite3.OperationalError as exc:
                 raise SqliteVecError("stored session vectors could not be read") from exc
             return int(row["count"]) if row is not None else 0

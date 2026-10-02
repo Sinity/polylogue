@@ -100,15 +100,15 @@ Policy (chosen for honesty + determinism):
   left query is the "primary" ranked search, the right is a membership gate.
 - **`except`** — trivially `A`'s order restricted to the complement.
 - **`union`** — operands may come from **incomparable score scales** (vector
-  cosine vs bm25), so we do **not** compare raw scores. Fuse by **Reciprocal
+  L2 distance vs bm25), so we do **not** compare raw scores. Fuse by **Reciprocal
   Rank Fusion** over the two operands' rank positions (reuse
-  `storage/search_providers/hybrid.py:reciprocal_rank_fusion`, `k=60`), with the
+  the complete SQL lane-settlement formula in `storage/sqlite/archive_tiers/archive.py`, `k=60`), with the
   deterministic `(-fused, key)` tie-break already implemented there. This is the
   same principle hybrid search already uses; union of two ranked sets is exactly
   a 2-list RRF. Unranked operands (pure structural filters) contribute rank =
   insertion order.
 
-This means **`union` is rank-honest** (never claims a cosine 0.8 outranks a bm25
+This means **`union` is rank-honest** (never claims a vector distance 0.8 outranks a bm25
 12.0) and **`intersect`/`except` preserve the primary search's ranking**. Both
 are documented as part of the `SearchEnvelope` contract.
 

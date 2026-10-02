@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import fields, replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TypeVar
+from typing import Never, TypeVar
 
 import pytest
 
@@ -76,7 +76,10 @@ class _FakeVectorProvider:
     def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         return []
 
-    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+    def scoped_query(self, *args: object, **kwargs: object) -> Never:
+        raise AssertionError("document-only fixture does not perform scoped retrieval")
+
+    async def read_similarity(self, *args: object, **kwargs: object) -> Never:
         raise AssertionError("this fixture does not perform retained-session reads")
 
 

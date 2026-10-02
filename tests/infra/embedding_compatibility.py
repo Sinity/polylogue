@@ -6,6 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Never
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
@@ -62,7 +63,10 @@ class _Documents:
     def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
         raise AssertionError("document protocol fixture does not query")
 
-    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+    def scoped_query(self, *args: object, **kwargs: object) -> Never:
+        raise AssertionError("document-only fixture does not perform scoped retrieval")
+
+    async def read_similarity(self, *args: object, **kwargs: object) -> Never:
         raise AssertionError("document protocol fixture does not query")
 
 

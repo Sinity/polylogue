@@ -4065,6 +4065,12 @@ components:
             type: string
           title: Executed Lanes
           type: array
+        completed_lanes:
+          default: []
+          items:
+            type: string
+          title: Completed Lanes
+          type: array
         unavailable_lanes:
           default: []
           items:

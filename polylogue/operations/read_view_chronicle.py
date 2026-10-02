@@ -155,12 +155,12 @@ def _chronicle_plan(payload: Mapping[str, object], *, vector_provider: VectorPro
 def chronicle_needs_complete_scan(plan: SessionQueryPlan) -> bool:
     """Whether this chronicle selection must read and hydrate every candidate.
 
-    A composed-count sort ranks sessions by their recomposed totals, which the
-    index cannot order; a ranked route keeps its sized candidate pool instead.
+    A composed-count sort needs recomposed totals. Ranked retrieval settles
+    the complete eligible relation before selecting its result window.
     """
     from polylogue.archive.query.archive_execution import _COMPOSED_COUNT_SORTS, _ranked_window
 
-    return plan.sort in _COMPOSED_COUNT_SORTS and not _ranked_window(plan)
+    return _ranked_window(plan) or plan.sort in _COMPOSED_COUNT_SORTS
 
 
 def chronicle_payload_is_scan(payload: Mapping[str, object]) -> bool:
@@ -182,10 +182,38 @@ def _select_summaries(
     from polylogue.archive.query.archive_execution import (
         _COMPOSED_COUNT_SORTS,
         _archive_summaries,
-        order_query_summaries,
+        _ranked_window,
     )
 
     plan = _chronicle_plan(payload, vector_provider=vector_provider)
+    if _ranked_window(plan):
+        # Membership and comparison keys are settled on the held frame before
+        # a page is hydrated. A sample retains only its requested summary rows.
+        from polylogue.archive.query.sorting import SessionReservoir
+
+        reservoir = SessionReservoir[ArchiveSessionSummary](plan.sample) if plan.sample is not None else None
+        remaining_offset = plan.offset
+
+        def sample_batch(rows: list[ArchiveSessionSummary]) -> None:
+            nonlocal remaining_offset
+            skipped = min(remaining_offset, len(rows))
+            remaining_offset -= skipped
+            assert reservoir is not None
+            reservoir.offer(rows[skipped:])
+
+        rows = _archive_summaries(
+            plan,
+            archive,
+            config=None,
+            archive_root=archive.archive_root,
+            default_limit=5,
+            complete=reservoir is not None,
+            on_batch=sample_batch if reservoir is not None else None,
+            full_sort=plan.needs_content_loading() or plan.sort in _COMPOSED_COUNT_SORTS,
+        )
+        rows = reservoir.items() if reservoir is not None else rows[plan.offset :]
+        return plan._finalize([archive_summary_to_domain(row) for row in rows])
+
     # A composed-count sort (messages/words/longest/tokens) ranks a lineage
     # child by its full inherited-prefix-plus-tail total, but the index only
     # stores that child's own tail count; windowing the SQL fetch by the
@@ -194,9 +222,6 @@ def _select_summaries(
     # sessions instead, exactly as the generic session-list route does
     # (``archive_execution.read``'s ``composed_order``/``complete`` path).
     composed_order = plan.sort in _COMPOSED_COUNT_SORTS
-    # A ranked route already fetches an unwindowed candidate pool sized from
-    # the requested window; clearing that window would shrink the pool to its
-    # default, so it keeps the requested plan (as the generic route does).
     complete = chronicle_needs_complete_scan(plan)
     fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
     if plan.needs_content_loading() or composed_order:
@@ -260,14 +285,11 @@ def _select_summaries(
         if composed_order:
             ordered = [summary_by_id[str(session.id)] for session in best]
         else:
-            ordered = order_query_summaries(
-                plan,
-                [
-                    summary
-                    for summary in (archive_summary_to_domain(row) for row in rows)
-                    if str(summary.id) in matched_ids
-                ],
-            )
+            ordered = [
+                summary
+                for summary in (archive_summary_to_domain(row) for row in rows)
+                if str(summary.id) in matched_ids
+            ]
     else:
         rows = _archive_summaries(
             fetch_plan,
@@ -278,7 +300,7 @@ def _select_summaries(
             complete=complete,
         )
         summaries = [archive_summary_to_domain(row) for row in rows]
-        ordered = order_query_summaries(plan, plan._apply_common_filters(summaries, sql_pushed=True))
+        ordered = plan._apply_common_filters(summaries, sql_pushed=True)
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
     if (plan.has_post_filters() or ranked or composed_order) and plan.offset:
         ordered = ordered[plan.offset :]

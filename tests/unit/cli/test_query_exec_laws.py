@@ -14,6 +14,7 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -43,6 +44,7 @@ from polylogue.cli.query_contracts import (
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
+from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.core.types import SessionId
 from polylogue.services import build_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
@@ -2189,14 +2191,27 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeVectorProvider:
-        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, index_connection, configure_connection
+            check_cancelled()
             assert text == "meaningful prompt"
-            # The over-fetch factor is the ranked executor's own, not a law of
-            # the request; what is load-bearing is which ids come back.
-            assert limit == 3
-            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+            yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
+        def iter_summaries(self, *, limit=None, **kwargs):
+            assert limit is None
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+
         index_db_path = archive_root / "index.db"
 
         def semantic_summaries(
@@ -2205,8 +2220,8 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
             **kwargs: object,
         ) -> list[ArchiveSessionSearchHit]:
             assert scored_message_ids == [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
-            assert kwargs["limit"] == 3
-            assert kwargs["offset"] == 0
+            assert kwargs["limit"] == 2
+            assert kwargs.get("offset", 0) == 0
             return [
                 ArchiveSessionSearchHit(
                     rank=1,
@@ -2293,11 +2308,27 @@ def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_quer
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeVectorProvider:
-        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-            del text, limit
-            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, index_connection, configure_connection
+            check_cancelled()
+            del text
+            yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
+        def iter_summaries(self, *, limit=None, **kwargs):
+            assert limit is None
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+
         index_db_path = archive_root / "index.db"
 
         def semantic_summaries(
@@ -2393,14 +2424,31 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeVectorProvider:
-        def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, index_connection, configure_connection
+            check_cancelled()
+            session_id = seed_session_id
             assert session_id == "codex-session:seed"
-            # The over-fetch factor belongs to the ranked executor; what this
-            # case asserts is the seed session the similarity ran from.
-            assert limit == 3
-            return [("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]
+            yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
+        def iter_summaries(self, *, limit=None, **kwargs):
+            assert limit is None
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+
+        def resolve_session_id(self, session_id):
+            return session_id
+
         index_db_path = archive_root / "index.db"
 
         def semantic_summaries(
@@ -2637,11 +2685,27 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeVectorProvider:
-        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, index_connection, configure_connection
+            check_cancelled()
             assert text == "meaningful prompt"
-            return [("codex-session:native-1:m1", 0.2)]
+            yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
+        def iter_summaries(self, *, limit=None, **kwargs):
+            assert limit is None
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+
         index_db_path = archive_root / "index.db"
 
         def semantic_summaries(
@@ -2717,11 +2781,27 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeVectorProvider:
-        def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, index_connection, configure_connection
+            check_cancelled()
             assert text == "meaningful prompt"
-            return [("codex-session:native-1:m1", 0.2)]
+            yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
+        def iter_summaries(self, *, limit=None, **kwargs):
+            assert limit is None
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+
         index_db_path = active_root / "index.db"
 
         def semantic_summaries(

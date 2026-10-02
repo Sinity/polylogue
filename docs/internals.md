@@ -42,7 +42,7 @@ debugging landmarks. For a task-to-owner map, start with
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
 | `storage/repository/__init__.py` | Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology) |
 | `storage/search/query_builders.py` | Lexical search |
-| `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
+| `storage/sqlite/archive_tiers/archive.py` | Scoped session ranking and SQL hybrid lane fusion |
 
 ### Sources and Pipeline
 

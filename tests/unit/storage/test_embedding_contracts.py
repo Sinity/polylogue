@@ -14,7 +14,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import Any, Never, TypeAlias, cast
 
 import pytest
 
@@ -59,7 +59,10 @@ class _FakeV1VectorProvider:
         self.texts.extend(texts)
         return [[0.01] * 1024 for _ in texts]
 
-    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+    def scoped_query(self, *args: object, **kwargs: object) -> Never:
+        raise AssertionError("document-only fixture does not perform scoped retrieval")
+
+    async def read_similarity(self, *args: object, **kwargs: object) -> Never:
         raise AssertionError("this fixture does not perform retained-session reads")
 
 

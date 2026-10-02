@@ -547,10 +547,18 @@ class InterruptibleSQLiteRead:
             ctx.record_sqlite_progress(progress_opcodes)
             return 1 if ctx.should_abort() else 0
 
+        def check_cancelled() -> None:
+            if ctx.should_abort():
+                raise _abort_error(ctx)
+
         with self._store_lock:
             self._store = store
         try:
-            store.set_read_progress_guard(guard, n_opcodes=progress_opcodes)
+            store.set_read_progress_guard(
+                guard,
+                n_opcodes=progress_opcodes,
+                check_cancelled=check_cancelled,
+            )
             if ctx.should_abort():
                 raise _abort_error(ctx)
             try:
@@ -575,6 +583,10 @@ class InterruptibleSQLiteRead:
             store.clear_read_progress_guard()
             ctx.mark_cleanup_complete()
 
+    def _check_cancelled(self) -> None:
+        if self._ctx.should_abort():
+            raise _abort_error(self._ctx)
+
     @contextmanager
     def open_context(self, archive_root: Path, *, read_timeout: float = 5.0) -> Iterator[ArchiveStore]:
         """Yield the controlled store to synchronous read-surface adapters."""
@@ -586,7 +598,11 @@ class InterruptibleSQLiteRead:
             with self._store_lock:
                 self._store = store
             try:
-                store.set_read_progress_guard(lambda: 1 if ctx.should_abort() else 0, n_opcodes=PROGRESS_GUARD_OPCODES)
+                store.set_read_progress_guard(
+                    lambda: 1 if ctx.should_abort() else 0,
+                    n_opcodes=PROGRESS_GUARD_OPCODES,
+                    check_cancelled=lambda: self._check_cancelled(),
+                )
                 if ctx.should_abort():
                     raise _abort_error(ctx)
                 store.begin_read_snapshot()

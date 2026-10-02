@@ -1761,6 +1761,7 @@ class SearchEnvelope(SurfacePayloadModel):
     exactness: Literal["exact", "capped", "sampled", "estimate"] | None = None
     requested_lanes: tuple[str, ...] = ()
     executed_lanes: tuple[str, ...] = ()
+    completed_lanes: tuple[str, ...] = ()
     unavailable_lanes: tuple[str, ...] = ()
     failed_lanes: tuple[dict[str, str], ...] = ()
     advisories: tuple[str, ...] = ()
@@ -3942,6 +3943,8 @@ def build_search_envelope(
         diagnostics=diagnostics,
         requested_lanes=tuple(execution.requested_lanes) if execution is not None else (),
         executed_lanes=tuple(execution.executed_lanes) if execution is not None else (),
+        completed_lanes=tuple(execution.completed_lanes) if execution is not None else (),
+        exactness=execution.exactness if execution is not None else None,
         unavailable_lanes=tuple(execution.unavailable_lanes) if execution is not None else (),
         failed_lanes=tuple(
             {"lane": failure.lane, "kind": failure.kind, "reason": failure.reason}

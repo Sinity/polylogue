@@ -29,7 +29,13 @@ class EmbeddingFetcher(Protocol):
 
 
 class VectorReadConnection(Protocol):
-    def __call__(self, *, index_path: Path | None = None) -> sqlite3.Connection: ...
+    def __call__(
+        self,
+        *,
+        index_path: Path | None = None,
+        index_connection: sqlite3.Connection | None = None,
+        configure_connection: Callable[[sqlite3.Connection], None] | None = None,
+    ) -> sqlite3.Connection: ...
 
 
 class MutableSqliteVecProvider(SqliteVecProvider):

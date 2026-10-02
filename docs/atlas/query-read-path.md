@@ -28,6 +28,12 @@ parent prefixes and report depth-limit, cycle, or dangling-branch-point status r
 than silently claiming completeness
 (`polylogue/storage/sqlite/archive_tiers/write.py:2543-2625`).
 
+## Scoped ranked reads
+
+Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.
+
+Session-level existential DSL filters stay independent of the semantic witness. Semantic under a correlated unit predicate or a non-session terminal source remains a typed compilation refusal (`polylogue/archive/query/expression.py`).
+
 ## Terminal outcome
 
 Every row-bearing envelope carries one typed outcome -- `ok`, `empty`,

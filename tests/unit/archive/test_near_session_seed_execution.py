@@ -12,6 +12,7 @@ unfiltered listing.
 from __future__ import annotations
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -24,7 +25,7 @@ from polylogue.archive.query.search_hits import plan_has_search_hit_evidence, se
 from polylogue.config import Config, Source
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-from polylogue.core.protocols import VectorProvider
+from polylogue.core.protocols import ScopedVectorQuery, VectorProvider
 from polylogue.storage.embeddings.identity import vector_derivation_hash
 from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -210,8 +211,20 @@ async def test_text_semantic_pages_apply_the_ranked_offset_once(
     ]
 
     class RankedVectors:
-        def query(self, _text: str, *, limit: int) -> list[tuple[str, float]]:
-            return scored[:limit]
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, text, seed_session_id, index_connection, configure_connection
+            check_cancelled()
+            yield ScopedVectorQuery(rows=iter(scored))
 
     vectors = cast(VectorProvider, RankedVectors())
     plan = SessionQueryPlan(similar_text="pagination", vector_provider=vectors, limit=2, offset=2)
@@ -345,8 +358,20 @@ async def test_sorted_semantic_pages_concatenate_the_sorted_candidate_relation(
     scored = [(message_by_session[session_id], float(index)) for index, session_id in enumerate(ranked_sessions)]
 
     class RankedVectors:
-        def query(self, _text: str, *, limit: int) -> list[tuple[str, float]]:
-            return scored[:limit]
+        @contextmanager
+        def scoped_query(
+            self,
+            session_ids,
+            *,
+            text=None,
+            seed_session_id=None,
+            index_connection,
+            configure_connection,
+            check_cancelled,
+        ):
+            del session_ids, text, seed_session_id, index_connection, configure_connection
+            check_cancelled()
+            yield ScopedVectorQuery(rows=iter(scored))
 
     config = Config(archive_root=archive_root, render_root=tmp_path / "render", sources=[], db_path=db_path)
     vectors = cast(VectorProvider, RankedVectors())
@@ -358,8 +383,8 @@ async def test_sorted_semantic_pages_concatenate_the_sorted_candidate_relation(
 
     served = [session_id for offset in range(6) for session_id in await page(offset)]
 
-    # The relation is the top 3 x limit ranked candidates, newest first.
-    assert served == list(reversed(ranked_sessions[:3]))
+    # Every eligible ranked session belongs to the explicit-sort relation.
+    assert served == list(reversed(ranked_sessions))
 
 
 async def test_near_id_resolves_retained_provider_without_acquisition_key(

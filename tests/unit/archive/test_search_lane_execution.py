@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -23,7 +24,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.query_output import format_search_envelope
 from polylogue.config import Config, Source
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-from polylogue.core.protocols import VectorProvider
+from polylogue.core.protocols import ScopedVectorQuery, VectorProvider
 from polylogue.mcp.archive_support import archive_search_payload
 from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.operations.daemon_reads import execute_read_operation
@@ -43,12 +44,16 @@ class _VectorReply:
         self.failure = failure
         self.calls = 0
 
-    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        del text, limit
+    @contextmanager
+    def scoped_query(
+        self, session_ids, *, text=None, seed_session_id=None, index_connection, configure_connection, check_cancelled
+    ):
+        del session_ids, text, seed_session_id, index_connection, configure_connection
+        check_cancelled()
         self.calls += 1
         if self.failure is not None:
             raise self.failure
-        return []
+        yield ScopedVectorQuery(rows=iter(()))
 
 
 @pytest.fixture
