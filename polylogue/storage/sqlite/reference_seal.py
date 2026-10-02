@@ -807,14 +807,31 @@ def _locate_composed_message(conn: sqlite3.Connection, session_id: str, message_
 class PreparedIndexMutation:
     """Live observer set and typed reachability captured before writer admission."""
 
-    def __init__(self, index_path: Path, *, archive_root: Path) -> None:
+    def __init__(
+        self,
+        index_path: Path,
+        *,
+        archive_root: Path,
+        destination: IndexMutationDestination | None = None,
+    ) -> None:
         self._configured_root = archive_root.absolute()
         self.archive_root = archive_root.resolve(strict=True)
         self.index_path = index_path.resolve(strict=True)
         from polylogue.storage.archive_identity import resolve_active_index_path
 
-        if resolve_active_index_path(self.archive_root).resolve(strict=True) != self.index_path:
+        if destination is not None:
+            destination.validate()
+            generation = destination.generation
+            if (
+                destination.kind != "owned_inactive"
+                or destination.index_path != self.index_path
+                or generation is None
+                or Path(generation.archive_root).resolve(strict=True) != self.archive_root
+            ):
+                raise ReferenceSealError("prepared Index destination does not belong to this archive")
+        elif resolve_active_index_path(self.archive_root).resolve(strict=True) != self.index_path:
             raise ReferenceSealError("active reference seal requires the archive's actual active Index")
+        self.destination = destination
         self.index_thread = threading.current_thread()
         self.index_pid = os.getpid()
         self.index_task = _current_task()
@@ -1161,6 +1178,8 @@ class PreparedIndexMutation:
 
     def validate_for_writer(self, conn: sqlite3.Connection) -> None:
         self._require_new_work()
+        if self.destination is not None:
+            self.destination.validate()
         if conn.in_transaction:
             raise ReferenceSealStaleError("reference seal validation must precede the writer transaction")
         if self._writer_identity(conn) != self.index_identity:

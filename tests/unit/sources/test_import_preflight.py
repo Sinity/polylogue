@@ -219,6 +219,50 @@ def test_preflight_inspects_conversational_evidence_after_the_former_prefix(tmp_
     assert inspection.produced["session_refs"] == []
 
 
+@pytest.mark.parametrize("retained_export", [False, True])
+def test_sqlite_preflight_cancellation_reaches_the_worker(tmp_path: Path, retained_export: bool) -> None:
+    """Dropping progress or classifying callback failure as malformed makes this red."""
+    from polylogue.sources.import_preflight import preflight_import_bindings
+    from polylogue.sources.source_staging import bind_source_input
+    from polylogue.sources.sqlite_export import write_logical_export
+    from polylogue.sources.sqlite_inspection import inspect_sqlite_source
+
+    source = tmp_path / "trajectories.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            "CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);"
+            "CREATE TABLE steps (trajectory_id TEXT, idx INTEGER, step_type TEXT, "
+            "step_format TEXT, step_payload TEXT);"
+        )
+        connection.executemany(
+            "INSERT INTO trajectory_meta VALUES (?, ?)",
+            ((f"trajectory-{index}", f"cascade-{index}") for index in range(2048)),
+        )
+    if retained_export:
+        export = tmp_path / "retained.sqlite"
+        with export.open("wb") as handle:
+            write_logical_export(source, handle)
+        source = export
+
+    calls = 0
+    cancellation = ValueError("synthetic cancellation")
+
+    def check_stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise cancellation
+
+    with bind_source_input(source) as binding, pytest.raises(ValueError) as raised:
+        preflight_import_bindings(
+            [(binding, source.name)], source_path=str(source), single_file=True, check_stop=check_stop
+        )
+    assert raised.value is cancellation
+    assert calls == 2
+    # A subsequent real inspection can use the same source after worker settlement.
+    assert inspect_sqlite_source(source, preflight=True).produced["sessions"] == 2048
+
+
 def test_several_unidentified_trajectory_rows_are_refused(tmp_path: Path) -> None:
     """Several trajectory rows without ids are refused, not told apart by position.
 

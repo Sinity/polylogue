@@ -1332,7 +1332,7 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
 
     initialize_active_archive_root(tmp_path)
     receipt_root = tmp_path / ".maintenance-state/durable-change-trains"
-    receipts = tuple(receipt_root / f"source-{slot:03d}.json" for slot in (2, 3))
+    receipts = tuple(receipt_root / f"source-{slot:03d}.json" for slot in (2, 3, 4))
     assert all(receipt.is_file() for receipt in receipts)
     assert reconcile_durable_change_train_startup(tmp_path) == receipts
 
@@ -1345,6 +1345,8 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
         "raw-failure-lifecycle",
         "captured-input-publication",
         "captured-input-replay",
+        "captured-zip-admission",
+        "captured-zip-restoration",
     }
     authorization = train.backup_authorization
     assert authorization is not None
@@ -1363,30 +1365,32 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
             is None
         )
     with closing(sqlite3.connect(tmp_path / "source.db")) as current:
-        assert current.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert current.execute("PRAGMA user_version").fetchone()[0] == 4
         assert current.execute("SELECT count(*) FROM raw_profile_identity_receipts").fetchone()[0] == 0
-        for alteration in ("PRAGMA user_version = 2", "DROP INDEX idx_raw_artifacts_failure_identity"):
-            with closing(migration_runner._schema_only_replica(current)) as mismatched:
-                mismatched.execute(alteration)
-                with pytest.raises(DurableChangeTrainError):
-                    _runtime_consumer_results(train, tmp_path, candidate=mismatched)
+        with closing(migration_runner._schema_only_replica(current)) as source3:
+            reset_source_fixture_to_version(source3, 3)
+            for alteration in ("PRAGMA user_version = 2", "DROP INDEX idx_raw_artifacts_failure_identity"):
+                with closing(migration_runner._schema_only_replica(source3)) as mismatched:
+                    mismatched.execute(alteration)
+                    with pytest.raises(DurableChangeTrainError):
+                        _runtime_consumer_results(train, tmp_path, candidate=mismatched)
 
-        def fail_consumer(_train: object, _root: Path) -> None:
-            raise RuntimeError("consumer interrupted")
+            def fail_consumer(_train: object, _root: Path) -> None:
+                raise RuntimeError("consumer interrupted")
 
-        with monkeypatch.context() as failure:
-            failure.setattr(durable_change_train_module, "_invoke_runtime_consumers", fail_consumer)
-            with runtime_tier_probe_authority(
-                RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 2, previous_inventory.sha256)
-            ):
-                with pytest.raises(RuntimeError, match="consumer interrupted"):
-                    _runtime_consumer_results(train, tmp_path, candidate=current)
-                with closing(sqlite3.connect(":memory:")) as restored_probe:
-                    initialize_runtime_tier_probe(restored_probe, ArchiveTier.SOURCE)
-                    assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 2
-            with closing(sqlite3.connect(":memory:")) as ordinary_probe:
-                initialize_runtime_tier_probe(ordinary_probe, ArchiveTier.SOURCE)
-                assert ordinary_probe.execute("PRAGMA user_version").fetchone()[0] == 3
+            with monkeypatch.context() as failure:
+                failure.setattr(durable_change_train_module, "_invoke_runtime_consumers", fail_consumer)
+                with runtime_tier_probe_authority(
+                    RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 2, previous_inventory.sha256)
+                ):
+                    with pytest.raises(RuntimeError, match="consumer interrupted"):
+                        _runtime_consumer_results(train, tmp_path, candidate=source3)
+                    with closing(sqlite3.connect(":memory:")) as restored_probe:
+                        initialize_runtime_tier_probe(restored_probe, ArchiveTier.SOURCE)
+                        assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 2
+                with closing(sqlite3.connect(":memory:")) as ordinary_probe:
+                    initialize_runtime_tier_probe(ordinary_probe, ArchiveTier.SOURCE)
+                    assert ordinary_probe.execute("PRAGMA user_version").fetchone()[0] == 4
     initialize_active_archive_root(tmp_path)
     assert reconcile_durable_change_train_startup(tmp_path) == receipts
 
@@ -1453,7 +1457,7 @@ def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile
     new_id = hermes_profile_raw_id(physical, 0, blob_hash, identity_path=physical, profile_identity=key)
     assert new_id != old_id
     with closing(sqlite3.connect(root / "source.db")) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         for _ in range(2):
             write_source_raw_session(
                 connection,
@@ -1584,7 +1588,9 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
     assert profile_receipt.is_file()
     assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt)
+    dependency_receipt = marker_root / "source-004.json"
+    assert dependency_receipt.is_file()
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt, dependency_receipt)
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
@@ -1956,13 +1962,16 @@ def test_fresh_bootstrap_receipt_rejects_recorded_version_tampering(
 
 def test_source_train_identity_survives_late_user_tier_initialization(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     source_path = tmp_path / "source.db"
-    initialize_archive_database(source_path, ArchiveTier.SOURCE, expected_version=1)
+    with write_lease("test.source-baseline-bootstrap", archive_root=tmp_path):
+        initialize_archive_database(source_path, ArchiveTier.SOURCE, expected_version=1)
     with sqlite3.connect(source_path) as conn:
         before = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
 
-    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with write_lease("test.late-user-baseline-bootstrap", archive_root=tmp_path):
+        initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER, expected_version=1)
     with sqlite3.connect(source_path) as conn:
         after = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
 
@@ -2965,3 +2974,289 @@ def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> N
 
     with pytest.raises(DurableChangeTrainError, match="schema replay terminal schema"):
         load_durable_change_train_manifest(path)
+
+
+def test_source004_indexes_actual_dependency_reader_and_preserves_populated_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from importlib import resources
+
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.storage.sqlite import archive_tiers
+    from polylogue.storage.sqlite.archive_tiers import bootstrap
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        RAW_BYTE_REVISION_DEPENDENTS_SQL,
+        has_raw_byte_revision_dependents,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+
+    source3 = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE]
+    directory = resources.files("polylogue.storage.sqlite.migrations.source")
+    for name in ("002_raw_artifact_failure_identity.sql", "003_captured_profile_identity.sql"):
+        source3 += "\n" + directory.joinpath(name).read_text(encoding="utf-8")
+    ddl = {**ARCHIVE_DDL_BY_TIER, ArchiveTier.SOURCE: source3}
+    with monkeypatch.context() as pinned:
+        _pin_source_runtime_version(pinned, 3)
+        for owner in (archive_tiers, bootstrap, migration_runner):
+            pinned.setattr(owner, "ARCHIVE_DDL_BY_TIER", ddl)
+        bootstrap.initialize_active_archive_root(tmp_path)
+        with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+            for raw_id in ("parent", "child"):
+                write_source_raw_session(
+                    connection,
+                    origin=Origin.CLAUDE_CODE_SESSION,
+                    capture_mode=Provider.CLAUDE_CODE,
+                    source_path=f"/{raw_id}.jsonl",
+                    source_index=0,
+                    payload=b"{}",
+                    acquired_at_ms=1,
+                    raw_id=raw_id,
+                )
+            connection.execute("UPDATE raw_sessions SET predecessor_raw_id = 'parent', baseline_raw_id = 'parent'")
+            connection.commit()
+            before = connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall()
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        proof = rehearse_durable_migration_chain(
+            connection, ArchiveTier.SOURCE, target_version=4, evidence_ref="proof:source004-populated-rehearsal"
+        )
+        assert proof.matches
+        assert tuple(step.version for step in proof.steps) == (4,)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall() == before
+    bootstrap.invalidate_active_archive_bootstrap(tmp_path)
+    bootstrap.initialize_active_archive_root(tmp_path)
+    with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall() == before
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN " + RAW_BYTE_REVISION_DEPENDENTS_SQL, ("parent", "parent", "parent")
+        ).fetchall()
+        detail = "\n".join(str(row[3]) for row in plan)
+        assert "idx_raw_sessions_predecessor_raw_id" in detail
+        assert "idx_raw_sessions_baseline_raw_id" in detail
+        assert "SCAN raw_sessions" not in detail
+        assert has_raw_byte_revision_dependents(connection, "parent")
+        connection.execute("DELETE FROM raw_sessions WHERE raw_id = 'child'")
+        assert not has_raw_byte_revision_dependents(connection, "parent")
+        assert not has_raw_byte_revision_dependents(connection, "missing")
+    train = load_durable_change_train_manifest(tmp_path / ".maintenance-state/durable-change-trains/source-004.json")
+    assert train.state is DurableChangeTrainState.RELEASED
+    assert train.backup_authorization is None
+    assert train.proof is not None
+    assert all(result.passed for result in train.proof.runtime_consumers)
+    bootstrap.initialize_active_archive_root(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("drop_sql", "accepted"),
+    [
+        ("DROP INDEX items_kind; CREATE UNIQUE INDEX items_kind ON items(kind) WHERE kind IN ('new');", True),
+        ("DROP INDEX items_kind;", False),
+        ("DROP INDEX items_kind; CREATE INDEX other_kind ON items(kind) WHERE kind IN ('new');", False),
+        ("DROP TABLE items;", False),
+        ("DROP VIEW item_view;", False),
+        ("DROP TRIGGER item_trigger;", False),
+        ("ALTER TABLE items DROP COLUMN kind;", False),
+        ('ALTER TABLE "items" DROP kind;', False),
+        ("ALTER/* boundary */TABLE items DROP COLUMN kind;", False),
+        (
+            "ALTER TABLE items DROP COLUMN kind; DROP INDEX items_kind; CREATE INDEX items_kind ON items(kind) WHERE kind IN ('new');",
+            False,
+        ),
+    ],
+)
+def test_backup_required_mixed_train_classifies_each_drop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drop_sql: str, accepted: bool
+) -> None:
+    package = f"fixture_mixed_drop_{tmp_path.name.replace('-', '_')}"
+    directory = tmp_path / package / "source"
+    directory.mkdir(parents=True)
+    (directory.parent / "__init__.py").write_text("")
+    (directory / "__init__.py").write_text("")
+    sql = "CREATE TABLE receipts(id TEXT PRIMARY KEY) STRICT; ALTER TABLE items ADD COLUMN receipt_id TEXT; " + drop_sql
+    name = "002_mixed_index_replacement.sql"
+    claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, name, sql, owner_ref="owner:mixed-drops")
+    assert claim.requires_backup
+    train = declare_durable_change_train(
+        train_id="source-mixed-index-replacement",
+        tier=ArchiveTier.SOURCE,
+        current_version=1,
+        target_version=2,
+        slot=2,
+        owner_ref="owner:mixed-drops",
+        migration=claim,
+        riders=(_production_rider(),),
+        backup_plan_ref="proof:mixed-train-backup",
+        declared_at_ms=1,
+    )
+    (directory / "002.train.json").write_text(json.dumps(migration_runner.durable_change_train_to_payload(train)))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(durable_change_train_module, "_migration_package", lambda _tier: f"{package}.source")
+    if accepted:
+        result = validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((name, sql),))
+        assert result[0].train.migration.requires_backup
+        with pytest.raises(migration_runner.MigrationError):
+            durable_migration_claim_for_sql(
+                ArchiveTier.SOURCE,
+                name,
+                "-- migration-safety: row-preserving-index-replacement\n" + sql,
+            )
+    else:
+        with pytest.raises(DurableChangeTrainError, match="unapproved drop"):
+            validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((name, sql),))
+
+
+@pytest.mark.parametrize("probe_kind", ["source", "user", "user-file"])
+def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, probe_kind: str
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    monkeypatch.setattr(connection_profile, "connect_measured", connect)
+    helper = {
+        "source": durable_change_train_module._runtime_probe_source_connection,
+        "user": durable_change_train_module._runtime_probe_user_connection,
+        "user-file": durable_change_train_module._runtime_probe_user_file_connection,
+    }[probe_kind]
+    connection: ControlledConnection | None = None
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        with helper() as actual:
+            assert isinstance(actual, ControlledConnection)
+            connection = actual
+            actual.close_failure = OSError("synthetic probe close remains unsettled")
+    assert connection is not None
+    owner = failed.value.owner
+    directory = Path(owner.scratch_directory.name) if owner.scratch_directory is not None else None
+    try:
+        assert connection.close_attempts == 1
+        if probe_kind == "user-file":
+            assert directory is not None and (directory / "user.db").is_file()
+        assert owner.connection is connection
+        with pytest.raises(RuntimeError, match="terminal cleanup"):
+            owner.require_connection()
+    finally:
+        connection.close_failure = None
+        owner.close()
+    assert connection.close_attempts == 2
+    if directory is not None:
+        assert not directory.exists()
+
+
+def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    capture = migration_runner.capture_durable_schema_inventory
+    actual: ControlledConnection | None = None
+
+    def capture_and_arm(connection: sqlite3.Connection) -> object:
+        nonlocal actual
+        result = capture(connection)
+        assert isinstance(connection, ControlledConnection)
+        actual = connection
+        connection.close_failure = OSError("synthetic canonical inventory close remains unsettled")
+        return result
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    monkeypatch.setattr(migration_runner, "capture_durable_schema_inventory", capture_and_arm)
+    canonical = durable_change_train_module._canonical_schema_inventory_for_ddl
+    canonical.cache_clear()
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        canonical(ArchiveTier.USER, 1, ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.USER], ())
+    assert actual is not None
+    try:
+        assert actual.close_attempts == 1
+        assert failed.value.owner.connection is actual
+        with pytest.raises(RuntimeError, match="terminal cleanup"):
+            failed.value.owner.require_connection()
+    finally:
+        actual.close_failure = None
+        failed.value.owner.close()
+        canonical.cache_clear()
+    assert actual.close_attempts == 2
+
+
+def test_raw_failure_probe_uses_authenticated_train_snapshot_without_admitting_file_skew(tmp_path: Path) -> None:
+    from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+        RuntimeTierProbeAuthority,
+        initialize_runtime_tier_probe,
+        runtime_tier_probe_authority,
+    )
+    from polylogue.storage.sqlite.managed_connection import sqlite_connection
+
+    inventory = durable_change_train_module._canonical_schema_inventory(ArchiveTier.SOURCE, 3)
+    path = tmp_path / "source.db"
+    authority = RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 3, inventory.sha256)
+    observed_versions: list[int] = []
+
+    def reader(source_path: Path | None, *, sample_limit: int, _connection: sqlite3.Connection) -> object:
+        assert source_path is None
+        assert _connection.in_transaction
+        assert _connection.execute("PRAGMA query_only").fetchone()[0] == 1
+        observed_versions.append(int(_connection.execute("PRAGMA user_version").fetchone()[0]))
+        snapshot = read_raw_failure_lifecycle(source_path, sample_limit=sample_limit, _connection=_connection)
+        assert snapshot.healthy
+        return snapshot
+
+    with runtime_tier_probe_authority(authority):
+        with sqlite_connection(path) as connection:
+            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=path)
+        durable_change_train_module._probe_raw_failure_lifecycle(reader, tmp_path)
+    assert observed_versions == [3]
+    ordinary = read_raw_failure_lifecycle(path)
+    assert not ordinary.available
+    assert ordinary.state == "unavailable"
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_runtime_probe_directory_survives_native_close_until_creator_retry(
+    monkeypatch: pytest.MonkeyPatch, cancelled: bool
+) -> None:
+    from polylogue.storage.sqlite import connection_profile, managed_connection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+
+    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
+        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+
+    monkeypatch.setattr(managed_connection, "connect_measured", connect)
+    directory: Path | None = None
+    cancellation = InterruptedError("synthetic probe cancellation")
+    with pytest.raises(connection_profile.NativeConnectionSettlementError) as failed:
+        with durable_change_train_module._runtime_probe_directory(prefix="polylogue-train-lifetime-test-") as scratch:
+            directory = scratch
+            with managed_connection.sqlite_connection(scratch / "probe.db") as connection:
+                assert isinstance(connection, ControlledConnection)
+                connection.execute("CREATE TABLE proof(value TEXT)")
+                connection.close_failure = OSError("synthetic probe close remains unsettled")
+                if cancelled:
+                    raise cancellation
+    import gc
+
+    owner = failed.value.owner
+    actual = owner.connection
+    assert isinstance(actual, ControlledConnection)
+    if cancelled:
+        assert failed.value.__cause__ is cancellation
+    actual.close_failure = None
+    del failed
+    cancellation.__traceback__ = None
+    gc.collect()
+    try:
+        assert directory is not None and (directory / "probe.db").is_file()
+        assert actual.close_attempts == 1
+    finally:
+        owner.close()
+    assert actual.close_attempts == 2
+    gc.collect()
+    assert directory is not None and not directory.exists()

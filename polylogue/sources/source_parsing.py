@@ -393,7 +393,7 @@ def _parse_one_source_path_bound(
                 raw_bytes=b"",
                 source_path=str(snapshot.source_path),
                 canonical_source_path=str(snapshot.identity_path),
-                captured_profile_key=snapshot.captured_profile_key if provider_hint is Provider.HERMES else None,
+                captured_profile_key=None,
                 source_index=None,
                 file_mtime=file_mtime,
                 provider_hint=provider_hint,

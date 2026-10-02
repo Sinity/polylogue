@@ -9,17 +9,21 @@ from __future__ import annotations
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.runtime import (
+    ArtifactStreamClassification,
     classify_artifact,
     classify_artifact_path,
-    classify_record_candidacy,
+    classify_artifact_records,
+    classify_artifact_stream,
     strong_path_classification,
 )
 
 __all__ = [
     "ArtifactClassification",
     "ArtifactKind",
+    "ArtifactStreamClassification",
     "classify_artifact",
+    "classify_artifact_stream",
+    "classify_artifact_records",
     "classify_artifact_path",
-    "classify_record_candidacy",
     "strong_path_classification",
 ]

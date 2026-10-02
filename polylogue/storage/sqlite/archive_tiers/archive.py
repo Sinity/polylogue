@@ -1417,8 +1417,11 @@ class ArchiveStore:
             with ExitStack() as stack:
                 if destination is not None:
                     if prepared_seal is not None:
-                        raise RuntimeError("inactive Index construction cannot borrow an active archive seal")
-                    scope = stack.enter_context(destination.mutation_scope(self._conn))
+                        if prepared_seal.destination != destination:
+                            raise RuntimeError("inactive Index preparation must name this exact owned destination")
+                        scope = stack.enter_context(prepared_seal.mutation_scope(self._conn))
+                    else:
+                        scope = stack.enter_context(destination.mutation_scope(self._conn))
                 else:
                     seal = prepared_seal
                     if seal is None:

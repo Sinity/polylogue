@@ -157,6 +157,9 @@ class SessionSummaryReplacement:
     generation_binding: str | None = None
     empty: bool = False
 
+    def close(self) -> None:
+        """The aggregate values own no physical resources."""
+
     @property
     def input_binding(self) -> str:
         """The complete input value projection for this aggregate's output.

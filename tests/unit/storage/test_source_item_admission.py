@@ -17,11 +17,10 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.raw_admission import (
     PendingPreParseRawAdmissionRequest,
     RawAdmissionPlan,
-    SourceItemAdmission,
     execute_source_item_admission,
     plan_raw_admission,
 )
-from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission, publish_source_generation
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 
 _PAYLOAD = b'{"synthetic":"source-item"}\n'

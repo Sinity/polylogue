@@ -1173,7 +1173,6 @@ class LiveParseStage:
                                 merge_append=False,
                                 source_conn=source_conn,
                                 raw_id=expected_raw_id,
-                                child_source_path=str(path),
                                 prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
                                 if result.shard_path is not None
                                 else None,

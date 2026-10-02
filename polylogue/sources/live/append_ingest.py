@@ -9,14 +9,15 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
-from polylogue.archive.raw_payload.decode import _sample_jsonl_payload_with_detail, jsonl_session_artifact
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_stream
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
     append_source_revision,
 )
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
@@ -233,7 +234,6 @@ def _ingest_append_plans_archive(
         require_positive_conversational_evidence,
     )
     from polylogue.sources.revision_backfill import (
-        _declared_non_session_artifact_classification,
         enrich_sessions_from_archive,
         parse_retained_raw_sessions,
     )
@@ -251,9 +251,9 @@ def _ingest_append_plans_archive(
         with _open_archive_for_live_write(archive_root) as archive:
             _add_timing(timings, "append.archive_open", t0)
             for plan in plans:
+                check_compute_cancelled()
                 provider: Provider | None = None
                 raw_id: str | None = None
-                session_artifact = None
                 try:
                     provider = Provider.from_string(plan.source_name)
                     degraded = degraded_reason()
@@ -279,64 +279,28 @@ def _ingest_append_plans_archive(
                         else:
                             succeeded.append(plan)
                         continue
-                    path_artifact = classify_artifact_path(
-                        str(plan.path),
-                        provider=provider,
-                    )
                     json_stream_started = time.perf_counter()
+                    classification = None
+                    classification_error = None
                     try:
-                        payloads, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
-                            plan.payload,
-                            max_samples=64,
-                            jsonl_dict_only=True,
-                            scan_full=False,
-                        )
-                        session_artifact = jsonl_session_artifact(
-                            plan.payload,
-                            provider=provider,
-                            jsonl_dict_only=True,
-                        )
-                    except Exception:
-                        # Preserve the pre-parse raw capture for malformed input;
-                        # the normal parser path below records the typed failure.
-                        payloads = None
-                    _add_timing(timings, "append.json_stream", json_stream_started)
-                    if payloads is not None:
-                        decoded_artifact = session_artifact or classify_artifact(payloads, provider=provider)
-                        classification = (
-                            _declared_non_session_artifact_classification(
-                                provider,
-                                str(plan.path),
-                                sample=payloads[:64],
-                            )
-                            if session_artifact is None and not decoded_artifact.parse_as_session
-                            else None
-                        )
-                        if classification is not None:
-                            artifact_result = archive.admit_raw_artifact_payload(
+                        with BytesIO(plan.payload) as handle:
+                            proof = classify_artifact_stream(
+                                handle,
                                 provider=provider,
-                                payload=plan.payload,
                                 source_path=str(plan.path),
-                                canonical_source_path=plan.canonical_source_path,
-                                source_index=-1,
-                                acquired_at_ms=acquired_at_ms,
-                                classification=classification,
+                                wire_format="jsonl",
+                                check_stop=check_compute_cancelled,
                             )
-                            if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
-                                raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
-                            if classification.kind is ArtifactKind.HOOK_EVENT_CARRIER:
-                                _logical_source_key, authority = _bind_hook_carrier_append_revision(
-                                    archive,
-                                    artifact_result.raw_id,
-                                    provider=provider,
-                                    plan=plan,
-                                )
-                                if authority is RawRevisionAuthority.QUARANTINED:
-                                    deferred.append(plan)
-                                    continue
-                            succeeded.append(plan)
-                            continue
-                    elif path_artifact is not None and not path_artifact.parse_as_session:
+                        if proof.proved_non_session:
+                            classification = proof.classification
+                    except DaemonOperationCancelled:
+                        raise
+                    except Exception as exc:
+                        # Preserve the pre-parse raw capture for malformed input;
+                        # syntax failure is never evidence of a source-only artifact.
+                        classification_error = exc
+                    _add_timing(timings, "append.json_stream", json_stream_started)
+                    if classification is not None:
                         artifact_result = archive.admit_raw_artifact_payload(
                             provider=provider,
                             payload=plan.payload,
@@ -344,11 +308,11 @@ def _ingest_append_plans_archive(
                             canonical_source_path=plan.canonical_source_path,
                             source_index=-1,
                             acquired_at_ms=acquired_at_ms,
-                            classification=path_artifact,
+                            classification=classification,
                         )
                         if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
                             raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
-                        if path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+                        if classification.kind is ArtifactKind.HOOK_EVENT_CARRIER:
                             _logical_source_key, authority = _bind_hook_carrier_append_revision(
                                 archive,
                                 artifact_result.raw_id,
@@ -358,7 +322,6 @@ def _ingest_append_plans_archive(
                             if authority is RawRevisionAuthority.QUARANTINED:
                                 deferred.append(plan)
                                 continue
-                        raw_id = artifact_result.raw_id
                         succeeded.append(plan)
                         continue
                     t0 = time.perf_counter()
@@ -369,6 +332,8 @@ def _ingest_append_plans_archive(
                         acquired_at_ms=acquired_at_ms,
                     )
                     _add_timing(timings, "append.source_raw_write", t0)
+                    if classification_error is not None:
+                        raise classification_error
                     t0 = time.perf_counter()
                     # polylogue-u19l: prefer the resolved provider session
                     # identity over the bare filename stem. For Codex this is
@@ -388,7 +353,7 @@ def _ingest_append_plans_archive(
                     else:
                         parsed_sessions = parse_payload(
                             provider,
-                            payloads,
+                            list(_iter_json_stream(BytesIO(plan.payload), plan.path.name, fail_on_decode_error=True)),
                             plan.native_id_hint or plan.path.stem,
                             source_path=str(plan.path),
                         )
@@ -492,6 +457,8 @@ def _ingest_append_plans_archive(
                     _add_timing(timings, "append.raw_and_index_write", t0)
                     session_ids_by_path[plan.path] = session_id
                     succeeded.append(plan)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Contention is infrastructure state, not a poison
@@ -529,6 +496,8 @@ def _ingest_append_plans_archive(
                         )
                     logger.warning("live.watcher: archive append ingest failed for %s", plan.path, exc_info=True)
                     failed.append(plan)
+    except DaemonOperationCancelled:
+        raise
     except Exception as exc:
         if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
             raise

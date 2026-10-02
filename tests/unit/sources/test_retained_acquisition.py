@@ -14,13 +14,18 @@ from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.sources import retained_acquisition
 from polylogue.sources.acquisition_boundary import open_bound_container
 from polylogue.sources.parsers.base import RawSessionData
-from polylogue.sources.retained_acquisition import iter_retained_source_records
+from polylogue.sources.retained_acquisition import SourceInputRecord, iter_retained_source_records
 from polylogue.sources.source_acquisition_components import SourceReadContext
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 _MEMBER = "projects/synthetic/session.jsonl"
+
+
+def _raw_data(record: SourceInputRecord) -> RawSessionData:
+    assert record.data is not None
+    return record.data
 
 
 def _retain_container(store: BlobStore, path: Path) -> tuple[str, int, CapturedSourceInputIdentity]:
@@ -94,13 +99,13 @@ def test_retained_zip_uses_exact_blob_after_original_path_is_deleted(tmp_path: P
     ]
     assert [record.entry_ordinal for record in records] == [0, 1]
     assert [record.split_index for record in records] == [0, 0]
-    assert [record.data.addressing_mode for record in records] == [
+    assert [_raw_data(record).addressing_mode for record in records] == [
         MemberAddressingMode.WHOLE_MEMBER,
         MemberAddressingMode.WHOLE_MEMBER,
     ]
-    assert [store.read_all(record.data.blob_hash or "") for record in records] == [first, second]
+    assert [store.read_all(_raw_data(record).blob_hash or "") for record in records] == [first, second]
     assert records[0].raw_id != records[1].raw_id
-    assert all(record.data.source_path == f"{original}:{_MEMBER}" for record in records)
+    assert all(_raw_data(record).source_path == f"{original}:{_MEMBER}" for record in records)
 
 
 @pytest.mark.parametrize("cut", [1, 8])
@@ -166,8 +171,8 @@ def test_retained_plain_input_does_not_reopen_deleted_acquisition_path(tmp_path:
         blob_store=store,
     )
     assert record.coordinate == '["physical-file-v1",0]'
-    assert record.data.source_path == str(original)
-    assert record.data.blob_hash == blob_hash
+    assert _raw_data(record).source_path == str(original)
+    assert _raw_data(record).blob_hash == blob_hash
     assert store.read_all(blob_hash) == payload
 
 
@@ -202,7 +207,7 @@ def test_one_physically_refused_member_does_not_abort_its_whole_input(
     # The admitted members keep their central-directory ordinals, and the
     # generator exhausts normally so its caller can close the source item.
     assert [record.entry_ordinal for record in records] == [0, 2]
-    assert [store.read_all(record.data.blob_hash or "") for record in records] == [
+    assert [store.read_all(_raw_data(record).blob_hash or "") for record in records] == [
         b'{"retained":"first"}\n',
         b'{"retained":"third"}\n',
     ]
@@ -290,12 +295,12 @@ def test_retained_zip_keeps_declared_artifact_members_under_an_unknown_provider(
         )
     )
 
-    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == [
+    assert [_raw_data(record).source_path.rsplit(":", 1)[-1] for record in records] == [
         "conversations.json",
         _DECLARED_ASSET,
     ]
     # The asset's exact bytes are retained, not a re-encoded interpretation.
-    assert store.read_all(records[1].data.blob_hash or "") == _PNG_BYTES
+    assert store.read_all(_raw_data(records[1]).blob_hash or "") == _PNG_BYTES
 
 
 def test_retained_zip_counts_an_unselected_member_instead_of_dropping_it(
@@ -329,7 +334,7 @@ def test_retained_zip_counts_an_unselected_member_instead_of_dropping_it(
         )
     )
 
-    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
+    assert [_raw_data(record).source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
     unselected = [fields for event, fields in captured if event == "sources.retained_zip.members_unselected"]
     assert len(unselected) == 1
     assert unselected[0]["skipped"] == 1
@@ -405,7 +410,7 @@ def test_retained_zip_bounds_unselected_detail_while_counting_exactly(
         )
     )
 
-    assert [record.data.source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
+    assert [_raw_data(record).source_path.rsplit(":", 1)[-1] for record in records] == ["conversations.json"]
     unselected = [fields for event, fields in captured if event == "sources.retained_zip.members_unselected"]
     assert len(unselected) == 1
     # The count stays exact: that denominator is what the event exists for.
@@ -456,7 +461,7 @@ def test_zip_database_basename_does_not_reclassify_its_container_as_native_state
             captured_identity=identity,
         )
     )
-    assert [store.read_all(record.data.blob_hash or "") for record in records] == [
+    assert [store.read_all(_raw_data(record).blob_hash or "") for record in records] == [
         b'{"retained":"first"}\n',
         b'{"retained":"second"}\n',
     ]

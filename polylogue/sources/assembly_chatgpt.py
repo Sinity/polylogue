@@ -37,6 +37,7 @@ from tempfile import TemporaryDirectory
 
 import ijson
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
@@ -112,6 +113,7 @@ def _read_chatgpt_zip_sidecars(
                 allowed_path=_is_asset_member,
             )
             for info in entries:
+                check_compute_cancelled()
                 # An asset member is claimed by its name, not its suffix: the
                 # 2026-04-23 export ships assets under their real extensions
                 # (and some under none), including a handful named `.json`.
@@ -121,7 +123,7 @@ def _read_chatgpt_zip_sidecars(
                         continue
                     try:
                         with open_zip_entry(zf, info) as handle:
-                            blob_hash, size = store.write_from_fileobj(handle)
+                            blob_hash, size = store.write_from_fileobj(handle, heartbeat=check_compute_cancelled)
                     except (KeyError, zipfile.BadZipFile, OSError) as exc:
                         logger.debug(
                             "chatgpt_asset_read_failed",
@@ -200,6 +202,7 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore, index
 
     group = index.begin_asset_group()
     for asset_path in _walk_asset_files(directory):
+        check_compute_cancelled()
         asset_id = _member_asset_id(asset_path.name)
         if asset_id is None:
             continue
@@ -217,7 +220,7 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore, index
                     continue
                 # Streamed into the blob store, so a large asset costs no
                 # memory; a size cap here would drop a valid asset.
-                blob_hash, size = store.write_from_fileobj(handle)
+                blob_hash, size = store.write_from_fileobj(handle, heartbeat=check_compute_cancelled)
         except OSError as exc:
             emit(
                 "sources.chatgpt.asset_refused",
@@ -234,10 +237,15 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore, index
 
 
 def _walk_asset_files(directory: Path) -> Iterator[Path]:
-    for root, dirnames, filenames in os.walk(directory):
+    def read_failed(error: OSError) -> None:
+        raise error
+
+    for root, dirnames, filenames in os.walk(directory, onerror=read_failed):
+        check_compute_cancelled()
         dirnames.sort()
         root_path = Path(root)
         for filename in sorted(filenames):
+            check_compute_cancelled()
             if _member_asset_id(filename) is None:
                 continue
             candidate = root_path / filename
@@ -293,6 +301,7 @@ class ChatGPTAssemblySpec:
         seen_dirs: set[Path] = set()
         try:
             for path in source_paths:
+                check_compute_cancelled()
                 if path.suffix.lower() == ".zip":
                     claimed.update(_read_chatgpt_zip_sidecars(path, blob_store, index, claimed))
                     if blob_store is not None:

@@ -4,6 +4,7 @@ import json
 import sqlite3
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -17,6 +18,111 @@ from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
 from polylogue.sources.source_parsing import parse_one_source_path
 from polylogue.sources.source_walk import census_source_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+
+@pytest.mark.parametrize("wire_format", ["json", "jsonl"])
+@pytest.mark.parametrize("last_value,proved", [("1", True), ('[{"deep":[{}]}]', False)])
+def test_complete_artifact_metadata_uses_last_duplicate_value_and_unknown_fields(
+    wire_format: Literal["json", "jsonl"], last_value: str, proved: bool
+) -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    record = '{"unselected":[{"deep":[{}]}],"unselected":' + last_value + "}"
+    payload = "[" + record + "]" if wire_format == "json" else record + "\n"
+    result = classify_artifact_stream(io.BytesIO(payload.encode()), provider=Provider.UNKNOWN, wire_format=wire_format)
+    assert result.proved_non_session is proved
+    assert result.classification.kind is (ArtifactKind.METADATA_DOCUMENT if proved else ArtifactKind.UNKNOWN)
+
+
+def test_complete_artifact_beads_refusal_is_distinct_from_unknown_and_late_conversation() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    beads = {"id": "interaction", "kind": "field_change", "created_at": "synthetic", "issue_id": "task", "extra": {}}
+    refusal = classify_artifact_stream(
+        io.BytesIO((json.dumps(beads) + "\n").encode()), provider=Provider.UNKNOWN, wire_format="jsonl"
+    )
+    assert refusal.classification.kind is ArtifactKind.UNKNOWN
+    assert refusal.proved_non_session
+    conversation = {"role": "user", "content": "actual conversational record"}
+    records = [beads] * 65 + [conversation]
+    result = classify_artifact_stream(
+        io.BytesIO("".join(json.dumps(record) + "\n" for record in records).encode()),
+        provider=Provider.UNKNOWN,
+        wire_format="jsonl",
+    )
+    assert not result.proved_non_session
+
+
+def test_complete_artifact_checkpoint_fold_cannot_refuse_a_late_session_record() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    source_path = "/synthetic/.claude/projects/project/session.jsonl"
+    checkpoint = {"type": "file-history-snapshot"}
+    payload = (json.dumps(checkpoint) + "\n") * 65
+    refusal = classify_artifact_stream(
+        io.BytesIO(payload.encode()), provider=Provider.CLAUDE_CODE, source_path=source_path, wire_format="jsonl"
+    )
+    assert refusal.proved_non_session
+    assert refusal.classification.kind is ArtifactKind.FILE_HISTORY_SNAPSHOT
+    payload += json.dumps({"type": "user", "uuid": "message", "message": {"role": "user", "content": "hello"}}) + "\n"
+    result = classify_artifact_stream(
+        io.BytesIO(payload.encode()), provider=Provider.CLAUDE_CODE, source_path=source_path, wire_format="jsonl"
+    )
+    assert result.classification.parse_as_session
+    assert not result.classification.schema_eligible
+    assert not result.proved_non_session
+
+
+def test_complete_artifact_late_syntax_failure_and_cancellation_do_not_prove_refusal() -> None:
+    import io
+
+    import ijson
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = b'{"event_type":"stop","session_id":"s","timestamp":"t","provider":"codex"}\n' * 65
+    with pytest.raises(ijson.JSONError):
+        classify_artifact_stream(io.BytesIO(payload + b'{"broken":}\n'), provider=Provider.CODEX, wire_format="jsonl")
+
+    def cancel() -> None:
+        raise InterruptedError("synthetic taxonomy cancellation")
+
+    with pytest.raises(InterruptedError):
+        classify_artifact_stream(io.BytesIO(payload), provider=Provider.CODEX, wire_format="jsonl", check_stop=cancel)
+
+
+def test_complete_artifact_preserves_exact_bare_codex_header_recovery() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    bare = b'{"type":"session_meta"}\n' * 2
+    result = classify_artifact_stream(io.BytesIO(bare), provider=Provider.CODEX, wire_format="jsonl")
+    assert result.classification.parse_as_session
+    assert not result.classification.schema_eligible
+    extended = b'{"type":"session_meta","unselected":1}\n' * 2
+    result = classify_artifact_stream(io.BytesIO(extended), provider=Provider.CODEX, wire_format="jsonl")
+    assert not result.classification.parse_as_session
+
+
+def test_jsonl_complete_document_array_keeps_document_semantics() -> None:
+    import io
+
+    from polylogue.archive.artifact_taxonomy import classify_artifact_stream
+
+    payload = [{"role": "user", "content": "first"}, {"role": "assistant", "content": "second"}]
+    result = classify_artifact_stream(
+        io.BytesIO(json.dumps(payload).encode()), provider=Provider.UNKNOWN, wire_format="jsonl"
+    )
+    assert result.classification.parse_as_session
+    assert result.record_count == 2
+    assert not result.proved_non_session
 
 
 def test_every_origin_artifact_rule_names_a_declared_artifact_kind() -> None:
@@ -959,19 +1065,19 @@ def test_late_message_establishes_session_document() -> None:
 
 def test_late_provider_record_prevents_extracted_corpus_refusal() -> None:
     """A wire envelope beyond the former prefix disqualifies the corpus rule."""
-    payload: JSONValue = [{"source_file": "transcript.jsonl", "text": "copied"} for _ in range(32)] + [
-        {"type": "user", "message": {"role": "user", "content": "wire"}}
-    ]
+    payload: list[JSONValue] = [{"source_file": "transcript.jsonl", "text": "copied"} for _ in range(32)]
+    payload.append({"type": "user", "message": {"role": "user", "content": "wire"}})
     artifact = classify_artifact(payload, provider=Provider.CLAUDE_CODE)
     assert artifact.kind is not ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS
 
 
 def test_late_session_document_prevents_all_hook_stream_refusal() -> None:
     """Complete stream predicates cannot refuse mixed input from its hook prefix."""
-    payload: JSONValue = [
+    payload: list[JSONValue] = [
         {"event_type": "started", "session_id": "synthetic", "timestamp": "2026-01-01", "provider": "claude-code"}
         for _ in range(32)
-    ] + [{"messages": [{"role": "user", "content": "conversation"}]}]
+    ]
+    payload.append({"messages": [{"role": "user", "content": "conversation"}]})
     artifact = classify_artifact(payload, provider=Provider.UNKNOWN)
     assert artifact.parse_as_session
     assert artifact.kind is not ArtifactKind.HOOK_EVENT

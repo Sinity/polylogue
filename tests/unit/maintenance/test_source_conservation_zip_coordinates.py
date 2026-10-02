@@ -40,3 +40,12 @@ def test_bang_member_coordinate_still_resolves(tmp_path: Path) -> None:
     bundle = _zip(tmp_path / "export.zip", "conversations/a.json")
     assert _source_presence(tmp_path, f"{bundle}!conversations/a.json", {})
     assert not _source_presence(tmp_path, f"{bundle}!conversations/gone.json", {})
+
+
+def test_coordinate_delimiters_inside_container_and_member_names_are_conserved(tmp_path: Path) -> None:
+    """Partitioning the first exclamation mark invents a missing container."""
+    member = "nested/item!part:revision.json"
+    bundle = _zip(tmp_path / "export!copy:revision.zip", member)
+    for separator in ("!", ":"):
+        assert _source_presence(tmp_path, f"{bundle}{separator}{member}", {}) is True
+        assert _source_presence(tmp_path, f"{bundle}{separator}nested/gone.json", {}) is False

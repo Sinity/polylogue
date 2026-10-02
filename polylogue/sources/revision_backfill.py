@@ -15,20 +15,20 @@ import time
 import uuid
 from builtins import BaseExceptionGroup
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import ExitStack, contextmanager, nullcontext
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial, wraps
 from io import BytesIO
-from itertools import chain, islice
+from itertools import chain, groupby
 from pathlib import Path
 from typing import Any, BinaryIO, Final, Literal, cast
 
 import ijson
 
 from polylogue import logging as _polylogue_logging
-from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
+from polylogue.archive.artifact_taxonomy import ArtifactStreamClassification, classify_artifact_stream
 from polylogue.archive.ingest_flags import (
     COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
@@ -41,9 +41,8 @@ from polylogue.archive.revision_authority import (
     RawRevisionEnvelope,
     RawRevisionKind,
     canonical_authority_logical_key,
-    durable_authority_logical_keys,
     is_work_event_raw_id,
-    parser_census_is_complete,
+    parser_census_identity_measurement,
     raw_receipt_order_sql,
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
@@ -87,7 +86,6 @@ from polylogue.sources.live.batch_support import (
     jsonl_parse_prefix_size,
     jsonl_parse_prefix_size_of_handle,
 )
-from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import (
@@ -110,12 +108,11 @@ from polylogue.sources.sqlite_snapshot import (
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import (
-    parser_census_logical_keys,
+    iter_parser_census_logical_keys,
     raw_authority_parser_fingerprint,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
-    FrozenSourceRemediationRequiredError,
     PreparedRawRevisionClassification,
     _raw_parse_failure_state,
     _raw_parse_success_state,
@@ -142,9 +139,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
 from polylogue.storage.sqlite.connection_profile import (
-    ReadContinuation,
-    ReadFrame,
-    ReadFrameExpiredError,
     StaleContinuationError,
     read_frame,
 )
@@ -270,17 +264,6 @@ class RevisionCensusResult:
     quarantined: int
     input_raw_ids: tuple[str, ...]
     logical_keys: tuple[str, ...]
-
-
-@dataclass(slots=True)
-class _CurrentParserReceiptShape:
-    recorded_keys_json: object
-    typed_key: object
-    revision_kind: object
-    typed_non_session: bool
-    parser_confirmed_non_session: bool
-    byte_governed_fragment: bool
-    membership_keys: list[object] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -747,12 +730,6 @@ def prepare_retained_jsonl_artifact(
                 and provider in BUNDLE_PROVIDERS
                 and Path(source_path).name.lower().endswith(".json")
             )
-            stream_grok = (
-                provider is Provider.GROK
-                and not is_stream_record_provider(source_path, provider)
-                and Path(source_path).name.lower().endswith(".json")
-                and get_assembly_spec(provider) is None
-            )
 
             # Bundle providers have source-scoped assembly evidence. Codex's
             # title enrichment needs the cohort's session IDs and is not a
@@ -797,67 +774,6 @@ def prepare_retained_jsonl_artifact(
                 assert sidecar_data_loaded
                 return spec.enrich_session(normalized, sidecar_data_cache)
 
-            def classify_records(records: Iterable[JSONValue]) -> Iterable[JSONValue]:
-                source = iter(records)
-                sample = tuple(islice(source, 64))
-                if _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None:
-                    return iter(())
-                return chain(sample, source)
-
-            def classify_bundle_members(witnesses: Sequence[JSONValue]) -> bool:
-                # The member scan keeps the first 64 members, each container
-                # field cut to 64 entries, as the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=witnesses) is None
-
-            def classify_grok_export(witness: JSONValue) -> bool:
-                # The root fields, with containers cut to their first 64
-                # entries, are the bounded record sample.
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_generic_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                taxonomy_witness = envelope.get("__taxonomy_witness")
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    **(taxonomy_witness if isinstance(taxonomy_witness, dict) else {}),
-                    "messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_design_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_claude_ai_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {
-                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
-                    "chat_messages": list(messages),
-                }
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_otel_object(witness: dict[str, JSONValue]) -> bool:
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
-                mapping = envelope["mapping"]
-                assert isinstance(mapping, Mapping)
-                sample_mapping = dict(islice(mapping.items(), 64))
-                witness = {**envelope, "mapping": sample_mapping}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
-            def classify_gemini_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
-                witness: JSONValue = {**envelope, "messages": list(messages)}
-                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
-
             parse_prefix_size: int | None = None
             if is_jsonl_source_path(source_path):
                 with blob_path.open("rb") as tail_handle:
@@ -882,18 +798,6 @@ def prepare_retained_jsonl_artifact(
                 ),
                 prepare_session=prepare_bundle_session if prepare_per_session else None,
                 prepare_sessions=None if prepare_per_session else finalize,
-                prepare_records=classify_records,
-                classify_grok_export=classify_grok_export if stream_grok else None,
-                classify_generic_object=classify_generic_object,
-                classify_hermes_object=classify_hermes_object,
-                classify_claude_design_object=classify_claude_design_object,
-                classify_claude_ai_object=classify_claude_ai_object,
-                classify_drive_chunked_object=classify_drive_chunked_object,
-                classify_hermes_atif_object=classify_hermes_atif_object,
-                classify_chatgpt_object=classify_chatgpt_object,
-                classify_gemini_object=classify_gemini_object,
-                classify_otel_object=classify_otel_object,
-                classify_bundle_members=classify_bundle_members,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the
@@ -1218,18 +1122,9 @@ def uncensused_historical_revision_raw_ids(
                 [*raw_id_chunk, current_fingerprint],
             )
             uncensused.extend(str(row[0]) for row in rows)
-            current_receipt_shapes: dict[str, _CurrentParserReceiptShape] = {}
-            for (
-                raw_id_value,
-                logical_keys_json,
-                typed_key,
-                revision_kind,
-                typed_non_session,
-                parser_confirmed_non_session,
-                byte_governed_fragment,
-                membership_key,
-            ) in conn.execute(
-                f"""
+            with closing(
+                conn.execute(
+                    f"""
                 SELECT r.raw_id, c.logical_keys_json, r.logical_source_key, r.revision_kind,
                        EXISTS(SELECT 1 FROM raw_artifacts AS a
                               WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
@@ -1253,42 +1148,44 @@ def uncensused_historical_revision_raw_ids(
                   AND c.detail LIKE 'parser-observed:%'
                 ORDER BY r.raw_id, m.logical_source_key
                 """,
-                (
-                    raw_authority_parser_fingerprint(),
-                    raw_authority_parser_fingerprint(),
-                    RawRevisionAuthority.BYTE_PROVEN.value,
-                    *raw_id_chunk,
-                    raw_authority_parser_fingerprint(),
-                ),
-            ):
-                raw_id = str(raw_id_value)
-                shape = current_receipt_shapes.setdefault(
-                    raw_id,
-                    _CurrentParserReceiptShape(
+                    (
+                        raw_authority_parser_fingerprint(),
+                        raw_authority_parser_fingerprint(),
+                        RawRevisionAuthority.BYTE_PROVEN.value,
+                        *raw_id_chunk,
+                        raw_authority_parser_fingerprint(),
+                    ),
+                )
+            ) as receipt_rows:
+                for raw_id, raw_rows in groupby(receipt_rows, key=lambda row: str(row[0])):
+                    check_compute_cancelled()
+                    first = next(raw_rows)
+                    (
+                        _raw_id,
                         logical_keys_json,
                         typed_key,
                         revision_kind,
-                        bool(typed_non_session),
-                        bool(parser_confirmed_non_session),
-                        bool(byte_governed_fragment),
-                    ),
-                )
-                if membership_key is not None:
-                    shape.membership_keys.append(membership_key)
-            for raw_id, shape in current_receipt_shapes.items():
-                durable_keys = durable_authority_logical_keys(
-                    raw_logical_key=shape.typed_key,
-                    revision_kind=shape.revision_kind,
-                    membership_logical_keys=shape.membership_keys,
-                )
-                if not parser_census_is_complete(
-                    recorded_keys=parser_census_logical_keys(shape.recorded_keys_json),
-                    durable_keys=durable_keys,
-                    typed_non_session=shape.typed_non_session,
-                    parser_confirmed_non_session=shape.parser_confirmed_non_session,
-                    byte_governed_fragment=shape.byte_governed_fragment,
-                ):
-                    uncensused.append(raw_id)
+                        typed_non_session,
+                        parser_confirmed_non_session,
+                        byte_governed_fragment,
+                        _membership_key,
+                    ) = first
+                    with parser_census_identity_measurement(
+                        raw_logical_key=typed_key,
+                        revision_kind=revision_kind,
+                        membership_logical_keys=(row[7] for row in chain((first,), raw_rows)),
+                        observed_logical_keys=iter_parser_census_logical_keys(logical_keys_json),
+                        observed_are_receipt=True,
+                        check_stop=check_compute_cancelled,
+                    ) as measured:
+                        if not measured.complete(
+                            typed_non_session=bool(typed_non_session),
+                            parser_confirmed_non_session=bool(parser_confirmed_non_session),
+                            byte_governed_fragment=bool(byte_governed_fragment),
+                        ):
+                            uncensused.append(raw_id)
+        if not source_frame.revalidate():
+            raise StaleContinuationError("source archive changed during parser source census")
     return tuple(sorted(set(uncensused)))
 
 
@@ -1391,6 +1288,7 @@ def _census_historical_revision_evidence(
                     provider=provider,
                     source_path=_source_path,
                     source_index=source_index,
+                    stream_classification=artifact.stream_classification(),
                     manage_transaction=False,
                 )
                 if provider is not Provider.UNKNOWN:
@@ -1508,486 +1406,6 @@ def _census_historical_revision_evidence(
     except BaseException:
         raise
     return state
-
-
-def require_current_parser_source_census(
-    archive_root: Path,
-    *,
-    selected_raw_ids: Sequence[str] | None = None,
-    transient_non_session_raw_ids: Set[str] = frozenset(),
-) -> dict[str, tuple[str, ...]]:
-    """Require phase-2 parser receipts before allocating an index candidate."""
-    stale_raw_ids: list[str] = []
-    recorded_logical_keys: dict[str, tuple[str, ...]] = {}
-    selections: tuple[tuple[str, ...] | None, ...] | None
-    if selected_raw_ids is None:
-        selections = None
-    else:
-        selections = tuple(
-            tuple(selected_raw_ids[offset : offset + 500]) for offset in range(0, len(selected_raw_ids), 500)
-        )
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        source_frontier_rowid: int | None = None
-        if selections is None:
-            source_frontier_rowid = _current_source_rowid_frontier(source_frame)
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT r.raw_id, c.parser_fingerprint, c.status, c.logical_keys_json
-                FROM raw_sessions AS r
-                LEFT JOIN raw_authority_parser_census AS c ON c.raw_id = r.raw_id
-                {where}
-                ORDER BY r.raw_id
-                """,
-                selection,
-            )
-            for raw_id_value, fingerprint, status, logical_keys_json in rows:
-                raw_id = str(raw_id_value)
-                if raw_id in transient_non_session_raw_ids:
-                    recorded_logical_keys[raw_id] = ()
-                    continue
-                if fingerprint != raw_authority_parser_fingerprint() or status != "complete":
-                    stale_raw_ids.append(raw_id)
-                    continue
-                normalized_keys = parser_census_logical_keys(logical_keys_json)
-                if normalized_keys is None:
-                    stale_raw_ids.append(raw_id)
-                    continue
-                recorded_logical_keys[raw_id] = normalized_keys
-        _require_current_source_census_frame(source_frame)
-    if stale_raw_ids:
-        sample = ", ".join(stale_raw_ids[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate requires a complete current-parser source census; "
-            f"{len(stale_raw_ids)} raw(s) are stale or incomplete (sample: {sample})"
-        )
-
-    durable_bindings: dict[str, tuple[object, object, list[object], bool, bool, bool]] = {
-        raw_id: (None, RawRevisionKind.UNKNOWN.value, [], False, False, False) for raw_id in recorded_logical_keys
-    }
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE r.raw_id IN ({','.join('?' for _ in selection)})"
-            params = (
-                raw_authority_parser_fingerprint(),
-                raw_authority_parser_fingerprint(),
-                RawRevisionAuthority.BYTE_PROVEN.value,
-                *selection,
-            )
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT r.raw_id, r.logical_source_key, r.revision_kind, r.source_index, m.logical_source_key,
-                       EXISTS(SELECT 1 FROM raw_artifacts AS a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
-                       EXISTS(
-                           SELECT 1 FROM raw_membership_census AS mc
-                           WHERE mc.raw_id = r.raw_id
-                             AND mc.parser_fingerprint = ?
-                             AND mc.status = 'non_session'
-                       ),
-                       EXISTS(
-                           SELECT 1 FROM raw_membership_census AS mc
-                           WHERE mc.raw_id = r.raw_id
-                             AND r.source_index < 0
-                             AND mc.parser_fingerprint = ?
-                             AND mc.status = 'failed'
-                             AND mc.revision_authority = ?
-                       )
-                FROM raw_sessions AS r
-                LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                {where}
-                ORDER BY r.raw_id, m.logical_source_key
-                """,
-                params,
-            )
-            for (
-                raw_id_value,
-                typed_key,
-                revision_kind,
-                _source_index,
-                membership_key,
-                typed_non_session,
-                parser_confirmed_non_session,
-                byte_governed_fragment,
-            ) in rows:
-                raw_id = str(raw_id_value)
-                typed_non_session = bool(typed_non_session) or raw_id in transient_non_session_raw_ids
-                (
-                    existing_typed,
-                    existing_kind,
-                    memberships,
-                    existing_non_session,
-                    existing_parser_confirmed_non_session,
-                    existing_byte_governed_fragment,
-                ) = durable_bindings.get(
-                    raw_id,
-                    (
-                        typed_key,
-                        revision_kind,
-                        [],
-                        bool(typed_non_session),
-                        bool(parser_confirmed_non_session),
-                        bool(byte_governed_fragment),
-                    ),
-                )
-                if membership_key is not None:
-                    memberships.append(membership_key)
-                durable_bindings[raw_id] = (
-                    typed_key if existing_typed is None else existing_typed,
-                    revision_kind if existing_kind == RawRevisionKind.UNKNOWN.value else existing_kind,
-                    memberships,
-                    bool(typed_non_session) or existing_non_session,
-                    bool(parser_confirmed_non_session) or existing_parser_confirmed_non_session,
-                    bool(byte_governed_fragment) or existing_byte_governed_fragment,
-                )
-
-    invalid_durable_bindings: set[str] = set()
-    durable_logical_keys: dict[str, tuple[str, ...]] = {}
-    for (
-        raw_id,
-        (
-            typed_key,
-            revision_kind,
-            membership_keys,
-            typed_non_session,
-            parser_confirmed_non_session,
-            byte_governed_fragment,
-        ),
-    ) in durable_bindings.items():
-        durable_keys = durable_authority_logical_keys(
-            raw_logical_key=typed_key,
-            revision_kind=revision_kind,
-            membership_logical_keys=membership_keys,
-        )
-        if durable_keys is None or not parser_census_is_complete(
-            recorded_keys=recorded_logical_keys.get(raw_id),
-            durable_keys=durable_keys,
-            typed_non_session=typed_non_session,
-            parser_confirmed_non_session=parser_confirmed_non_session,
-            byte_governed_fragment=byte_governed_fragment,
-        ):
-            invalid_durable_bindings.add(raw_id)
-        else:
-            durable_logical_keys[raw_id] = durable_keys
-
-    authority_binding_drift = sorted(
-        invalid_durable_bindings
-        | {
-            raw_id
-            for raw_id, census_keys in recorded_logical_keys.items()
-            if durable_logical_keys.get(raw_id, ()) != census_keys
-        }
-    )
-    if authority_binding_drift:
-        sample = ", ".join(authority_binding_drift[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate current-parser census differs from frozen durable authority bindings; "
-            f"{len(authority_binding_drift)} raw(s) require source remediation (sample: {sample})"
-        )
-
-    authority_rows: dict[str, tuple[str | None, str, str, int, str | None, str | None]] = {}
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            where = f"WHERE raw_id IN ({','.join('?' for _ in selection)})"
-            rows = _read_current_source_census_page(
-                source_frame,
-                selection,
-                source_frontier_rowid,
-                f"""
-                SELECT raw_id, logical_source_key, revision_kind, revision_authority,
-                       source_index, predecessor_raw_id, baseline_raw_id
-                FROM raw_sessions {where}
-                ORDER BY raw_id
-                """,
-                selection,
-            )
-            for raw_id_value, logical_key, revision_kind, authority, source_index, predecessor_id, baseline_id in rows:
-                authority_rows[str(raw_id_value)] = (
-                    str(logical_key) if logical_key is not None else None,
-                    str(revision_kind),
-                    str(authority),
-                    int(source_index),
-                    str(predecessor_id) if predecessor_id is not None else None,
-                    str(baseline_id) if baseline_id is not None else None,
-                )
-
-    append_identity_drift: set[str] = set()
-    for raw_id, (
-        append_key,
-        revision_kind,
-        authority,
-        _source_index,
-        predecessor_id,
-        baseline_id,
-    ) in authority_rows.items():
-        if revision_kind != RawRevisionKind.APPEND.value:
-            continue
-        predecessor = authority_rows.get(predecessor_id or "")
-        baseline = authority_rows.get(baseline_id or "")
-        if (
-            append_key is None
-            or authority != RawRevisionAuthority.BYTE_PROVEN.value
-            or predecessor_id is None
-            or baseline_id is None
-            or predecessor_id == raw_id
-            or baseline_id == raw_id
-            or predecessor is None
-            or baseline is None
-            or predecessor[2] != RawRevisionAuthority.BYTE_PROVEN.value
-            or baseline[1] != RawRevisionKind.FULL.value
-            or baseline[2] != RawRevisionAuthority.BYTE_PROVEN.value
-            or baseline[3] < 0
-        ):
-            append_identity_drift.add(raw_id)
-            continue
-        try:
-            canonical_append_key = canonical_authority_logical_key(append_key)
-            canonical_predecessor_key = canonical_authority_logical_key(predecessor[0] or "")
-            canonical_baseline_key = canonical_authority_logical_key(baseline[0] or "")
-        except ValueError:
-            append_identity_drift.add(raw_id)
-            continue
-        if {canonical_predecessor_key, canonical_baseline_key} != {canonical_append_key}:
-            append_identity_drift.add(raw_id)
-            continue
-
-        seen = {raw_id}
-        cursor_id = predecessor_id
-        while True:
-            if cursor_id in seen:
-                append_identity_drift.add(raw_id)
-                break
-            seen.add(cursor_id)
-            cursor = authority_rows.get(cursor_id)
-            if cursor is None:
-                append_identity_drift.add(raw_id)
-                break
-            if cursor[1] == RawRevisionKind.FULL.value:
-                if cursor_id != baseline_id:
-                    append_identity_drift.add(raw_id)
-                break
-            if cursor[1] != RawRevisionKind.APPEND.value or cursor[4] is None:
-                append_identity_drift.add(raw_id)
-                break
-            try:
-                if canonical_authority_logical_key(cursor[0] or "") != canonical_append_key:
-                    append_identity_drift.add(raw_id)
-                    break
-            except ValueError:
-                append_identity_drift.add(raw_id)
-                break
-            cursor_id = cursor[4]
-    if append_identity_drift:
-        sample = ", ".join(sorted(append_identity_drift)[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate typed continuation identity differs from linked byte authority; "
-            f"{len(append_identity_drift)} raw(s) require source remediation (sample: {sample})"
-        )
-
-    unresolved_raw_ids: list[str] = []
-    with read_frame(
-        archive_root / "source.db", tier=ArchiveTier.SOURCE, timeout_class="background-read"
-    ) as source_frame:
-        for selection in _current_source_raw_id_selections(
-            source_frame, selections, frontier_rowid=source_frontier_rowid
-        ):
-            authority_where = f"AND r.raw_id IN ({','.join('?' for _ in selection)})"
-            authority_params: tuple[object, ...] = selection
-            unresolved_raw_ids.extend(
-                str(row[0])
-                for row in _read_current_source_census_page(
-                    source_frame,
-                    selection,
-                    source_frontier_rowid,
-                    f"""
-                    SELECT DISTINCT r.raw_id
-                    FROM raw_sessions AS r
-                    LEFT JOIN raw_membership_census AS c ON c.raw_id = r.raw_id
-                    LEFT JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
-                    WHERE r.revision_authority = 'quarantined'
-                      {authority_where}
-                      AND NOT EXISTS (
-                          SELECT 1 FROM raw_artifacts AS a
-                          WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0
-                      )
-                      AND (
-                          c.raw_id IS NULL OR c.status NOT IN ('complete', 'non_session')
-                          OR (
-                              c.status = 'complete'
-                              AND (
-                                  m.raw_id IS NULL OR m.decision IS NULL
-                                  OR m.decision IN ('ambiguous', 'deferred')
-                              )
-                          )
-                      )
-                    ORDER BY r.raw_id
-                    """,
-                    authority_params,
-                )
-                if str(row[0]) not in transient_non_session_raw_ids
-            )
-    if unresolved_raw_ids:
-        sample = ", ".join(unresolved_raw_ids[:5])
-        raise FrozenSourceRemediationRequiredError(
-            "inactive candidate requires complete frozen source authority; "
-            f"{len(unresolved_raw_ids)} raw(s) remain quarantined or undecided (sample: {sample})"
-        )
-    return recorded_logical_keys
-
-
-_CURRENT_SOURCE_CENSUS_PAGE_SIZE = 500
-_CURRENT_SOURCE_CENSUS_PAGE_RETRIES = 1
-
-
-def _current_source_rowid_frontier(source_frame: ReadFrame) -> int:
-    """Capture the committed source row frontier, retrying if its frame expires."""
-    sql = "SELECT COALESCE(MAX(rowid), 0) FROM raw_sessions"
-    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-        try:
-            rows = tuple(source_frame.stream(sql))
-            return int(rows[0][0]) if rows else 0
-        except ReadFrameExpiredError:
-            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                raise
-            _require_current_source_census_frame(source_frame)
-            source_frame.rebind()
-    raise AssertionError("bounded source frontier retry loop fell through")
-
-
-def _current_source_selection_continuation(
-    source_frame: ReadFrame,
-    selection: tuple[str, ...],
-    frontier_rowid: int | None,
-) -> ReadContinuation:
-    """Anchor one page by its source endpoint or its immutable input selection."""
-    last_raw_id = selection[-1]
-    if frontier_rowid is None:
-        continuation = ReadContinuation(
-            position=last_raw_id,
-            anchor_sql="SELECT ?",
-            anchor_params=(last_raw_id,),
-        )
-    else:
-        continuation = ReadContinuation(
-            position=last_raw_id,
-            anchor_sql="SELECT raw_id FROM raw_sessions WHERE raw_id = ? AND rowid <= ?",
-            anchor_params=(last_raw_id, frontier_rowid),
-        )
-    return source_frame.bind(continuation)
-
-
-def _require_current_source_census_frame(source_frame: ReadFrame) -> None:
-    """Refuse a mixed census if the source changed since this frame opened."""
-    if not source_frame.revalidate():
-        raise StaleContinuationError(
-            "source archive changed during parser source census; retry against one unchanged generation"
-        )
-
-
-def _resume_current_source_census(
-    source_frame: ReadFrame,
-    continuation: ReadContinuation,
-) -> ReadContinuation:
-    if source_frame.expired:
-        _require_current_source_census_frame(source_frame)
-    return source_frame.resume(continuation)
-
-
-def _read_current_source_census_page(
-    source_frame: ReadFrame,
-    selection: tuple[str, ...],
-    frontier_rowid: int | None,
-    sql: str,
-    parameters: Sequence[object],
-) -> tuple[sqlite3.Row, ...]:
-    """Read a whole selection before changing result state, retrying one expiry."""
-    continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
-    for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-        try:
-            return tuple(source_frame.stream(sql, parameters))
-        except ReadFrameExpiredError:
-            if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                raise
-            _require_current_source_census_frame(source_frame)
-            _resume_current_source_census(source_frame, continuation)
-    raise AssertionError("bounded source census page retry loop fell through")
-
-
-def _current_source_raw_id_selections(
-    source_frame: ReadFrame,
-    selections: tuple[tuple[str, ...] | None, ...] | None,
-    *,
-    frontier_rowid: int | None,
-) -> Iterator[tuple[str, ...]]:
-    """Yield bounded raw-id selections, rebinding between pages as needed."""
-    if selections is not None:
-        continuation: ReadContinuation | None = None
-        for selection in selections:
-            if not selection:
-                continue
-            if continuation is not None:
-                _resume_current_source_census(source_frame, continuation)
-            continuation = _current_source_selection_continuation(source_frame, selection, frontier_rowid)
-            _resume_current_source_census(source_frame, continuation)
-            yield selection
-        return
-
-    if frontier_rowid is None:
-        raise ValueError("archive-wide source census requires its initial rowid frontier")
-    continuation = None
-    after_raw_id: str | None = None
-    while True:
-        if continuation is not None:
-            _resume_current_source_census(source_frame, continuation)
-            after_raw_id = str(continuation.position)
-        params: tuple[object, ...] = (
-            (frontier_rowid, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
-            if after_raw_id is None
-            else (frontier_rowid, after_raw_id, _CURRENT_SOURCE_CENSUS_PAGE_SIZE)
-        )
-        where = "WHERE rowid <= ?" if after_raw_id is None else "WHERE rowid <= ? AND raw_id > ?"
-        page_sql = f"SELECT raw_id FROM raw_sessions {where} ORDER BY raw_id LIMIT ?"
-        page_anchor = continuation or source_frame.bind(
-            ReadContinuation(position=frontier_rowid, anchor_sql="SELECT ?", anchor_params=(frontier_rowid,))
-        )
-        for attempt in range(_CURRENT_SOURCE_CENSUS_PAGE_RETRIES + 1):
-            try:
-                raw_ids = tuple(str(row[0]) for row in source_frame.stream(page_sql, params))
-                break
-            except ReadFrameExpiredError:
-                if attempt >= _CURRENT_SOURCE_CENSUS_PAGE_RETRIES:
-                    raise
-                _require_current_source_census_frame(source_frame)
-                _resume_current_source_census(source_frame, page_anchor)
-        else:
-            raise AssertionError("bounded source ID page retry loop fell through")
-        if not raw_ids:
-            return
-        after_raw_id = raw_ids[-1]
-        continuation = _current_source_selection_continuation(source_frame, raw_ids, frontier_rowid)
-        # A page's ID scan can itself spend time near the frame limit. Renew
-        # before handing its selection to the caller, which starts the page's
-        # authority query on the same frame.
-        _resume_current_source_census(source_frame, continuation)
-        yield raw_ids
 
 
 def apply_prepared_revision_census(
@@ -3531,80 +2949,6 @@ def _prepared_shard_path(prepared_inputs: Mapping[str, PreparedRetainedInput], r
     return artifact.shard_path
 
 
-def _declared_non_session_artifact_classification(
-    provider: Provider,
-    source_path: str,
-    *,
-    sample: Sequence[object] = (),
-) -> ArtifactClassification | None:
-    """Classify a declared non-session raw revision before session admission.
-
-    polylogue-b508: retained raw revisions include OriginSpec-declared fact
-    artifacts (``agent-*.meta.json`` sidecars, ``workflows/*.json`` run
-    snapshots, ``subagents/workflows/*/journal.jsonl``, ``adopt.json``
-    manifests) admitted as raw authority by ``sources/live/batch.py`` even
-    though their ``parse_policy`` is ``"fact"``, never ``"session"`` --
-    intentional, so the retained bytes stay durable raw evidence. The live
-    daemon's ingest path (``ingest_worker.py``/``batch.py``) already consults
-    this same OriginSpec rule before parsing and refuses to session-parse
-    these; this replay engine is a SEPARATE parse chokepoint that did not,
-    and would silently recreate exactly the ``<agent>.meta`` phantom sessions
-    that fix is meant to eliminate on every future rebuild. A positive JSONL
-    session proof is the one deliberate exception, matching the live route:
-    a source-only outage may retain bytes before it can inspect a path that
-    normally carries fact evidence, and recovery must not make that filename
-    permanently override later decoded session authority.
-
-    polylogue-9ykn: a path-declared rule is only half of the live path's
-    gate. ``pipeline/services/ingest_worker.py`` also runs every sampled
-    JSONL payload through ``archive.artifact_taxonomy.classify_artifact`` --
-    the richer, CONTENT-based classifier that catches a non-conversational
-    record sitting under a watched Claude Code directory with no matching
-    path rule at all (e.g. a third-party analysis index such as
-    ``conversation_relationships.jsonl`` that happens to satisfy the loose
-    per-record shape check). Without the same content check here, replay
-    (this module) would silently resurrect exactly the phantom sessions the live gate
-    now refuses, on every future rebuild -- the two "single chokepoints"
-    disagreeing is the location-as-identity defect recurring at a second
-    layer. ``sample`` -- the first up to 64 decoded records, mirroring the
-    live path's own sample bound (``ingest_worker.py``'s
-    ``_sample_jsonl_payload_with_detail(..., max_samples=64)``) -- is
-    classified only when no path rule already decided the question; an
-    empty ``sample`` (the default) preserves the original path-only
-    behavior exactly, so every existing caller is unaffected until it opts
-    in.
-    """
-    from polylogue.archive.artifact_taxonomy import classify_artifact
-
-    rule = artifact_rule_for_path(provider, source_path)
-    if rule is not None and rule.parse_policy != "session" and not sample:
-        classification = classify_artifact([], provider=provider, source_path=source_path)
-        if not classification.parse_as_session:
-            return classification
-    if not sample:
-        return None
-    from polylogue.core.json import JSONValue
-
-    # ``sample`` records come from ``_iter_json_stream`` (this module's own
-    # decode path, typed ``JsonValue`` -- ``core/query_identity.py``'s
-    # structurally-equivalent but nominally distinct alias) rather than
-    # ``classify_artifact``'s own ``core.json.JSONValue``; both describe the
-    # same decoded-JSON shape ijson/json.loads ever produce, so the cast is
-    # a type-identity bridge, not a real behavior narrowing.
-    classification = classify_artifact(cast(list[JSONValue], list(sample)), provider=provider, source_path=source_path)
-    # ``UNKNOWN`` means the taxonomy cannot decide, not that the payload is
-    # a proved sidecar.  Codex append deltas intentionally omit the
-    # session_meta header and become materializable only after the live
-    # revision layer supplies its recorded native-id hint.  Treating that
-    # undecided partial stream as an artifact skips revision binding and
-    # silently loses its append frontier.  Keep the raw evidence on the
-    # normal parser path, which either uses the hint or records a typed parse
-    # failure; only a positive non-session cohort may bypass session parsing.
-    if classification.kind is ArtifactKind.UNKNOWN:
-        return None
-    return classification if not classification.parse_as_session else None
-
-
 LEGACY_PAGE_IMAGE_CENSUS_DETAIL = (
     "retained legacy SQLite page image; no current parser reads this material and it is "
     "not a logical export, so it produces no session"
@@ -3685,20 +3029,15 @@ def _persist_terminal_non_session_artifact(
     provider: Provider,
     source_path: str,
     source_index: int,
+    stream_classification: ArtifactStreamClassification | None,
     manage_transaction: bool,
 ) -> bool:
-    """Record replay-confirmed source-only artifact authority once.
-
-    Replay reaches this function only after the real parser has consumed the
-    complete stream and produced no conversational session. The terminal
-    receipt therefore follows that one authoritative parse result instead of
-    reclassifying the raw through a second, weaker JSONL shape scan.
-    """
-    if provider is Provider.UNKNOWN:
+    """Persist the complete classification bound to the sealed retained input."""
+    if stream_classification is None or not stream_classification.proved_non_session:
         return False
-    classification = _declared_non_session_artifact_classification(provider, source_path)
-    if classification is None:
-        return False
+    classification = stream_classification.classification
+    if classification.provider is not provider:
+        raise RetainedPreparationRetryableError("prepared artifact classification provider changed")
     origin = origin_from_provider(provider)
     observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
     upsert_raw_artifact(
@@ -3731,16 +3070,6 @@ def _persist_terminal_non_session_artifact(
     return True
 
 
-def _is_declared_non_session_artifact(
-    provider: Provider,
-    source_path: str,
-    *,
-    sample: Sequence[object] = (),
-) -> bool:
-    """Return whether this raw revision must not be session-parsed on replay."""
-    return _declared_non_session_artifact_classification(provider, source_path, sample=sample) is not None
-
-
 def _parse_one(
     provider: Provider,
     payload: bytes,
@@ -3751,12 +3080,6 @@ def _parse_one(
     archive_root: Path | None = None,
     fallback_id_override: str | None = None,
 ) -> list[ParsedSession]:
-    # polylogue-9ykn: replay must apply the same positive-conversational-
-    # evidence gate the live ingest paths apply, on top of the path/shape
-    # gate above (``_is_declared_non_session_artifact``, polylogue-6mpy) --
-    # a source can pass that gate (its shape IS a recognized Claude Code
-    # JSONL file with no path rule) yet still parse to zero real messages
-    # (e.g. a file containing only file-history-snapshot records).
     return require_positive_conversational_evidence(
         _parse_one_raw(
             provider,
@@ -3868,19 +3191,27 @@ def _parse_one_raw(
         # non-session evidence instead: no session, no abort, and a receipt
         # that still names what the material was.
         return []
-    rule = artifact_rule_for_path(provider, source_path)
-    declared_path_session_evidence = False
-    if rule is not None and rule.parse_policy != "session" and is_jsonl_source_path(source_path):
-        from polylogue.archive.raw_payload.decode import jsonl_session_artifact
+    from polylogue.sources.live.batch_support import jsonl_parse_input_of_handle
 
-        declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
+    with BytesIO(payload) as input_handle, ExitStack() as input_lifetime:
+        input_is_jsonl = is_jsonl_source_path(source_path)
+        classified_input = (
+            input_lifetime.enter_context(jsonl_parse_input_of_handle(input_handle, check_stop=check_compute_cancelled))
+            if input_is_jsonl
+            else input_handle
+        )
+        classification = classify_artifact_stream(
+            classified_input,
+            provider=provider,
+            source_path=source_path,
+            wire_format="jsonl" if input_is_jsonl else "json",
+            check_stop=check_compute_cancelled,
+        )
+    if classification.proved_non_session:
+        return []
     sidecar_resolver = _retained_sidecar_resolver(archive_root)
     if is_stream_record_provider(source_path, str(provider)):
         records = _retained_jsonl_records(payload, source_name, source_path)
-        if not declared_path_session_evidence and _is_declared_non_session_artifact(
-            provider, source_path, sample=records[:64]
-        ):
-            return []
         return parse_stream_payload(
             provider,
             records,
@@ -3890,10 +3221,6 @@ def _parse_one_raw(
             sidecar_resolver=sidecar_resolver,
         )
     records = _retained_jsonl_records(payload, source_name, source_path)
-    if not declared_path_session_evidence and _is_declared_non_session_artifact(
-        provider, source_path, sample=records[:64]
-    ):
-        return []
     return parse_payload(
         provider,
         records,
@@ -4006,7 +3333,6 @@ __all__ = [
     "apply_prepared_revision_census",
     "enrich_sessions_from_archive",
     "open_retained_session_enricher",
-    "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",
     "parse_retained_raw_sessions",
 ]

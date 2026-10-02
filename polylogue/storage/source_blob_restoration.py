@@ -231,8 +231,8 @@ def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str
     if recorded:
         split = split_zip_member_text(source)
         if split is not None:
-            container, member = split
-            return f"{relocate(Path(container))}:{member}", True
+            container_text, member = split
+            return f"{relocate(Path(container_text))}:{member}", True
         return source, True
     return str(literal), False
 

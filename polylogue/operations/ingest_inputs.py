@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sqlite3
@@ -40,20 +41,43 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     SourceItemAdmission,
     source_item_id,
 )
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    _close_failed_native_construction,
+    open_scratch_connection,
+    readonly_connection_context,
+    retained_native_sql_owners_for_lifetime,
+)
 
 
 @contextmanager
-def spool_connection(path: Path | str, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
-    """Open one private spool database for one transaction, then close it.
+def spool_connection(path: Path, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
+    """Own one private spool transaction and its exact artifact through settlement."""
+    if read_only:
+        with readonly_connection_context(path, validate_schema=False, lifetime_dependencies=(path,)) as conn:
+            conn.execute("PRAGMA temp_store=FILE").close()
+            yield conn
+        return
+    owner = open_scratch_connection(path, lifetime_dependencies=(path,))
+    try:
+        conn = owner.require_connection()
+        conn.execute("PRAGMA journal_mode=DELETE").close()
+        conn.execute("PRAGMA temp_store=FILE").close()
+        with conn:
+            yield conn
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
-    ``sqlite3.Connection``'s own context manager commits or rolls back but
-    never closes, so a bare ``with sqlite3.connect(...)`` keeps the file
-    handle until garbage collection. Spools are private scratch owned by one
-    pass (docs/sqlite-connection-policy.md), not archive tiers.
-    """
-    target = f"file:{path}?mode=ro" if read_only else str(path)
-    with closing(sqlite3.connect(target, uri=read_only)) as conn, conn:
-        yield conn
+
+def unlink_spool(path: Path) -> None:
+    """Remove only an operation's private artifact after its native owners retire."""
+    retained = retained_native_sql_owners_for_lifetime(path)
+    if retained:
+        raise NativeConnectionSettlementError(retained[0], RuntimeError("private spool remains under native custody"))
+    path.unlink(missing_ok=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,23 +146,60 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
                     "INSERT INTO paths VALUES (?, ?, ?, NULL)", ("input:0", str(path), source_path or str(path))
                 )
             elif stat.S_ISDIR(mode):
-                for candidate in path.rglob("*"):
+                conn.execute(
+                    "CREATE TABLE directories(relative TEXT PRIMARY KEY, device INTEGER NOT NULL, inode INTEGER NOT NULL) "
+                    "WITHOUT ROWID"
+                )
+                root_info = path.lstat()
+                conn.execute("INSERT INTO directories VALUES ('', ?, ?)", (root_info.st_dev, root_info.st_ino))
+                while True:
                     check_stop()
-                    candidate_mode = candidate.lstat().st_mode
-                    if stat.S_ISDIR(candidate_mode):
-                        continue
-                    if not stat.S_ISREG(candidate_mode):
-                        raise ValueError("ingest inputs must be regular files, not links or special files")
-                    relative = candidate.relative_to(path)
-                    logical = str(Path(source_path) / relative) if source_path is not None else str(candidate)
-                    conn.execute("INSERT INTO paths VALUES (?, ?, ?, NULL)", (str(relative), str(candidate), logical))
+                    with closing(
+                        conn.execute("SELECT relative, device, inode FROM directories ORDER BY relative LIMIT 1")
+                    ) as pending:
+                        directory = pending.fetchone()
+                    if directory is None:
+                        break
+                    relative_directory, device, inode = directory
+                    current_directory = path / relative_directory
+                    descriptor = os.open(current_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                    try:
+                        opened = os.fstat(descriptor)
+                        if (opened.st_dev, opened.st_ino) != (device, inode):
+                            raise OSError(
+                                errno.ESTALE, "ingest directory changed during enumeration", str(current_directory)
+                            )
+                        with os.scandir(descriptor) as entries:
+                            for entry in entries:
+                                check_stop()
+                                relative = Path(relative_directory) / entry.name
+                                candidate = path / relative
+                                info = entry.stat(follow_symlinks=False)
+                                if stat.S_ISDIR(info.st_mode):
+                                    conn.execute(
+                                        "INSERT INTO directories VALUES (?, ?, ?)",
+                                        (str(relative), info.st_dev, info.st_ino),
+                                    )
+                                elif stat.S_ISREG(info.st_mode):
+                                    logical = (
+                                        str(Path(source_path) / relative) if source_path is not None else str(candidate)
+                                    )
+                                    conn.execute(
+                                        "INSERT INTO paths VALUES (?, ?, ?, NULL)",
+                                        (str(relative), str(candidate), logical),
+                                    )
+                                else:
+                                    raise ValueError("ingest inputs must be regular files, not links or special files")
+                    finally:
+                        os.close(descriptor)
+                    conn.execute("DELETE FROM directories WHERE relative=?", (relative_directory,))
             else:
                 raise ValueError("ingest input must be a regular file or directory")
             if conn.execute("SELECT 1 FROM paths LIMIT 1").fetchone() is None:
                 raise ValueError("ingest input contains no physical files")
         return spool
     except BaseException:
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)
         raise
 
 
@@ -207,7 +268,7 @@ def preflight_ingest_input(
             )
         return result, declaration
     finally:
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)
 
 
 def retain_input_page(

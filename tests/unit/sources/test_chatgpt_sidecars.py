@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -483,7 +484,7 @@ def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
     fail_closes = [failed_close]
 
     class FaultConnection(sqlite3.Connection):
-        def execute(self, sql: str, *args: object, **kwargs: object) -> sqlite3.Cursor:
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             if sql.startswith(failed_statement):
                 raise sqlite3.OperationalError("synthetic asset setup fault")
             return super().execute(sql, *args, **kwargs)
@@ -493,11 +494,13 @@ def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
                 raise sqlite3.OperationalError("synthetic asset close fault")
             super().close()
 
-    def connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         kwargs["factory"] = FaultConnection
-        return original_connect(path, *args, **kwargs)
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
 
-    def open_writer(path: Path, **kwargs: object) -> object:
+    def open_writer(path: Path, **kwargs: Any) -> object:
         dependencies = kwargs["lifetime_dependencies"]
         assert isinstance(dependencies, tuple) and isinstance(dependencies[0], ChatGPTAssetIndex)
         captured.append(dependencies[0])
@@ -550,6 +553,47 @@ def test_streamed_sidecar_duplicate_keys_preserve_last_value_and_first_order() -
         resolution = index.resolve_sandbox(file_name="shared", message_id=None, thread_id=None)
         assert resolution.tier == 5 and resolution.file is None
     finally:
+        index.close()
+
+
+@pytest.mark.parametrize("library", [False, True])
+def test_streamed_sidecar_cancellation_rolls_back_partial_input(monkeypatch: pytest.MonkeyPatch, library: bool) -> None:
+    import json
+    import threading
+    from io import BytesIO
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    index = ChatGPTAssetIndex()
+    baseline = [{"file_id": "file-old", "file_name": "old.txt"}] if library else {"file-old.dat": "old.txt"}
+    assert index.load_stream(BytesIO(json.dumps(baseline).encode()), library=library)
+    cancelled = threading.Event()
+    insert = index._insert_library if library else index._insert_name
+
+    def cancel_after_insert(*args: Any) -> None:
+        insert(*args)
+        cancelled.set()
+
+    monkeypatch.setattr(index, "_insert_library" if library else "_insert_name", cancel_after_insert)
+    token = compute_cancel.set(cancelled)
+    try:
+        payload = (
+            [{"file_id": f"file-new-{number}", "file_name": "new.txt"} for number in range(1024)]
+            if library
+            else {f"file-new-{number}.dat": "new.txt" for number in range(1024)}
+        )
+        with pytest.raises(DaemonOperationCancelled):
+            index.load_stream(BytesIO(json.dumps(payload).encode()), library=library)
+        assert cancelled.is_set()
+        cancelled.clear()
+        index.seal()
+        retained = index.resolve_dat("file-old")
+        assert retained is not None
+        assert retained.name == "old.txt"
+        assert index.resolve_dat("file-new-0") is None
+    finally:
+        compute_cancel.reset(token)
         index.close()
 
 
@@ -628,9 +672,11 @@ def test_asset_lookup_failed_native_close_retains_index_until_actual_settlement(
                 raise sqlite3.OperationalError("synthetic asset lookup close fault")
             super().close()
 
-    def connect(path: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(path: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         kwargs["factory"] = FaultReader
-        return original_connect(path, *args, **kwargs)
+        result = original_connect(path, *args, **kwargs)
+        assert isinstance(result, sqlite3.Connection)
+        return result
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     try:

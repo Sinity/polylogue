@@ -17,7 +17,6 @@ from typing import IO, TYPE_CHECKING, Literal, cast
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
     ArtifactKind,
-    classify_artifact,
     classify_artifact_path,
 )
 from polylogue.archive.raw_payload.decode import (
@@ -373,8 +372,13 @@ def _build_stream_parse_plan(
         context.raw_source,
         provider=runtime_provider,
         jsonl_dict_only=True,
+        source_path=context.raw_record.source_path,
     )
-    if scan.artifact is None and scan.malformed_records and not path_is_terminal:
+    if (
+        (scan.artifact is None or not scan.artifact.parse_as_session)
+        and scan.malformed_records
+        and not path_is_terminal
+    ):
         # Decode failure is not proof of a non-session artifact. The normal
         # decode boundary owns its typed refusal/partial outcome.
         return None
@@ -389,7 +393,9 @@ def _build_stream_parse_plan(
         )
     except ValueError:
         sample_payloads, malformed_detail = [], None
-    decoded_artifact = scan.artifact or classify_artifact([], provider=runtime_provider)
+    decoded_artifact = scan.artifact or ArtifactClassification(
+        runtime_provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete stream classification evidence"
+    )
     artifact = (
         path_artifact
         if path_is_terminal and path_artifact is not None

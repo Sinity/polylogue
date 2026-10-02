@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.stage_admission import admit_stage_write
 from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
 from polylogue.sources import revision_backfill
 from polylogue.sources.revision_backfill import (
@@ -20,9 +19,12 @@ from polylogue.sources.revision_backfill import (
     RetainedPreparationRetryableError,
     RevisionCensusResult,
 )
+from polylogue.storage.derived.raw import RawObservationReplacement
+from polylogue.storage.index_generation import IndexGeneration
 from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +65,7 @@ def replay_retained_components(
     *,
     selected_raw_ids: Sequence[str] | None = None,
     active_index_path: Path | None = None,
+    owned_generation: IndexGeneration | None = None,
 ) -> RetainedReplayRun:
     """Run the real captured preparation/publication route without fallback.
 
@@ -74,7 +77,13 @@ def replay_retained_components(
         retained = tuple(str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions ORDER BY rowid"))
     selected = frozenset(selected_raw_ids) if selected_raw_ids is not None else None
     seeds = tuple(raw_id for raw_id in retained if selected is None or raw_id in selected)
-    adapter = make_raw_observation_derivation(archive_root, index_db_path=active_index_path)
+    if owned_generation is not None:
+        if active_index_path is not None and active_index_path.resolve() != Path(owned_generation.index_path).resolve():
+            raise ValueError("retained fixture Index differs from its exact owned generation")
+        active_index_path = Path(owned_generation.index_path)
+    adapter = make_raw_observation_derivation(
+        archive_root, index_db_path=active_index_path, owned_generation=owned_generation
+    )
     frame = raw_observation_frame(archive_root, raw_ids=seeds, index_db_path=active_index_path)
     receipts: list[PreparedRevisionReplayResult | RevisionCensusResult] = []
     failures: list[RetainedPreparationRetryableError] = []
@@ -149,13 +158,14 @@ def replay_retained_components(
                 started = False
                 previous_failures = len(failures)
 
-                def publish(replacement=replacement) -> bool:
+                def publish(replacement: RawObservationReplacement = replacement) -> bool:
                     nonlocal started
                     started = True
                     return adapter.publish(frame, replacement)
 
                 try:
-                    published = admit_stage_write("synthetic-retained-replay", publish)
+                    with write_lease("synthetic-retained-replay", archive_root=archive_root):
+                        published = publish()
                 finally:
                     if not started:
                         replacement.close()

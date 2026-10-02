@@ -21,6 +21,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus, TitleSource
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
@@ -29,7 +30,6 @@ from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessio
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
-from .hermes_identity import profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import (
     _codex_output_text_blocks,
@@ -462,7 +462,7 @@ def _logical_export_fidelity_from_evidence(evidence: _LogicalFidelityEvidence) -
 
     state_counts = evidence.state_counts
     state_capable = evidence.state_capable
-    material_counts = {
+    material_counts: dict[str, int] = {
         origin.value: evidence.material_counts[origin.value]
         for origin in MaterialOrigin
         if origin.value in evidence.material_counts

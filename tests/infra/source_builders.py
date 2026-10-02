@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, TypeAlias
 
 from polylogue.config import Source
@@ -517,3 +519,112 @@ def prepared_ingest_manifest(
                 source_name=source_name,
                 sealed_at_ms=1,
             )
+
+
+def observe_source_generation_receipt(
+    source: sqlite3.Connection, index: sqlite3.Connection, *, source_generation_id: str, active_generation: str
+) -> SimpleNamespace:
+    """Collect small fixture observations from the actual paged receipt/spool owners."""
+    import os
+    from contextlib import closing
+    from tempfile import mkstemp
+
+    from polylogue.operations.daemon_ingest import _spool_source_receipt
+    from polylogue.operations.ingest_inputs import spool_connection, unlink_spool
+    from polylogue.storage.source_generation_receipts import (
+        iter_source_item_raw_receipts,
+        source_generation_receipt_page,
+    )
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    items = []
+    retired: list[SimpleNamespace] = []
+    cursor = None
+    marker_missing: set[str] = set()
+    while True:
+        page = source_generation_receipt_page(source, source_generation_id=source_generation_id, after=cursor)
+        if not page.items:
+            break
+        for item in page.items:
+            with closing(
+                iter_source_item_raw_receipts(
+                    source, index, source_generation_id=source_generation_id, source_item_id=item.source_item_id
+                )
+            ) as rows:
+                observed_raws = []
+                for raw in rows:
+                    logicals = tuple(
+                        SimpleNamespace(
+                            logical_source_key=logical.logical_source_key,
+                            expected_session_id=logical.expected_session_id,
+                            accepted_raw_id=logical.accepted_raw_id,
+                            application_ids=tuple(logical.application_ids),
+                            head_session_ids=logical.head_session_ids,
+                            session_ids=logical.session_ids,
+                            blockers=logical.blockers,
+                            complete=logical.complete,
+                        )
+                        for logical in raw.logicals
+                    )
+                    observed_raws.append(
+                        SimpleNamespace(
+                            raw_id=raw.raw_id,
+                            parsed_at_ms=raw.parsed_at_ms,
+                            parser_complete=raw.parser_complete,
+                            parser_blockers=raw.parser_blockers,
+                            logicals=logicals,
+                            complete=raw.parser_complete and all(logical.complete for logical in logicals),
+                        )
+                    )
+                raws = tuple(observed_raws)
+            marker_missing.update(
+                raw.raw_id for raw in raws if raw.complete and raw.logicals and raw.parsed_at_ms is None
+            )
+            items.append(
+                SimpleNamespace(
+                    source_item_id=item.source_item_id,
+                    logical_coordinate=item.logical_coordinate,
+                    enumeration_complete=item.enumeration_complete,
+                    blockers=item.blockers,
+                    raws=raws,
+                    complete=item.source_complete and all(raw.complete for raw in raws),
+                )
+            )
+            with closing(
+                source.execute(
+                    "SELECT record_coordinate FROM source_item_raw_members "
+                    "WHERE source_generation_id=? AND source_item_id=? AND raw_id IS NULL "
+                    "ORDER BY record_coordinate",
+                    (source_generation_id, item.source_item_id),
+                )
+            ) as rows:
+                retired.extend(SimpleNamespace(record_coordinate=str(row[0])) for row in rows)
+        cursor = page.next_cursor
+    descriptor, filename = mkstemp(prefix="polylogue-receipt-fixture-", suffix=".sqlite")
+    os.close(descriptor)
+    receipt_path = Path(filename)
+    try:
+        spool = _spool_source_receipt(source, index, source_generation_id, receipt_path)
+        with spool_connection(spool.path, read_only=True) as observed:
+            confirmed = tuple(
+                str(row[0]) for row in observed.execute("SELECT raw_id FROM raws WHERE complete=1 ORDER BY raw_id")
+            )
+            unresolved = tuple(
+                str(row[0]) for row in observed.execute("SELECT raw_id FROM raws WHERE complete=0 ORDER BY raw_id")
+            )
+        return SimpleNamespace(
+            complete=spool.complete,
+            enumeration_complete=spool.enumeration_complete,
+            active_generation=active_generation,
+            items=tuple(items),
+            retired_raw_ids=(),
+            retired_coordinates=tuple(retired),
+            confirmed_raw_ids=confirmed,
+            unresolved_raw_ids=unresolved,
+            source_marker_missing_raw_ids=tuple(sorted(marker_missing)),
+        )
+    finally:
+        # A failed Native close retains this exact artifact. An enclosing
+        # TemporaryDirectory finalizer would otherwise delete it on unwind.
+        if not retained_native_sql_owners_for_lifetime(receipt_path):
+            unlink_spool(receipt_path)

@@ -34,6 +34,122 @@ from polylogue.sources.sqlite_export import logical_export_bytes, looks_like_log
 from polylogue.sources.sqlite_snapshot import sqlite_logical_revision, sqlite_member_revision
 
 
+@pytest.mark.parametrize("kind", ["file", "zip", "sqlite"])
+def test_source_observation_cancellation_stops_actual_byte_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    import threading
+    import zipfile
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    cancelled = threading.Event()
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"synthetic\n" * 150000)
+    role = SourceRole.IMMUTABLE_EXPORT
+    if kind == "zip":
+        archive = tmp_path / "source.zip"
+        with zipfile.ZipFile(archive, "w") as output:
+            output.write(source, "session.jsonl")
+        source = archive
+        role = SourceRole.ARCHIVE_MEMBER
+        original_member_read = zipfile.ZipExtFile.read
+
+        def read_member(self: zipfile.ZipExtFile, *args: Any, **kwargs: Any) -> bytes:
+            result = original_member_read(self, *args, **kwargs)
+            if result:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(zipfile.ZipExtFile, "read", read_member)
+    elif kind == "sqlite":
+        source = tmp_path / "source.sqlite"
+        with sqlite3.connect(source) as connection:
+            connection.execute("CREATE TABLE evidence (value TEXT)")
+            connection.execute("INSERT INTO evidence VALUES ('synthetic')")
+        role = SourceRole.MUTABLE_SQLITE
+        original_write = sqlite_export._HashingSink.write
+
+        def write_chunk(self: Any, chunk: bytes) -> int:
+            result = original_write(self, chunk)
+            if chunk:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(sqlite_export._HashingSink, "write", write_chunk)
+    else:
+        original_file_read = os.read
+
+        def read_file(descriptor: int, size: int) -> bytes:
+            result = original_file_read(descriptor, size)
+            if result:
+                cancelled.set()
+            return result
+
+        monkeypatch.setattr(os, "read", read_file)
+    declaration = SourceDeclaration("source", role, source, mutable=kind == "sqlite")
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            source_snapshot.observe_source_members(declaration)
+        assert cancelled.is_set()
+    finally:
+        compute_cancel.reset(token)
+    assert len(source_snapshot.observe_source_members(declaration)) == 1
+
+
+def test_source_cut_cancellation_during_copy_leaves_no_published_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    source = tmp_path / "source.jsonl"
+    source.write_bytes(b"synthetic\n" * 250000)
+    preflight = preflight_source_cut(
+        [SourceDeclaration("source", SourceRole.APPEND_JSONL, source, True)],
+        policies={"source": source_snapshot.SourceCutPolicy(SnapshotMode.COMPLETE_COPY, prefer_reflink=False)},
+    )
+    destination = tmp_path / "candidate"
+    cancelled = threading.Event()
+    original_copy = source_snapshot._copy_file
+    original_read = os.read
+    in_copy = False
+    armed = True
+
+    def copy_file(*args: Any, **kwargs: Any) -> None:
+        nonlocal in_copy
+        in_copy = True
+        try:
+            original_copy(*args, **kwargs)
+        finally:
+            in_copy = False
+
+    def read_chunk(descriptor: int, size: int) -> bytes:
+        nonlocal armed
+        result = original_read(descriptor, size)
+        if in_copy and armed and result:
+            armed = False
+            cancelled.set()
+        return result
+
+    monkeypatch.setattr(source_snapshot, "_copy_file", copy_file)
+    monkeypatch.setattr(os, "read", read_chunk)
+    token = compute_cancel.set(cancelled)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            source_snapshot.execute_source_cut(preflight, destination)
+        assert not destination.exists()
+        assert not list(tmp_path.glob(".source-cut.*"))
+    finally:
+        compute_cancel.reset(token)
+    result = source_snapshot.execute_source_cut(preflight, destination)
+    assert len(result.candidate_manifest.items) == 1
+
+
 def test_cut_publishes_immutable_candidate_and_carry_forward(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "sessions"
     root.mkdir()
@@ -703,6 +819,30 @@ def test_archive_cut_reacquires_member_bytes_and_detects_member_mutation(tmp_pat
         reacquire_candidate(result)
 
 
+@pytest.mark.parametrize("container_name", ["export.zip", "export!copy.zip"])
+def test_archive_cut_preserves_distinct_duplicate_named_members(tmp_path: Path, container_name: str) -> None:
+    """Name-based reopening selects the last duplicate instead of the captured member."""
+    import zipfile
+
+    source = tmp_path / container_name
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("nested/item!part.json", "first")
+        with pytest.warns(UserWarning):
+            archive.writestr("nested/item!part.json", "second")
+    result = execute_source_cut(
+        preflight_source_cut([SourceDeclaration("export", SourceRole.ARCHIVE_MEMBER, source)]), tmp_path / "cut"
+    )
+    inputs = reacquire_candidate(result)
+    assert result.counts.conserved
+    assert result.candidate_manifest.item_count == 2
+    assert {item.content_sha256 for item in inputs} == {
+        hashlib.sha256(b"first").hexdigest(),
+        hashlib.sha256(b"second").hexdigest(),
+    }
+    assert len(inputs) == 2
+    assert reacquire_candidate(result, coordinates=[inputs[0].coordinate]) == inputs
+
+
 @pytest.mark.skipif(os.geteuid() == 0, reason="Permission test requires an unprivileged reader")
 def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_path: Path) -> None:
     """Mutation: rglob silently skips denied directories and publishes partial PRESENT."""
@@ -721,6 +861,21 @@ def test_frontier_refuses_whole_root_when_hidden_directory_is_unreadable(tmp_pat
     assert not frontier.complete
     assert frontier.blockers
     frontier.verify_integrity()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="requires an unprivileged directory reader")
+def test_candidate_sync_refuses_an_unreadable_nested_directory(tmp_path: Path) -> None:
+    """A walk that silently omits a directory cannot prove the candidate tree synced."""
+    root = tmp_path / "candidate"
+    hidden = root / "hidden"
+    hidden.mkdir(parents=True)
+    (hidden / "member.jsonl").write_bytes(b"{}\n")
+    hidden.chmod(0)
+    try:
+        with pytest.raises(SourceSnapshotError):
+            source_snapshot._fsync_tree(root)
+    finally:
+        hidden.chmod(0o700)
 
 
 @pytest.mark.parametrize("replacement", ["symlink", "regular", "parent-symlink"])

@@ -145,7 +145,7 @@ def read_staging_receipt(
             metadata_identity = _named_identity(directory, name)
         except FileNotFoundError:
             return None
-        root = _named_identity(directory, staged.name)
+        root = _identity(os.stat(staged.name, dir_fd=directory, follow_symlinks=False))
         if root[2] != stat.S_IFDIR:
             raise ValueError("staged receipt requires its private directory slot")
 
@@ -258,9 +258,10 @@ class StagedInputMember:
     content_revision: str
 
     def __post_init__(self) -> None:
+        identity_fields: tuple[object, ...] = self.file_identity
         if (
-            len(self.file_identity) != 3
-            or any(type(value) is not int for value in self.file_identity)
+            len(identity_fields) != 3
+            or any(type(value) is not int for value in identity_fields)
             or self.file_identity[2] != stat.S_IFREG
             or self.content_kind not in {"bytes", "sqlite"}
             or len(self.content_revision) != 64
@@ -503,10 +504,10 @@ def bind_source_input(
 def stage_source_input(source: Path, staging_root: Path, *, check_stop: Callable[[], None]) -> Path:
     """Capture into one private slot and publish its streamed outside receipt last."""
     from polylogue.core.durable_fs import sync_directory
+    from polylogue.core.provider_identity import profile_root_for_artifact
     from polylogue.sources.parsers.hermes_identity import (
         CapturedHermesProfile,
         capture_profile_namespace,
-        profile_root_for_artifact,
     )
     from polylogue.sources.sqlite_export import _control_bytes, _identity
     from polylogue.sources.sqlite_snapshot import _snapshot_sqlite_database_bound, is_sqlite_path
@@ -723,7 +724,7 @@ def _read_bound_input_in_worker(request: dict[str, Any], sink: BinaryWriteSink |
         before = os.fstat(stream.fileno())
         if _identity(before) != expected or not stat.S_ISREG(before.st_mode):
             raise OSError(errno.ESTALE, "source differs from its accepted byte input", str(source))
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+        _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         if request["operation"] == "preflight_bytes":
             from polylogue.sources.import_preflight import _preflight_handle
 
@@ -760,7 +761,7 @@ def _read_bound_input_in_worker(request: dict[str, Any], sink: BinaryWriteSink |
             or _named_identity(directory, source.name) != expected
         ):
             raise OSError(errno.ESTALE, "source changed while retaining the accepted input", str(source))
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+        _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         if request.get("expected_content_revision") not in {None, digest.hexdigest()}:
             raise OSError(errno.ESTALE, "staged bytes differ from the accepted input", str(source))
     result: dict[str, Any] = {
@@ -861,7 +862,7 @@ def _copy_bound_input_in_worker(request: dict[str, Any]) -> dict[str, Any]:
         before = os.fstat(accepted.fileno())
         if _identity(before) != expected or not stat.S_ISREG(before.st_mode):
             raise OSError(errno.ESTALE, "source differs from its accepted byte input", str(source))
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+        _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         publication: dict[str, Any] = {}
 
         def digest_prefix(fd: int) -> str:
@@ -892,7 +893,7 @@ def _copy_bound_input_in_worker(request: dict[str, Any]) -> dict[str, Any]:
                 raise OSError(errno.ESTALE, "source changed during copying", str(source))
             if _named_identity(directory, source.name) != expected:
                 raise OSError(errno.ESTALE, "anchored source changed during copying", str(source))
-            _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+            _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
             os.fsync(candidate)
             publication.update(
                 content_revision=revision,
@@ -953,45 +954,15 @@ def copy_bound_input(
     return result
 
 
-def _verify_staging_provenance(
-    directory: int, expected: dict[str, Any] | None, *, heartbeat: Callable[[], None] | None = None
-) -> None:
-    """Reprove accepted metadata bytes inside the isolated reader.
-
-    The binding operation already validated the declaration against its input.
-    Later reads prove that exact receipt, without reparsing or retaining a
-    whole directory receipt in memory. An ordinary metadata FD belongs only
-    to this fresh process, where closing it cannot release a parent's locks.
-    """
-    _verify_staging_metadata_name(directory, expected)
-    if expected is None:
-        return
-    descriptor = os.open(expected["name"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-    with os.fdopen(descriptor, "rb") as stream:
-        before = os.fstat(stream.fileno())
-        if [before.st_dev, before.st_ino, stat.S_IFMT(before.st_mode)] != expected["identity"] or [
-            before.st_ctime_ns,
-            before.st_mtime_ns,
-            before.st_size,
-        ] != expected["observation"]:
-            raise OSError(errno.ESTALE, "staging provenance changed before reading", expected["name"])
-        digest = hashlib.sha256()
-        while chunk := stream.read(1024 * 1024):
-            if heartbeat is not None:
-                heartbeat()
-            digest.update(chunk)
-        after = os.fstat(stream.fileno())
-        if (
-            [after.st_dev, after.st_ino, stat.S_IFMT(after.st_mode)] != expected["identity"]
-            or [after.st_ctime_ns, after.st_mtime_ns, after.st_size] != expected["observation"]
-            or digest.hexdigest() != expected["digest"]
-        ):
-            raise OSError(errno.ESTALE, "staging provenance changed while reading", expected["name"])
-    _verify_staging_metadata_name(directory, expected)
-
-
 def _verify_staging_metadata_name(directory: int, expected: dict[str, Any] | None) -> None:
-    """Parent metadata-only proof; an ordinary FD close could release SQLite locks."""
+    """Check currency of the original fully validated outside receipt.
+
+    The captured digest, inode and observation arrive only from the completed
+    receipt reader through its owned spool/proof. Later reads check that same
+    receipt has stayed unchanged; they never reinterpret new metadata or
+    establish byte authority from a stat. Payload readers still prove each
+    member independently. No ordinary metadata FD belongs to the parent.
+    """
     from polylogue.sources.sqlite_export import _identity
 
     if expected is None:

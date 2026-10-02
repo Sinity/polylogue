@@ -11,14 +11,16 @@ from __future__ import annotations
 import codecs
 import io
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterator, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import BinaryIO, Literal, Protocol
+from json import JSONDecodeError
+from typing import IO, Literal, Protocol
 
 import ijson
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
@@ -33,14 +35,18 @@ class DetectorProjection:
     mapping_witness: object = None
     mapping_key_predicate: Callable[[str], bool] | None = None
     preserve_mapping_size: bool = False
+    capture_metadata_values: bool = False
 
 
 class _ProjectedMapping(dict[str, object]):
     """Selected predicate fields carrying the original unique-key count."""
 
-    def __init__(self, fields: dict[str, object], original_size: int) -> None:
+    def __init__(
+        self, fields: dict[str, object], original_size: int, metadata_values_scalarish: bool | None = None
+    ) -> None:
         super().__init__(fields)
         self.original_size = original_size
+        self.metadata_values_scalarish = metadata_values_scalarish
 
     def __len__(self) -> int:
         return self.original_size
@@ -58,6 +64,7 @@ class _ObservedLine:
         self.callback_failure: BaseException | None = None
 
     def read(self, size: int = -1) -> bytes:
+        check_compute_cancelled()
         if self.check_stop is not None:
             try:
                 self.check_stop()
@@ -87,6 +94,7 @@ class _DetectionText(io.RawIOBase):
         return True
 
     def readinto(self, buffer: object) -> int:
+        check_compute_cancelled()
         if self.check_stop is not None:
             try:
                 self.check_stop()
@@ -95,6 +103,7 @@ class _DetectionText(io.RawIOBase):
                 raise
         view = memoryview(buffer)  # type: ignore[arg-type]
         while not self.pending and not self.ended:
+            check_compute_cancelled()
             chunk = self.handle.read(1024 * 1024)
             self.ended = not chunk
             text = self.decoder.decode(chunk, final=self.ended)
@@ -132,22 +141,85 @@ def _project(
     rule: DetectorProjection | None,
     stack: ExitStack,
 ) -> object:
+    return _project_value(
+        events,
+        event,
+        value,
+        rule,
+        stack,
+        scalarish_depth=-1 if rule is not None and rule.capture_metadata_values else None,
+    )[0]
+
+
+def _consume_scalarish(events: Iterator[tuple[str, object]], event: str, depth: int) -> bool:
+    """Fold the taxonomy's scalarish predicate without retaining unknown values."""
+    if event not in {"start_map", "start_array"}:
+        return True
+    if depth >= 2:
+        _skip(events, event)
+        return False
+    if event == "start_array":
+        count = 0
+        accepted = True
+        while True:
+            following, _value = next(events)
+            if following == "end_array":
+                return count <= 32 and accepted
+            count += 1
+            accepted = _consume_scalarish(events, following, depth + 1) and accepted
+    with scratch_connection_context(prefix="polylogue-taxonomy-values-", filename="keys.db") as keys:
+        keys.execute("PRAGMA journal_mode=DELETE")
+        keys.execute("PRAGMA temp_store=FILE")
+        keys.execute("BEGIN")
+        keys.execute("CREATE TABLE keys(name BLOB PRIMARY KEY, accepted INTEGER NOT NULL) WITHOUT ROWID")
+        while True:
+            following, key = next(events)
+            if following == "end_map":
+                count, refused = keys.execute("SELECT COUNT(*), COALESCE(SUM(accepted=0),0) FROM keys").fetchone()
+                return count <= 8 and not refused
+            if following != "map_key" or not isinstance(key, str):
+                raise ijson.JSONError("invalid taxonomy object event")
+            following, _value = next(events)
+            accepted = _consume_scalarish(events, following, depth + 1)
+            keys.execute(
+                "INSERT INTO keys VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET accepted=excluded.accepted",
+                (key.encode("utf-8", "surrogatepass"), int(accepted)),
+            )
+
+
+def _project_value(
+    events: Iterator[tuple[str, object]],
+    event: str,
+    value: object,
+    rule: DetectorProjection | None,
+    stack: ExitStack,
+    *,
+    scalarish_depth: int | None,
+) -> tuple[object, bool]:
     if rule is None:
-        return _skip(events, event)
+        if scalarish_depth is not None:
+            shape: dict[str, object] | list[object] | None = (
+                {} if event == "start_map" else [] if event == "start_array" else None
+            )
+            return shape, _consume_scalarish(events, event, scalarish_depth)
+        return _skip(events, event), True
     if event == "start_map":
         with ExitStack() as mapping_stack:
             fields: dict[str, object] = {}
             matching_key = False
             database: sqlite3.Connection | None = None
-            if rule.mapping_predicate is not None or rule.preserve_mapping_size:
+            if rule.mapping_predicate is not None or rule.preserve_mapping_size or scalarish_depth is not None:
                 database = mapping_stack.enter_context(
                     scratch_connection_context(prefix="polylogue-detector-", filename="keys.db")
                 )
                 # Duplicate keys update this complete key set. Keep their
                 # rollback journal on the same private disk as the rows.
                 database.execute("PRAGMA journal_mode=DELETE")
+                database.execute("PRAGMA temp_store=FILE")
                 database.execute("BEGIN")
-                database.execute("CREATE TABLE keys (name BLOB PRIMARY KEY, accepted INTEGER NOT NULL) WITHOUT ROWID")
+                database.execute(
+                    "CREATE TABLE keys (name BLOB PRIMARY KEY, accepted INTEGER NOT NULL, scalarish INTEGER) WITHOUT ROWID"
+                )
             while True:
                 event, key = next(events)
                 if event == "end_map":
@@ -155,47 +227,68 @@ def _project(
                 if event != "map_key" or not isinstance(key, str):
                     raise ValueError("invalid detector object event")
                 event, value = next(events)
+                child_depth = None if scalarish_depth is None or scalarish_depth >= 2 else scalarish_depth + 1
+                child_rule = rule.item if rule.mapping_predicate is not None else (rule.fields or {}).get(key)
+                item, scalarish = _project_value(events, event, value, child_rule, stack, scalarish_depth=child_depth)
                 if rule.mapping_predicate is not None:
                     assert database is not None
-                    item = _project(events, event, value, rule.item, stack)
                     assert rule.mapping_predicate is not None
                     database.execute(
-                        "INSERT INTO keys VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET accepted=excluded.accepted",
+                        "INSERT INTO keys(name,accepted) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET accepted=excluded.accepted",
                         (key.encode("utf-8", "surrogatepass"), int(rule.mapping_predicate(item))),
                     )
                 elif rule.mapping_key_predicate is not None:
                     matching_key |= rule.mapping_key_predicate(key)
-                    _skip(events, event)
                 elif rule.fields is not None and key in rule.fields:
-                    fields[key] = _project(events, event, value, rule.fields[key], stack)
-                else:
-                    _skip(events, event)
-                if rule.preserve_mapping_size and rule.mapping_predicate is None:
+                    fields[key] = item
+                if (rule.preserve_mapping_size or scalarish_depth is not None) and rule.mapping_predicate is None:
                     assert database is not None
                     database.execute(
-                        "INSERT INTO keys VALUES (?, 1) ON CONFLICT(name) DO NOTHING",
+                        "INSERT INTO keys(name,accepted) VALUES (?, 1) ON CONFLICT(name) DO NOTHING",
                         (key.encode("utf-8", "surrogatepass"),),
                     )
+                if scalarish_depth is not None:
+                    assert database is not None
+                    database.execute(
+                        "UPDATE keys SET scalarish=? WHERE name=?",
+                        (int(scalarish), key.encode("utf-8", "surrogatepass")),
+                    )
+            scalarish = True
+            metadata_values = None
+            if scalarish_depth is not None:
+                assert database is not None
+                count, refused = database.execute("SELECT COUNT(*), COALESCE(SUM(scalarish=0),0) FROM keys").fetchone()
+                metadata_values = not refused
+                scalarish = scalarish_depth < 2 and count <= 8 and metadata_values
             if database is not None and rule.mapping_predicate is not None:
                 count, refused = database.execute("SELECT COUNT(*), SUM(accepted=0) FROM keys").fetchone()
-                return {} if not count else {"node": None if refused else rule.mapping_witness}
+                return ({} if not count else {"node": None if refused else rule.mapping_witness}), scalarish
             if rule.mapping_key_predicate is not None:
-                return rule.mapping_witness if matching_key else {}
+                return (rule.mapping_witness if matching_key else {}), scalarish
             if rule.preserve_mapping_size:
                 assert database is not None
                 count = int(database.execute("SELECT COUNT(*) FROM keys").fetchone()[0])
-                return _ProjectedMapping(fields, count)
-            return fields
+                return _ProjectedMapping(fields, count, metadata_values), scalarish
+            return fields, scalarish
     if event == "start_array":
         first: object = None
         witness: object = None
         count = 0
         matched = False
+        scalarish_items = True
         while True:
             event, value = next(events)
             if event == "end_array":
                 break
-            item = _project(events, event, value, rule.item, stack)
+            item, child_scalarish = _project_value(
+                events,
+                event,
+                value,
+                rule.item,
+                stack,
+                scalarish_depth=None if scalarish_depth is None or scalarish_depth >= 2 else scalarish_depth + 1,
+            )
+            scalarish_items &= child_scalarish
             if count == 0:
                 first = item
             count += 1
@@ -204,14 +297,15 @@ def _project(
                 if (rule.array_fold == "any" and accepts) or (rule.array_fold == "all" and not accepts):
                     witness = item
                     matched = True
+        scalarish = scalarish_depth is None or (scalarish_depth < 2 and count <= 32 and scalarish_items)
         if not count or rule.array_fold == "type":
-            return []
+            return [], scalarish
         if rule.array_fold == "first":
-            return [first] if count == 1 else [first, None]
-        return [witness if matched else first]
+            return ([first] if count == 1 else [first, None]), scalarish
+        return [witness if matched else first], scalarish
     if isinstance(value, Decimal):
-        return float(value)
-    return value
+        return float(value), True
+    return value, True
 
 
 def _document_projection(
@@ -242,7 +336,7 @@ def _document_projection(
 
 
 def project_detection_input(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     stream_predicate: Callable[[object], bool] | None = None,
@@ -266,7 +360,7 @@ def project_detection_input(
             try:
                 payload = _document_projection(reader, rule, stream_predicate)
                 return ("sequence" if isinstance(payload, list) else "record"), payload
-            except (ijson.JSONError, StopIteration) as exc:
+            except (ijson.JSONError, JSONDecodeError, StopIteration) as exc:
                 if source.callback_failure is not None:
                     raise source.callback_failure from None
                 syntax_error = exc
@@ -293,7 +387,7 @@ def project_detection_input(
                 observed = _ObservedLine(line)
                 try:
                     item = _document_projection(observed, rule, None)
-                except (StopIteration, ijson.JSONError):
+                except (StopIteration, ijson.JSONError, JSONDecodeError):
                     if source.callback_failure is not None:
                         raise source.callback_failure from None
                     observed.drain()
@@ -317,12 +411,12 @@ def project_detection_input(
 
 
 def iter_projected_jsonl_records(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     check_stop: Callable[[], None] | None = None,
     on_decode_failure: Callable[[Exception], None] | None = None,
-) -> Iterator[object]:
+) -> Generator[object, None, None]:
     """Project each complete JSONL value while consuming every physical line.
 
     The caller owns the original handle. A supplied failure observer permits
@@ -339,7 +433,7 @@ def iter_projected_jsonl_records(
         try:
             try:
                 value = _document_projection(reader, rule, None)
-            except (StopIteration, ijson.JSONError, UnicodeError) as exc:
+            except (StopIteration, ijson.JSONError, JSONDecodeError, UnicodeError) as exc:
                 if source.callback_failure is not None:
                     raise source.callback_failure from None
                 if observed.callback_failure is not None:
@@ -358,11 +452,12 @@ def iter_projected_jsonl_records(
 
 
 def iter_projected_document_records(
-    handle: BinaryIO,
+    handle: IO[bytes],
     rule: DetectorProjection,
     *,
     encoding: str = "utf-8",
     check_stop: Callable[[], None] | None = None,
+    on_root: Callable[[Literal["record", "sequence"]], None] | None = None,
 ) -> Iterator[object]:
     """Project a complete document's root records without retaining its array.
 
@@ -378,6 +473,8 @@ def iter_projected_document_records(
         events = iter(exact_backend.basic_parse(_PrefixStringReader(reader, scalar_values=True)))
         try:
             event, value = next(events)
+            if on_root is not None:
+                on_root("sequence" if event == "start_array" else "record")
             if event == "start_array":
                 while True:
                     event, value = next(events)
@@ -390,7 +487,7 @@ def iter_projected_document_records(
                 raise ijson.JSONError("trailing JSON candidacy value")
         except StopIteration as exc:
             raise ijson.JSONError("incomplete JSON candidacy document") from exc
-        except (UnicodeError, ijson.JSONError):
+        except (UnicodeError, ijson.JSONError, JSONDecodeError):
             if source.callback_failure is not None:
                 raise source.callback_failure from None
             raise

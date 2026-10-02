@@ -18,6 +18,16 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/archive/raw_payload/streams.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/archive/revision_authority.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/session_revision_membership.py",
     "tiers": [],
     "authority": "scratch"
@@ -174,6 +184,16 @@
     ]
   },
   {
+    "file": "polylogue/sources/codex_state_projection.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/detection_projection.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/live/cursor.py",
     "tiers": [
       "ops"
@@ -187,6 +207,16 @@
   },
   {
     "file": "polylogue/sources/live/tool_result_sidecars.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/antigravity.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/chatgpt_sidecars.py",
     "tiers": [],
     "authority": "scratch"
   },
@@ -207,6 +237,16 @@
   },
   {
     "file": "polylogue/sources/parsers/drive.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_state.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_verification.py",
     "tiers": [],
     "authority": "scratch"
   },
@@ -387,6 +427,11 @@
     "tiers": [
       "embeddings"
     ]
+  },
+  {
+    "file": "polylogue/storage/source_generation_receipts.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/storage/sqlite/action_pairs.py",

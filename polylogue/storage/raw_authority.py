@@ -14,12 +14,16 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.revision_authority import canonical_authority_logical_key, raw_authority_parser_fingerprint
+from polylogue.archive.revision_authority import (
+    InvalidParserCensusKeysError,
+    canonical_authority_logical_key,
+    raw_authority_parser_fingerprint,
+)
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
@@ -45,31 +49,43 @@ def _writer(path: Path, *, archive_root: Path) -> sqlite3.Connection:
     return open_isolated_write_connection(path, purpose=f"raw authority({path})", archive_root=archive_root)
 
 
-def parser_census_logical_keys(logical_keys_json: object) -> tuple[str, ...] | None:
-    """Validate and normalize the durable logical-key receipt payload.
+def iter_parser_census_logical_keys(logical_keys_json: object) -> Generator[str, None, None]:
+    """Validate the existing ordered receipt while yielding one canonical key.
 
-    The parser census writer records a sorted, duplicate-free JSON list.  A
-    few legacy membership rows carry provider prefixes, so normalize those to
-    public origins here while preserving the receipt's ordering invariant.
-    ``None`` means the receipt cannot establish parser authority.
+    Canonical duplicate detection belongs to the shared disk measurement.
+    The durable JSON cell itself remains one SQLite value; this reader does
+    not allocate its decoded list, normalized list and duplicate-key set.
     """
-    try:
-        decoded = json.loads(str(logical_keys_json))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if not isinstance(decoded, list) or not all(isinstance(value, str) for value in decoded):
-        return None
-    raw_keys = tuple(decoded)
-    if raw_keys != tuple(sorted(set(raw_keys))):
-        return None
-    normalized: list[str] = []
-    for logical_key in raw_keys:
+    import io
+
+    import ijson
+
+    from polylogue.archive.raw_payload.streams import raw_byte_stream
+
+    with io.StringIO(str(logical_keys_json)) as text, raw_byte_stream(text) as stream:
+        events = iter(ijson.basic_parse(stream))
+        last: str | None = None
         try:
-            normalized.append(canonical_authority_logical_key(logical_key))
-        except ValueError:
-            return None
-    normalized_keys = tuple(sorted(set(normalized)))
-    return normalized_keys if len(normalized_keys) == len(raw_keys) else None
+            if next(events, None) != ("start_array", None):
+                raise InvalidParserCensusKeysError("parser identity receipt is not an array")
+            for event, value in events:
+                if event == "end_array":
+                    if next(events, None) is not None:
+                        raise InvalidParserCensusKeysError("parser identity receipt has trailing values")
+                    return
+                if event != "string" or not isinstance(value, str) or last is not None and value <= last:
+                    raise InvalidParserCensusKeysError("parser identity receipt keys are not sorted unique strings")
+                last = value
+                try:
+                    key = canonical_authority_logical_key(value)
+                except ValueError as error:
+                    raise InvalidParserCensusKeysError(
+                        "parser identity receipt has an invalid authority key"
+                    ) from error
+                yield key
+        except (ijson.JSONError, UnicodeError) as error:
+            raise InvalidParserCensusKeysError("parser identity receipt JSON cannot establish authority") from error
+        raise InvalidParserCensusKeysError("parser identity receipt is incomplete")
 
 
 @dataclass(frozen=True, slots=True)
@@ -913,7 +929,7 @@ __all__ = [
     "build_raw_replay_plans",
     "describe_raw_authority_blocker",
     "list_unresolved_raw_authority_blockers",
-    "parser_census_logical_keys",
+    "iter_parser_census_logical_keys",
     "raw_replay_application_receipt",
     "raw_replay_application_receipt_from_connection",
     "resolve_raw_authority_blocker",

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import BinaryIO, Literal, cast
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.support import (
@@ -22,6 +23,7 @@ from polylogue.archive.artifact_taxonomy.support import (
     path_only_sidecar_reason,
     record_carries_provider_envelope,
 )
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 
@@ -443,6 +445,9 @@ class _RecordArtifactEvidence:
     extracted: bool = False
     provider_envelope: bool = False
     all_checkpoints: bool = True
+    saw_checkpoint: bool = False
+    checkpoint_disqualified: bool = False
+    all_bare_codex_headers: bool = True
 
     def observe(self, item: JSONDocument) -> None:
         from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
@@ -450,6 +455,7 @@ class _RecordArtifactEvidence:
         if not item:
             return
         self.document_count += 1
+        self.all_bare_codex_headers &= len(item) == 1 and item == {"type": "session_meta"}
         self.record_count += int(looks_like_record_entry(item))
         self.all_atof = self.all_atof and looks_like_atof_payload(item)
         self.all_hooks = self.all_hooks and looks_like_hook_event(item)
@@ -458,6 +464,9 @@ class _RecordArtifactEvidence:
         self.extracted = self.extracted or looks_like_extracted_transcript_record(item)
         self.provider_envelope = self.provider_envelope or record_carries_provider_envelope(item)
         record_type = item.get("type")
+        if isinstance(record_type, str):
+            self.saw_checkpoint |= record_type in {"file-history-snapshot", "progress"}
+            self.checkpoint_disqualified |= record_type not in {"file-history-snapshot", "progress"}
         self.all_checkpoints = (
             self.all_checkpoints
             and isinstance(record_type, str)
@@ -465,31 +474,13 @@ class _RecordArtifactEvidence:
         )
 
 
-def classify_record_candidacy(
-    records: Iterable[JSONValue],
+def _record_candidacy_from_evidence(
+    evidence: _RecordArtifactEvidence,
+    specific_document: bool,
     *,
     provider: Provider,
-    source_path: str | Path | None = None,
+    source_path: str | Path | None,
 ) -> ArtifactClassification | None:
-    """Fold complete artifact candidacy without claiming parser/schema support.
-
-    Projected records prove the declared taxonomy predicates. The parser still
-    validates the original full records, including mixed wire generations.
-    """
-    evidence = _RecordArtifactEvidence()
-    specific_document = False
-    for value in records:
-        item = json_document(value)
-        evidence.observe(item)
-        if item:
-            specific_document = (
-                specific_document
-                or _classify_dict(
-                    item,
-                    provider=provider,
-                    source_path=source_path,
-                ).parse_as_session
-            )
     if not evidence.document_count or (evidence.extracted and not evidence.provider_envelope):
         return None
     explicit = strong_path_classification(source_path, provider=provider)
@@ -515,6 +506,248 @@ def classify_record_candidacy(
         default_priority=120,
         reason="complete artifact candidacy; full-record parser and schema validation remain unmeasured",
     )
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactStreamClassification:
+    """Complete admission evidence, with refusal distinguished from unknown content."""
+
+    classification: ArtifactClassification
+    proved_non_session: bool
+    record_count: int = 0
+
+
+def classify_artifact_stream(
+    handle: BinaryIO,
+    *,
+    provider: Provider,
+    source_path: str | Path | None = None,
+    wire_format: Literal["json", "jsonl"],
+    check_stop: Callable[[], None] | None = None,
+) -> ArtifactStreamClassification:
+    """Classify complete caller-owned input, privately replaying non-seekable streams."""
+    from polylogue.archive.raw_payload.streams import rewindable_byte_stream
+
+    with rewindable_byte_stream(handle, check_stop=check_stop) as stream:
+        return _classify_seekable_artifact_stream(
+            cast(BinaryIO, stream),
+            provider=provider,
+            source_path=source_path,
+            wire_format=wire_format,
+            check_stop=check_stop,
+        )
+
+
+def _classify_seekable_artifact_stream(
+    handle: BinaryIO,
+    *,
+    provider: Provider,
+    source_path: str | Path | None,
+    wire_format: Literal["json", "jsonl"],
+    check_stop: Callable[[], None] | None,
+) -> ArtifactStreamClassification:
+    """Fold the whole accepted input; the canonical parser owns session validation.
+
+    The caller owns the handle and any accepted JSONL-prefix boundary. Syntax,
+    cancellation and I/O failures propagate; no prefix sample proves refusal.
+    """
+    import json
+    from contextlib import closing
+    from itertools import chain
+
+    import ijson
+
+    from polylogue.archive.artifact_taxonomy.support import record_candidacy_projection
+    from polylogue.sources.detection_projection import iter_projected_document_records, iter_projected_jsonl_records
+
+    position = handle.tell()
+    encoding = json.detect_encoding(handle.read(4))
+    handle.seek(position)
+    sequence = wire_format == "jsonl"
+    callback_failure: BaseException | None = None
+
+    def checkpoint() -> None:
+        nonlocal callback_failure
+        if check_stop is not None:
+            try:
+                check_stop()
+            except BaseException as exc:
+                callback_failure = exc
+                raise
+
+    def root(kind: Literal["record", "sequence"]) -> None:
+        nonlocal sequence
+        sequence = wire_format == "jsonl" or kind == "sequence"
+
+    def measure(records: Iterator[object]) -> ArtifactStreamClassification:
+        with closing(records):
+            try:
+                first = next(records)
+            except StopIteration:
+                values: Iterator[object] = iter(())
+            else:
+                values = chain((first,), records)
+            return _classify_artifact_records(
+                values,
+                provider=provider,
+                source_path=source_path,
+                sequence=sequence,
+                empty_jsonl=wire_format == "jsonl",
+                check_stop=checkpoint,
+            )
+
+    # A physical JSONL file can contain one complete document/array. Preserve
+    # that grammar before treating physical lines as separate record inputs.
+    try:
+        return measure(
+            iter_projected_document_records(
+                handle,
+                record_candidacy_projection(),
+                encoding=encoding,
+                check_stop=checkpoint,
+                on_root=root,
+            )
+        )
+    except (ijson.JSONError, UnicodeError, json.JSONDecodeError):
+        if callback_failure is not None:
+            raise callback_failure from None
+        if wire_format == "json":
+            raise
+        handle.seek(position)
+        sequence = True
+        return measure(iter_projected_jsonl_records(handle, record_candidacy_projection(), check_stop=checkpoint))
+
+
+def classify_artifact_records(
+    records: Iterable[object],
+    *,
+    provider: Provider,
+    source_path: str | Path | None = None,
+    check_stop: Callable[[], None] | None = None,
+) -> ArtifactStreamClassification:
+    """Fold an exhausted record stream without replacing unknown with refusal."""
+    return _classify_artifact_records(
+        records, provider=provider, source_path=source_path, sequence=True, empty_jsonl=True, check_stop=check_stop
+    )
+
+
+def _classify_artifact_records(
+    records: Iterable[object],
+    *,
+    provider: Provider,
+    source_path: str | Path | None,
+    sequence: bool,
+    empty_jsonl: bool,
+    check_stop: Callable[[], None] | None,
+) -> ArtifactStreamClassification:
+    evidence = _RecordArtifactEvidence()
+    count = 0
+    all_metadata = True
+    specific_document = False
+    first_classification: ArtifactClassification | None = None
+
+    def result(classification: ArtifactClassification, proved: bool) -> ArtifactStreamClassification:
+        return ArtifactStreamClassification(classification, proved, count)
+
+    for value in records:
+        check_compute_cancelled()
+        if check_stop is not None:
+            check_stop()
+        count += 1
+        item = json_document(value)
+        evidence.observe(item)
+        all_metadata &= isinstance(value, str | int | float | bool | type(None)) or (
+            isinstance(value, dict) and looks_metadataish_dict(item)
+        )
+        classification = classify_artifact(cast(JSONValue, value), provider=provider, source_path=source_path)
+        if count == 1:
+            first_classification = classification
+        specific_document |= classification.parse_as_session
+    if empty_jsonl and not count:
+        classification = ArtifactClassification(
+            provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete JSONL artifact records"
+        )
+        return result(classification, False)
+    if not sequence and first_classification is not None:
+        classification = replace(first_classification, schema_eligible=False)
+        return result(
+            classification,
+            not classification.parse_as_session
+            and (
+                classification.kind is not ArtifactKind.UNKNOWN or evidence.all_beads and bool(evidence.document_count)
+            ),
+        )
+    explicit = strong_path_classification(source_path, provider=provider)
+    if explicit is not None and not explicit.parse_as_session:
+        return result(explicit, True)
+    if evidence.extracted and not evidence.provider_envelope:
+        classification = ArtifactClassification(
+            provider, ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS, False, False, 0, "extracted transcript corpus"
+        )
+        return result(classification, True)
+    if (
+        provider is Provider.CLAUDE_CODE
+        and explicit is not None
+        and explicit.parse_as_session
+        and evidence.saw_checkpoint
+        and not evidence.checkpoint_disqualified
+    ):
+        classification = ArtifactClassification(
+            provider,
+            ArtifactKind.FILE_HISTORY_SNAPSHOT,
+            False,
+            False,
+            0,
+            "Claude Code file-history-snapshot-only stream",
+        )
+        return result(classification, True)
+    if explicit is not None:
+        return result(replace(explicit, schema_eligible=False), False)
+    if evidence.document_count and evidence.all_hooks:
+        classification = ArtifactClassification(
+            provider, ArtifactKind.HOOK_EVENT, False, False, 100, "hook event stream"
+        )
+        return result(classification, True)
+    if evidence.document_count and evidence.all_beads:
+        classification = ArtifactClassification(
+            Provider.UNKNOWN, ArtifactKind.UNKNOWN, False, False, 0, "Beads interaction-history artifact"
+        )
+        return result(classification, True)
+    if provider is Provider.CODEX and evidence.document_count > 1 and evidence.all_bare_codex_headers:
+        classification = ArtifactClassification(
+            provider,
+            ArtifactKind.SESSION_RECORD_STREAM,
+            True,
+            False,
+            120,
+            "repeated bare Codex session-meta record stream",
+        )
+        return result(classification, False)
+    candidacy = _record_candidacy_from_evidence(
+        evidence,
+        specific_document,
+        provider=provider,
+        source_path=source_path,
+    )
+    if candidacy is not None:
+        return result(candidacy, False)
+    if all_metadata:
+        classification = ArtifactClassification(
+            provider,
+            ArtifactKind.METADATA_DOCUMENT,
+            False,
+            False,
+            0,
+            "metadata-oriented list payload" if count else "empty list payload",
+        )
+        return result(classification, True)
+    weak = _self_generated_artifact_dir_classification(source_path, provider=provider)
+    if weak is not None:
+        return result(weak, True)
+    classification = ArtifactClassification(
+        provider, ArtifactKind.UNKNOWN, False, False, 0, "unrecognized artifact stream"
+    )
+    return result(classification, False)
 
 
 def _classify_list(

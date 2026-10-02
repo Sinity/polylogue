@@ -162,3 +162,67 @@ def test_applet_access_log_is_a_declared_non_session_document(
     )
 
     assert inspect_raw_artifact(record).artifact_kind == "unknown"
+
+
+def test_retained_artifact_inspection_propagates_mid_read_compute_cancellation(
+    blob_store: BlobStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+    from typing import Any
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+
+    export = tmp_path / "Synthetic_Cancellation-0123456789abcdef.json"
+    _chunked_prompt_export(export, min_bytes=2 * 1024 * 1024)
+    record = _record(blob_store, export, source_path=f"/drive-cache/gemini/{export.name}")
+    retained = blob_store.blob_path(record.blob_hash or record.raw_id)
+    cancelled = threading.Event()
+    original_open = Path.open
+    handles: list[Any] = []
+    reads = 0
+
+    class CancelAfterRead:
+        def __init__(self, source: Any) -> None:
+            self.source = source
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.source, name)
+
+        def __enter__(self) -> CancelAfterRead:
+            return self
+
+        def __exit__(self, *args: Any) -> Any:
+            return self.source.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal reads
+            data = self.source.read(size)
+            if len(data) >= 65536:
+                reads += 1
+                cancelled.set()
+            return data
+
+    def open_retained(path: Path, *args: Any, **kwargs: Any) -> Any:
+        source = original_open(path, *args, **kwargs)
+        if path == retained:
+            handles.append(source)
+            return CancelAfterRead(source)
+        return source
+
+    token = compute_cancel.set(cancelled)
+    try:
+        with monkeypatch.context() as controlled:
+            controlled.setattr(Path, "open", open_retained)
+            with pytest.raises(DaemonOperationCancelled):
+                inspect_raw_artifact(record, blob_store=blob_store)
+        assert reads > 0
+        assert handles and all(handle.closed for handle in handles)
+        cancelled.clear()
+        observation = inspect_raw_artifact(record, blob_store=blob_store)
+        assert observation.parse_as_session
+        assert observation.decode_error is None
+    finally:
+        compute_cancel.reset(token)

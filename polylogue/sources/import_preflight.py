@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO
+from typing import IO, TYPE_CHECKING, Any
 
 from polylogue.core.enums import Provider
 from polylogue.sources.decoder_zip import (
@@ -160,11 +160,28 @@ class _PreflightAccumulator:
 
 
 def _preflight_sqlite(
-    path: Path, acc: _PreflightAccumulator, *, label: str, source_binding: SourceInputBinding | None = None
+    path: Path,
+    acc: _PreflightAccumulator,
+    *,
+    label: str,
+    source_binding: SourceInputBinding | None = None,
+    check_stop: Callable[[], None] | None = None,
 ) -> None:
     """Classify a SQLite import by its provider schema, never by its suffix."""
+    callback_failed = False
+
+    def heartbeat() -> None:
+        nonlocal callback_failed
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        callback_failed = True
+        check_compute_cancelled()
+        if check_stop is not None:
+            check_stop()
+        callback_failed = False
+
     try:
-        inspection = inspect_sqlite_source(path, preflight=True, source_binding=source_binding)
+        inspection = inspect_sqlite_source(path, preflight=True, source_binding=source_binding, check_stop=heartbeat)
         if inspection.domain == "antigravity_trajectory_db":
             if inspection.admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
@@ -174,6 +191,10 @@ def _preflight_sqlite(
                 acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
             return
     except Exception as exc:
+        from polylogue.core.compute import DaemonOperationCancelled
+
+        if callback_failed or isinstance(exc, DaemonOperationCancelled):
+            raise
         acc.malformed(label, f"could not inspect SQLite trajectory: {type(exc).__name__}: {exc}")
         return
     acc.unsupported(label, "SQLite schema is not a supported Antigravity trajectory store")
@@ -184,7 +205,7 @@ def _preflight_zip(
     acc: _PreflightAccumulator,
     *,
     label: str,
-    handle: BinaryIO | None = None,
+    handle: IO[bytes] | None = None,
     check_stop: Callable[[], None] | None = None,
 ) -> None:
     try:
@@ -213,7 +234,7 @@ def _preflight_zip(
 
 
 def _preflight_json_handle(
-    handle: BinaryIO, acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
+    handle: IO[bytes], acc: _PreflightAccumulator, *, label: str, check_stop: Callable[[], None] | None = None
 ) -> None:
     import ijson
 
@@ -248,7 +269,7 @@ __all__ = [
 
 
 def _preflight_handle(
-    handle: BinaryIO, semantic_path: Path, *, check_stop: Callable[[], None] | None = None
+    handle: IO[bytes], semantic_path: Path, *, check_stop: Callable[[], None] | None = None
 ) -> ImportPreflightResult:
     """Inspect the actual accepted byte descriptor in its fresh reader process."""
     acc = _PreflightAccumulator(str(semantic_path))
@@ -323,7 +344,7 @@ def preflight_import_bindings(
                 acc.ignored()
             continue
         if is_sqlite_path(binding.source_path):
-            _preflight_sqlite(binding.source, acc, label=label, source_binding=binding)
+            _preflight_sqlite(binding.source, acc, label=label, source_binding=binding, check_stop=check_stop)
             continue
         result = _decode_bound_preflight(preflight_bound_bytes(binding, check_stop=check_stop), binding.source_path)
         for name in ("candidate_count", "supported_count", "unsupported_count", "malformed_count", "ignored_count"):

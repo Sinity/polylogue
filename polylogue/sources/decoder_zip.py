@@ -265,7 +265,6 @@ def process_zip(
         _captured_zip_record,
         zip_acquisition_fingerprint,
         zip_member_admission,
-        zip_member_profile_identity,
     )
     from .source_staging import bind_source_input
 
@@ -274,9 +273,10 @@ def process_zip(
         physical = custody.enter_context(open_bound_container(store, binding))
         zf = custody.enter_context(zipfile.ZipFile(physical.stream))
         entries = zf.infolist()
-        ordinals = {id(info): ordinal for ordinal, info in enumerate(entries)}
         admission = zip_member_admission(zf, zip_path, entries, provider_hint)
-        for info in validator.filter_entries(entries, allowed_path=admission.allowed_path):
+        for entry_ordinal, info in enumerate(entries):
+            if next(iter(validator.filter_entries((info,), allowed_path=admission.allowed_path)), None) is None:
+                continue
             name = info.filename
             entry_provider_hint = admission.entry_provider_hint(zf, info)
             member_context = ZipEntryReadContext(
@@ -290,9 +290,9 @@ def process_zip(
                 captured_input_identity=binding.captured_identity,
                 container_blob_hash=physical.blob_hash,
                 decoder_fingerprint=zip_acquisition_fingerprint(provider_hint),
-                entry_ordinal=ordinals[id(info)],
+                entry_ordinal=entry_ordinal,
             )
-            namespace = zip_member_profile_identity(binding.captured_identity, name)
+            namespace = binding.captured_identity.member_profile_identity(name)
             profile = (
                 None
                 if namespace is None

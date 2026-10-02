@@ -6,10 +6,10 @@ the candidate cohort into a private immutable tree, inventories the live roots
 again, and publishes two digests: candidate bytes and the material that stayed
 in the ordinary source roots after the cut.
 
-The source roots are never moved, renamed, or acknowledged by this module.
-Consequently, a later daemon catch-up sees carry-forward files through its
-normal acquisition route.  A candidate can only be read from the published
-private tree, and every read rechecks its content digest.
+The declared spool strategy hands its original generation aside and creates
+a fresh active root; other strategies copy their roots. A later daemon
+catch-up sees carry-forward files through its normal acquisition route. A
+candidate is read from the published private tree, with its digest rechecked.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import sqlite3
 import stat
 import tempfile
 import zipfile
+from bisect import bisect_left
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
@@ -31,6 +32,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
 from polylogue.sources.source_staging import bind_source_input
 from polylogue.sources.sqlite_export import BinaryWriteSink, _logical_export_digest_bound, _write_logical_export_bound
@@ -352,6 +355,7 @@ def _sha256_path(path: Path) -> str:
     try:
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                check_compute_cancelled()
                 digest.update(chunk)
     except OSError as exc:
         raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
@@ -454,6 +458,7 @@ def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
     os.lseek(descriptor, 0, os.SEEK_SET)
     remaining = size
     while remaining:
+        check_compute_cancelled()
         chunk = os.read(descriptor, min(1024 * 1024, remaining))
         if not chunk:
             raise SourceSnapshotError(f"source member was truncated while reading: {path}")
@@ -493,6 +498,7 @@ def _walk_files(
             raise SourceSnapshotError(f"source root is not a directory: {root}")
         directories = [(root, root_info)]
         while directories:
+            check_compute_cancelled()
             directory, expected = directories.pop()
             with (
                 _open_source_file(
@@ -506,6 +512,7 @@ def _walk_files(
             ):
                 children = sorted(entries, key=lambda entry: entry.name)
                 for entry in children:
+                    check_compute_cancelled()
                     path = directory / entry.name
                     info = entry.stat(follow_symlinks=False)
                     if stat.S_ISDIR(info.st_mode):
@@ -549,6 +556,7 @@ def _observe_sqlite_members(
 ) -> tuple[CutItem, ...]:
     result = []
     for coordinate, path, before, parent_anchor, semantic_parent in members:
+        check_compute_cancelled()
         expected = before.st_dev, before.st_ino
         for info in (before, path.stat() if parent_anchor is None else path.lstat()):
             if not stat.S_ISREG(info.st_mode) or (info.st_dev, info.st_ino) != expected:
@@ -591,12 +599,14 @@ def _observe_root(
             ):
                 items = []
                 for info in sorted(archive.infolist(), key=lambda item: item.filename):
+                    check_compute_cancelled()
                     if info.is_dir():
                         continue
                     digest = hashlib.sha256()
                     size = 0
                     with archive.open(info) as member:
                         while chunk := member.read(1024 * 1024):
+                            check_compute_cancelled()
                             digest.update(chunk)
                             size += len(chunk)
                     items.append(
@@ -612,6 +622,8 @@ def _observe_root(
                 if (after.st_size, after.st_ctime_ns) != (archive_info.st_size, archive_info.st_ctime_ns):
                     raise SourceMutationError(f"archive changed during inventory: {root}")
                 return tuple(items)
+        except DaemonOperationCancelled:
+            raise
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceSnapshotError(f"archive member inventory failed: {root}") from exc
     result: list[CutItem] = []
@@ -691,6 +703,7 @@ def _copy_file(
         remaining = size
         with destination.open("xb") as output:
             while remaining:
+                check_compute_cancelled()
                 chunk = os.read(descriptor, min(1024 * 1024, remaining))
                 if not chunk:
                     raise SourceMutationError(f"source truncated while copying: {source}")
@@ -709,7 +722,11 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _fsync_tree(root: Path) -> None:
-    for directory, _children, _files in os.walk(root, topdown=False):
+    def refuse_unreadable_directory(error: OSError) -> None:
+        raise SourceSnapshotError(f"candidate directory sync inventory failed: {root}") from error
+
+    for directory, _children, _files in os.walk(root, topdown=False, onerror=refuse_unreadable_directory):
+        check_compute_cancelled()
         _fsync_directory(Path(directory))
 
 
@@ -718,6 +735,22 @@ def _write_durable(path: Path, payload: str) -> None:
         stream.write(payload)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def _archive_member_info(archive: zipfile.ZipFile, item: CutItem) -> zipfile.ZipInfo:
+    """Select the already captured member offset, including duplicate names."""
+    try:
+        offset = int(item.identity.rsplit(":", 1)[1])
+    except (ValueError, IndexError) as exc:
+        raise SourceMutationError(f"archive member identity changed: {item.coordinate}") from exc
+    entries = archive.infolist()
+    position = bisect_left(entries, offset, key=lambda entry: entry.header_offset)
+    if position == len(entries):
+        raise SourceMutationError(f"archive member disappeared: {item.coordinate}")
+    entry = entries[position]
+    if entry.header_offset != offset or entry.is_dir() or not item.coordinate.endswith("!" + entry.filename):
+        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
+    return entry
 
 
 def _copy_candidates(
@@ -746,13 +779,18 @@ def _copy_bound_candidates(
         )
         try:
             with zipfile.ZipFile(destination) as archive:
+                archive.infolist().sort(key=lambda entry: entry.header_offset)
                 members = []
                 for item in baseline:
-                    member_name = item.coordinate.split("!", 1)[1]
+                    check_compute_cancelled()
+                    info = _archive_member_info(archive, item)
+                    if item.coordinate != f"{root.name}!{info.filename}":
+                        raise SourceMutationError(f"archive member coordinate changed: {item.coordinate}")
                     digest = hashlib.sha256()
                     size = 0
-                    with archive.open(member_name) as stream:
+                    with archive.open(info) as stream:
                         while chunk := stream.read(1024 * 1024):
+                            check_compute_cancelled()
                             digest.update(chunk)
                             size += len(chunk)
                     if digest.hexdigest() != item.content_sha256 or size != item.size_bytes:
@@ -769,10 +807,13 @@ def _copy_bound_candidates(
                     )
                     for item in members
                 )
+        except DaemonOperationCancelled:
+            raise
         except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
             raise SourceMutationError(f"archive changed during cut: {root}") from exc
     result: list[CutItem] = []
     for item in baseline:
+        check_compute_cancelled()
         source = root / item.coordinate if binding.root_identity.kind == "directory" else root
         target = destination / item.coordinate if binding.root_identity.kind == "directory" else destination
         _copy_file(
@@ -1202,6 +1243,7 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         candidate_items: list[CutItem] = []
         observation_bindings: list[SourceCutBinding] = []
         for binding in preflight.bindings:
+            check_compute_cancelled()
             source_destination = staging / "candidate" / binding.source.source_id
             if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
                 source_destination = source_destination.with_name(source_destination.name + ".jsonl")
@@ -1241,6 +1283,7 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         baseline_coordinates = {(item.source_id, item.coordinate) for items in baselines.values() for item in items}
         carry_items: list[CutItem] = []
         for item in post_items:
+            check_compute_cancelled()
             mode = modes[item.source_id]
             if (
                 mode in {SnapshotMode.COMPLETE_COPY, SnapshotMode.DIRECTORY_COPY}
@@ -1333,10 +1376,11 @@ def reacquire_candidate(
     modes = dict(result.ownership_modes)
     # Keep each central directory open once, rather than reparsing a ZIP for
     # every member. The manifest names member bytes, not container bytes, and
-    # a member is read by name exactly as the cut read it.
+    # each member is selected by its captured physical header offset.
     archives: dict[Path, zipfile.ZipFile] = {}
     with ExitStack() as stack:
         for item in result.candidate_manifest.items:
+            check_compute_cancelled()
             if source_id is not None and item.source_id != source_id:
                 continue
             if selected is not None and item.coordinate not in selected:
@@ -1347,19 +1391,23 @@ def reacquire_candidate(
             if not path.is_relative_to(result.candidate_root):
                 raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
             if modes[item.source_id] is SnapshotMode.ARCHIVE_MEMBER:
-                _, separator, member_name = item.coordinate.partition("!")
-                if not separator:
+                if "!" not in item.coordinate:
                     raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
                 try:
                     if path not in archives:
                         archives[path] = stack.enter_context(zipfile.ZipFile(path))
+                        archives[path].infolist().sort(key=lambda entry: entry.header_offset)
+                    info = _archive_member_info(archives[path], item)
                     digest = hashlib.sha256()
                     size = 0
-                    with archives[path].open(member_name) as stream:
+                    with archives[path].open(info) as stream:
                         while chunk := stream.read(1024 * 1024):
+                            check_compute_cancelled()
                             digest.update(chunk)
                             size += len(chunk)
                     unchanged = size == item.size_bytes and digest.hexdigest() == item.content_sha256
+                except DaemonOperationCancelled:
+                    raise
                 except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
                     raise SourceMutationError(f"candidate archive mutated: {item.coordinate}") from exc
             else:

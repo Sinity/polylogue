@@ -5,6 +5,7 @@ from __future__ import annotations
 import zipfile
 from collections.abc import Callable, Collection, Iterable
 from pathlib import Path
+from typing import IO
 
 from polylogue.logging import get_logger
 
@@ -64,7 +65,7 @@ class BoundedMemberReport:
         return joined
 
 
-def open_zip_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> zipfile.ZipExtFile:
+def open_zip_entry(zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> IO[bytes]:
     """Open the exact admitted entry as a seekable, CRC-checked byte stream.
 
     The central-directory object, rather than its name, chooses duplicate

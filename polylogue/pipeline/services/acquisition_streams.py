@@ -247,12 +247,16 @@ async def iter_raw_record_stream(
     generation: str | None = None
     source_item: str | None = None
     fingerprint: str | None = None
+    input_acquired_at: str | None = None
     coordinates: PickleSpool[str] | None = None
 
     async def publish(effect: Callable[[], Awaitable[object]]) -> object:
         if execution is None:
             return await effect()
         return await execution.publish("raw", effect)
+
+    def observe_zip_effect(effect: Callable[..., Awaitable[object]]) -> Awaitable[object]:
+        return effect(observed_at_ms=acquisition_timestamp_ms(datetime.now(UTC).isoformat()))
 
     try:
         async for item in raw_stream:
@@ -264,6 +268,7 @@ async def iter_raw_record_stream(
                         coordinates.close()
                     generation = source_item = fingerprint = None
                     coordinates = None
+                    input_acquired_at = datetime.now(UTC).isoformat()
                     identity = envelope.captured_input_identity
                     if (
                         input_observation_callback is not None
@@ -290,15 +295,13 @@ async def iter_raw_record_stream(
                         source_name=envelope.input_source_name,
                     )
                     generation = manifest.source_generation_id
-                    observed_at = acquisition_timestamp_ms(datetime.now(UTC).isoformat())
-                    source_item = await publish(
-                        lambda manifest=manifest, observed_at=observed_at: input_repository.publish_acquired_zip_input(
-                            manifest,
-                            observed_at_ms=observed_at,
-                        )
+                    observed_at = acquisition_timestamp_ms(input_acquired_at)
+                    published_source_item = await publish(
+                        partial(input_repository.publish_acquired_zip_input, manifest, observed_at_ms=observed_at)
                     )
-                    if not isinstance(source_item, str):
+                    if not isinstance(published_source_item, str):
                         raise ValueError("ordinary ZIP input returned no exact item identity")
+                    source_item = published_source_item
                     coordinates = PickleSpool[str]()
                 elif envelope.member_disposition is not None:
                     if input_repository is None:
@@ -311,20 +314,22 @@ async def iter_raw_record_stream(
                     ):
                         raise ValueError("ZIP disposition has no accepted input")
                     await publish(
-                        lambda generation=generation, source_item=source_item, envelope=envelope: (
-                            input_repository.record_acquired_zip_disposition(
+                        partial(
+                            observe_zip_effect,
+                            partial(
+                                input_repository.record_acquired_zip_disposition,
                                 source_generation_id=generation,
                                 source_item_id=source_item,
                                 entry_ordinal=envelope.entry_ordinal,
                                 member_name=envelope.member_name,
                                 disposition=envelope.member_disposition,
                                 diagnostic=envelope.diagnostic,
-                                observed_at_ms=acquisition_timestamp_ms(datetime.now(UTC).isoformat()),
-                            )
+                            ),
                         )
                     )
                 elif envelope.enumeration_complete:
                     if input_repository is None:
+                        input_acquired_at = None
                         continue
                     if (
                         generation is None
@@ -337,30 +342,41 @@ async def iter_raw_record_stream(
                     if before_input_complete is not None:
                         await before_input_complete()
                     await publish(
-                        lambda generation=generation, source_item=source_item, fingerprint=fingerprint, coordinates=coordinates, envelope=envelope: (
-                            input_repository.complete_acquired_zip_input(
+                        partial(
+                            observe_zip_effect,
+                            partial(
+                                input_repository.complete_acquired_zip_input,
                                 source_generation_id=generation,
                                 source_item_id=source_item,
                                 enumeration_fingerprint=fingerprint,
                                 record_coordinates=coordinates,
                                 member_count=envelope.member_count,
-                                observed_at_ms=acquisition_timestamp_ms(datetime.now(UTC).isoformat()),
-                            )
+                            ),
                         )
                     )
                     coordinates.close()
                     coordinates = None
                     generation = source_item = fingerprint = None
+                    input_acquired_at = None
                 continue
             raw_data = envelope.data if envelope is not None else item
             if not isinstance(raw_data, RawSessionData):
                 raise TypeError("acquisition record has no raw payload")
             if not raw_data.raw_bytes and not raw_data.blob_hash:
                 continue
-            record = make_raw_record(raw_data, source.name, blob_root=blob_root, blob_store=blob_store)
+            acquired_at = None
+            if raw_data.captured_zip_coordinate is not None:
+                if envelope is None or input_acquired_at is None:
+                    raise ValueError("ZIP raw has no accepted acquisition pass")
+                acquired_at = input_acquired_at
+            record = make_raw_record(
+                raw_data, source.name, blob_root=blob_root, blob_store=blob_store, acquired_at=acquired_at
+            )
             if envelope is not None and raw_data.captured_zip_coordinate is not None and input_repository is not None:
                 if generation is None or source_item is None or coordinates is None:
                     raise ValueError("ZIP raw has no accepted frozen input")
+                if raw_data.addressing_mode is None:
+                    raise ValueError("ZIP raw lacks its captured member reading")
                 coordinates.append(envelope.coordinate)
                 record.source_item = SourceItemAdmission(
                     generation,

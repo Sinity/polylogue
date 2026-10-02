@@ -229,8 +229,8 @@ It does **not** extend to a declared database member, and nothing here has
 measured one. A `MUTABLE_SQLITE` member has no delta representation: every
 observation retains a complete logical export
 (`sources/source_snapshot.py::_default_policy` selects
-`SnapshotMode.SQLITE_LOGICAL_EXPORT`, and `retained_content_revision` returns
-that export's own blob hash). Content addressing collapses only *identical*
+`SnapshotMode.SQLITE_LOGICAL_EXPORT`, and raw admission uses
+that export's own blob hash as its content term). Content addressing collapses only *identical*
 revisions, so a `state_5.sqlite` whose title column changes once per
 observation retains one full export per observation — roughly 40 copies of
 the unchanged rows for 40 perfectly continuous observations. That is exactly

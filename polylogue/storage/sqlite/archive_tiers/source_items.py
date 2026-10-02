@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
-from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 from .common import require_vocabulary
@@ -27,6 +27,9 @@ from .source_attachments import (
     record_source_attachments,
     source_attachment_census,
 )
+
+if TYPE_CHECKING:
+    from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +104,13 @@ class CapturedSourceInputIdentity:
     profile_source_path: str
 
     def __post_init__(self) -> None:
-        for value in (
+        coordinate_fields: tuple[object, ...] = (
             self.canonical_source_path,
             self.semantic_source_path,
             self.profile_root,
             self.profile_source_path,
-        ):
+        )
+        for value in coordinate_fields:
             if (
                 not isinstance(value, str)
                 or not Path(value).is_absolute()
@@ -1171,6 +1175,49 @@ def complete_source_item_enumeration(
     ).fetchone()
     if item is None or item[0] != enumeration_fingerprint:
         raise ValueError("source enumeration decoder binding changed")
+    count, digest, member_count, member_digest, retired_count = _measure_source_item_enumeration(
+        conn,
+        source_generation_id=source_generation_id,
+        source_item_id=source_item_id,
+        record_coordinates=record_coordinates,
+        member_ordinals=member_ordinals,
+        member_count=member_count,
+        check_stop=check_stop,
+    )
+    binding = (source_generation_id, source_item_id)
+    checkpoint()
+    if retired_count:
+        raise ValueError("source enumeration contains retired raw members")
+    if item[3] is not None:
+        if tuple(item[1:3]) != (count, digest) or tuple(item[4:]) != (member_count, member_digest):
+            raise ValueError("completed source enumeration changed")
+        return digest
+    conn.execute(
+        "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=?, "
+        "enumerated_member_count=?, enumeration_member_digest=? "
+        "WHERE source_generation_id=? AND source_item_id=?",
+        (count, digest, enumerated_at_ms, member_count, member_digest, *binding),
+    )
+    return digest
+
+
+def _measure_source_item_enumeration(
+    conn: sqlite3.Connection,
+    *,
+    source_generation_id: str,
+    source_item_id: str,
+    record_coordinates: Iterable[str],
+    member_ordinals: Iterable[int] | None,
+    member_count: int | None,
+    check_stop: Callable[[], None] | None = None,
+) -> tuple[int, str, int, str, int]:
+    """Measure exact membership on the caller's snapshot without publishing it."""
+
+    def checkpoint() -> None:
+        if check_stop is not None:
+            check_stop()
+
+    checkpoint()
     binding = (source_generation_id, source_item_id)
     with scratch_connection_context(prefix="polylogue-enumeration-", filename="denominator.db") as denominator:
         # Regular indexed tables spill to this owner's private file even when
@@ -1180,13 +1227,15 @@ def complete_source_item_enumeration(
         # for the full ordinal set. Select a disk journal before any SQL data
         # or transaction exists; never change TEMP storage under the caller.
         denominator.execute("PRAGMA journal_mode=DELETE")
+        denominator.execute("PRAGMA temp_store=FILE")
         denominator.execute("BEGIN")
         denominator.execute("CREATE TABLE records(coordinate TEXT PRIMARY KEY) WITHOUT ROWID")
         denominator.execute(
             "CREATE TABLE ordinals(ordinal INTEGER PRIMARY KEY, accepted INTEGER, "
             "member_name TEXT, disposition TEXT, diagnostic TEXT)"
         )
-        for coordinate in record_coordinates:
+        coordinates: Iterable[object] = record_coordinates
+        for coordinate in coordinates:
             checkpoint()
             if not isinstance(coordinate, str) or not coordinate.strip():
                 raise ValueError("enumeration coordinates must be distinct and nonempty")
@@ -1197,6 +1246,7 @@ def complete_source_item_enumeration(
         count = int(denominator.execute("SELECT COUNT(*) FROM records").fetchone()[0])
         record_hash = hashlib.sha256(b"[")
         seen = 0
+        retired_count = 0
         is_zip = False
         cursor = conn.execute(
             "SELECT record_coordinate, raw_blob_hash, raw_id FROM source_item_raw_members "
@@ -1206,8 +1256,7 @@ def complete_source_item_enumeration(
         try:
             for coordinate, blob_hash, raw_id in cursor:
                 checkpoint()
-                if raw_id is None:
-                    raise ValueError("source enumeration contains retired raw members")
+                retired_count += raw_id is None
                 if denominator.execute("SELECT 1 FROM records WHERE coordinate=?", (coordinate,)).fetchone() is None:
                     raise ValueError("source enumeration has missing or unexpected raw members")
                 is_zip |= coordinate.startswith('["zip-v2"')
@@ -1306,17 +1355,7 @@ def complete_source_item_enumeration(
         member_hash.update(b"]")
         member_digest = member_hash.hexdigest()
         checkpoint()
-        if item[3] is not None:
-            if tuple(item[1:3]) != (count, digest) or tuple(item[4:]) != (member_count, member_digest):
-                raise ValueError("completed source enumeration changed")
-            return digest
-        conn.execute(
-            "UPDATE source_items SET enumerated_record_count=?, enumeration_digest=?, enumerated_at_ms=?, "
-            "enumerated_member_count=?, enumeration_member_digest=? "
-            "WHERE source_generation_id=? AND source_item_id=?",
-            (count, digest, enumerated_at_ms, member_count, member_digest, *binding),
-        )
-        return digest
+        return count, digest, member_count, member_digest, retired_count
 
 
 def retained_completed_source_item_for_raw(conn: sqlite3.Connection, raw_id: str) -> tuple[str, str]:

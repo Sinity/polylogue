@@ -518,6 +518,10 @@ def _operation_handler(timeline: list[str], body: bytes, *, content_length: int 
     headers["Content-Type"] = "application/json"
     headers["Content-Length"] = str(len(body) if content_length is None else content_length)
     object.__setattr__(handler, "rfile", BytesIO(body))
+    object.__setattr__(handler, "wfile", BytesIO())
+    object.__setattr__(handler, "send_response", lambda _status: timeline.append("response"))
+    object.__setattr__(handler, "send_header", lambda *_args: None)
+    object.__setattr__(handler, "end_headers", lambda: None)
     return handler
 
 
@@ -534,40 +538,30 @@ def _preview_operation_body(session_ids: list[str]) -> bytes:
     ).encode()
 
 
-def test_delete_preview_operation_bounds_body_bytes_and_reads_before_runtime_dispatch(
+def test_delete_preview_checks_headers_before_reading_and_dispatches_after_body(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """The selection bound is the operation's own, and dispatch starts after the read.
+    """Invalid framing refuses before reading; valid dispatch follows the full body.
 
-    Anti-vacuity: raising ``mutation.session.delete.preview``'s
-    ``max_body_bytes`` above the transport's declared maximum makes the
-    oversize case read a body it must refuse; dispatching before the body read
-    reorders ``slow_timeline``.
+    Reading before header admission triggers the exploding body; dispatching
+    before body completion changes the recorded slow-body event order.
     """
-    from polylogue.operations.daemon_protocol import (
-        MAX_DECLARED_OPERATION_BODY_BYTES,
-        daemon_operation_spec,
-    )
-
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    spec = daemon_operation_spec("mutation.session.delete.preview")
-    assert spec is not None
-    assert spec.max_body_bytes == MAX_DECLARED_OPERATION_BODY_BYTES
 
     class _ExplodingBody:
         def read(self, _size: int) -> bytes:
-            raise AssertionError("oversize body must not be read")
+            raise AssertionError("invalid framing must be refused before the body is read")
 
-    oversize_timeline: list[str] = []
-    oversize = _operation_handler(oversize_timeline, b"", content_length=MAX_DECLARED_OPERATION_BODY_BYTES + 1)
-    object.__setattr__(oversize, "rfile", _ExplodingBody())
-    oversize._do_post_impl()
-    assert oversize_timeline == ["error"]
+    invalid_timeline: list[str] = []
+    invalid = _operation_handler(invalid_timeline, b"")
+    invalid.headers.replace_header("Content-Length", "invalid")
+    object.__setattr__(invalid, "rfile", _ExplodingBody())
+    invalid._do_post_impl()
+    assert invalid_timeline == ["error"]
 
     large_timeline: list[str] = []
     large_body = _preview_operation_body([f"codex-session:{index}" for index in range(257)])
     large = _operation_handler(large_timeline, large_body)
-    object.__setattr__(large, "_send_json", lambda *_args, **_kwargs: large_timeline.append("response"))
     large._do_post_impl()
     assert large_timeline == ["runtime:mutation.session.delete.preview", "response"]
 
@@ -582,7 +576,6 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_runtime_dis
 
     slow = _operation_handler(slow_timeline, b"", content_length=len(slow_body))
     object.__setattr__(slow, "rfile", _SlowBody())
-    object.__setattr__(slow, "_send_json", lambda *_args, **_kwargs: slow_timeline.append("response"))
     slow._do_post_impl()
     assert slow_timeline == [
         "body-read",
@@ -633,8 +626,10 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
     handler = _operation_handler([], body)
     runtime = _OperationConflictRuntime()
     object.__setattr__(handler.server, "operation_runtime", runtime)
-    responses: list[tuple[HTTPStatus, object]] = []
-    object.__setattr__(handler, "_send_json", lambda status, payload, **_kwargs: responses.append((status, payload)))
+    statuses: list[HTTPStatus] = []
+    headers: dict[str, str] = {}
+    object.__setattr__(handler, "send_response", statuses.append)
+    object.__setattr__(handler, "send_header", lambda name, value: headers.__setitem__(name, value))
 
     failure: list[BaseException] = []
 
@@ -650,10 +645,13 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
 
     assert not thread.is_alive(), "conflicting duplicate request id deadlocked the machine endpoint"
     assert failure == []
-    assert responses and responses[0][0] is HTTPStatus.CONFLICT
+    assert statuses == [HTTPStatus.CONFLICT]
     assert runtime.calls == [conflicting]
-    response = responses[0][1]
-    assert isinstance(response, dict)
+    body = cast(BytesIO, handler.wfile).getvalue()
+    assert headers["Content-Type"] == "application/json"
+    assert int(headers["Content-Length"]) == len(body)
+    response = json.loads(body)
+    assert response["outcome"] == "rejected"
     assert response["error"] == {
         "code": "request_identity_conflict",
         "retryable": False,

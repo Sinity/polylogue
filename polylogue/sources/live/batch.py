@@ -25,12 +25,16 @@ from json import loads as json_loads
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, ParamSpec, TypeVar, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path, strong_path_classification
+from polylogue.archive.artifact_taxonomy import (
+    ArtifactKind,
+    classify_artifact_path,
+    classify_artifact_stream,
+    strong_path_classification,
+)
 from polylogue.archive.ingest_flags import (
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
 )
-from polylogue.archive.raw_payload.decode import jsonl_session_artifact
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
@@ -43,6 +47,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.config import Source
 from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -149,7 +154,6 @@ from polylogue.sources.live.batch_support import (
     _FullIngestResult,
     _ingest_pass_exhausted,
     _jsonl_provider_and_session_artifact,
-    _parse_payload_as_session_artifact,
     _path_size,
     _throttled_phase_heartbeat,
     classify_pre_acquisition,
@@ -166,6 +170,7 @@ from polylogue.sources.live.batch_support import (
     foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_parse_input_of_handle,
     jsonl_prefix_record_count,
     last_complete_newline_from_tail,
     sha256_range_from_path,
@@ -227,7 +232,6 @@ from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.retained_acquisition import SourceInputRecord, iter_captured_zip_input
 from polylogue.sources.revision_backfill import (
     RetainedPreparationRetryableError,
-    _declared_non_session_artifact_classification,
     enrich_sessions_from_archive,
     parse_retained_raw_sessions,
     prepared_enrichment_dependency_state,
@@ -560,21 +564,6 @@ def _single_route_stage_payload(*, append_file_count: int, full_file_count: int)
 
 def _iso_to_epoch_ms(value: str) -> int:
     return int(datetime.fromisoformat(value).timestamp() * 1000)
-
-
-def _blob_jsonl_has_session_evidence(
-    blob_store: BlobStore,
-    blob_hash: str,
-    *,
-    provider: Provider,
-    source_path: str,
-) -> bool:
-    if not is_jsonl_source_path(source_path):
-        return False
-    try:
-        return jsonl_session_artifact(blob_store.blob_path(blob_hash), provider=provider) is not None
-    except (OSError, ValueError):
-        return False
 
 
 def _fresh_build_admits(sessions: Iterable[Any], written: set[str] | None) -> bool:
@@ -2803,6 +2792,8 @@ class LiveBatchProcessor:
                             )
 
                     admit_stage_write("convergence.hook_paste_enrichment", enrich_and_clear_paste_debt)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     # A debug line made this indistinguishable from success:
                     # the stage still recorded its elapsed time and nothing
@@ -2859,6 +2850,8 @@ class LiveBatchProcessor:
                 else:
                     per_file_debt_items.extend(convergence_debt_from_state(path, state))
             return per_file_completed, time.perf_counter() - started, stage_timings, per_file_debt_items, settlements
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             logger.warning("live.watcher: post-ingest converge failed: %s", exc)
             return (
@@ -4274,12 +4267,12 @@ class LiveBatchProcessor:
                     canonical_source_path=(
                         str(captured_sqlite.snapshot.identity_path)
                         if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                        else None
+                        else raw_canonical_source_paths.get(path)
                     ),
                     captured_profile_key=(
                         captured_sqlite.snapshot.captured_profile_key
                         if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                        else None
+                        else raw_profile_keys.get(path)
                     ),
                     source_index=0,
                     blob_size=blob_size,
@@ -4776,44 +4769,41 @@ class LiveBatchProcessor:
                     fallback_id = Path(record.source_path).stem
                     blob_hash = record.blob_hash or record.raw_id
                     acquired_at_ms = _iso_to_epoch_ms(record.acquired_at)
-                    # Source-only acquisition deliberately has no decoded
-                    # evidence with which to confirm or override a path
-                    # classification. Keep every such raw pending instead of
-                    # giving a filename-only fact/sidecar rule terminal
-                    # authority that a recovered derived tier could not undo.
-                    artifact_classification = (
-                        None
-                        if source_only
-                        else _declared_non_session_artifact_classification(
-                            provider,
-                            record.source_path,
+                    artifact_classification = None
+                    if not source_only:
+                        proof = (
+                            selected_preparation.stream_classification()
+                            if selected_preparation is not None and selected_preparation.error is None
+                            else None
                         )
-                    )
-                    session_evidence = False
-                    # A ``raw-only`` declaration is terminal: decoded shape may
-                    # outrank a ``fact`` location, but never a family whose
-                    # declaration states that content cannot decide it
-                    # (polylogue-omsw, polylogue-ximhz).
-                    if (
-                        artifact_classification is not None
-                        and not source_only
-                        and not path_declaration_refuses_session(provider, record.source_path)
-                    ):
-                        session_evidence = (
-                            _blob_jsonl_has_session_evidence(
-                                blob_store,
-                                blob_hash,
-                                provider=provider,
-                                source_path=record.source_path,
-                            )
-                            if payload is None
-                            else _parse_payload_as_session_artifact(
-                                Path(record.source_path),
-                                provider=provider,
-                                payload=payload,
-                            )
-                        )
-                    if artifact_classification is not None and not session_evidence:
+                        if proof is None and (
+                            is_jsonl_source_path(record.source_path)
+                            or Path(record.source_path).suffix.lower() == ".json"
+                        ):
+                            with ExitStack() as input_lifetime:
+                                input_handle = input_lifetime.enter_context(
+                                    BytesIO(parse_payload_bytes)
+                                    if parse_payload_bytes is not None
+                                    else blob_store.open(blob_hash)
+                                )
+                                jsonl = is_jsonl_source_path(record.source_path)
+                                accepted_input = (
+                                    input_lifetime.enter_context(
+                                        jsonl_parse_input_of_handle(input_handle, check_stop=check_compute_cancelled)
+                                    )
+                                    if jsonl
+                                    else input_handle
+                                )
+                                proof = classify_artifact_stream(
+                                    accepted_input,
+                                    provider=provider,
+                                    source_path=record.source_path,
+                                    wire_format="jsonl" if jsonl else "json",
+                                    check_stop=check_compute_cancelled,
+                                )
+                        if proof is not None and proof.proved_non_session:
+                            artifact_classification = proof.classification
+                    if artifact_classification is not None:
                         explicit_raw_id = record.raw_id if record.blob_hash is not None else None
                         if payload is None:
                             source_raw_id = archive.admit_raw_artifact_blob_ref(
@@ -6250,7 +6240,6 @@ class LiveBatchProcessor:
                 zipfile.ZipFile(physical.stream) as zf,
             ):
                 central_directory = zf.infolist()
-                entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 container_hash, _container_size, input_receipt = physical.retain()
                 if input_receipt is None:
                     raise ValueError("ZIP input lacks its accepted publication receipt")
@@ -6270,9 +6259,9 @@ class LiveBatchProcessor:
                 def disposition(info: zipfile.ZipInfo, reason: str, kind: str = "unselected") -> None:
                     captured_input.dispositions.append(
                         SourceInputRecord(
-                            coordinate=json_dumps(["zip-member-v1", entry_ordinals[id(info)]], separators=(",", ":")),
+                            coordinate=json_dumps(["zip-member-v1", entry_ordinal], separators=(",", ":")),
                             data=None,
-                            entry_ordinal=entry_ordinals[id(info)],
+                            entry_ordinal=entry_ordinal,
                             member_name=info.filename,
                             member_disposition=kind,
                             diagnostic=reason,
@@ -6280,18 +6269,23 @@ class LiveBatchProcessor:
                     )
 
                 allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
-                for info in validator.filter_entries(
-                    central_directory,
-                    allowed_path=allowed_path,
-                    on_unselected=disposition,
-                ):
+                for entry_ordinal, info in enumerate(central_directory):
+                    if (
+                        next(
+                            iter(
+                                validator.filter_entries((info,), allowed_path=allowed_path, on_unselected=disposition)
+                            ),
+                            None,
+                        )
+                        is None
+                    ):
+                        continue
                     if info.file_size == 0:
                         with open_zip_entry(zf, info) as empty:
                             if empty.read(1):
                                 raise zipfile.BadZipFile("empty member yielded data")
                         disposition(info, "member is empty")
                         continue
-                    entry_ordinal = entry_ordinals[id(info)]
                     split_index = 0
                     source_index = zip_member_source_index(
                         entry_ordinal=entry_ordinal,

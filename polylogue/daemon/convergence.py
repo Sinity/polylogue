@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 import threading
 import time
+from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -25,7 +27,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
-from polylogue.core.compute_cancel import compute_cancel
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel
 from polylogue.daemon.derivation import (
     Budget,
     DerivationAdapter,
@@ -484,6 +487,8 @@ def _converge_selected_prerequisites(
                 if barrier is not None:
                     try:
                         waiting = session_id in barrier((session_id,))
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         held.append(f"publication barrier unreadable: {exc}")
                         return False
@@ -560,6 +565,8 @@ def _converge_selected_session_parts_sync(
             continue
         try:
             before = _selected_session_facts(adapter, frame, target.session_id)
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             outcomes.append(_selected_outcome(target, "failed", None, reason=f"inspect: {exc}"))
             continue
@@ -575,6 +582,8 @@ def _converge_selected_session_parts_sync(
         if barrier is not None and target.expected == "required":
             try:
                 waiting = target.session_id in barrier((target.session_id,))
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(
                     _selected_outcome(target, "pending", before, reason=f"publication barrier unreadable: {exc}")
@@ -587,6 +596,8 @@ def _converge_selected_session_parts_sync(
             if adapter.quiet(frame, target.session_id):
                 outcomes.append(_selected_outcome(target, "pending", before, reason="quiet"))
                 continue
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             outcomes.append(_selected_outcome(target, "failed", before, reason=f"quiet: {exc}"))
             continue
@@ -602,6 +613,8 @@ def _converge_selected_session_parts_sync(
                     barrier=barrier,
                     stop_requested=stop_requested,
                 )
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"prerequisite: {exc}"))
                 continue
@@ -635,198 +648,223 @@ def _converge_selected_session_parts_sync(
                 break
             try:
                 replacement = adapter.compute(frame, target.session_id)
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"compute: {exc}"))
                 break
-            prepared_binding = replacement.input_binding if target.expected == "required" else None
+            publication_started = False
             try:
-                before_publication = _selected_session_facts(adapter, frame, target.session_id)
-            except Exception as exc:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "failed",
-                        before,
-                        input_binding=prepared_binding,
-                        reason=f"pre-publication inspection: {exc}",
+                prepared_binding = replacement.input_binding if target.expected == "required" else None
+                try:
+                    before_publication = _selected_session_facts(adapter, frame, target.session_id)
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "failed",
+                            before,
+                            input_binding=prepared_binding,
+                            reason=f"pre-publication inspection: {exc}",
+                        )
                     )
-                )
-                break
-            if (moved := _selected_disposition_moved(target, before_publication)) is not None:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before_publication,
-                        input_binding=prepared_binding,
-                        reason=moved,
+                    break
+                if (moved := _selected_disposition_moved(target, before_publication)) is not None:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before_publication,
+                            input_binding=prepared_binding,
+                            reason=moved,
+                        )
                     )
-                )
-                break
-            if _selected_satisfied(target, before_publication):
-                outcomes.append(_selected_outcome(target, "already_satisfied", before_publication))
-                break
-            if target.expected == "required" and before_publication.input_binding != prepared_binding:
+                    break
+                if _selected_satisfied(target, before_publication):
+                    outcomes.append(_selected_outcome(target, "already_satisfied", before_publication))
+                    break
+                if target.expected == "required" and before_publication.input_binding != prepared_binding:
+                    if attempt == MAX_SELECTED_BINDING_RETRIES:
+                        outcomes.append(
+                            _selected_outcome(
+                                target,
+                                "pending",
+                                before_publication,
+                                input_binding=prepared_binding,
+                                reason="binding_moved",
+                            )
+                        )
+                        break
+                    before = before_publication
+                    continue
+                # Do not admit the bridge after a stop request. A stop received
+                # while the bridge is running is settled below before this worker
+                # returns, because publication and its cleanup remain on this worker.
+                if stop_requested() is not None:
+                    return tuple(outcomes)
+                if not _selected_recipe_is_current(adapter, frame, expected_recipe):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before_publication,
+                            input_binding=prepared_binding,
+                            reason="selected part recipe changed before publication",
+                        )
+                    )
+                    break
+                if not _selected_frame_is_current(adapter, frame):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before,
+                            input_binding=prepared_binding,
+                            reason="selected part generation changed before publication",
+                        )
+                    )
+                    break
+                held_at_admission: list[str] = []
+
+                def publish_unless_held(
+                    replacement: ReplacementLike = replacement,
+                    target: SelectedSessionTarget = target,
+                    held_at_admission: list[str] = held_at_admission,
+                ) -> bool:
+                    nonlocal publication_started
+                    # Re-decide the barrier inside the writer admission: compute
+                    # ran outside it, so a newer unpublished revision may have been
+                    # staged since the pre-compute check.
+                    if barrier is not None and target.expected == "required":
+                        try:
+                            waiting = target.session_id in barrier((target.session_id,))
+                        except DaemonOperationCancelled:
+                            raise
+                        except Exception as exc:
+                            held_at_admission.append(f"publication barrier unreadable: {exc}")
+                            return False
+                        if waiting:
+                            held_at_admission.append("awaits primary publication")
+                            return False
+                    publication_started = True
+                    return adapter.publish(frame, replacement)
+
+                try:
+                    accepted = admission("session_profile", publish_unless_held)
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    # polylogue-ylh7v: session-profile publication is one index
+                    # transaction with one outcome. The partial-commit branch this
+                    # used to carry existed only for marker lowering, which ran a
+                    # second, non-atomic user-tier transaction behind an
+                    # already-committed index write. Markers are their own domain
+                    # now (``storage/derived/session/marker_domain.py``), so a
+                    # failed publication here failed, full stop.
+                    outcomes.append(
+                        _selected_outcome(
+                            target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
+                        )
+                    )
+                    break
+                if held_at_admission:
+                    outcomes.append(
+                        _selected_outcome(
+                            target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
+                        )
+                    )
+                    break
+                if not _selected_frame_is_current(adapter, frame):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            before,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason="selected part generation changed after publication",
+                        )
+                    )
+                    break
+                try:
+                    after = _selected_session_facts(adapter, frame, target.session_id)
+                except DaemonOperationCancelled:
+                    raise
+                except Exception as exc:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "unknown",
+                            None,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason=f"post-publication certification unavailable: {exc}",
+                        )
+                    )
+                    break
+                if (moved := _selected_disposition_moved(target, after)) is not None:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "stale",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason=moved,
+                        )
+                    )
+                    break
+                if _selected_satisfied(target, after):
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "published" if accepted else "already_satisfied",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                        )
+                    )
+                    break
+                if accepted:
+                    outcomes.append(
+                        _selected_outcome(
+                            target,
+                            "failed",
+                            after,
+                            input_binding=prepared_binding,
+                            publication_known_committed=accepted,
+                            reason="publication returned success without output certification",
+                        )
+                    )
+                    break
+                refused_publication = refused_publication or after.input_binding == prepared_binding
                 if attempt == MAX_SELECTED_BINDING_RETRIES:
                     outcomes.append(
                         _selected_outcome(
                             target,
                             "pending",
-                            before_publication,
+                            after,
                             input_binding=prepared_binding,
-                            reason="binding_moved",
+                            # An unchanged binding means the publisher refused the
+                            # prepared output, not that its input moved.
+                            reason="publication_refused" if refused_publication else "binding_moved",
                         )
                     )
                     break
-                before = before_publication
-                continue
-            # Do not admit the bridge after a stop request. A stop received
-            # while the bridge is running is settled below before this worker
-            # returns, because publication and its cleanup remain on this worker.
-            if stop_requested() is not None:
-                return tuple(outcomes)
-            if not _selected_recipe_is_current(adapter, frame, expected_recipe):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before_publication,
-                        input_binding=prepared_binding,
-                        reason="selected part recipe changed before publication",
-                    )
-                )
-                break
-            if not _selected_frame_is_current(adapter, frame):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before,
-                        input_binding=prepared_binding,
-                        reason="selected part generation changed before publication",
-                    )
-                )
-                break
-            held_at_admission: list[str] = []
-
-            def publish_unless_held(
-                replacement: ReplacementLike = replacement,
-                target: SelectedSessionTarget = target,
-                held_at_admission: list[str] = held_at_admission,
-            ) -> bool:
-                # Re-decide the barrier inside the writer admission: compute
-                # ran outside it, so a newer unpublished revision may have been
-                # staged since the pre-compute check.
-                if barrier is not None and target.expected == "required":
+                before = after
+            finally:
+                if not publication_started:
+                    primary = sys.exception()
                     try:
-                        waiting = target.session_id in barrier((target.session_id,))
-                    except Exception as exc:
-                        held_at_admission.append(f"publication barrier unreadable: {exc}")
-                        return False
-                    if waiting:
-                        held_at_admission.append("awaits primary publication")
-                        return False
-                return adapter.publish(frame, replacement)
-
-            try:
-                accepted = admission("session_profile", publish_unless_held)
-            except Exception as exc:
-                # polylogue-ylh7v: session-profile publication is one index
-                # transaction with one outcome. The partial-commit branch this
-                # used to carry existed only for marker lowering, which ran a
-                # second, non-atomic user-tier transaction behind an
-                # already-committed index write. Markers are their own domain
-                # now (``storage/derived/session/marker_domain.py``), so a
-                # failed publication here failed, full stop.
-                outcomes.append(
-                    _selected_outcome(
-                        target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
-                    )
-                )
-                break
-            if held_at_admission:
-                outcomes.append(
-                    _selected_outcome(
-                        target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
-                    )
-                )
-                break
-            if not _selected_frame_is_current(adapter, frame):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        before,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason="selected part generation changed after publication",
-                    )
-                )
-                break
-            try:
-                after = _selected_session_facts(adapter, frame, target.session_id)
-            except Exception as exc:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "unknown",
-                        None,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason=f"post-publication certification unavailable: {exc}",
-                    )
-                )
-                break
-            if (moved := _selected_disposition_moved(target, after)) is not None:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "stale",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason=moved,
-                    )
-                )
-                break
-            if _selected_satisfied(target, after):
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "published" if accepted else "already_satisfied",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                    )
-                )
-                break
-            if accepted:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "failed",
-                        after,
-                        input_binding=prepared_binding,
-                        publication_known_committed=accepted,
-                        reason="publication returned success without output certification",
-                    )
-                )
-                break
-            refused_publication = refused_publication or after.input_binding == prepared_binding
-            if attempt == MAX_SELECTED_BINDING_RETRIES:
-                outcomes.append(
-                    _selected_outcome(
-                        target,
-                        "pending",
-                        after,
-                        input_binding=prepared_binding,
-                        # An unchanged binding means the publisher refused the
-                        # prepared output, not that its input moved.
-                        reason="publication_refused" if refused_publication else "binding_moved",
-                    )
-                )
-                break
-            before = after
+                        replacement.close()
+                    except BaseException as cleanup:
+                        if primary is not None:
+                            raise BaseExceptionGroup(
+                                "selected publication abandonment and cleanup failed", [primary, cleanup]
+                            ) from primary
+                        raise
     return tuple(outcomes)
 
 
@@ -1095,10 +1133,13 @@ class DaemonConverger:
         """Return bounded stage-owned status without propagating secret detail."""
         result: dict[str, dict[str, object]] = {}
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             if stage.status is None:
                 continue
             try:
                 result[stage_name] = dict(stage.status())
+            except DaemonOperationCancelled:
+                raise
             except Exception as exc:
                 # An unavailable probe is reported as unavailable, never as a
                 # healthy default: a status surface must not render a failed
@@ -1138,6 +1179,8 @@ class DaemonConverger:
             return state.stages.get(stage_name) is not StageState.DONE
         try:
             return bool(stage.barrier_check(path))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1164,6 +1207,8 @@ class DaemonConverger:
             return {path for path in paths if self._path_barrier_blocked(stage_name, stage, path)}
         try:
             blocked = set(stage.barrier_check_many(paths))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1196,6 +1241,8 @@ class DaemonConverger:
             }
         try:
             blocked = set(stage.barrier_check_sessions(session_ids))
+        except DaemonOperationCancelled:
+            raise
         except Exception as exc:
             emit(
                 "daemon.barrier.failed",
@@ -1243,6 +1290,7 @@ class DaemonConverger:
         downstream_blocked = False
 
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             if downstream_blocked:
                 state.stages[stage_name] = StageState.PENDING
                 continue
@@ -1251,6 +1299,8 @@ class DaemonConverger:
             if current is not StageState.DONE:
                 try:
                     needs_work = stage.check(path)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     emit(
                         "daemon.stage.check_failed",
@@ -1271,6 +1321,8 @@ class DaemonConverger:
                         t_stage = time.perf_counter()
                         try:
                             execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1367,6 +1419,7 @@ class DaemonConverger:
         batch_stage_times: dict[str, float] = {}
         blocked_paths: set[Path] = set()
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             for path in blocked_paths:
                 self._file_states[path].stages[stage_name] = StageState.PENDING
             active_paths = tuple(path for path in paths if path not in blocked_paths)
@@ -1383,6 +1436,8 @@ class DaemonConverger:
                     t_check = time.perf_counter()
                     try:
                         needs_work = stage.check(path)
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         emit(
                             "daemon.stage.check_failed",
@@ -1407,6 +1462,8 @@ class DaemonConverger:
                     t_stage = time.perf_counter()
                     try:
                         execute_result = _run_stage_execute(stage, partial(stage.execute, path))
+                    except DaemonOperationCancelled:
+                        raise
                     except Exception as exc:
                         emit(
                             "daemon.stage.execute_failed",
@@ -1441,6 +1498,8 @@ class DaemonConverger:
                 t_check = time.perf_counter()
                 try:
                     batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception as exc:
                     _record_stage_times(batch_stage_times, f"{stage_name}.check", time.perf_counter() - t_check, {})
                     emit(
@@ -1474,6 +1533,8 @@ class DaemonConverger:
                         t_stage = time.perf_counter()
                         try:
                             execute_result = _run_stage_execute(stage, partial(stage.execute_many, ordered_needs_work))
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             _record_stage_times(batch_stage_times, stage_name, time.perf_counter() - t_stage, {})
                             emit(
@@ -1500,6 +1561,8 @@ class DaemonConverger:
                                     remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
                                     )
+                                except DaemonOperationCancelled:
+                                    raise
                                 except Exception as exc:
                                     emit(
                                         "daemon.stage.recheck_failed",
@@ -1566,6 +1629,7 @@ class DaemonConverger:
         batch_stage_times: dict[str, float] = {}
         blocked_ids: set[str] = set()
         for stage_name, stage in self._stages.items():
+            check_compute_cancelled()
             for session_id in blocked_ids:
                 self._session_states[session_id].stages[stage_name] = StageState.PENDING
             active_ids = tuple(session_id for session_id in ids if session_id not in blocked_ids)
@@ -1578,6 +1642,8 @@ class DaemonConverger:
             else:
                 try:
                     batch_needs_work = set(stage.check_sessions(active_ids)).intersection(active_ids)
+                except DaemonOperationCancelled:
+                    raise
                 except Exception:
                     emit(
                         "daemon.stage.check_failed",
@@ -1604,6 +1670,8 @@ class DaemonConverger:
                             execute_result = _run_stage_execute(
                                 stage, partial(stage.execute_sessions, tuple(batch_needs_work))
                             )
+                        except DaemonOperationCancelled:
+                            raise
                         except Exception as exc:
                             emit(
                                 "daemon.stage.execute_failed",
@@ -1629,6 +1697,8 @@ class DaemonConverger:
                                     remaining_needs_work = set(
                                         stage.check_sessions(tuple(batch_needs_work))
                                     ).intersection(batch_needs_work)
+                                except DaemonOperationCancelled:
+                                    raise
                                 except Exception as exc:
                                     emit(
                                         "daemon.stage.recheck_failed",

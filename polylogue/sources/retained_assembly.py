@@ -54,6 +54,7 @@ import ijson
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, read_captured_zip_coordinate_receipt
 from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
@@ -124,6 +125,7 @@ def _select_retained(
     )
     try:
         for raw_id, source_path, blob_hash, blob_size, receipt, ordinal, captured in cursor:
+            check_compute_cancelled()
             if receipt is None:
                 raise OSError(errno.ENODATA, "retained artifact currency has no source receipt")
             if ordinal is not None:

@@ -345,26 +345,6 @@ def is_declared_logical_export(blob_path: Path, source_path: Path | str) -> bool
     )
 
 
-def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
-    """Return the content term identifying one retained acquisition.
-
-    Live acquisition of a mutable database identifies it by the canonical
-    logical export's digest, so import and replay use that digest directly.
-    Material that is not a canonical export is identified by its bytes.
-
-    A retained export is already the canonical form of its member's logical
-    revision, so its blob hash -- sha256 over exactly those bytes -- is that
-    term with nothing to recompute.
-
-    In particular, an old SQLite page image remains addressable by its blob
-    hash but cannot regain logical-source identity. It is historical opaque
-    material, not a compatibility input for the current source contract.
-    """
-    if looks_like_logical_export_path(blob_path):
-        return blob_hash
-    return blob_hash
-
-
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
     """Create a consistent standalone backup without writing to the source."""
     _snapshot_sqlite_database_bound(source, destination)
@@ -473,7 +453,6 @@ __all__ = [
     "is_sqlite_page_image",
     "is_undeclared_logical_export",
     "is_sqlite_path",
-    "retained_content_revision",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
     "sqlite_snapshot_failure_as_oserror",

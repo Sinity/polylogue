@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.operations.daemon_ingest import _spool_source_receipt
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import (
     SourceGenerationBlocker,
-    source_generation_receipt,
+    _raw_receipt,
     source_generation_receipt_page,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -24,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     record_source_item_raw_member,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.source_builders import observe_source_generation_receipt
 
 
 def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
@@ -119,7 +123,7 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     """An ANY application or a parsed_at marker must not stand in for current evidence."""
     source, index, _item_id = _connections()
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -134,11 +138,113 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     assert logical.session_ids == ("codex-session:session-1",)
 
     index.execute("UPDATE raw_revision_applications SET accepted_raw_id = 'other-raw' WHERE raw_id = 'raw-1'")
-    stale = source_generation_receipt(
+    stale = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
     assert SourceGenerationBlocker.APPLICATION_STALE in stale.items[0].raws[0].logicals[0].blockers
     assert stale.unresolved_raw_ids == ("raw-1",)
+
+
+def test_parser_census_writer_preserves_inherited_duplicate_receipt_spelling() -> None:
+    """Failed inherited census keeps its original sorted canonical JSON evidence."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+
+    source, index, _item = _connections()
+    try:
+        record_current_parser_source_census(
+            source, "raw-1", inherited_logical_keys=("codex:session-1", "codex-session:session-1")
+        )
+        assert source.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
+        ).fetchone() == ("failed", '["codex-session:session-1", "codex-session:session-1"]')
+        record_current_parser_source_census(source, "raw-1", inherited_logical_keys=("codex:session-1",))
+        assert source.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
+        ).fetchone() == ("complete", '["codex-session:session-1"]')
+    finally:
+        source.close()
+        index.close()
+
+
+def test_receipt_counts_all_application_witnesses_and_preserves_ambiguity() -> None:
+    """A late second current witness cannot hide behind many stale applications."""
+    source, index, _item = _connections()
+    try:
+        original = index.execute("SELECT decision_id FROM raw_revision_applications").fetchone()[0]
+        for number in range(1_024):
+            index.execute(
+                "INSERT INTO raw_revision_applications "
+                "SELECT ?, raw_id, session_id, logical_source_key, ?, acquisition_generation, decision, "
+                "accepted_raw_id, accepted_source_revision, accepted_content_hash, accepted_frontier_kind, "
+                "accepted_frontier, ?, predecessor_raw_id, append_end_offset, detail, decided_at_ms "
+                "FROM raw_revision_applications WHERE decision_id=?",
+                (f"z-{number:05d}", f"stale-{number}", f"baseline-{number}", original),
+            )
+        receipt = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-1"
+        )
+        assert receipt.complete
+        assert len(receipt.items[0].raws[0].logicals[0].application_ids) == 1_025
+        index.execute("UPDATE raw_revision_applications SET source_revision='revision-1' WHERE decision_id='z-01023'")
+        ambiguous = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-1"
+        )
+        assert not ambiguous.complete
+        assert ambiguous.items[0].raws[0].logicals[0].blockers == (SourceGenerationBlocker.APPLICATION_AMBIGUOUS,)
+    finally:
+        source.close()
+        index.close()
+
+
+def test_receipt_spools_one_raws_complete_logical_denominator_without_collecting_it(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import spool_connection
+
+    source, index, _item = _connections()
+    keys = ["codex:session-1"]
+    for number in range(1_024):
+        native_id = f"logical-{number:05d}"
+        keys.append(f"codex:{native_id}")
+        source.execute(
+            "INSERT INTO raw_session_memberships(raw_id, logical_source_key, provider_session_id, source_revision, "
+            "normalized_content_hash, message_count, acquisition_generation, decision) "
+            "VALUES ('raw-1', ?, ?, 'revision-1', ?, 1, 1, 'applied')",
+            (keys[-1], native_id, b"c" * 32),
+        )
+    source.execute(
+        "UPDATE raw_authority_parser_census SET logical_keys_json=? WHERE raw_id='raw-1'", (json.dumps(sorted(keys)),)
+    )
+    source.execute("UPDATE raw_membership_census SET member_count=? WHERE raw_id='raw-1'", (len(keys),))
+    assert source.in_transaction
+    spool = _spool_source_receipt(source, index, "source-43", tmp_path / "logical-receipt.sqlite")
+    try:
+        assert source.in_transaction
+        assert spool.unresolved_raw_count == 1
+        assert spool.confirmed_raw_count == 0
+        with spool_connection(spool.path, read_only=True) as observed:
+            assert observed.execute("SELECT COUNT(*) FROM logicals").fetchone() == (1_025,)
+            assert observed.execute("SELECT COUNT(*) FROM logicals WHERE complete=1").fetchone() == (1,)
+            assert observed.execute("SELECT parser_complete FROM raws WHERE raw_id='raw-1'").fetchone() == (1,)
+    finally:
+        spool.close()
+
+
+@pytest.mark.parametrize(
+    "recorded",
+    [
+        '["codex:session-1","codex:session-1"]',
+        '["codex:session-1","codex:logical-earlier"]',
+        '["codex-session:session-1","codex:session-1"]',
+    ],
+)
+def test_receipt_refuses_invalid_order_or_duplicate_canonical_identity(recorded: str) -> None:
+    source, index, _item = _connections()
+    source.execute("UPDATE raw_authority_parser_census SET logical_keys_json=? WHERE raw_id='raw-1'", (recorded,))
+    receipt = observe_source_generation_receipt(
+        source, index, source_generation_id="source-43", active_generation="index-1"
+    )
+    assert not receipt.complete
+    assert receipt.unresolved_raw_ids == ("raw-1",)
+    assert receipt.items[0].raws[0].parser_blockers == (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
 
 
 def test_receipt_rejects_incomplete_enumeration_despite_current_raw_witnesses() -> None:
@@ -149,7 +255,7 @@ def test_receipt_rejects_incomplete_enumeration_despite_current_raw_witnesses() 
         (item_id,),
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -165,7 +271,7 @@ def test_receipt_reports_retired_source_member_by_coordinate_not_invented_raw_id
     source, index, _item_id = _connections()
     source.execute("DELETE FROM raw_sessions WHERE raw_id = 'raw-1'")
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -180,7 +286,17 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     """A byte fragment with a durable key still needs an exact current index witness."""
     source, index, _item_id = _connections()
     source.execute("DELETE FROM raw_session_memberships WHERE raw_id = 'raw-1'")
-    source.execute("UPDATE raw_sessions SET source_index = -1 WHERE raw_id = 'raw-1'")
+    source.execute(
+        "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
+        "logical_source_key, revision_kind, source_revision, acquisition_generation, revision_authority) "
+        "VALUES ('raw-0', 'codex-session', '/synthetic/export.json', ?, 1, 0, "
+        "'codex:session-1', 'full', 'revision-0', 0, 'byte_proven')",
+        (b"q" * 32,),
+    )
+    source.execute(
+        "UPDATE raw_sessions SET source_index=-1, revision_kind='append', revision_authority='byte_proven', "
+        "predecessor_raw_id='raw-0', baseline_raw_id='raw-0' WHERE raw_id='raw-1'"
+    )
     source.execute(
         """
         UPDATE raw_membership_census
@@ -190,7 +306,7 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
         """
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -200,14 +316,15 @@ def test_receipt_requires_membership_census_and_keeps_byte_governed_logical_deno
     assert raw.logicals[0].complete is True
 
     source.execute("UPDATE raw_membership_census SET member_count = 1 WHERE raw_id = 'raw-1'")
-    mismatch = source_generation_receipt(
+    mismatch = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
     assert mismatch.items[0].raws[0].parser_complete is False
     assert mismatch.unresolved_raw_ids == ("raw-1",)
 
 
-def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head() -> None:
+@pytest.mark.parametrize("corruption", [None, "cycle", "missing-predecessor"])
+def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head(corruption: str | None) -> None:
     """A later head must not turn a source member's immutable prefix receipt into a false gap."""
     source, index, _item_id = _connections()
     source.execute(
@@ -243,14 +360,41 @@ def test_receipt_preserves_an_applied_prefix_that_leads_to_the_current_head() ->
         decided_at_ms=3,
     )
 
-    receipt = source_generation_receipt(
+    if corruption == "cycle":
+        source.execute("UPDATE raw_sessions SET predecessor_raw_id='raw-2' WHERE raw_id='raw-2'")
+    elif corruption == "missing-predecessor":
+        source.execute("UPDATE raw_sessions SET predecessor_raw_id=NULL WHERE raw_id='raw-2'")
+
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
     logical = receipt.items[0].raws[0].logicals[0]
     assert logical.accepted_raw_id == "raw-2"
-    assert logical.complete is True
-    assert receipt.complete is True
+    assert logical.complete is (corruption is None)
+    assert receipt.complete is (corruption is None)
+    if corruption is not None:
+        assert SourceGenerationBlocker.APPLICATION_STALE in logical.blockers
+    else:
+        chain_read = False
+
+        def trace(statement: str) -> None:
+            nonlocal chain_read
+            if "SELECT raw_id, logical_source_key, revision_kind, revision_authority, source_index" in statement:
+                chain_read = True
+
+        def stop() -> None:
+            if chain_read:
+                raise InterruptedError("synthetic predecessor cancellation")
+
+        source.set_trace_callback(trace)
+        with pytest.raises(InterruptedError):
+            with _raw_receipt(source, index, "raw-1", check_stop=stop) as raw:
+                assert raw is not None
+                tuple(raw.logicals)
+        assert chain_read
+        source.set_trace_callback(None)
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
 
 
 def test_receipt_rejects_ambiguous_application_that_mimics_the_current_head() -> None:
@@ -259,7 +403,7 @@ def test_receipt_rejects_ambiguous_application_that_mimics_the_current_head() ->
     index.execute("UPDATE raw_revision_applications SET decision = 'ambiguous' WHERE raw_id = 'raw-1'")
     source.execute("UPDATE raw_session_memberships SET decision = 'ambiguous' WHERE raw_id = 'raw-1'")
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -290,7 +434,7 @@ def test_receipt_rejects_old_same_raw_receipt_after_reparse_changes_current_head
         decided_at_ms=3,
     )
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -317,7 +461,7 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
     * restoring the ``CREATE TABLE`` to ``INDEX_DDL`` turns the first
       assertion red;
     * restoring the reader's query without the table makes
-      ``source_generation_receipt`` raise ``no such table`` instead of
+      the actual paged receipt owner raise ``no such table`` instead of
       returning a complete receipt, turning the second half red;
     * reintroducing the reported field as an always-empty stand-in turns the
       last assertion red.
@@ -328,7 +472,7 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
     assert "candidate_source_membership" not in declared
     assert "idx_candidate_source_membership_pending" not in declared
 
-    receipt = source_generation_receipt(
+    receipt = observe_source_generation_receipt(
         source, index, source_generation_id="source-43", active_generation="index-generation-1"
     )
 
@@ -367,18 +511,10 @@ def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: 
             raw_id="shared-raw",
             raw_blob_hash=b"r" * 32,
         )
-    receipt = source_generation_receipt(
-        source, index, source_generation_id="large", active_generation="index-generation:synthetic"
-    )
-    assert len(receipt.items) == 10_241
-    assert receipt.unresolved_raw_ids == ("shared-raw",)
-    assert receipt.confirmed_raw_ids == ()
-    assert receipt.items[0].logical_coordinate == coordinates[0]
-    assert receipt.items[-1].logical_coordinate == coordinates[-1]
     cursor = None
     page_count = 0
     while True:
-        page = source_generation_receipt_page(source, index, source_generation_id="large", after=cursor)
+        page = source_generation_receipt_page(source, source_generation_id="large", after=cursor)
         if not page.items:
             break
         assert len(page.items) <= 256
@@ -395,3 +531,155 @@ def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: 
             assert check.execute("SELECT COUNT(*) FROM items").fetchone() == (10_241,)
     finally:
         spool.close()
+
+
+def test_receipt_spools_nested_members_from_the_callers_uncommitted_source_snapshot(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import spool_connection
+
+    source, index, item_id = _connections()
+    source.execute(
+        "UPDATE source_items SET enumerated_record_count=NULL, enumeration_digest=NULL, enumerated_at_ms=NULL, "
+        "enumerated_member_count=NULL, enumeration_member_digest=NULL WHERE source_item_id=?",
+        (item_id,),
+    )
+    for ordinal in range(513):
+        raw_id = f"nested:{ordinal:04d}"
+        source.execute(
+            "INSERT INTO raw_sessions(raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES (?, 'codex-session', '/synthetic/nested', ?, 1, 1)",
+            (raw_id, b"n" * 32),
+        )
+        record_source_item_raw_member(
+            source,
+            source_generation_id="source-43",
+            source_item_id=item_id,
+            record_coordinate=f"record:nested:{ordinal:04d}",
+            raw_id=raw_id,
+            raw_blob_hash=b"n" * 32,
+        )
+    complete_source_item_enumeration(
+        source,
+        source_generation_id="source-43",
+        source_item_id=item_id,
+        enumeration_fingerprint="b" * 64,
+        record_coordinates=(
+            str(row[0])
+            for row in source.execute(
+                "SELECT record_coordinate FROM source_item_raw_members WHERE source_item_id=?", (item_id,)
+            )
+        ),
+        enumerated_at_ms=2,
+    )
+    assert source.in_transaction
+    spool = _spool_source_receipt(source, index, "source-43", tmp_path / "nested.sqlite")
+    try:
+        assert source.in_transaction
+        assert spool.enumeration_complete
+        assert spool.unresolved_raw_count == 513
+        assert spool.confirmed_raw_count == 1
+        with spool_connection(spool.path, read_only=True) as observed:
+            assert observed.execute("SELECT raw_count, unresolved_count FROM items").fetchone() == (514, 513)
+            assert observed.execute("SELECT COUNT(*) FROM item_raws").fetchone() == (514,)
+    finally:
+        spool.close()
+        source.rollback()
+
+
+def test_receipt_cancellation_preserves_source_snapshot_and_settles_private_spool(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import unlink_spool
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    source, index, _item_id = _connections()
+    path = tmp_path / "cancelled-receipt.sqlite"
+    calls = 0
+
+    def stop() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            raise InterruptedError("synthetic receipt cancellation")
+
+    with pytest.raises(InterruptedError):
+        _spool_source_receipt(source, index, "source-43", path, check_stop=stop)
+    assert not retained_native_sql_owners_for_lifetime(path)
+    assert source.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
+    unlink_spool(path)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "UPDATE raw_sessions SET revision_authority='quarantined' WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET logical_source_key='codex:other-session' WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET source_index=-1 WHERE raw_id='raw-1'",
+        "UPDATE raw_sessions SET predecessor_raw_id='raw-2' WHERE raw_id='raw-2'",
+        "UPDATE raw_sessions SET predecessor_raw_id=NULL WHERE raw_id='raw-2'",
+        "UPDATE raw_sessions SET baseline_raw_id='raw-2' WHERE raw_id='raw-2'",
+    ],
+    ids=[
+        "exact",
+        "quarantined-baseline",
+        "different-session",
+        "negative-baseline",
+        "cycle",
+        "missing-predecessor",
+        "wrong-baseline",
+    ],
+)
+def test_byte_fragment_receipt_requires_the_exact_durable_baseline_chain(corruption: str | None) -> None:
+    """A failed fragment census proves completion only with its complete BYTE_PROVEN chain."""
+    source, index, _item = _connections()
+    try:
+        source.execute("UPDATE raw_sessions SET revision_authority='byte_proven' WHERE raw_id='raw-1'")
+        source.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms,
+                logical_source_key, revision_kind, source_revision, acquisition_generation,
+                revision_authority, predecessor_raw_id, baseline_raw_id
+            ) VALUES ('raw-2', 'codex-session', '/synthetic/export.json', -1, ?, 1, 2,
+                      'codex:session-1', 'append', 'revision-2', 2, 'byte_proven', 'raw-1', 'raw-1')
+            """,
+            (b"s" * 32,),
+        )
+        source.execute(
+            "INSERT INTO raw_authority_parser_census(raw_id, parser_fingerprint, status, logical_keys_json, detail) "
+            "VALUES ('raw-2', ?, 'complete', '[\"codex-session:session-1\"]', '')",
+            (raw_authority_parser_fingerprint(),),
+        )
+        source.execute(
+            "INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, "
+            "censused_at_ms, detail, revision_authority) VALUES ('raw-2', ?, 'failed', 0, 2, '', 'byte_proven')",
+            (raw_authority_parser_fingerprint(),),
+        )
+        if corruption is not None:
+            source.execute(corruption)
+        with _raw_receipt(source, index, "raw-2", check_stop=None) as receipt:
+            assert receipt is not None
+            assert receipt.parser_complete is (corruption is None)
+            assert receipt.parser_blockers == (
+                () if corruption is None else (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
+            )
+        if corruption is None:
+            chain_read = False
+
+            def trace(statement: str) -> None:
+                nonlocal chain_read
+                if "SELECT raw_id, logical_source_key, revision_kind, revision_authority, source_index" in statement:
+                    chain_read = True
+
+            def stop() -> None:
+                if chain_read:
+                    raise InterruptedError("synthetic byte-chain cancellation")
+
+            source.set_trace_callback(trace)
+            with pytest.raises(InterruptedError):
+                with _raw_receipt(source, index, "raw-2", check_stop=stop):
+                    pytest.fail("cancelled chain published a receipt")
+            assert chain_read
+            source.set_trace_callback(None)
+            assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
+    finally:
+        source.close()
+        index.close()

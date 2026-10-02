@@ -3442,8 +3442,8 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     }
 
 
-def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
-    """Malformed journals remain typed evidence when decoding cannot recover them."""
+def test_append_malformed_workflow_journal_retains_failure_without_artifact_authority(tmp_path: Path) -> None:
+    """A filename cannot turn a complete corrupt record into artifact proof."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b'{"contentKey":"broken"\n'
@@ -3452,8 +3452,8 @@ def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp
 
     result = ingest_append_plans(cast(Any, _append_owner(tmp_path)), [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifacts = conn.execute(
             """
@@ -3461,20 +3461,21 @@ def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp
             FROM raw_artifacts
             """
         ).fetchall()
-    assert len(artifacts) == 1
-    assert [row[0] for row in artifacts] == ["workflow_journal"]
-    assert all(row[2] == 0 for row in artifacts)
-    assert all("OriginSpec" in row[1] for row in artifacts)
+        raw = conn.execute("SELECT parse_error, parsed_at_ms FROM raw_sessions").fetchone()
+    assert artifacts == []
+    assert raw is not None and raw[0] is not None and raw[1] is None
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
 
-def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path) -> None:
+@pytest.mark.parametrize("artifact_count", [65, 257])
+def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path, artifact_count: int) -> None:
     """Decoded session evidence bypasses path-only workflow-journal admission."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n' for index in range(64)
+        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
+        for index in range(artifact_count)
     ) + (
         b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
         b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'

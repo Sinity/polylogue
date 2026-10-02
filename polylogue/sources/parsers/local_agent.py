@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
+from polylogue.core.provider_identity import profile_root_for_artifact as _profile_root_for_artifact
 from polylogue.core.timestamps import format_timestamp
 from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.live.gemini_tool_output_sidecars import (
@@ -34,7 +35,6 @@ from .base import (
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
 from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
-from .hermes_identity import profile_root_for_artifact as _profile_root_for_artifact
 from .hermes_identity import qualified_session_id as _qualified_session_id
 
 

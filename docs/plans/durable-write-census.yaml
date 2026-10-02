@@ -7,6 +7,31 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
+  - file: "polylogue/storage/source_generation_receipts.py"
+    function: "_source_predecessor_rows"
+    table: "visited"
+    disposition: disposable_scratch
+    reason: "Creator-owned visited.db deduplicates one supplied Source predecessor walk; the managed scratch owner retains the database through failed close and creator retry."
+  - file: "polylogue/storage/source_generation_receipts.py"
+    function: "iter_source_item_raw_receipts"
+    table: "raws"
+    disposition: disposable_scratch
+    reason: "Creator-owned disk scratch deduplicates raw receipts while the caller retains the same Source snapshot; it is not archive state."
+  - file: "polylogue/storage/sqlite/archive_tiers/source_items.py"
+    function: "FrozenSourceManifest.__post_init__"
+    table: "coordinates"
+    disposition: disposable_scratch
+    reason: "Creator-owned private disk coordinate inventory validates one frozen manifest and closes with its managed scratch owner."
+  - file: "polylogue/storage/sqlite/archive_tiers/source_items.py"
+    function: "_measure_source_item_enumeration"
+    table: "ordinals"
+    disposition: disposable_scratch
+    reason: "Creator-owned private disk ordinal inventory measures one source item enumeration; publication remains on the supplied Source writer."
+  - file: "polylogue/storage/sqlite/archive_tiers/source_items.py"
+    function: "_measure_source_item_enumeration"
+    table: "records"
+    disposition: disposable_scratch
+    reason: "Creator-owned private disk record inventory measures one source item enumeration; publication remains on the supplied Source writer."
   - file: "polylogue/analysis/delegation_work_evidence_materializer.py"
     function: "_create_scratch_graph"
     table: "nodes"

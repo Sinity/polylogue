@@ -11,7 +11,7 @@ import re
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from importlib import resources
@@ -79,7 +79,6 @@ DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
 _SIDECAR_NAME_RE = re.compile(r"^(?P<slot>\d{3,})\.train\.json$")
 _DURABLE_TRAIN_MANIFEST_NAME_RE = re.compile(r"^(?P<tier>source|user|audit)-(?P<slot>\d{3,})\.json$")
 _MIGRATION_NAME_RE = re.compile(r"^(?P<slot>\d{3,})_[a-z0-9_]+\.sql$")
-_DROP_SQL_RE = re.compile(r"(?is)\bDROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)\b")
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
 
@@ -241,8 +240,17 @@ def _validate_sidecar_binding(
         )
     # The canonical classifier separately proves paired index replacement;
     # destructive drops still require their declared copy-forward constraints.
-    if _DROP_SQL_RE.search(sql) is not None and expected_claim.requires_backup and not train.drop_constraints:
-        raise DurableChangeTrainError(f"durable migration sidecar forbids an unapproved drop: {sidecar.resource_name}")
+    if (
+        _migration_runner._migration_has_schema_drops(sql)
+        and expected_claim.requires_backup
+        and not train.drop_constraints
+    ):
+        try:
+            _migration_runner._index_replacement_pairs(Path(migration_name), sql, allow_other_statements=True)
+        except _migration_runner.MigrationError as exc:
+            raise DurableChangeTrainError(
+                f"durable migration sidecar forbids an unapproved drop: {sidecar.resource_name}"
+            ) from exc
 
 
 def validate_durable_migration_sidecars(
@@ -753,6 +761,10 @@ def _invoke_runtime_consumers(
                     detail = _probe_source_profile_identity(
                         cast(Callable[..., object], value), writer=reference.endswith(":record_raw_profile_identity")
                     )
+                elif reference.endswith(":has_raw_byte_revision_dependents"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("byte revision dependency reader is source-tier-only")
+                    detail = _probe_raw_byte_revision_dependents(cast(Callable[..., object], value))
                 elif reference.endswith(":read_raw_failure_lifecycle"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -772,12 +784,16 @@ def _invoke_runtime_consumers(
                                 _ISOLATED_RUNTIME_PROBE_CACHE.pop(next(iter(_ISOLATED_RUNTIME_PROBE_CACHE)))
                             _ISOLATED_RUNTIME_PROBE_CACHE[key] = cached_detail
                     detail = cached_detail
-                elif reference.endswith(":_record_zip_container_coordinate"):
+                elif reference.endswith(":execute_raw_admission_plan_sync"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_zip_container_coordinate_write(cast(Callable[..., object], value))
+                    detail = _probe_captured_zip_admission(cast(Callable[..., object], value))
+                elif reference.endswith(":retained_source_location"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("captured ZIP restoration requires source tier")
+                    detail = _probe_captured_zip_restoration(cast(Callable[..., object], value))
                 elif reference.endswith(":raw_revision_descriptor"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -1107,17 +1123,14 @@ def _probe_accepted_marker_input_writer() -> str:
     return "accepted marker replay is immutable and source rollback removes the batch"
 
 
-def _runtime_probe_source_connection() -> sqlite3.Connection:
-    """Create a fresh canonical source-tier probe."""
+@contextmanager
+def _runtime_probe_source_connection() -> Iterator[sqlite3.Connection]:
+    """Own the actual canonical source-tier probe through native settlement."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    connection = sqlite3.connect(":memory:")
-    try:
+    with sqlite_connection(":memory:") as connection:
         initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+        yield connection
 
 
 def _probe_source_profile_identity(operation: Callable[..., object], *, writer: bool) -> str:
@@ -1132,7 +1145,7 @@ def _probe_source_profile_identity(operation: Callable[..., object], *, writer: 
     write = operation if writer else record_raw_profile_identity
     read = read_raw_profile_identity if writer else operation
     key = "0123456789ab"
-    with closing(_runtime_probe_source_connection()) as probe:
+    with _runtime_probe_source_connection() as probe:
         for raw_id in ("captured-profile", "historical-profile-gap"):
             write_source_raw_session_blob_ref(
                 probe,
@@ -1182,7 +1195,7 @@ def _probe_captured_source_input(operation: Callable[..., object], *, writer: bo
         profile_source_path=str(root / "sessions/input.jsonl"),
     )
     generation = "durable-change-train-captured-input"
-    with closing(_runtime_probe_source_connection()) as probe:
+    with _runtime_probe_source_connection() as probe:
         publish(
             probe,
             source_generation_id=generation,
@@ -1365,12 +1378,29 @@ def _probe_source_generation_census(census: Callable[..., object]) -> str:
     return "census reported the probe generation as pending and unsealable"
 
 
+@contextmanager
+def _runtime_probe_directory(*, prefix: str) -> Iterator[Path]:
+    """Retain the original probe tree until every physical SQL owner retires."""
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    scratch = tempfile.TemporaryDirectory(prefix=prefix)
+    with retain_native_sql_lifetimes(scratch):
+        try:
+            yield Path(scratch.name)
+        finally:
+            if not retained_native_sql_owners_for_lifetime(scratch):
+                scratch.cleanup()
+            # Otherwise original Native custody retains this exact directory;
+            # final creator retirement releases its original cleanup finalizer.
+
+
 def _probe_material_admission(admit: Callable[..., object]) -> str:
     """Exercise prepared claim admission against the canonical source schema."""
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.materials import prepare_material
 
-    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+    with _runtime_probe_directory(prefix="material-consumer-probe-") as directory:
         root = Path(directory)
         prepared = prepare_material(
             blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
@@ -1398,7 +1428,7 @@ def _probe_material_read(get: Callable[..., object]) -> str:
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.materials import admit_material, prepare_material
 
-    with tempfile.TemporaryDirectory(prefix="material-consumer-probe-") as directory:
+    with _runtime_probe_directory(prefix="material-consumer-probe-") as directory:
         root = Path(directory)
         prepared = prepare_material(
             blob_store=ArchiveBlobPublisher(root / "source.db", root / "blob"),
@@ -1417,17 +1447,14 @@ def _probe_material_read(get: Callable[..., object]) -> str:
     return f"read back probe material {observation.material_id[:12]}"
 
 
-def _runtime_probe_user_connection() -> sqlite3.Connection:
-    """Create a fresh canonical user-tier probe."""
+@contextmanager
+def _runtime_probe_user_connection() -> Iterator[sqlite3.Connection]:
+    """Own the actual canonical user-tier probe through native settlement."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    connection = sqlite3.connect(":memory:")
-    try:
+    with sqlite_connection(":memory:") as connection:
         initialize_runtime_tier_probe(connection, ArchiveTier.USER)
-    except BaseException:
-        connection.close()
-        raise
-    return connection
+        yield connection
 
 
 def _probe_query_promotion(promote: Callable[..., object]) -> str:
@@ -1574,17 +1601,18 @@ def _probe_assertion_status_mark(mark: Callable[..., object]) -> str:
 
 @contextmanager
 def _runtime_probe_user_file_connection() -> Iterator[sqlite3.Connection]:
-    """Make a file-backed user tier for cursor transaction probes."""
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    """Keep the real file probe and directory until native SQL settles."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-user-cursor-probe-") as directory:
-        path = Path(directory) / "user.db"
-        initialize_archive_database(path, ArchiveTier.USER)
-        connection = sqlite3.connect(path)
+    with scratch_connection_context(prefix="polylogue-user-cursor-probe-", filename="user.db") as connection:
+        cursor = connection.execute("PRAGMA database_list")
         try:
-            yield connection
+            probe_path = next(Path(str(row[2])) for row in cursor if row[1] == "main")
         finally:
-            connection.close()
+            cursor.close()
+        initialize_runtime_tier_probe(connection, ArchiveTier.USER, probe_path=probe_path)
+        yield connection
 
 
 def _probe_session_marker_delivery_writer(writer: Callable[..., object]) -> str:
@@ -1703,9 +1731,8 @@ def _seed_probe_raw_row(
     polylogue-1fijp: this is the only ``INSERT INTO raw_sessions`` left in the
     tree outside ``source_write.py``'s writer primitives, and a census should
     be able to tell at a glance that it is NOT an acquisition path. Every
-    caller is a ``_probe_*`` function operating on a
-    ``tempfile.TemporaryDirectory`` archive deleted before the function
-    returns; nothing here ever touches a real archive.
+    caller is a ``_probe_*`` function operating on an isolated canonical
+    probe or archive; nothing here ever touches a live operator archive.
 
     These rows also cannot go through
     :func:`~polylogue.storage.sqlite.archive_tiers.raw_admission.admit_raw_observation`,
@@ -1730,71 +1757,128 @@ def _seed_probe_raw_row(
     )
 
 
-def _probe_zip_container_coordinate_write(writer: Callable[..., object]) -> str:
-    """Exercise the zip-member coordinate write against a migrated source tier.
+def _probe_captured_zip_admission(execute: Callable[..., object]) -> str:
+    """Publish the captured coordinate atomically through actual raw admission."""
+    from dataclasses import replace
 
-    The consumer decodes a v2 zip-member identity and forwards it to
-    ``record_raw_container_coordinate``, which writes the source tier. The
-    probe drives both arms: a raw whose id genuinely encodes its coordinate is
-    recorded, and one whose id does not is rejected without a write, which is
-    the guard that keeps legacy or unrelated identities out of the table.
-    """
-    from polylogue.core.enums import Provider
-    from polylogue.core.raw_coordinates import zip_member_raw_id, zip_member_source_coordinate
-    from polylogue.storage.runtime.raw.records import RawSessionRecord
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_member_raw_id,
+    )
+    from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+        PendingPreParseRawAdmissionRequest,
+        RawAdmissionResult,
+        plan_raw_admission,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_captured_zip_coordinate
 
-    blob_hash = "b" * 64
-    source_path = "/durable-change-train/coordinate-probe.zip"
-    source_index = 1
-    entry_ordinal, split_index = zip_member_source_coordinate(source_index)
-    matching_raw_id = zip_member_raw_id(
-        source_path=source_path,
-        entry_ordinal=entry_ordinal,
-        split_index=split_index,
+    coordinate = CapturedZipMemberCoordinate(
+        "/durable-change-train/physical/input.zip",
+        "/durable-change-train/declared/input.zip",
+        "directory:with:separators/session.json",
+        2,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        "a" * 64,
+        "c" * 64,
+    )
+    payload = b'{"probe":"captured-member"}'
+    blob_hash = hashlib.sha256(payload).digest()
+    raw_id = captured_zip_member_raw_id(coordinate, blob_hash.hex())
+    request = PendingPreParseRawAdmissionRequest(
+        origin=Origin.UNKNOWN_EXPORT,
+        capture_mode=Provider.UNKNOWN,
+        source_path=coordinate.declared_member,
+        canonical_source_path=coordinate.canonical_member,
+        source_index=coordinate.source_index,
         blob_hash=blob_hash,
+        blob_size=len(payload),
+        acquired_at_ms=1,
+        raw_id=raw_id,
+        captured_zip_coordinate=coordinate,
+        addressing_mode=coordinate.addressing_mode.value,
+        content_identity=blob_hash.hex(),
+    )
+    with _runtime_probe_source_connection() as probe:
+        result = cast(RawAdmissionResult, execute(probe, plan_raw_admission(request)))
+        if result.raw_id != raw_id or read_raw_captured_zip_coordinate(probe, raw_id) != coordinate:
+            raise DurableChangeTrainError("captured ZIP admission lost its exact coordinate")
+        before = probe.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+        for altered in (
+            replace(request, raw_id="unrelated-raw"),
+            replace(request, source_path="/durable-change-train/other.zip:session.json"),
+            replace(request, canonical_source_path=coordinate.declared_member),
+            replace(request, source_index=coordinate.source_index + 1),
+            replace(request, addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER.value),
+        ):
+            try:
+                execute(probe, plan_raw_admission(altered))
+            except ValueError:
+                pass
+            else:
+                raise DurableChangeTrainError("captured ZIP admission accepted conflicting input evidence")
+            if probe.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] != before:
+                raise DurableChangeTrainError("captured ZIP refusal published an unrelated raw")
+    return "admitted the captured coordinate and refused altered identity, paths, index and reading"
+
+
+def _probe_captured_zip_restoration(resolve: Callable[..., object]) -> str:
+    """Restore the captured physical member without reinterpreting path separators."""
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_coordinate_receipt,
     )
 
-    def _record(raw_id: str) -> RawSessionRecord:
-        return RawSessionRecord(
-            raw_id=raw_id,
-            blob_hash=blob_hash,
-            source_name=Provider.CLAUDE_CODE.value,
-            source_path=source_path,
-            source_index=source_index,
-            blob_size=0,
-            acquired_at="2026-01-01T00:00:00+00:00",
-        )
+    coordinate = CapturedZipMemberCoordinate(
+        "/durable-change-train/physical/input.zip",
+        "/durable-change-train/declared/input.zip",
+        "directory:with:separators/session.json",
+        2,
+        0,
+        MemberAddressingMode.WHOLE_MEMBER,
+        "a" * 64,
+        "c" * 64,
+    )
+    row = {
+        "source_path": coordinate.declared_member,
+        "captured_coordinate": captured_zip_coordinate_receipt(coordinate),
+    }
+    if resolve(row, Path("/durable-change-train/active")) != (coordinate.canonical_member, True):
+        raise DurableChangeTrainError("captured ZIP restoration lost the accepted physical member")
+    for receipt in (17, "{}"):
+        try:
+            resolve({**row, "captured_coordinate": receipt}, Path("/durable-change-train/active"))
+        except ValueError:
+            pass
+        else:
+            raise DurableChangeTrainError("captured ZIP restoration reinterpreted malformed evidence")
+    return "restored the exact captured physical member and refused malformed receipts"
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-coordinate-") as directory:
-        root = Path(directory) / "archive"
-        initialize_active_archive_root(root)
-        with ArchiveStore.open_existing(root, read_only=False) as archive:
-            connection = archive._ensure_source_conn()
-            for raw_id in (matching_raw_id, "durable-change-train-unrelated-raw"):
-                _seed_probe_raw_row(
-                    connection,
-                    raw_id=raw_id,
-                    source_path=source_path,
-                    source_index=source_index,
-                    blob_hash=bytes.fromhex(blob_hash),
-                )
-            writer(archive, _record(matching_raw_id), source_raw_id=matching_raw_id, blob_hash=blob_hash)
-            writer(
-                archive,
-                _record("durable-change-train-unrelated-raw"),
-                source_raw_id="durable-change-train-unrelated-raw",
-                blob_hash=blob_hash,
-            )
-            recorded = {
-                str(row[0]) for row in connection.execute("SELECT raw_id FROM raw_container_coordinates").fetchall()
-            }
-    if matching_raw_id not in recorded:
-        raise DurableChangeTrainError("zip container coordinate write did not record a matching v2 identity")
-    if "durable-change-train-unrelated-raw" in recorded:
-        raise DurableChangeTrainError("zip container coordinate write recorded an identity it should have rejected")
-    return "recorded a v2 zip member coordinate and rejected an unrelated identity"
+
+def _probe_raw_byte_revision_dependents(reader: Callable[..., object]) -> str:
+    """Exercise both indexed dependency arms and the excluded self row."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+
+    with sqlite_connection(":memory:") as connection:
+        initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE)
+        for raw_id in ("parent", "child"):
+            _seed_probe_raw_row(connection, raw_id=raw_id, source_path=f"/{raw_id}.jsonl", blob_hash=b"0" * 32)
+        connection.execute(
+            "UPDATE raw_sessions SET predecessor_raw_id = 'parent', baseline_raw_id = 'parent' WHERE raw_id = 'parent'"
+        )
+        if reader(connection, "parent") or reader(connection, "missing"):
+            raise DurableChangeTrainError("dependency reader counted its own row or an absent dependency")
+        for column in ("predecessor_raw_id", "baseline_raw_id"):
+            connection.execute(f"UPDATE raw_sessions SET {column} = 'parent' WHERE raw_id = 'child'")
+            if not reader(connection, "parent"):
+                raise DurableChangeTrainError(f"dependency reader missed {column}")
+            connection.execute(f"UPDATE raw_sessions SET {column} = NULL WHERE raw_id = 'child'")
+        if reader(connection, "parent"):
+            raise DurableChangeTrainError("dependency reader retained a removed dependency")
+    return "read predecessor and baseline dependents while excluding self and absent dependencies"
 
 
 def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> str:
@@ -1810,7 +1894,7 @@ def _probe_revision_provider_resolution(descriptor: Callable[..., object]) -> st
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-revision-") as directory:
+    with _runtime_probe_directory(prefix="polylogue-durable-train-revision-") as directory:
         root = Path(directory) / "archive"
         initialize_active_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -1846,24 +1930,20 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
     """
     from polylogue.core.enums import Origin, Provider
     from polylogue.core.sources import provider_from_origin
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
 
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-hydration-") as directory:
-        source_path = Path(directory) / "source.db"
-        with sqlite_connection(source_path) as connection:
-            connection.row_factory = sqlite3.Row
-            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
-            _seed_probe_raw_row(
-                connection,
-                raw_id="durable-change-train-hydration-raw",
-                source_path="/durable-change-train/hydration-probe.jsonl",
-                blob_hash=b"\0" * 32,
-                detected_provider="codex",
-            )
-            row = connection.execute(
-                "SELECT * FROM raw_sessions WHERE raw_id = ?",
-                ("durable-change-train-hydration-raw",),
-            ).fetchone()
+    with _runtime_probe_source_connection() as connection:
+        connection.row_factory = sqlite3.Row
+        _seed_probe_raw_row(
+            connection,
+            raw_id="durable-change-train-hydration-raw",
+            source_path="/durable-change-train/hydration-probe.jsonl",
+            blob_hash=b"\0" * 32,
+            detected_provider="codex",
+        )
+        row = connection.execute(
+            "SELECT * FROM raw_sessions WHERE raw_id = ?",
+            ("durable-change-train-hydration-raw",),
+        ).fetchone()
         if row is None:
             raise DurableChangeTrainError("raw record hydration probe could not read back its seeded row")
         record = mapper(row)
@@ -1886,15 +1966,17 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
 def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
     """Exercise the source-tier failure lifecycle reader against the canonical source schema."""
     del archive_root
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
-        source_path = Path(directory) / "source.db"
-        with sqlite_connection(source_path) as connection:
-            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
-
-            initialize_runtime_tier_probe(connection, ArchiveTier.SOURCE, probe_path=source_path)
-        snapshot = reader(source_path, sample_limit=1)
+    # The numbered train authenticates this exact schema, which may precede
+    # the runtime floor. Ordinary file admission must still reject that skew.
+    with _runtime_probe_source_connection() as connection:
+        connection.execute("PRAGMA query_only = ON")
+        with connection:
+            connection.execute("BEGIN")
+            snapshot = reader(None, sample_limit=1, _connection=connection)
     if not getattr(snapshot, "available", False):
-        raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
+        raise DurableChangeTrainError(
+            f"raw failure lifecycle probe could not read its snapshot: {getattr(snapshot, 'reason', None)}"
+        )
     return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"
 
 
@@ -1920,12 +2002,15 @@ def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
         raise DurableChangeTrainError(
             "durable tier was replaced by an unsafe file; refusing startup initialization/release"
         )
+    opened = False
     try:
-        connection = sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        with sqlite_connection(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True) as connection:
+            opened = True
+            yield connection
     except (OSError, sqlite3.Error) as exc:
+        if opened:
+            raise
         raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
-    with closing(connection), connection:
-        yield connection
 
 
 def _verify_persisted_live_tier_continuity(
@@ -2031,7 +2116,7 @@ def _canonical_schema_inventory_for_ddl(
     The baseline and complete ordered steps are keys, so neither a different
     baseline nor changed installed SQL can reuse a prior schema inventory.
     """
-    with closing(sqlite3.connect(":memory:")) as fresh:
+    with sqlite_connection(":memory:") as fresh:
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
         fresh.execute(f"PRAGMA user_version = {DURABLE_MIGRATION_ADOPTION_FLOORS[tier]}")

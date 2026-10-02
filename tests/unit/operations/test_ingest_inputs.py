@@ -2,11 +2,77 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
-from polylogue.operations.ingest_inputs import discover_ingest_input_spool, retain_input_page
+import pytest
+
+from polylogue.operations.ingest_inputs import discover_ingest_input_spool, retain_input_page, unlink_spool
 from polylogue.sources.source_staging import stage_source_input
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_spool_failed_close_retains_exact_artifact_until_creator_settles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, read_only: bool
+) -> None:
+    import sqlite3
+
+    from polylogue.operations.ingest_inputs import spool_connection
+    from polylogue.storage.sqlite import connection_profile
+
+    path = tmp_path / "private-spool.sqlite"
+    with spool_connection(path) as conn:
+        conn.execute("CREATE TABLE evidence(value INTEGER)").close()
+        conn.execute("INSERT INTO evidence VALUES (1)").close()
+    actual_connect = sqlite3.connect
+    fail_close = [True]
+
+    class FailingClose(sqlite3.Connection):
+        def close(self) -> None:
+            if fail_close[0]:
+                raise sqlite3.OperationalError("synthetic private spool close failure")
+            super().close()
+
+    def connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        kwargs["factory"] = FailingClose
+        return actual_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    try:
+        with pytest.raises(connection_profile.NativeConnectionSettlementError):
+            with spool_connection(path, read_only=read_only) as conn:
+                assert conn.execute("PRAGMA temp_store").fetchone() == (1,)
+                assert conn.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+                assert conn.execute("SELECT value FROM evidence").fetchone() == (1,)
+        owners = connection_profile.retained_native_sql_owners_for_lifetime(path)
+        assert owners
+        with pytest.raises(connection_profile.NativeConnectionSettlementError):
+            unlink_spool(path)
+        assert path.is_file()
+    finally:
+        fail_close[0] = False
+        for owner in connection_profile.retained_native_sql_owners_for_lifetime(path):
+            owner.close()
+        unlink_spool(path)
+    assert not path.exists()
+
+
+def test_spool_cancelled_transaction_rolls_back_and_settles_before_cleanup(tmp_path: Path) -> None:
+    from polylogue.operations.ingest_inputs import spool_connection
+    from polylogue.storage.sqlite.connection_profile import retained_native_sql_owners_for_lifetime
+
+    path = tmp_path / "cancelled-spool.sqlite"
+    with spool_connection(path) as conn:
+        conn.execute("CREATE TABLE evidence(value INTEGER)").close()
+    with pytest.raises(InterruptedError):
+        with spool_connection(path) as conn:
+            conn.execute("INSERT INTO evidence VALUES (1)").close()
+            raise InterruptedError("synthetic cancellation")
+    assert not retained_native_sql_owners_for_lifetime(path)
+    with spool_connection(path, read_only=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone() == (0,)
+    unlink_spool(path)
 
 
 def _retain(path: Path, source_path: str | None, tmp_path: Path) -> set[tuple[str, str]]:
@@ -16,8 +82,30 @@ def _retain(path: Path, source_path: str | None, tmp_path: Path) -> set[tuple[st
         page = retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
     finally:
         publisher.discard_pending()
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)
     return {(item.coordinate, item.source_path) for item in page}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="requires an unprivileged directory reader")
+def test_ordinary_directory_intake_refuses_a_denied_hidden_subtree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recursive glob silently publishes only the public part of the input."""
+    original = tmp_path / "exports"
+    hidden = original / "hidden"
+    hidden.mkdir(parents=True)
+    (original / "public.jsonl").write_bytes(b"{}\n")
+    (hidden / "session.jsonl").write_bytes(b"{}\n")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    hidden.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            discover_ingest_input_spool(original, source_path=None, check_stop=lambda: None)
+    finally:
+        hidden.chmod(0o700)
+    assert list(scratch.glob("polylogue-ingest-paths-*.sqlite")) == []
 
 
 def test_staged_directory_members_are_keyed_under_the_callers_path(tmp_path: Path) -> None:
@@ -41,6 +129,65 @@ def test_staged_directory_members_are_keyed_under_the_callers_path(tmp_path: Pat
         ("conversations.json", str(original / "conversations.json")),
         ("nested/chat.jsonl", str(original / "nested" / "chat.jsonl")),
     }
+
+
+@pytest.mark.parametrize("member_count", [1, 32])
+def test_staged_intake_reads_its_outside_receipt_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member_count: int
+) -> None:
+    """Rehashing the whole directory receipt per member makes metadata work quadratic."""
+    from polylogue.sources import source_staging, sqlite_export
+
+    original = tmp_path / "exports"
+    original.mkdir()
+    for ordinal in range(member_count):
+        (original / f"member-{ordinal:03d}.jsonl").write_bytes(b"{}\n")
+    staged = stage_source_input(original, tmp_path / "staging", check_stop=lambda: None)
+    metadata = source_staging.staging_metadata_path(staged)
+    accounting = tmp_path / "receipt-reads.txt"
+    fixture = Path(__file__).parents[2] / "fixtures/sqlite_source/staging_read_accounting.py"
+    monkeypatch.setenv("POLYLOGUE_TEST_RECEIPT_NAME", metadata.name)
+    monkeypatch.setenv("POLYLOGUE_TEST_RECEIPT_ACCOUNTING", str(accounting))
+    monkeypatch.setattr(
+        sqlite_export, "_WORKER_COMMAND", f"exec(compile(open({str(fixture)!r}).read(), {str(fixture)!r}, 'exec'))"
+    )
+
+    retained = _retain(staged, str(original), tmp_path)
+    assert len(retained) == member_count
+    assert sum(int(line) for line in accounting.read_text().splitlines()) == metadata.stat().st_size
+
+
+@pytest.mark.parametrize("mutation", ["receipt-rewrite", "receipt-replace", "slot-replace", "late-member"])
+def test_captured_staging_receipt_does_not_admit_changed_members_or_custody(tmp_path: Path, mutation: str) -> None:
+    """The fully read receipt stays authority only while its captured custody is current."""
+    from polylogue.sources.source_staging import staging_metadata_path
+
+    original = tmp_path / "exports"
+    original.mkdir()
+    for ordinal in range(3):
+        (original / f"member-{ordinal}.jsonl").write_bytes(b"{}\n")
+    staged = stage_source_input(original, tmp_path / "staging", check_stop=lambda: None)
+    spool = discover_ingest_input_spool(staged, source_path=str(original), check_stop=lambda: None)
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    try:
+        metadata = staging_metadata_path(staged)
+        if mutation == "receipt-rewrite":
+            metadata.write_bytes(metadata.read_bytes())
+        elif mutation == "receipt-replace":
+            replacement = tmp_path / "replacement-receipt"
+            replacement.write_bytes(metadata.read_bytes())
+            replacement.replace(metadata)
+        elif mutation == "slot-replace":
+            moved = staged.with_name("moved-slot")
+            staged.rename(moved)
+            staged.symlink_to(moved, target_is_directory=True)
+        else:
+            (staged / "member-2.jsonl").write_bytes(b"[]\n")
+        with pytest.raises(OSError):
+            retain_input_page(spool, after_coordinate=None, publisher=publisher, check_stop=lambda: None)
+    finally:
+        publisher.discard_pending()
+        unlink_spool(spool)
 
 
 def test_file_intake_requires_the_captured_original_declaration(tmp_path: Path) -> None:
@@ -117,4 +264,4 @@ def test_machine_zip_enumeration_preserves_the_accepted_decoder_identity(tmp_pat
         assert identities[0] != identities[1]
     finally:
         publisher.discard_pending()
-        spool.unlink(missing_ok=True)
+        unlink_spool(spool)

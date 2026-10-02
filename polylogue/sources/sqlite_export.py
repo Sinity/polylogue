@@ -43,11 +43,11 @@ import struct
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, cast
+from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 
 if TYPE_CHECKING:
     from polylogue.sources.source_staging import SourceInputBinding
@@ -246,7 +246,7 @@ class _SourceDescriptors:
                 raise OSError(errno.ESTALE, "SQLite opened an unbound source descriptor", self.name)
 
 
-def _read_exact(stream: BinaryIO, count: int) -> bytes:
+def _read_exact(stream: IO[bytes], count: int) -> bytes:
     payload = bytearray()
     while len(payload) < count:
         try:
@@ -259,7 +259,7 @@ def _read_exact(stream: BinaryIO, count: int) -> bytes:
     return bytes(payload)
 
 
-def _write_frame(stream: BinaryIO, kind: bytes, payload: bytes = b"") -> None:
+def _write_frame(stream: IO[bytes], kind: bytes, payload: bytes = b"") -> None:
     stream.write(_FRAME_HEADER.pack(kind, len(payload)))
     stream.write(payload)
     stream.flush()
@@ -310,9 +310,10 @@ def _decode_control(payload: bytes) -> dict[str, Any]:
 
 def _decode_shape(payload: bytes) -> dict[str, list[str]]:
     result = _decode_control(payload)
+    items: Iterable[tuple[object, object]] = result.items()
     if not all(
         isinstance(key, str) and isinstance(value, list) and all(isinstance(column, str) for column in value)
-        for key, value in result.items()
+        for key, value in items
     ):
         raise OSError(errno.EPROTO, "invalid SQLite worker shape")
     return result
@@ -356,6 +357,8 @@ def _raise_worker_error(payload: bytes) -> None:
 
 def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | None = None) -> dict[str, Any]:
     """Exchange only the declared source operations with one drained fresh process."""
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
     operation = request["operation"]
     with tempfile.TemporaryDirectory(prefix=".polylogue-sqlite-reader.") as scratch:
         request["scratch"] = scratch
@@ -376,16 +379,28 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
             result: dict[str, Any] = {}
             got_result = False
             while True:
+                check_compute_cancelled()
                 kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
                 if kind == b"D":
                     if (
-                        operation not in {"export", "bytes", "preflight_bytes", "staging_receipt", "copy", "backup"}
+                        operation
+                        not in {
+                            "export",
+                            "bytes",
+                            "preflight_bytes",
+                            "staging_receipt",
+                            "copy",
+                            "backup",
+                            "inspect_preflight",
+                            "inspect_explain",
+                        }
                         or handle is None
                     ):
                         raise OSError(errno.EPROTO, "unexpected SQLite export frame")
                     if not size:
                         handle.write(b"")
                     while size:
+                        check_compute_cancelled()
                         chunk = _read_exact(process.stdout, min(size, _STREAM_CHUNK))
                         handle.write(chunk)
                         size -= len(chunk)
@@ -622,6 +637,7 @@ def _inspect_export_at(
     profile_identity: str,
     scratch: Path,
     classify: bool = False,
+    check_stop: Callable[[], None] | None = None,
 ) -> dict[str, Any] | None:
     """Reconstruct retained exports from their accepted descriptor, preserving read semantics."""
     from polylogue.sources.parsers.hermes_state import _MESSAGE_READ_INDEXES
@@ -644,7 +660,9 @@ def _inspect_export_at(
         os.close(temporary)
         reconstruction = Path(name)
         try:
-            _materialize_export_records(_iter_export_handle(handle), reconstruction, read_indexes=_MESSAGE_READ_INDEXES)
+            _materialize_export_records(
+                _iter_export_handle(handle), reconstruction, read_indexes=_MESSAGE_READ_INDEXES, check_stop=check_stop
+            )
             parent_fd = os.open(reconstruction.parent, getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY)
             try:
                 with ExitStack() as stack:
@@ -656,6 +674,10 @@ def _inspect_export_at(
                     proof = _SourceDescriptors(parent_fd, reconstruction.name, identities)
                     with _source_connection_context(reconstruction, immutable=True, directory=parent_fd) as conn:
                         proof.validate()
+                        if check_stop is not None:
+                            conn.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
+                            if grouping is not None:
+                                grouping.connection.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
                         conn.execute("BEGIN").close()
                         _source_schema(conn)
                         proof.validate()
@@ -767,17 +789,21 @@ def _source_worker_main() -> None:
             _write_frame(sys.stdout.buffer, b"S")
             return
         scope = MemberExportScope(**request["scope"])
-        from polylogue.sources.source_staging import _verify_staging_provenance
+        from polylogue.sources.source_staging import _verify_staging_metadata_name
 
         def progress() -> None:
             if request.get("progress"):
                 _WorkerSink().write(b"")
 
-        _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+        def sql_progress() -> int:
+            progress()
+            return 0
+
+        _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
         if request["operation"] == "shape":
             export_shape = _export_shape_at(request["directory"], source.name, accepted[""])
             if export_shape is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_shape))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
@@ -791,9 +817,10 @@ def _source_worker_main() -> None:
                 profile_identity=request["profile_identity"],
                 scratch=Path(request["scratch"]),
                 classify=request["operation"] == "classify",
+                check_stop=progress if request.get("progress") else None,
             )
             if export_inspection is not None:
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 _write_frame(sys.stdout.buffer, b"R", _control_bytes(export_inspection))
                 _write_frame(sys.stdout.buffer, b"S")
                 return
@@ -827,7 +854,11 @@ def _source_worker_main() -> None:
                 source, immutable=request["immutable"], directory=request["directory"]
             ) as conn:
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
+                if request.get("progress"):
+                    conn.set_progress_handler(sql_progress, 1000)
+                    if grouping is not None:
+                        grouping.connection.set_progress_handler(sql_progress, 1000)
                 # Sorting a complete source or preview denominator must spill
                 # regardless of the SQLite build's default TEMP policy. Main
                 # descriptor proof precedes SQL; no transaction or TEMP object
@@ -873,6 +904,7 @@ def _source_worker_main() -> None:
                         )
                     )
                 elif request["operation"] == "backup" and output is not None:
+                    assert output_identity is not None
                     retained_revision = _HashingSink(progress if request.get("progress") else None)
                     _write_export_connection(conn, retained_revision, scope, schema)
                     conn.backup(output, pages=256, progress=lambda *_counts: progress())
@@ -888,7 +920,7 @@ def _source_worker_main() -> None:
                 else:
                     raise OSError(errno.EPROTO, "invalid SQLite source operation")
                 proof.validate()
-                _verify_staging_provenance(request["metadata_directory"], request["provenance"], heartbeat=progress)
+                _verify_staging_metadata_name(request["metadata_directory"], request["provenance"])
                 if grouping is not None:
                     grouping.verify()
                 if output_descriptors:
@@ -1304,7 +1336,7 @@ def logical_source_shape(path: Path, *, immutable: bool = False) -> dict[str, tu
     return {table: tuple(columns) for table, columns in result.items()}
 
 
-def _iter_export_handle(handle: BinaryIO) -> Iterator[tuple[LogicalExportHeader | dict[str, Any] | list[Any], str]]:
+def _iter_export_handle(handle: IO[bytes]) -> Iterator[tuple[LogicalExportHeader | dict[str, Any] | list[Any], str]]:
     yield _parse_header(handle.readline()), "header"
     for line in handle:
         if not line.strip():
@@ -1381,14 +1413,19 @@ def _materialize_export_records(
     destination: Path,
     *,
     read_indexes: Sequence[tuple[str, tuple[str, ...]]] = (),
+    check_stop: Callable[[], None] | None = None,
 ) -> None:
     with _source_connection_context(destination, readonly=False) as conn:
+        if check_stop is not None:
+            conn.set_progress_handler(lambda: (check_stop(), 0)[1], 1000)
         conn.execute("PRAGMA journal_mode=OFF")
         table: str | None = None
         columns: list[str] = []
         targets = ""
         materialized: dict[str, frozenset[str]] = {}
         for payload, kind in records:
+            if check_stop is not None:
+                check_stop()
             if kind == "header":
                 continue
             if kind == "table":

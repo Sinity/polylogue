@@ -275,6 +275,9 @@ def looks_metadataish_dict(payload: JSONDocument) -> bool:
         return False
     if looks_like_session_document(payload):
         return False
+    complete_values = getattr(payload, "metadata_values_scalarish", None)
+    if isinstance(complete_values, bool):
+        return complete_values
     return all(is_scalarish(value) for value in payload.values())
 
 
@@ -373,4 +376,4 @@ def record_candidacy_projection() -> DetectorProjection:
     )
     fields.update(grok.detection_projection().fields or {})
     fields.update(grok.native_detection_projection().fields or {})
-    return DetectorProjection(fields=fields, preserve_mapping_size=True)
+    return DetectorProjection(fields=fields, preserve_mapping_size=True, capture_metadata_values=True)

@@ -127,6 +127,9 @@ class EmbeddingMessageReplacement:
     empty: bool = False
     retained_output: EmbeddingStoredOutput | None = None
 
+    def close(self) -> None:
+        """The computed vector values own no physical resources."""
+
 
 _REQUIRED_KEY_PREFIX = "message:"
 _EXCESS_KEY_PREFIX = "orphan:"

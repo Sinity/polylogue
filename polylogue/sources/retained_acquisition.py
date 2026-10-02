@@ -15,7 +15,7 @@ from collections.abc import Callable, Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import IO, TYPE_CHECKING
 
 from polylogue.archive.zip_admission import BoundedMemberReport, open_zip_entry
 from polylogue.config import Source
@@ -82,7 +82,7 @@ def _container_input(
     blob_store: BlobStore,
     blob_hash: str,
     input_capture: BoundContainerCapture | None,
-) -> Iterator[BinaryIO]:
+) -> Iterator[IO[bytes]]:
     if input_capture is not None:
         if input_capture.blob_hash != blob_hash:
             raise ValueError("retained decoder differs from its accepted input")
@@ -356,13 +356,7 @@ def iter_captured_zip_input(
         status_callback=status_callback,
     )
     try:
-        while True:
-            try:
-                record = next(records)
-            except StopIteration as exhausted:
-                member_count = exhausted.value
-                break
-            yield record
+        member_count = yield from records
     finally:
         records.close()
     yield SourceInputRecord(
