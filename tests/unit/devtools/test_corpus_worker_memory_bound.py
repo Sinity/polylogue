@@ -1061,6 +1061,7 @@ def test_an_unmeasured_run_reports_no_verdict_rather_than_a_false_one() -> None:
     """
     assert corroborate_profile(None, _OBSERVED_SIZING) is None
     assert corroborate_profile(_OBSERVED_CORPUS_RUN, None) is None
+    assert corroborate_profile({**_OBSERVED_CORPUS_RUN, "incomplete": "unreadable custody"}, _OBSERVED_SIZING) is None
     assert corroborate_profile({"unmeasured": "no sample observed the process group"}, _OBSERVED_SIZING) is None
     assert corroborate_profile({"peak": {"rss_kib": 0}, "processes": []}, _OBSERVED_SIZING) is None
     assert corroborate_profile(_OBSERVED_CORPUS_RUN, {"workers": "wide"}) is None

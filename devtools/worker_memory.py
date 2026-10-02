@@ -445,7 +445,7 @@ def corroborate_profile(
     ``None`` when there is nothing to compare: no sampler document, a run too
     short to observe the group, or no width on record.
     """
-    if not memory or not sizing or memory.get("unmeasured"):
+    if not memory or not sizing or (memory.get("unmeasured") or memory.get("incomplete")):
         return None
     processes = [entry for entry in memory.get("processes") or [] if entry.get("peak_private_kib")]
     peak = memory.get("peak") or {}

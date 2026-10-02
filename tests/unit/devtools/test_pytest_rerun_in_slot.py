@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from devtools import pytest_rerun, pytest_slot
+from devtools.pytest_memory import CUSTODY_ENV
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT, rerun_failed_once
 
 
@@ -35,7 +36,8 @@ def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypat
     _failed_report(report, "tests/test_x.py::test_flaky")
     rerun_report = step / "pytest-rerun.json"
     script = (
-        "import json, pathlib\n"
+        "import json, os, pathlib\n"
+        f"pathlib.Path({str(step / 'custody.json')!r}).write_text(json.dumps({{'marker':os.environ[{CUSTODY_ENV!r}], 'receipt':os.environ['POLYLOGUE_PYTEST_RUN_ID']}}))\n"
         f"pathlib.Path({str(rerun_report)!r}).write_text(json.dumps("
         "{'tests': [{'nodeid': 'tests/test_x.py::test_flaky', 'outcome': 'passed'}]}))\n"
     )
@@ -47,6 +49,8 @@ def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypat
     environment = {
         RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
         "PATH": "/usr/bin:/bin",
+        CUSTODY_ENV: "actual-launch-custody",
+        "POLYLOGUE_PYTEST_RUN_ID": "original-receipt",
     }
 
     started: list[object] = []
@@ -56,6 +60,10 @@ def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypat
     # The rerun is registered with the launch before it is waited on, so the
     # launch's signal handling can stop it.
     assert len(started) == 1
+    assert json.loads((step / "custody.json").read_text()) == {
+        "marker": "actual-launch-custody",
+        "receipt": "original-receipt",
+    }
 
     record = json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
     assert record["attempted"] == ["tests/test_x.py::test_flaky"]
