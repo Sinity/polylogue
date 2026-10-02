@@ -40,7 +40,12 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_rerun import report_nodeid_to_selector, rerun_failed_once, testmon_rerun_environment
+from devtools.pytest_rerun import (
+    report_nodeid_to_selector,
+    rerun_failed_once,
+    semantic_rerun_options,
+    testmon_rerun_environment,
+)
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -54,7 +59,6 @@ from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_rece
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
-    TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
     declared_test_files,
     inspect_testmon_graph,
@@ -62,6 +66,7 @@ from devtools.testmon_provision import (
     snapshot_testmon_graph,
     sync_testmon_graph,
     testmon_datafile,
+    testmon_environment,
 )
 from devtools.toolchain import venv_python
 from devtools.verification_admission import (
@@ -294,7 +299,11 @@ def _pytest_command(
         SUITE_COST_PLUGIN_NAME,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
-        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
+        *(
+            ["--testmon", f"--testmon-env={testmon_environment(ROOT, hypothesis_profile)}", select_flag]
+            if testmon
+            else []
+        ),
         "-p",
         "no:randomly",
         *([f"--hypothesis-profile={hypothesis_profile}"] if hypothesis_profile else []),
@@ -353,9 +362,9 @@ def _git_changed_paths(root: Path) -> frozenset[str] | None:
             return None
         paths: set[str] = set()
         for command in (
-            ["git", "diff", "--name-only", "--no-ext-diff", f"{base}...HEAD", "--"],
-            ["git", "diff", "--name-only", "--no-ext-diff", "HEAD", "--"],
-            ["git", "ls-files", "--others", "--exclude-standard"],
+            ["git", "diff", "--name-only", "--no-renames", "-z", "--no-ext-diff", f"{base}...HEAD", "--"],
+            ["git", "diff", "--name-only", "--no-renames", "-z", "--no-ext-diff", "HEAD", "--"],
+            ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         ):
             result = subprocess.run(
                 command,
@@ -367,7 +376,7 @@ def _git_changed_paths(root: Path) -> frozenset[str] | None:
             )
             if result.returncode != 0:
                 return None
-            paths.update(line for line in result.stdout.splitlines() if line)
+            paths.update(line for line in result.stdout.split("\0") if line)
         return frozenset(paths)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -451,12 +460,14 @@ def _estimate_affected_selection(
             destination = Path(temporary) / "testmondata"
             if not snapshot_testmon_graph(source, destination):
                 return None, None, "the testmon graph could not be snapshotted for admission", None
-            snapshot_state = inspect_testmon_graph(root, datafile=destination)
+            snapshot_state = inspect_testmon_graph(root, datafile=destination, profile=hypothesis_profile)
             if not snapshot_state.usable or snapshot_state.full_rerun_cause:
                 return None, None, "the admission snapshot is unreadable or incompatible with this environment", None
             database = testmon_db.DB(str(destination), readonly=False)
             try:
-                data = TestmonData.for_local_run(rootdir=str(root), database=database, environment=TESTMON_ENVIRONMENT)
+                data = TestmonData.for_local_run(
+                    rootdir=str(root), database=database, environment=testmon_environment(root, hypothesis_profile)
+                )
                 if data.system_packages_change:
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
                 recorded = {report_nodeid_to_selector(name): value for name, value in data.all_tests.items()}
@@ -825,6 +836,8 @@ def _run(
         command = _bind_pytest_reports_to_step(command, artifacts)
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env, command)
+        if "--testmon-noselect" in command:
+            env["POLYLOGUE_TESTMON_COMPLETE"] = "1"
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         # The pytest slot re-checks the branch and records what it executed
         # when the run starts, as it does for focused runs: the checkout can
@@ -863,6 +876,7 @@ def _run(
                 first_provenance=(
                     metadata_receipt.get("worktree_provenance") if isinstance(metadata_receipt, dict) else None
                 ),
+                options=semantic_rerun_options(command),
                 testmon_env=testmon_rerun_environment(command),
             )
             if completed.returncode == 1
@@ -1360,8 +1374,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
         selection = _selection_for_changes(changed_paths)
-    seeded_from_primary = sync_testmon_graph(ROOT)
-    graph = inspect_testmon_graph(ROOT)
+    seeded_from_primary = sync_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
+    graph = inspect_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
     scope = _scope(quick=args.quick, selection=selection)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
@@ -1465,7 +1483,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                         provenance.get("git_worktree_content_sha256"),
                     )
                 )
-            elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+            elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS or (
+                isinstance(slot_receipt, Mapping) and slot_receipt.get("diagnosis") == "execution_source_unavailable"
+            ):
                 # The kill took the slot receipt, so nothing identified the tree
                 # pytest ran against; the admitted head is not that evidence.
                 tree_unknown = True

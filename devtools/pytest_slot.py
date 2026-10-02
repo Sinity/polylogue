@@ -193,16 +193,21 @@ def _job_termination(reference: str | None) -> dict[str, Any] | None:
 
 
 def termination_metadata(outcome: SlotOutcome) -> dict[str, Any]:
-    """Step fields naming what ended a queued run from outside it.
+    """Step fields recording execution authority and external termination.
 
     A systemd-oomd kill is the typed ``oom_killed`` diagnosis, not the missing
     report or bare exit 137 it otherwise leaves.
     """
+    metadata: dict[str, Any] = {}
+    if isinstance(outcome.receipt, Mapping) and isinstance(outcome.receipt.get("execution_source"), Mapping):
+        metadata["execution_source"] = outcome.receipt["execution_source"]
+        if outcome.receipt["execution_source"].get("status") != "stable":
+            metadata.update({"diagnosis": "execution_source_unavailable", "worktree_provenance_unknown": True})
     termination = outcome.termination
     if not termination:
-        return {}
+        return metadata
     killer = termination.get("killer")
-    metadata: dict[str, Any] = {"termination_killer": killer, "termination_unit": termination.get("unit")}
+    metadata.update({"termination_killer": killer, "termination_unit": termination.get("unit")})
     if killer == "oom-kill":
         metadata.update({"diagnosis": OOM_KILLED_DIAGNOSIS, "termination_reason": OOM_KILLED_DIAGNOSIS})
     return metadata
@@ -1081,6 +1086,7 @@ def _write_interrupted_result(
     sizing: Mapping[str, Any] | None = None,
     memory: Mapping[str, Any] | None = None,
     profile: ChargeProfile | None = None,
+    execution_source: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Atomically preserve an interruption result before the worker dies."""
     receipt = _slot_receipt(
@@ -1090,6 +1096,7 @@ def _write_interrupted_result(
         memory=memory,
         profile=profile,
         extra={
+            **({"execution_source": dict(execution_source)} if execution_source is not None else {}),
             "diagnosis": "pytest_interrupted",
             "signal": signal.Signals(signal_number).name,
             **({"worktree_provenance": dict(worktree_provenance)} if worktree_provenance is not None else {}),
@@ -1176,6 +1183,23 @@ def _run_held(
             ledger.release()
 
 
+def _stop_execution_process(process: subprocess.Popen[Any], source_guard: Any = None) -> None:
+    if source_guard is not None:
+        source_guard.stop(process)
+        return
+    if process.poll() is not None:
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=STOP_TERM_GRACE_S)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            process.wait(timeout=STOP_KILL_GRACE_S)
+
+
 def _run_held_admitted(
     command: Sequence[str],
     *,
@@ -1203,8 +1227,42 @@ def _run_held_admitted(
         # A previous run of this pid may have left one; reading that would
         # report someone else's interruption.
         _slot_result_path(result_path).unlink(missing_ok=True)
+    from devtools.execution_source import complete_execution, finish_execution, start_execution
+
+    guard = start_execution(Path(cwd), env)
+    try:
+        worktree_provenance = _focused_worktree_provenance(cwd, env)
+        execution_command = guard.command(command, env, worktree_provenance) if guard is not None else command
+        if guard is not None and worktree_provenance is not None:
+            worktree_provenance["capture_source"] = "readonly_snapshot"
+    except BaseException:
+        if guard is not None:
+            guard.failure = "execution setup failed"
+        finish_execution(guard, env)
+        raise
     child_environment = {**env, CUSTODY_ENV: uuid.uuid4().hex}
-    process = subprocess.Popen(command, cwd=cwd, env=child_environment, stdout=stdout, stderr=stdout, process_group=0)
+    try:
+        process = subprocess.Popen(
+            execution_command,
+            cwd=cwd,
+            env=child_environment,
+            stdout=stdout,
+            stderr=stdout,
+            process_group=0,
+            pass_fds=guard.pass_fds if guard is not None else (),
+        )
+    except BaseException:
+        if guard is not None:
+            guard.failure = "execution setup failed"
+        finish_execution(guard, env)
+        raise
+    try:
+        if guard is not None:
+            guard.launched_process(process)
+    except BaseException:
+        _stop_execution_process(process, guard)
+        finish_execution(guard, env)
+        raise
     try:
         sampler = ProcessGroupMemorySampler(
             process.pid,
@@ -1219,34 +1277,30 @@ def _run_held_admitted(
             },
         )
     except BaseException:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=STOP_TERM_GRACE_S)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=STOP_KILL_GRACE_S)
+        if guard is not None:
+            guard.failure = "execution sampler setup failed"
+        _stop_execution_process(process, guard)
+        if guard is None:
+            _group_reaped(process.pid)
+        finish_execution(guard, env)
         raise
     try:
         sampler.start()
     except BaseException:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=STOP_TERM_GRACE_S)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=STOP_KILL_GRACE_S)
+        if guard is not None:
+            guard.failure = "execution sampler setup failed"
+        _stop_execution_process(process, guard)
         with contextlib.suppress(Exception):
             sampler.stop()
+        if guard is None:
+            _group_reaped(process.pid)
+        finish_execution(guard, env)
         raise
 
     def preserve(signal_number: int) -> None:
         """Write the terminated run's receipt before anything is disposed."""
+        if guard is not None:
+            guard.failure = "execution interrupted"
         if on_interrupt is not None:
             on_interrupt()
         if result_path is None:
@@ -1264,25 +1318,19 @@ def _run_held_admitted(
                 environment=env,
                 started=started,
                 signal_number=signal_number,
-                worktree_provenance=worktree_provenance,
+                worktree_provenance=worktree_provenance if guard is None else None,
+                execution_source={"status": "unavailable", "reason": "execution interrupted"}
+                if guard is not None
+                else None,
                 sizing=sizing,
                 profile=profile,
                 memory=sampler.persist(),
             )
 
     def stop() -> None:
-        if process.poll() is not None:
-            return
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=STOP_TERM_GRACE_S)
-        except subprocess.TimeoutExpired:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                process.wait(timeout=STOP_KILL_GRACE_S)
+        _stop_execution_process(process, guard)
 
+    returncode = 125
     try:
         # ``preserve`` runs before ``stop`` so the sampler reads the group
         # while it is still alive, and before ``on_exit`` so the caller's
@@ -1291,7 +1339,17 @@ def _run_held_admitted(
             returncode = process.wait()
             terminal_status = "passed" if returncode == 0 else "failed"
     finally:
-        memory = sampler.stop()
+        try:
+            memory = sampler.stop()
+        except BaseException:
+            if guard is not None:
+                guard.failure = "execution sampler settlement failed"
+            raise
+        finally:
+            _stop_execution_process(process, guard)
+            stability = finish_execution(guard, env, complete=complete_execution(command, env, returncode))
+    if stability is not None and stability["status"] != "stable":
+        returncode = 125
     return returncode, _slot_receipt(
         status="success" if returncode == 0 else "failed",
         profile=profile,
@@ -1299,7 +1357,17 @@ def _run_held_admitted(
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
-        extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
+        extra={
+            "worktree_provenance": worktree_provenance
+            if stability is None or stability["status"] == "stable"
+            else None,
+            "execution_source": stability,
+            **(
+                {"diagnosis": "execution_source_unavailable"}
+                if stability is not None and stability["status"] != "stable"
+                else {}
+            ),
+        },
     )
 
 
@@ -1477,6 +1545,7 @@ def _rerun_failures_in_slot(
     log: IO[bytes],
     on_start: Callable[[subprocess.Popen[Any]], None],
     first_group: int | None = None,
+    source_guard: Any = None,
 ) -> None:
     """Rerun a failed run's failures once, alone, while this job holds the slot.
 
@@ -1519,7 +1588,7 @@ def _rerun_failures_in_slot(
     if plan is None:
         return
     failed, command, _rerun_report = plan
-    if first_group is not None and not _group_reaped(first_group):
+    if source_guard is None and first_group is not None and not _group_reaped(first_group):
         # A descendant of the first attempt (a server, a lock holder) would
         # share the rerun's slot and state, so no rerun happens and the
         # failures stand.
@@ -1586,15 +1655,21 @@ def _rerun_failures_in_slot(
         log.write(f"\n  rerun skipped: its result could not be recorded ({exc})\n".encode())
         return
     try:
+        execution_command = (
+            source_guard.command(command, rerun_env, provenance) if source_guard is not None else command
+        )
         process = subprocess.Popen(
-            command,
+            execution_command,
             cwd=cwd,
             env=rerun_env,
+            pass_fds=source_guard.pass_fds if source_guard is not None else (),
             stdout=log,
             stderr=log,
             start_new_session=True,
         )
-    except OSError as exc:
+    except (OSError, PytestSlotUnavailableError) as exc:
+        if source_guard is not None:
+            source_guard.failure = str(exc)
         log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
         with contextlib.suppress(OSError):
             (step_dir / RERUN_IN_SLOT_RESULT).write_text(
@@ -1606,6 +1681,8 @@ def _rerun_failures_in_slot(
     # cancelled or deadline-killed job reaps the rerun and still writes its
     # interrupted receipt.
     on_start(process)
+    if source_guard is not None:
+        source_guard.launched_process(process)
     rerun_exit = process.wait()
     with contextlib.suppress(OSError):
         write_run_receipt(rerun_cost_dir(step_dir))
@@ -1676,7 +1753,7 @@ def _run_launch(launch_path: Path) -> int:
     launch_path.unlink(missing_ok=True)
     environment = dict(launch["environment"])
     environment[SLOT_ESCAPE_ENV] = SLOT_HELD
-    worktree_provenance = _focused_worktree_provenance(launch["working_directory"], environment)
+    worktree_provenance = None
     log_path = Path(launch["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child: subprocess.Popen[Any] | None = None
@@ -1700,28 +1777,22 @@ def _run_launch(launch_path: Path) -> int:
         if terminating:
             return
         terminating = True
-        if child is not None and child.poll() is None:
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(child.pid, signal.SIGTERM)
-            try:
-                child.wait(timeout=STOP_TERM_GRACE_S)
-            except subprocess.TimeoutExpired:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(child.pid, signal.SIGKILL)
-                with contextlib.suppress(subprocess.TimeoutExpired):
-                    child.wait(timeout=STOP_KILL_GRACE_S)
-        # Every group this launch started, the first attempt's included: a
-        # signal during the rerun's setup (while the first group's lingering
-        # descendants are being reaped) must still finish that reaping.
-        for group in started_groups:
-            _group_reaped(group)
+        if guard is not None:
+            guard.failure = "execution interrupted"
+        if child is not None:
+            _stop_execution_process(child, guard)
+        if guard is None:
+            for group in started_groups:
+                _group_reaped(group)
+        stability = finish_execution(guard, environment)
         with contextlib.suppress(OSError):
             receipt = _write_interrupted_result(
                 log_path,
                 environment=environment,
                 started=started,
                 signal_number=signal_number,
-                worktree_provenance=worktree_provenance,
+                worktree_provenance=worktree_provenance if guard is None else None,
+                execution_source=stability,
                 sizing=sizing,
                 profile=profile,
                 memory=sampler.persist() if sampler is not None else None,
@@ -1729,8 +1800,11 @@ def _run_launch(launch_path: Path) -> int:
             _print_result(receipt)
         os._exit(128 + signal_number)
 
+    guard = None
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
     ledger = None
+    from devtools.execution_source import complete_execution, finish_execution, start_execution
+
     try:
         ledger = admission_ledger(environment)
         command, sizing = admit_width(
@@ -1764,9 +1838,17 @@ def _run_launch(launch_path: Path) -> int:
                 log.write((note + "\n").encode())
                 log.flush()
             try:
+                guard = start_execution(Path(launch["working_directory"]), environment)
+                worktree_provenance = _focused_worktree_provenance(launch["working_directory"], environment)
+                execution_command = (
+                    guard.command(command, environment, worktree_provenance) if guard is not None else command
+                )
+                if guard is not None and worktree_provenance is not None:
+                    worktree_provenance["capture_source"] = "readonly_snapshot"
                 environment[CUSTODY_ENV] = uuid.uuid4().hex
                 child = subprocess.Popen(
-                    command,
+                    execution_command,
+                    pass_fds=guard.pass_fds if guard is not None else (),
                     cwd=launch["working_directory"],
                     env=environment,
                     stdout=log,
@@ -1775,6 +1857,8 @@ def _run_launch(launch_path: Path) -> int:
                 )
                 # The process being measured; the in-slot rerun replaces it, and
                 # live telemetry names whichever attempt is running now.
+                if guard is not None:
+                    guard.launched_process(child)
                 measured = [child]
                 started_groups.append(child.pid)
                 sampler = ProcessGroupMemorySampler(
@@ -1807,23 +1891,25 @@ def _run_launch(launch_path: Path) -> int:
                         log=log,
                         on_start=register,
                         first_group=child.pid,
+                        source_guard=guard,
                     )
                 terminal_status = "passed" if returncode == 0 else "failed"
-            except OSError as exc:
+            except (OSError, PytestSlotUnavailableError) as exc:
                 log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
-                return 125
+                if guard is not None:
+                    guard.failure = str(exc)
+                returncode = 125
             finally:
-                if child is not None and child.poll() is None:
-                    with contextlib.suppress(ProcessLookupError, PermissionError):
-                        os.killpg(child.pid, signal.SIGTERM)
-                    try:
-                        child.wait(timeout=STOP_TERM_GRACE_S)
-                    except subprocess.TimeoutExpired:
-                        with contextlib.suppress(ProcessLookupError, PermissionError):
-                            os.killpg(child.pid, signal.SIGKILL)
-                        with contextlib.suppress(subprocess.TimeoutExpired):
-                            child.wait(timeout=STOP_KILL_GRACE_S)
+                if child is not None:
+                    _stop_execution_process(child, guard)
                 memory = sampler.stop() if sampler is not None else None
+        if guard is None:
+            for group in started_groups:
+                _group_reaped(group)
+        stability = finish_execution(guard, environment, complete=complete_execution(command, environment, returncode))
+        guard = None
+        if stability is not None and stability["status"] != "stable":
+            returncode = 125
         receipt = _slot_receipt(
             status="success" if returncode == 0 else "failed",
             profile=profile,
@@ -1832,7 +1918,17 @@ def _run_launch(launch_path: Path) -> int:
             sizing=sizing,
             memory=memory,
             log_path=log_path,
-            extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
+            extra={
+                "worktree_provenance": worktree_provenance
+                if stability is None or stability["status"] == "stable"
+                else None,
+                "execution_source": stability,
+                **(
+                    {"diagnosis": "execution_source_unavailable"}
+                    if stability is not None and stability["status"] != "stable"
+                    else {}
+                ),
+            },
         )
         # Written as well as printed: the waiting client reads the file, and the
         # job's stdout is the result artifact.
@@ -1842,6 +1938,11 @@ def _run_launch(launch_path: Path) -> int:
         return returncode
 
     finally:
+        if guard is not None:
+            guard.failure = guard.failure or "execution did not finish"
+            if child is not None:
+                _stop_execution_process(child, guard)
+        finish_execution(guard, environment)
         if ledger is not None:
             ledger.release()
         for number, handler in previous.items():

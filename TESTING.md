@@ -123,8 +123,9 @@ Focused `devtools test <selection>` does not load or update testmon. Its
 receipt records the checkout graph only as a diagnostic.
 
 Ordinary `devtools verify` runs static gates and makes one bounded selection
-from a usable pytest-testmon graph at `.cache/testmon/testmondata` (environment
-`polylogue`). A green result covers only the selected tests; ordinary
+from a usable pytest-testmon graph at `.cache/testmon/testmondata` (environments
+bound to pytest configuration, root and nested conftest files, and the effective
+Hypothesis profile). A green result covers only the selected tests; ordinary
 development accepts that selection can miss affected tests. A normal selector
 that chooses zero is reported as zero. If the graph is unusable or the
 selection exceeds its bound, verification records why and refuses before

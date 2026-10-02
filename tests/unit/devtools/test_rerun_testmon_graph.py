@@ -21,6 +21,7 @@ import devtools
 from devtools import pytest_rerun, verify
 from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
 from devtools.testmon_provision import TESTMON_ENVIRONMENT
+from devtools.testmon_provision import testmon_environment as _testmon_environment
 
 _NODEID = "tests/test_flaky.py::test_passes_the_second_time"
 
@@ -106,6 +107,6 @@ def test_the_rerun_records_into_the_environment_the_first_run_traced() -> None:
         selection="descriptor", worker_args=(), hypothesis_profile=None, explicit_tests=()
     )
 
-    assert pytest_rerun.testmon_rerun_environment(traced) == TESTMON_ENVIRONMENT
+    assert pytest_rerun.testmon_rerun_environment(traced) == _testmon_environment(verify.ROOT)
     assert pytest_rerun.testmon_rerun_environment(untraced) is None
     assert not [option for option in pytest_rerun.semantic_rerun_options(traced) if "testmon" in option]

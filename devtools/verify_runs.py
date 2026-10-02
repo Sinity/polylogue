@@ -247,20 +247,22 @@ def git_head(cwd: Path | None = None) -> str | None:
     return result.stdout.strip() if result.returncode == 0 and result.stdout.strip() else None
 
 
-def git_worktree_content_sha256(cwd: Path) -> str | None:
+def git_worktree_content_sha256(cwd: Path, *, paths: Sequence[bytes] | None = None) -> str | None:
     """Hash Git-visible worktree paths and their execution-time content."""
     try:
-        listed = subprocess.run(
-            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-            capture_output=True,
-            timeout=30,
-            cwd=cwd,
-            env=_read_only_git_env(),
-        )
-        if listed.returncode != 0:
-            return None
+        if paths is None:
+            listed = subprocess.run(
+                ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+                capture_output=True,
+                timeout=30,
+                cwd=cwd,
+                env=_read_only_git_env(),
+            )
+            if listed.returncode != 0:
+                return None
+            paths = listed.stdout.split(b"\0")
         digest = hashlib.sha256()
-        paths = sorted(set(listed.stdout.split(b"\0")) - {b""})
+        paths = sorted(set(paths) - {b""})
         for raw_path in paths:
             path = cwd / os.fsdecode(raw_path)
             digest.update(len(raw_path).to_bytes(8, "big"))
@@ -478,6 +480,7 @@ class VerifyRun:
                     "focused_test_runner_exception",
                     "pytest_interrupted",
                     "pytest_slot_unavailable",
+                    "execution_source_unavailable",
                     "verification_interrupted",
                 }
                 phase = "aggregation"

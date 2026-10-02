@@ -6,7 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, testmon_datafile
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, testmon_datafile, testmon_environment
 from devtools.verify_test_collection import collection_command
 
 
@@ -18,11 +18,20 @@ def seed_admission_graph(root: Path, *, checkout: Path) -> Path:
     testfile.write_text(
         "import pytest\nfrom neutral import value\ndef test_old():\n    assert value() == 1\n", encoding="utf-8"
     )
+    (root / "devtools").mkdir(exist_ok=True)
+    (root / "devtools/execution_custody.py").write_bytes((checkout / "devtools/execution_custody.py").read_bytes())
+    (root / ".gitignore").write_text(".cache/\n__pycache__/\n.pytest_cache/\n.hypothesis/\n.benchmarks/\n")
+    for arguments in (
+        ["init", "-b", "feature"],
+        ["add", "."],
+        ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"],
+    ):
+        subprocess.run(["git", *arguments], cwd=root, capture_output=True, check=True)
     datafile = testmon_datafile(root)
     datafile.parent.mkdir(parents=True)
     command = collection_command(root=checkout, paths=["tests"], testmon=True)
     command.remove("--collect-only")
-    command.extend(("--testmon", "--testmon-env=" + TESTMON_ENVIRONMENT, "--testmon-noselect"))
+    command.extend(("--testmon", "--testmon-env=" + testmon_environment(root), "--testmon-noselect"))
     env = dict(os.environ)
     env.update(
         {

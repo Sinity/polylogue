@@ -26,11 +26,13 @@ from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
 from devtools.run_tests import ROOT, build_pytest_cmd, focused_pytest_env
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
-    TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
     current_environment_key,
     discard_testmon_graph,
     inspect_testmon_graph,
+)
+from devtools.testmon_provision import (
+    testmon_environment as _testmon_environment,
 )
 from devtools.toolchain import venv_python
 from devtools.verify_runs import VerifyRun
@@ -42,7 +44,7 @@ def _seed_with_testmon(root: Path, *, packages: str | None = None, python_versio
     database = DB(str(path))
     current_packages, current_version = current_environment_key()
     database.initiate_execution(
-        TESTMON_ENVIRONMENT,
+        _testmon_environment(root),
         packages if packages is not None else current_packages,
         python_version or current_version,
         {},
@@ -375,6 +377,27 @@ def _record_tests(path: Path, node_ids: tuple[str, ...]) -> None:
     connection.close()
 
 
+def test_graph_readers_use_current_package_environment_instead_of_newest_or_union(tmp_path: Path) -> None:
+    """An intervening incompatible writer cannot hide or enlarge current coverage."""
+    graph = _seed_with_testmon(tmp_path)
+    _record_tests(graph, ("tests/test_current.py::test_current",))
+    with sqlite3.connect(graph) as connection:
+        cursor = connection.execute(
+            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, ?, ?)",
+            (_testmon_environment(tmp_path), "synthetic-other-packages", "synthetic-other-python"),
+        )
+        connection.execute(
+            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) VALUES (?, ?, 1, 0, 0)",
+            (cursor.lastrowid, "tests/test_other.py::test_other"),
+        )
+    state = inspect_testmon_graph(tmp_path)
+    assert state.usable and state.full_rerun_cause is None
+    assert state.recorded_tests == 1
+    assert testmon_provision.recorded_test_names(graph, environment=_testmon_environment(tmp_path)) == frozenset(
+        {"tests/test_current.py::test_current"}
+    )
+
+
 def _two_file_worktree(root: Path) -> Path:
     (root / "tests").mkdir(parents=True)
     for name in ("test_a.py", "test_b.py"):
@@ -395,9 +418,9 @@ def test_an_interrupted_local_graph_takes_the_complete_primary(tmp_path: Path) -
     _record_tests(_two_file_worktree(local_root), ("tests/test_a.py::test_a",))
 
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
-    assert testmon_provision.recorded_test_names(testmon_provision.testmon_datafile(local_root)) == frozenset(
-        {"tests/test_a.py::test_a", "tests/test_b.py::test_a"}
-    )
+    assert testmon_provision.recorded_test_names(
+        testmon_provision.testmon_datafile(local_root), environment=_testmon_environment(local_root)
+    ) == frozenset({"tests/test_a.py::test_a", "tests/test_b.py::test_a"})
 
 
 def test_a_local_graph_as_complete_as_the_primary_is_kept(tmp_path: Path) -> None:
@@ -431,7 +454,9 @@ def test_a_seed_covering_more_files_but_fewer_tests_does_not_replace_the_local_g
     _record_tests(local, local_tests)
 
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is False
-    assert testmon_provision.recorded_test_names(local) == frozenset(local_tests)
+    assert testmon_provision.recorded_test_names(local, environment=_testmon_environment(local_root)) == frozenset(
+        local_tests
+    )
 
 
 def _synthetic_corpus(root: Path) -> None:
@@ -500,7 +525,7 @@ def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path, monkeyp
             "-q",
             *MANAGED_PLUGIN_ARGS,
             "--testmon",
-            f"--testmon-env={TESTMON_ENVIRONMENT}",
+            f"--testmon-env={_testmon_environment(ROOT)}",
             "--testmon-noselect",
             "tests",
         ],
