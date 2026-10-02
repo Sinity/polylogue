@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import gc
 import hashlib
 import json
@@ -25,6 +26,7 @@ from devtools.checkout_guard import (
     resolved_polylogue_path,
 )
 from devtools.hypothesis_database import RevisionedExampleDatabase
+from devtools.render_support import write_if_changed
 from tests.infra.session_archive_root import (
     discard_session_archive_root,
     pin_session_archive_root,
@@ -281,15 +283,20 @@ def _record_long_nodeids(shortened: dict[str, str]) -> None:
     """
     if not shortened:
         return
-    merged = _load_long_nodeid_map()
-    if not set(shortened).difference(merged):
-        return
-    merged.update(shortened)
     try:
         LONG_NODEID_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
-        scratch = LONG_NODEID_MAP_PATH.with_suffix(f".{os.getpid()}.tmp")
-        scratch.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(scratch, LONG_NODEID_MAP_PATH)
+        # Lock a stable sibling inode: the JSON inode changes on publication.
+        # Every writer must read the preceding writer's complete merged map.
+        with LONG_NODEID_MAP_PATH.with_suffix(".lock").open("a+b") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                merged = _load_long_nodeid_map()
+                if not set(shortened).difference(merged):
+                    return
+                merged.update(shortened)
+                write_if_changed(LONG_NODEID_MAP_PATH, json.dumps(merged, indent=2, sort_keys=True))
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except OSError:
         # A read-only or missing cache directory must not fail the run; the
         # only cost is that the next rerun cannot name a shortened id.
