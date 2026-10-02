@@ -41,12 +41,14 @@ from __future__ import annotations
 
 import sqlite3
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import TopologyEdgeStatus
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 BlockAnchorState = Literal[
     "ok",
@@ -87,60 +89,94 @@ class BlockAnchorResolution:
     detail: str = ""
 
 
-def _quarantined_edge(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row | None:
+BeforeAnchorInput = Callable[[str, tuple[str, ...], str, tuple[object, ...]], None]
+
+
+def _anchor_rows(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: tuple[str, ...],
+    rowid_sql: str,
+    parameters: tuple[object, ...],
+    before_input: BeforeAnchorInput | None,
+) -> Generator[sqlite3.Row, None, None]:
+    # Canonical predicates/order choose identity once, including LIMIT ties.
+    # Every payload read then names that same physical row under the held view.
+    projection = ",".join(columns)
+    with connection_cursor(conn, rowid_sql, parameters) as identities:
+        for (rowid,) in identities:
+            if before_input is not None:
+                before_input(table, columns, f"SELECT rowid FROM {table} WHERE rowid=?", (rowid,))
+            with connection_cursor(conn, f"SELECT {projection} FROM {table} WHERE rowid=?", (rowid,)) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("anchor input disappeared inside its owned read snapshot")
+            yield cast(sqlite3.Row, row)
+
+
+def _quarantined_edge(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeAnchorInput | None = None
+) -> sqlite3.Row | None:
     """Return one quarantined edge incident to ``session_id``, if any."""
-
-    return cast(
-        sqlite3.Row | None,
-        conn.execute(
-            """
-        SELECT src_session_id, resolved_dst_session_id, link_type, inheritance,
-               branch_point_message_id, status
-          FROM session_links
-         WHERE status = ?
-           AND (src_session_id = ? OR resolved_dst_session_id = ?)
-         ORDER BY src_session_id, resolved_dst_session_id, link_type
-         LIMIT 1
-        """,
+    with closing(
+        _anchor_rows(
+            conn,
+            "session_links",
+            (
+                "src_session_id",
+                "resolved_dst_session_id",
+                "link_type",
+                "inheritance",
+                "branch_point_message_id",
+                "status",
+            ),
+            "SELECT rowid FROM session_links WHERE status=? AND (src_session_id=? OR resolved_dst_session_id=?) "
+            "ORDER BY src_session_id,resolved_dst_session_id,link_type LIMIT 1",
             (TopologyEdgeStatus.QUARANTINED.value, session_id, session_id),
-        ).fetchone(),
-    )
+            before_input,
+        )
+    ) as rows:
+        return next(rows, None)
 
 
-def _lineage_edges(conn: sqlite3.Connection, session_id: str) -> list[sqlite3.Row]:
+def _lineage_edges(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeAnchorInput | None = None
+) -> list[sqlite3.Row]:
     """Return composing edges incident to one session in preference order."""
-
-    return [
-        cast(sqlite3.Row, row)
-        for row in conn.execute(
-            f"""
-        SELECT src_session_id, resolved_dst_session_id, link_type, inheritance,
-               branch_point_message_id, status
-          FROM session_links
-         WHERE resolved_dst_session_id IS NOT NULL
-           AND inheritance IN ('prefix-sharing', 'spawned-fresh')
-           AND (src_session_id = ? OR resolved_dst_session_id = ?)
-           AND {topology_status_composes_sql()}
-         ORDER BY CASE inheritance
-                    WHEN 'prefix-sharing' THEN 0
-                    WHEN 'spawned-fresh' THEN 1
-                    ELSE 2
-                  END,
-                  src_session_id, resolved_dst_session_id, link_type
-        """,
+    with closing(
+        _anchor_rows(
+            conn,
+            "session_links",
+            (
+                "src_session_id",
+                "resolved_dst_session_id",
+                "link_type",
+                "inheritance",
+                "branch_point_message_id",
+                "status",
+            ),
+            "SELECT rowid FROM session_links WHERE resolved_dst_session_id IS NOT NULL "
+            "AND inheritance IN ('prefix-sharing', 'spawned-fresh') "
+            f"AND (src_session_id=? OR resolved_dst_session_id=?) AND {topology_status_composes_sql()} "
+            "ORDER BY CASE inheritance WHEN 'prefix-sharing' THEN 0 WHEN 'spawned-fresh' THEN 1 ELSE 2 END,"
+            "src_session_id,resolved_dst_session_id,link_type",
             (session_id, session_id),
-        ).fetchall()
-    ]
+            before_input,
+        )
+    ) as rows:
+        return list(rows)
 
 
-def _lineage_candidates(conn: sqlite3.Connection, session_id: str) -> Iterator[tuple[str, sqlite3.Row]]:
+def _lineage_candidates(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeAnchorInput | None = None
+) -> Iterator[tuple[str, sqlite3.Row]]:
     """Visit every composing neighbour once; no cap can establish uniqueness."""
 
     queue = deque([session_id])
     visited = {session_id}
     while queue:
         current = queue.popleft()
-        for edge in _lineage_edges(conn, current):
+        for edge in _lineage_edges(conn, current, before_input):
             src = str(edge["src_session_id"])
             dst = str(edge["resolved_dst_session_id"])
             neighbour = dst if src == current else src
@@ -151,22 +187,22 @@ def _lineage_candidates(conn: sqlite3.Connection, session_id: str) -> Iterator[t
             queue.append(neighbour)
 
 
-def _hash_matches_in_session(conn: sqlite3.Connection, session_id: str, content_hash: bytes) -> list[tuple[str, int]]:
+def _hash_matches_in_session(
+    conn: sqlite3.Connection, session_id: str, content_hash: bytes, before_input: BeforeAnchorInput | None = None
+) -> list[tuple[str, int]]:
     """Blocks carrying ``content_hash`` among one session's own physical rows."""
-
-    return [
-        (str(row["message_id"]), int(row["position"]))
-        for row in conn.execute(
-            """
-            SELECT b.message_id, b.position
-            FROM blocks b
-            JOIN messages m ON m.message_id = b.message_id
-            WHERE m.session_id = ? AND b.content_hash = ?
-            ORDER BY b.message_id, b.position
-            """,
+    with closing(
+        _anchor_rows(
+            conn,
+            "blocks",
+            ("message_id", "position"),
+            "SELECT b.rowid FROM blocks b JOIN messages m ON m.message_id=b.message_id "
+            "WHERE m.session_id=? AND b.content_hash=? ORDER BY b.message_id,b.position",
             (session_id, content_hash),
-        ).fetchall()
-    ]
+            before_input,
+        )
+    ) as rows:
+        return [(str(row["message_id"]), int(row["position"])) for row in rows]
 
 
 def _lineage_detail(edge: sqlite3.Row, resolved_session_id: str) -> str:
@@ -182,6 +218,7 @@ def _resolve_relocated_lineage(
     conn: sqlite3.Connection,
     anchor: BlockAnchor,
     content_hash: bytes,
+    before_input: BeforeAnchorInput | None = None,
 ) -> BlockAnchorResolution | None:
     """Resolve only a unique physical block across the whole lineage neighbourhood.
 
@@ -194,8 +231,8 @@ def _resolve_relocated_lineage(
     """
 
     matches: dict[tuple[str, int], str] = {}
-    for candidate_session_id, edge in _lineage_candidates(conn, anchor.session_id):
-        for match in _hash_matches_in_session(conn, candidate_session_id, content_hash):
+    for candidate_session_id, edge in _lineage_candidates(conn, anchor.session_id, before_input):
+        for match in _hash_matches_in_session(conn, candidate_session_id, content_hash, before_input):
             matches.setdefault(match, _lineage_detail(edge, candidate_session_id))
     if not matches:
         return None
@@ -252,6 +289,7 @@ def resolve_block_anchor(
     anchor: BlockAnchor,
     *,
     position_hint: int | None = None,
+    before_input: BeforeAnchorInput | None = None,
 ) -> BlockAnchorResolution:
     """Resolve a citation anchor against the current archive (read-only).
 
@@ -260,13 +298,22 @@ def resolve_block_anchor(
     ``sqlite3.Row``, so a plain-tuple connection will raise).
     """
 
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return resolve_block_anchor(conn, anchor, position_hint=position_hint, before_input=before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+
     content_hash = bytes.fromhex(anchor.content_hash_hex)
 
     # A quarantined topology edge is an explicit refusal to trust the graph.
     # Report it before even checking local rows: in particular, do not let a
     # seemingly valid local block mask the fact that lineage traversal is
     # unsafe for this session.
-    quarantined = _quarantined_edge(conn, anchor.session_id)
+    quarantined = _quarantined_edge(conn, anchor.session_id, before_input)
     if quarantined is not None:
         return BlockAnchorResolution(
             state="quarantined",
@@ -279,16 +326,31 @@ def resolve_block_anchor(
             ),
         )
 
-    message_row = conn.execute(
-        "SELECT message_id, session_id FROM messages WHERE message_id = ?",
-        (anchor.message_id,),
-    ).fetchone()
+    with closing(
+        _anchor_rows(
+            conn,
+            "messages",
+            ("message_id", "session_id"),
+            "SELECT rowid FROM messages WHERE message_id=?",
+            (anchor.message_id,),
+            before_input,
+        )
+    ) as rows:
+        message_row = next(rows, None)
 
     if message_row is not None and message_row["session_id"] == anchor.session_id:
-        in_message = conn.execute(
-            "SELECT position FROM blocks WHERE message_id = ? AND content_hash = ? ORDER BY position",
-            (anchor.message_id, content_hash),
-        ).fetchall()
+        with closing(
+            _anchor_rows(
+                conn,
+                "blocks",
+                ("position",),
+                "SELECT rowid FROM blocks WHERE message_id=? AND content_hash=? ORDER BY position",
+                (anchor.message_id, content_hash),
+                before_input,
+            )
+        ) as rows:
+            in_message = list(rows)
+
         if len(in_message) > 1:
             return BlockAnchorResolution(
                 state="ambiguous",
@@ -311,10 +373,18 @@ def resolve_block_anchor(
         # position still exists but with different content, that is a hard
         # hash_mismatch -- never guess a rewrite.
         if position_hint is not None:
-            mismatch_row = conn.execute(
-                "SELECT content_hash FROM blocks WHERE message_id = ? AND position = ?",
-                (anchor.message_id, position_hint),
-            ).fetchone()
+            with closing(
+                _anchor_rows(
+                    conn,
+                    "blocks",
+                    ("content_hash",),
+                    "SELECT rowid FROM blocks WHERE message_id=? AND position=?",
+                    (anchor.message_id, position_hint),
+                    before_input,
+                )
+            ) as rows:
+                mismatch_row = next(rows, None)
+
             if mismatch_row is not None and mismatch_row["content_hash"] != content_hash:
                 return BlockAnchorResolution(
                     state="hash_mismatch",
@@ -327,7 +397,7 @@ def resolve_block_anchor(
     # Look for the hash elsewhere in the same session (message drift). This
     # also covers an anchored message that no longer exists: a renumbered
     # message whose block survives is drift, not a lineage relocation.
-    in_session = _hash_matches_in_session(conn, anchor.session_id, content_hash)
+    in_session = _hash_matches_in_session(conn, anchor.session_id, content_hash, before_input)
     if len(in_session) > 1:
         return BlockAnchorResolution(
             state="ambiguous",
@@ -344,7 +414,7 @@ def resolve_block_anchor(
             resolved_position=position,
         )
 
-    relocated = _resolve_relocated_lineage(conn, anchor, content_hash)
+    relocated = _resolve_relocated_lineage(conn, anchor, content_hash, before_input)
     if relocated is not None:
         return relocated
     return BlockAnchorResolution(

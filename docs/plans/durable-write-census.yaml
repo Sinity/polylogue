@@ -1262,6 +1262,14 @@ writes:
     classification: two_phase_recovery
     reason: "cross-tier two-phase abort: the caller holds the index write transaction and has observed no ingest_marker_witnesses row for this request in the current incarnation, so the pending prepare never committed there and was never accepted or delivered; the update matches request_key, raw_id and the retained carrier_digest with rowcount == 1 and installs the validated current interpretation; accepted carriers are never touched"
 caller_supplied_sql:
+  - file: "polylogue/storage/io_phase_metrics.py"
+    function: "connection_cursor"
+    parameter: "sql"
+    reason: "Retains the caller's actual cursor before statement execution and uses the existing measured connection's strong physical settlement. It introduces no archive authority; read or mutation guards and exact effect permits remain on the original connection."
+  - file: "polylogue/storage/sqlite/reference_seal.py"
+    function: "PreparedIndexMutation.before_index_input"
+    parameter: "rowid_sql"
+    reason: "Canonical read owners supply explicit physical identity selectors on the same pinned original Index observer. The existing read authorizer refuses durable effects; only native byte metadata is charged before those exact input fields hydrate."
   - file: "polylogue/storage/sqlite/reference_seal.py"
     function: "PreparedIndexMutation._owned_cursor"
     parameter: "sql"

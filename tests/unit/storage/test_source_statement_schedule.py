@@ -1,14 +1,15 @@
 """Canonical Source statements retain allocation, order and their original owner."""
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
-from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+from polylogue.storage.sqlite.literal_cells import SQLiteLiteralCell
+from polylogue.storage.sqlite.reference_seal import KnownTierCell, PreparedIndexMutation, ReferenceSealError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -916,3 +917,335 @@ def test_original_reservation_partial_cancel_preserves_remaining_claim_authority
                 assert applications == []
     finally:
         publisher.discard_pending()
+
+
+def test_original_input_demand_precedes_copy_and_reuses_only_same_epoch(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        original_copy = seal._retain_variable_cell
+
+        def measured_copy(metadata: SQLiteLiteralCell, chunks: Iterable[bytes]) -> KnownTierCell:
+            assert charges, "original payload copied before creator input demand amendment"
+            return original_copy(metadata, chunks)
+
+        monkeypatch.setattr(seal, "_retain_variable_cell", measured_copy)
+        with seal.original_read_snapshot(input_demand=charges.append):
+            assert seal.retain_tier_row("source", "raw_sessions", 999) is None
+            assert charges == []
+            first = seal.retain_tier_row("source", "raw_sessions", 1)
+            again = seal.retain_tier_row("source", "raw_sessions", 1)
+            assert first is not None and again == first
+            assert len(charges) == 1 and charges[0] > 0
+        with seal.original_read_snapshot(input_demand=charges.append):
+            assert seal.retain_tier_row("source", "raw_sessions", 1) == first
+            assert len(charges) == 1
+        with seal.original_read_snapshot(), seal.source_producer():
+            seal.load_source_row(first)
+            _stage_raw(seal, "original-raw")
+        _publish_source(seal)
+        with seal.original_read_snapshot(input_demand=charges.append):
+            advanced = seal.retain_tier_row("source", "raw_sessions", 1)
+            assert advanced is not None and advanced.cells != first.cells
+            assert charges == [charges[0], charges[0]]
+
+
+def test_original_input_demand_is_not_recharged_after_cell_copy_failure(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_original_raw(source_statement_root)
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        original_copy = seal._retain_variable_cell
+        failure = OSError("synthetic selected literal read failure")
+        fail_once = True
+
+        def copy(metadata: SQLiteLiteralCell, chunks: Iterable[bytes]) -> KnownTierCell:
+            nonlocal fail_once
+            if fail_once:
+                fail_once = False
+
+                def interrupted() -> Iterator[bytes]:
+                    for chunk in chunks:
+                        yield chunk
+                        raise failure
+
+                return original_copy(metadata, interrupted())
+            return original_copy(metadata, chunks)
+
+        monkeypatch.setattr(seal, "_retain_variable_cell", copy)
+        with seal.original_read_snapshot(input_demand=charges.append):
+            with seal._owned_cursor(seal._scratch, "SELECT count(*) FROM known_tier_literal_cells") as rows:
+                before = rows.fetchone()[0]
+            with pytest.raises(OSError) as caught:
+                seal.retain_tier_row("source", "raw_sessions", 1)
+            assert caught.value is failure
+            with seal._owned_cursor(seal._scratch, "SELECT count(*) FROM known_tier_literal_cells") as rows:
+                assert rows.fetchone()[0] == before
+            image = seal.retain_tier_row("source", "raw_sessions", 1)
+            assert image is not None and len(charges) == 1
+
+
+def test_prepared_cas_input_charges_actual_claim_before_read_and_reuses_original_alias(
+    source_statement_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.storage_faults import ArchiveStorageFaultError
+    from polylogue.storage.blob_publication import (
+        ArchiveBlobPublisher,
+        PreparedBlobPublicationClaim,
+        consume_blob_publication_receipt,
+    )
+
+    root = source_statement_root
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    payload = b"synthetic current-phase raw sidecar"
+    prepared = publisher.prepare_from_bytes(payload)
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    alias_prepared = publisher.prepare_from_bytes(payload)
+    alias_claim = publisher.prepare_claim(alias_prepared)
+    publisher.queue_prepared(alias_prepared, claim=alias_claim)
+    charges: list[int] = []
+    try:
+        with PreparedIndexMutation.source_only(archive_root=root, input_demand=charges.append) as seal:
+            with seal.original_read_snapshot():
+                assert seal.retain_prepared_blob_input(claim) == (bytes.fromhex(claim.receipt.blob_hash), len(payload))
+                assert charges == [len(payload)]
+                assert claim.prepared_path.read_bytes() == payload
+                seal.retain_prepared_blob_input(claim)
+                seal.retain_prepared_blob_input(alias_claim)
+                assert charges == [len(payload)]
+            publisher.prepare_flush(reference_seal=seal)
+            publisher.flush(reference_seal=seal)
+            assert not claim.prepared_path.exists()
+            with seal.original_read_snapshot():
+                # Final-path enrollment must use the original accepted
+                # reservation; an already exposed file alone is insufficient.
+                original_validate = publisher.validate_published_claim
+                checked_fields: list[dict[str, int]] = []
+
+                def validate_after_field_charge(
+                    connection: sqlite3.Connection,
+                    selected_claim: PreparedBlobPublicationClaim,
+                    *,
+                    source_path: str,
+                ) -> None:
+                    with seal._owned_cursor(
+                        connection,
+                        "SELECT rowid FROM blob_publication_reservations WHERE publication_id=?",
+                        (selected_claim.receipt.publication_id,),
+                    ) as cursor:
+                        physical_rowid = cursor.fetchone()[0]
+                    with seal._owned_cursor(
+                        seal._scratch,
+                        "SELECT column_name,byte_length FROM temp.original_input_fields "
+                        "WHERE tier='source' AND epoch=? AND table_name='blob_publication_reservations' "
+                        "AND physical_rowid=? AND column_name IN ('blob_hash','size_bytes','publisher_id')",
+                        (seal._original_input_epochs["source"], physical_rowid),
+                    ) as cursor:
+                        fields = dict(cursor)
+                    assert fields == {
+                        "blob_hash": 32,
+                        "size_bytes": 8,
+                        "publisher_id": len(selected_claim.receipt.publisher_id.encode()),
+                    }
+                    checked_fields.append(fields)
+                    original_validate(connection, selected_claim, source_path=source_path)
+
+                with monkeypatch.context() as scope:
+                    scope.setattr(publisher, "validate_published_claim", validate_after_field_charge)
+                    seal.retain_prepared_blob_input(claim)
+                    accepted_charges = tuple(charges)
+                    seal.retain_prepared_blob_input(claim)
+                    assert tuple(charges) == accepted_charges
+                assert len(checked_fields) == 2
+                reservation_fields = sum(checked_fields[0].values())
+        fresh: list[int] = []
+        with PreparedIndexMutation.source_only(archive_root=root, input_demand=fresh.append) as later:
+            with later.original_read_snapshot():
+                later.retain_prepared_blob_input(claim)
+                assert fresh == [reservation_fields, len(payload)]
+        with pytest.raises(ReferenceSealError):
+            later.retain_prepared_blob_input(claim)
+        with closing(open_source_tier_write_connection(root / "source.db", archive_root=root)) as source:
+            with closing(
+                source.execute(
+                    "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms) "
+                    "VALUES('published-original','unknown-export','synthetic/published',?,?,1)",
+                    (bytes.fromhex(claim.receipt.blob_hash), len(payload)),
+                )
+            ):
+                pass
+            consume_blob_publication_receipt(
+                source, claim.receipt.publication_id, bytes.fromhex(claim.receipt.blob_hash)
+            )
+            source.commit()
+        unpaid: list[int] = []
+        with PreparedIndexMutation.source_only(archive_root=root, input_demand=unpaid.append) as missing:
+            with pytest.raises(ArchiveStorageFaultError):
+                with missing.original_read_snapshot():
+                    missing.retain_prepared_blob_input(claim)
+        assert unpaid == []
+        assert publisher._store.blob_path(claim.receipt.blob_hash).read_bytes() == payload
+    finally:
+        publisher.discard_pending()
+
+
+@pytest.mark.parametrize("refusal", ["foreign", "stale", "missing-reservation", "demand"])
+def test_prepared_cas_input_refuses_invalid_or_cancelled_provenance_before_payload_read(
+    source_statement_root: Path,
+    refusal: str,
+) -> None:
+    from polylogue.core.storage_faults import ArchiveStorageFaultError
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    root = source_statement_root
+    publisher = ArchiveBlobPublisher(
+        root / ("foreign-source.db" if refusal == "foreign" else "source.db"), root / "blob"
+    )
+    prepared = publisher.prepare_from_bytes(b"synthetic refused raw sidecar")
+    claim = publisher.prepare_claim(prepared)
+    publisher.queue_prepared(prepared, claim=claim)
+    charges: list[int] = []
+    cancelled = OSError("synthetic current-phase demand cancellation")
+
+    def amend(byte_length: int) -> None:
+        if refusal == "demand":
+            raise cancelled
+        charges.append(byte_length)
+
+    try:
+        if refusal == "stale":
+            claim.prepared_path.unlink()
+            claim.prepared_path.write_bytes(b"changed")
+        elif refusal == "missing-reservation":
+            # A final file without this exact accepted receipt is not input
+            # provenance, even when its hash and size are otherwise correct.
+            publisher._store.publish_many((prepared,))
+        with PreparedIndexMutation.source_only(archive_root=root, input_demand=amend) as seal:
+            expected = (
+                ArchiveStorageFaultError
+                if refusal == "missing-reservation"
+                else OSError
+                if refusal == "demand"
+                else (ReferenceSealError, ValueError)
+            )
+            with pytest.raises(expected) as caught:
+                with seal.original_read_snapshot():
+                    seal.retain_prepared_blob_input(claim)
+            assert charges == []
+            if refusal == "demand":
+                assert caught.value is cancelled
+                with pytest.raises(ReferenceSealError):
+                    with seal.original_read_snapshot():
+                        pass
+    finally:
+        publisher.discard_pending()
+
+
+def test_original_input_demand_refusal_prevents_native_payload_copy(
+    source_statement_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_original_raw(source_statement_root)
+    refusal = RuntimeError("synthetic creator amendment refusal")
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+
+        def refuse(_byte_length: int) -> None:
+            raise refusal
+
+        def forbidden_copy(_metadata: SQLiteLiteralCell, _chunks: Iterable[bytes]) -> KnownTierCell:
+            pytest.fail("payload copied after failed demand amendment")
+
+        monkeypatch.setattr(seal, "_retain_variable_cell", forbidden_copy)
+        with pytest.raises(RuntimeError) as caught:
+            with seal.original_read_snapshot(input_demand=refuse):
+                seal.retain_tier_row("source", "raw_sessions", 1)
+        assert caught.value is refusal
+        with pytest.raises(ReferenceSealError):
+            with seal.original_read_snapshot(input_demand=refuse):
+                pass
+
+
+def test_original_cas_demand_precedes_initial_and_late_reads_and_deduplicates_aliases(
+    source_statement_root: Path,
+) -> None:
+    root = source_statement_root
+    _seed_original_raw(root)
+    with closing(open_source_tier_write_connection(root / "source.db", archive_root=root)) as source:
+        with closing(
+            source.execute(
+                "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms) "
+                "VALUES('alias-raw','unknown-export','synthetic/alias',?,1,1),"
+                "('late-raw','unknown-export','synthetic/late',?,9,1)",
+                (b"o" * 32, b"l" * 32),
+            )
+        ):
+            pass
+        source.commit()
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=root) as seal:
+        with seal.original_read_snapshot(input_demand=charges.append):
+            assert seal.retain_original_blob_input("original-raw") == (b"o" * 32, 1)
+            assert seal.retain_original_blob_input("alias-raw") == (b"o" * 32, 1)
+            assert charges == [40, 1, 40]
+            assert seal.retain_original_blob_input("late-raw") == (b"l" * 32, 9)
+            assert seal.retain_original_blob_input("late-raw") == (b"l" * 32, 9)
+            assert charges == [40, 1, 40, 40, 9]
+        with seal.original_read_snapshot(input_demand=charges.append):
+            seal.retain_original_blob_input("late-raw")
+            assert charges == [40, 1, 40, 40, 9]
+
+
+def test_original_cas_missing_descriptor_refuses_before_payload_hydration(source_statement_root: Path) -> None:
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root) as seal:
+        with seal.original_read_snapshot(input_demand=charges.append):
+            with pytest.raises(ReferenceSealError):
+                seal.retain_original_blob_input("missing-original-input")
+        assert charges == []
+
+
+def test_prior_original_row_charge_does_not_prepay_cas_payload(source_statement_root: Path) -> None:
+    _seed_original_raw(source_statement_root)
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root, input_demand=charges.append) as seal:
+        with seal.original_read_snapshot():
+            assert seal.retain_tier_row("source", "raw_sessions", 1) is not None
+            row_charge = tuple(charges)
+            assert seal.retain_original_blob_input("original-raw") == (b"o" * 32, 1)
+            assert tuple(charges) == (*row_charge, 1)
+            seal.retain_original_blob_input("original-raw")
+            assert tuple(charges) == (*row_charge, 1)
+
+
+def test_append_prepaid_cas_requires_matching_original_acquisition(source_statement_root: Path) -> None:
+    _seed_original_raw(source_statement_root)
+    charges: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root, input_demand=charges.append) as seal:
+        with seal.original_read_snapshot(prepaid_blob_inputs=(("original-raw", b"o" * 32, 1),)):
+            assert seal.retain_original_blob_input("original-raw") == (b"o" * 32, 1)
+        assert charges == [40]
+        with pytest.raises(ReferenceSealError):
+            with seal.original_read_snapshot(prepaid_blob_inputs=(("original-raw", b"x" * 32, 1),)):
+                pytest.fail("changed accepted append input admitted payload hydration")
+        assert charges == [40]
+
+
+def test_omitted_original_windows_keep_constructor_demand_and_override_restores_it(source_statement_root: Path) -> None:
+    _seed_original_raw(source_statement_root)
+    original: list[int] = []
+    override: list[int] = []
+    with PreparedIndexMutation.source_only(archive_root=source_statement_root, input_demand=original.append) as seal:
+        with seal.original_read_snapshot(input_demand=override.append):
+            seal.retain_original_blob_input("original-raw")
+        assert override == [40, 1] and original == []
+        with seal.original_read_snapshot():
+            image = seal.retain_tier_row("source", "raw_sessions", 1)
+            assert image is not None
+        assert original and override == [40, 1]
+        with pytest.raises(ReferenceSealError):
+            seal.before_index_input("sessions", ("session_id",), "SELECT rowid FROM sessions", ())

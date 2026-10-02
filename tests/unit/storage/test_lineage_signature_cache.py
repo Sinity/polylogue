@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,6 +25,7 @@ from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -86,8 +88,8 @@ def test_disabling_cache_preserves_lineage_output(tmp_path: Path) -> None:
         [_msg("c0", "hello", 0), _msg("c1", "reply", 1), _msg("c2", "tail", 2)],
         parent="parent",
     )
-    cached_conn = _connect(tmp_path / "cached.db")
-    uncached_conn = _connect(tmp_path / "uncached.db")
+    cached_conn = _connect(tmp_path / "cached" / "index.db")
+    uncached_conn = _connect(tmp_path / "uncached" / "index.db")
     try:
         cached = LineageSignatureCache(max_bytes=1024 * 1024)
         write_fixture_index_session(cached_conn, parent, signature_cache=cached)
@@ -118,15 +120,36 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
     parent = _session("parent", [_msg("p0", "hello", 0), _msg("p1", "reply", 1)])
     parent_id = write_fixture_index_session(conn, parent, signature_cache=cache)
 
-    calls = 0
+    preparation_calls = 0
+    validation_calls = 0
+    preparing = False
     original = write_module._own_db_signatures
+    original_context = write_module._prepared_message_context
 
-    def counted(conn_arg: sqlite3.Connection, session_id_arg: str) -> list[tuple[str, str]]:
-        nonlocal calls
-        calls += 1
-        return original(conn_arg, session_id_arg)
+    def prepare_context(*args: Any, **kwargs: Any) -> write_module.PreparedMessageContext:
+        nonlocal preparing
+        assert not preparing
+        preparing = True
+        try:
+            return original_context(*args, **kwargs)
+        finally:
+            preparing = False
+
+    def counted(
+        conn_arg: sqlite3.Connection,
+        session_id_arg: str,
+        before_input: write_module.BeforeIndexInput | None = None,
+    ) -> list[tuple[str, str]]:
+        nonlocal preparation_calls, validation_calls
+        if session_id_arg == parent_id:
+            if preparing:
+                preparation_calls += 1
+            else:
+                validation_calls += 1
+        return original(conn_arg, session_id_arg, before_input)
 
     monkeypatch.setattr(write_module, "_own_db_signatures", counted)
+    monkeypatch.setattr(write_module, "_prepared_message_context", prepare_context)
     child_a = _session(
         "child-a",
         [_msg("a0", "hello", 0), _msg("a1", "reply", 1), _msg("a2", "A tail", 2)],
@@ -140,9 +163,10 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
     child_a_id = write_fixture_index_session(conn, child_a, signature_cache=cache)
     child_b_id = write_fixture_index_session(conn, child_b, signature_cache=cache)
 
-    # Parent own signatures are read once; the second sibling consumes the
-    # composed cache hit. The branch point remains the parent's canonical row.
-    assert calls == 1
+    # Preparation reconstructs the parent once and the second sibling reuses
+    # it. Each publication separately validates the current authoritative prefix.
+    assert preparation_calls == 1
+    assert validation_calls == 2
     assert cache.hits >= 1
     branch_a = conn.execute(
         "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_a_id,)
@@ -155,6 +179,36 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
     ).fetchone()[0]
     assert branch_a == canonical_branch == branch_b
     conn.close()
+
+
+def test_changed_parent_refuses_prepared_child_even_with_stale_batch_cache(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers import write as write_module
+
+    conn = _connect(tmp_path / "index.db")
+    cache = LineageSignatureCache(max_bytes=1024 * 1024)
+    prepared = None
+    try:
+        parent = _session("parent", [_msg("p0", "hello", 0), _msg("p1", "reply", 1)])
+        parent_id = write_fixture_index_session(conn, parent)
+        child = _session(
+            "child",
+            [_msg("c0", "hello", 0), _msg("c1", "reply", 1), _msg("c2", "tail", 2)],
+            parent="parent",
+        )
+        prepared = write_module.prepare_session_write(conn, child, merge_append=False, signature_cache=cache)
+        stale_prefix = cache.get_composed(parent_id)
+        assert stale_prefix is not None
+        replacement = _session("parent", [_msg("p0", "changed", 0), _msg("p1", "reply", 1)])
+        write_fixture_index_session(conn, replacement)
+        assert cache.get_composed(parent_id) == stale_prefix
+        assert write_module._composed_db_signatures(conn, parent_id) != stale_prefix
+        with pytest.raises(write_module.PreparedSessionWriteRefusedError):
+            write_fixture_index_session(conn, child, signature_cache=cache, prepared_write=prepared)
+        assert conn.execute("SELECT 1 FROM sessions WHERE native_id = 'child'").fetchone() is None
+    finally:
+        if prepared is not None:
+            prepared.close()
+        conn.close()
 
 
 def test_one_byte_prefix_difference_is_a_miss_and_stays_spawned_fresh(tmp_path: Path) -> None:

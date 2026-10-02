@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -281,7 +281,11 @@ def read_spawn_edges(index_conn: sqlite3.Connection, *, source_path: str | None 
 
 
 def read_parent_thread_id(
-    index_conn: sqlite3.Connection, child_thread_id: str, *, source_path: str | None = None
+    index_conn: sqlite3.Connection,
+    child_thread_id: str,
+    *,
+    source_path: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
 ) -> str | None:
     """Return the projected parent of ``child_thread_id``, or ``None`` when silent.
 
@@ -292,6 +296,7 @@ def read_parent_thread_id(
         index_conn,
         child_thread_id,
         source_scope=codex_state_source_scope(source_path) if source_path else None,
+        before_input=before_input,
     )
 
 

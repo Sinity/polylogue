@@ -60,10 +60,13 @@ def _schema_alias(schema: str) -> str:
 
 
 def _schema_attached(conn: sqlite3.Connection, schema: str) -> bool:
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     alias = _schema_alias(schema)
     if alias == "main":
         return True
-    return any(str(row[1]) == alias for row in conn.execute("PRAGMA database_list").fetchall())
+    with connection_cursor(conn, "PRAGMA database_list") as cursor:
+        return any(str(row[1]) == alias for row in cursor)
 
 
 def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
@@ -82,13 +85,16 @@ def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -
     Returns:
         True if the table exists, False otherwise
     """
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     if not _schema_attached(conn, schema):
         return False
-    cursor = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='table' AND name=? LIMIT 1",
         (name,),
-    )
-    return cursor.fetchone() is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def relation_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
@@ -98,36 +104,45 @@ def relation_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main"
     ``threads``) is a valid answer: a table-only probe silently omits them
     (polylogue-grdt).
     """
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     if not _schema_attached(conn, schema):
         return False
-    cursor = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master "
         "WHERE type IN ('table', 'view') AND name=? LIMIT 1",
         (name,),
-    )
-    return cursor.fetchone() is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def view_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
     """Check if a view -- and only a view -- exists in the given schema."""
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     if not _schema_attached(conn, schema):
         return False
-    cursor = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='view' AND name=? LIMIT 1",
         (name,),
-    )
-    return cursor.fetchone() is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def trigger_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
     """Check if a trigger exists in the given schema."""
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     if not _schema_attached(conn, schema):
         return False
-    cursor = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='trigger' AND name=? LIMIT 1",
         (name,),
-    )
-    return cursor.fetchone() is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 async def trigger_exists_async(conn: aiosqlite.Connection, name: str, *, schema: str = "main") -> bool:
@@ -171,11 +186,14 @@ def index_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -
 
     See `table_exists` for the `schema` trust requirement.
     """
-    cursor = conn.execute(
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master WHERE type='index' AND name=? LIMIT 1",
         (name,),
-    )
-    return cursor.fetchone() is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 async def index_exists_async(conn: aiosqlite.Connection, name: str, *, schema: str = "main") -> bool:
@@ -203,10 +221,12 @@ def column_exists(conn: sqlite3.Connection, table: str, column: str, *, schema: 
     See `table_exists` for the `schema`/`table` trust requirement -- both are
     interpolated into `PRAGMA` text since SQLite cannot bind pragma targets.
     """
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
     if not table_exists(conn, table, schema=schema):
         return False
-    rows = conn.execute(_table_info_pragma(table, schema=schema)).fetchall()
-    return any(str(row[1]) == column for row in rows)
+    with connection_cursor(conn, _table_info_pragma(table, schema=schema)) as cursor:
+        return any(str(row[1]) == column for row in cursor)
 
 
 async def column_exists_async(conn: aiosqlite.Connection, table: str, column: str, *, schema: str = "main") -> bool:

@@ -20,7 +20,7 @@ import time
 import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -120,7 +120,7 @@ from polylogue.storage.fts.sql import (
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
-from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -930,16 +930,25 @@ def _identity_sequence_digest(identities: Iterable[str]) -> str:
     return digest.hexdigest()
 
 
-def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _IdentityScope | None:
+def _materialized_identity_scope(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> _IdentityScope | None:
     """The identity scope this child's stored IDs follow, if its prefix was materialized.
 
     Kept per session, not on an edge: a later revision that no longer declares
     the parent deletes the edge, and the IDs must still not move.
     """
-    row = conn.execute(
-        "SELECT scope_json FROM session_identity_scopes WHERE session_id = ?",
-        (session_id,),
-    ).fetchone()
+    if before_input is not None:
+        before_input(
+            "session_identity_scopes",
+            ("scope_json",),
+            "SELECT rowid FROM session_identity_scopes WHERE session_id=?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn, "SELECT scope_json FROM session_identity_scopes WHERE session_id = ?", (session_id,)
+    ) as _input_cursor:
+        row = _input_cursor.fetchone()
     return _IdentityScope.from_json(str(row[0])) if row is not None else None
 
 
@@ -1687,6 +1696,7 @@ def _prepared_message_context(
     signature_cache: _SignatureCacheLike | None,
     source_conn: sqlite3.Connection | None,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> PreparedMessageContext:
     """Canonical normalization-before-lineage-slicing context for one write."""
     if isinstance(session.messages, SqliteMessageSink) and session.messages._writer is None:
@@ -1709,6 +1719,7 @@ def _prepared_message_context(
         child_provider_values=_child_provider_values(session),
         parent_candidate=session.parent_session_provider_id,
         child_source_path=child_source_path,
+        before_input=before_input,
     )
     hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
     effective_session_kind = session.session_kind
@@ -1725,23 +1736,29 @@ def _prepared_message_context(
     # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
     # it against whatever the parent holds now, which would move those IDs.
     # Only a full write re-applies it to IDs; an append keeps stored IDs.
-    identity_scope = _materialized_identity_scope(conn, session_id)
+    identity_scope = _materialized_identity_scope(conn, session_id, before_input)
     parent_composed: Sequence[tuple[str, str]] | None = None
     if not merge_append:
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
-        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value)
+        parent_session_id = _existing_parent_session_id(conn, lineage_session, origin.value, before_input)
         acompact = _is_claude_code_acompact_session(session)
         force_spawned_fresh = False
         if parent_session_id is not None and messages:
-            cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=parent_session_id)
+            cycle_walk = _would_create_cycle(
+                conn, child_id=session_id, proposed_parent_id=parent_session_id, before_input=before_input
+            )
             force_spawned_fresh = cycle_walk.outcome != "acyclic"
             if acompact:
                 parent_composed = (
-                    _disk_composed_db_signatures(conn, parent_session_id, messages.path.parent)
+                    _disk_composed_db_signatures(
+                        conn, parent_session_id, messages.path.parent, before_input=before_input
+                    )
                     if isinstance(messages, SqliteMessageSink)
-                    else _composed_db_signatures(conn, parent_session_id, cache=signature_cache)
+                    else _composed_db_signatures(
+                        conn, parent_session_id, cache=signature_cache, before_input=before_input
+                    )
                 )
                 membership = _acompact_content_membership_ratio(
                     parent_composed,
@@ -1784,9 +1801,12 @@ def _prepared_message_context(
                     cache=signature_cache,
                     parent_composed=parent_composed,
                     attachments=session.attachments,
+                    before_input=before_input,
                 )
             if branch_point_message_id is not None:
-                branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
+                branch_point_content_address = _message_content_address_for_id(
+                    conn, branch_point_message_id, before_input
+                )
     scoped_identities: tuple[MessageContentIdentity, ...] | None = None
     if identity_scope is not None and not merge_append:
         scoped_view, scoped_identities = _scoped_identities(messages, identity_scope)
@@ -1864,6 +1884,7 @@ def prepare_session_write(
     raw_id: str | None = None,
     force_replace: bool = False,
     prepared_rows: PreparedSessionRows | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> PreparedSessionWrite:
     """Prepare the canonical pending write while its lineage evidence is pinned."""
     from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -1882,16 +1903,25 @@ def prepare_session_write(
         signature_cache=signature_cache,
         source_conn=source_conn,
         child_source_path=raw_source_path(source_conn, raw_id),
+        before_input=before_input,
     )
     scratch: tempfile.TemporaryDirectory[str] | None = None
     prepared_union: _PreparedCrossAcquisitionUnion | None = None
     try:
-        predecessor_row = conn.execute(
-            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
-        ).fetchone()
+        if before_input is not None:
+            before_input(
+                "sessions",
+                ("content_hash", "raw_id", "updated_at_ms"),
+                "SELECT rowid FROM sessions WHERE session_id=?",
+                (session_id,),
+            )
+        with connection_cursor(
+            conn, "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id=?", (session_id,)
+        ) as cursor:
+            predecessor_row = cursor.fetchone()
         predecessor = tuple(predecessor_row) if predecessor_row is not None else None
         position_offset = _next_message_position(conn, session_id) if merge_append else 0
-        content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
+        content_occurrence_offsets = _stored_content_occurrences(conn, session_id, before_input) if merge_append else {}
         if (
             prepared_rows is not None
             and not merge_append
@@ -2012,6 +2042,7 @@ def prepare_session_write(
                 rows,
                 raw_id=raw_id,
                 directory=directory,
+                before_input=before_input,
             )
         return PreparedSessionWrite(
             session_id=session_id,
@@ -2358,9 +2389,7 @@ def write_parsed_session_to_archive(
         raise ReferenceSealError("an outer Index transaction requires its explicit matching scope")
     from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 
-    dependencies = (
-        () if prepared_write is None or prepared_write.rows.scratch is None else (prepared_write.rows.scratch,)
-    )
+    dependencies = () if prepared_write.rows.scratch is None else (prepared_write.rows.scratch,)
     with retain_native_sql_lifetimes(*dependencies):
         stored_header = (
             _stored_session_header(
@@ -2845,11 +2874,7 @@ def write_parsed_session_to_archive(
                         messages,
                         position_offset=position_offset,
                         duplicate_native_ids=duplicate_message_native_ids,
-                        rows=(
-                            prepared_rows_to_use.message_rows
-                            if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                            else None
-                        ),
+                        rows=prepared_rows_to_use.message_rows,
                         content_identities=content_identities,
                     )
                     add_timing("index.messages", t0)
@@ -2860,11 +2885,7 @@ def write_parsed_session_to_archive(
                         messages,
                         position_offset=position_offset,
                         duplicate_native_ids=duplicate_message_native_ids,
-                        rows=(
-                            prepared_rows_to_use.block_rows
-                            if isinstance(prepared_rows_to_use, PreparedSessionRows)
-                            else None
-                        ),
+                        rows=prepared_rows_to_use.block_rows,
                         content_identities=content_identities,
                     )
                     add_timing("index.blocks", t0)
@@ -3346,14 +3367,19 @@ def _count_session_messages(
     if upto_position is not None and upto_variant_index is not None:
         upto_clause = " AND (position, variant_index) <= (?, ?)"
         upto_params = (upto_position, upto_variant_index)
-    row = conn.execute(
-        f"SELECT COUNT(*) FROM messages WHERE session_id = ?{upto_clause}",
-        (session_id, *upto_params),
-    ).fetchone()
+    with connection_cursor(
+        conn, f"SELECT COUNT(*) FROM messages WHERE session_id = ?{upto_clause}", (session_id, *upto_params)
+    ) as cursor:
+        row = cursor.fetchone()
     return int(row[0])
 
 
-def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str, int, int] | None:
+BeforeIndexInput = Callable[[str, tuple[str, ...], str, tuple[object, ...]], None]
+
+
+def _message_coordinates(
+    conn: sqlite3.Connection, message_id: str, before_input: BeforeIndexInput | None = None
+) -> tuple[str, int, int] | None:
     """Return ``(session_id, position, variant_index)`` for one stored message.
 
     The owning session is part of the answer because a composed transcript
@@ -3361,10 +3387,17 @@ def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str
     composed-index locate have to know which segment a message belongs to
     before they can place it.
     """
-    row = conn.execute(
-        "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?",
-        (message_id,),
-    ).fetchone()
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("session_id", "position", "variant_index"),
+            "SELECT rowid FROM messages WHERE message_id=?",
+            (message_id,),
+        )
+    with connection_cursor(
+        conn, "SELECT session_id, position, variant_index FROM messages WHERE message_id = ?", (message_id,)
+    ) as cursor:
+        row = cursor.fetchone()
     if row is None:
         return None
     return (str(row["session_id"]), int(row["position"]), int(row["variant_index"]))
@@ -3380,8 +3413,11 @@ class _SegmentList:
     walk's visited set), so each owns at most one segment.
     """
 
-    def __init__(self, conn: sqlite3.Connection, base: Sequence[_TranscriptSegment]) -> None:
+    def __init__(
+        self, conn: sqlite3.Connection, base: Sequence[_TranscriptSegment], before_input: BeforeIndexInput | None = None
+    ) -> None:
         self._conn = conn
+        self._before_input = before_input
         self.segments = list(base)
         self._index = {segment.session_id: position for position, segment in enumerate(self.segments)}
         self.total = sum(segment.message_count for segment in self.segments)
@@ -3392,7 +3428,7 @@ class _SegmentList:
         ``False`` is the dangling branch point: the parent message was
         hard-deleted, or it is not part of the parent's composed transcript.
         """
-        located = _message_coordinates(self._conn, branch_point_message_id)
+        located = _message_coordinates(self._conn, branch_point_message_id, self._before_input)
         if located is None:
             return False
         owner_session_id, position, variant_index = located
@@ -3431,7 +3467,9 @@ class _SegmentList:
         self.total += segment.message_count
 
 
-def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _ComposedTranscriptPlan:
+def _composed_transcript_plan(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> _ComposedTranscriptPlan:
     """Plan a session's composed transcript: the parent's prefix, then its own tail.
 
     4ts.6: two paths yield an INCOMPLETE transcript -- a cycle, and a dangling
@@ -3456,7 +3494,7 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _Com
     cursor_session_id = session_id
     plan: _ComposedTranscriptPlan
     while True:
-        edge = _prefix_sharing_edge_sync(conn, cursor_session_id)
+        edge = _prefix_sharing_edge_sync(conn, cursor_session_id, before_input)
         if edge is None:
             own = own_segment(cursor_session_id)
             plan = _ComposedTranscriptPlan(
@@ -3486,11 +3524,11 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _Com
 
     if not chain:
         return plan
-    composed = _SegmentList(conn, plan.segments)
+    composed = _SegmentList(conn, plan.segments, before_input)
     complete, reason = plan.lineage_complete, plan.lineage_truncation_reason
     for child_session_id, parent_session_id, branch_point_message_id in reversed(chain):
         cut = _branch_point_content_address_matches(
-            conn, child_session_id, parent_session_id, branch_point_message_id
+            conn, child_session_id, parent_session_id, branch_point_message_id, before_input
         ) and composed.cut_at(branch_point_message_id)
         # The parent's own incompleteness is checked first: a branch point
         # missing from a truncated parent is a symptom of that truncation, not
@@ -3968,7 +4006,8 @@ def _count_session_messages_before(
     variant_index: int,
 ) -> int:
     """Count a session's own rows that precede ``(position, variant_index)``."""
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         """
         SELECT COUNT(*)
         FROM messages
@@ -3976,11 +4015,14 @@ def _count_session_messages_before(
           AND (position, variant_index) < (?, ?)
         """,
         (session_id, position, variant_index),
-    ).fetchone()
+    ) as cursor:
+        row = cursor.fetchone()
     return int(row[0])
 
 
-def locate_composed_message(conn: sqlite3.Connection, session_id: str, message_id: str) -> int | None:
+def locate_composed_message(
+    conn: sqlite3.Connection, session_id: str, message_id: str, *, before_input: BeforeIndexInput | None = None
+) -> int | None:
     """Return a message's index in a session's COMPOSED transcript, or ``None``.
 
     ``None`` means this session's composed transcript does not contain that
@@ -4000,17 +4042,19 @@ def locate_composed_message(conn: sqlite3.Connection, session_id: str, message_i
     never disagree.
     """
     if not conn.in_transaction:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
         try:
-            return locate_composed_message(conn, session_id, message_id)
+            return locate_composed_message(conn, session_id, message_id, before_input=before_input)
         finally:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
     conn.row_factory = sqlite3.Row
-    located = _message_coordinates(conn, message_id)
+    located = _message_coordinates(conn, message_id, before_input)
     if located is None:
         return None
     owner_session_id, position, variant_index = located
-    plan = _composed_transcript_plan(conn, session_id)
+    plan = _composed_transcript_plan(conn, session_id, before_input)
     preceding = 0
     for segment in plan.segments:
         if segment.session_id == owner_session_id and not (
@@ -5337,8 +5381,86 @@ class _UnionSet(Set[str]):
 
 
 def _capture_session_projection_rows(
-    conn: sqlite3.Connection, session_id: str, *, scratch: _UnionScratch | None = None
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    scratch: _UnionScratch | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> _CapturedProjections:
+    if before_input is not None:
+        fields = {
+            "attachment_refs": (
+                "attachment_id",
+                "session_id",
+                "message_id",
+                "position",
+                "upload_origin",
+                "direction",
+                "producer_ref",
+                "source_url",
+                "caption",
+                "supplying_raw_id",
+            ),
+            "paste_spans": (
+                "message_id",
+                "session_id",
+                "position",
+                "start_offset",
+                "end_offset",
+                "boundary_state",
+                "source_event_id",
+                "source_marker",
+                "content_hash",
+                "observed_at_ms",
+            ),
+            "file_edits": (
+                "tool_use_block_id",
+                "session_id",
+                "message_id",
+                "file_path",
+                "structured_patch_json",
+                "original_file",
+                "old_string",
+                "new_string",
+                "replace_all",
+                "user_modified",
+                "observed_at_ms",
+            ),
+            "web_content_constructs": (
+                "session_id",
+                "message_id",
+                "block_id",
+                "position",
+                "provider",
+                "construct_type",
+                "provider_key",
+                "title",
+                "url",
+                "text",
+                "source_id",
+                "group_id",
+                "group_title",
+                "query",
+                "asset_pointer",
+                "mime_type",
+                "status",
+                "task_id",
+                "task_type",
+                "rank",
+                "start_index",
+                "end_index",
+            ),
+            "session_provider_usage_events": _PROVIDER_USAGE_EVENT_COLUMNS,
+        }
+        for table, columns in fields.items():
+            before_input(table, tuple(columns), f"SELECT rowid FROM {table} WHERE session_id=?", (session_id,))
+        before_input(
+            "attachment_native_ids",
+            ("ref_id", "id_kind", "native_id"),
+            "SELECT ani.rowid FROM attachment_native_ids ani JOIN attachment_refs ar "
+            "ON ani.ref_id=ar.message_id || ':attachment:' || ar.position WHERE ar.session_id=?",
+            (session_id,),
+        )
     if scratch is not None:
         selections = {
             "attachment_refs": "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
@@ -5350,25 +5472,26 @@ def _capture_session_projection_rows(
             + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
         }
         for name, sql in selections.items():
-            for ordinal, row in enumerate(conn.execute(sql, (session_id,))):
+            with connection_cursor(conn, sql, (session_id,)) as _input_cursor:
+                for ordinal, row in enumerate(_input_cursor):
+                    scratch.conn.execute(
+                        f"INSERT INTO captured_{name} VALUES (?, ?)",
+                        (ordinal, pickle.dumps(tuple(row), protocol=5)),
+                    )
+                    if name == "attachment_refs":
+                        scratch.conn.execute("INSERT INTO captured_attachment_owner VALUES (?, ?)", (row[0], row[2]))
+        with connection_cursor(
+            conn,
+            "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
+            "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
+            "WHERE ar.session_id = ?",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
                 scratch.conn.execute(
-                    f"INSERT INTO captured_{name} VALUES (?, ?)",
+                    "INSERT INTO captured_attachment_native_ids VALUES (?, ?)",
                     (ordinal, pickle.dumps(tuple(row), protocol=5)),
                 )
-                if name == "attachment_refs":
-                    scratch.conn.execute("INSERT INTO captured_attachment_owner VALUES (?, ?)", (row[0], row[2]))
-        for ordinal, row in enumerate(
-            conn.execute(
-                "SELECT ani.ref_id, ani.id_kind, ani.native_id FROM attachment_native_ids ani "
-                "JOIN attachment_refs ar ON ani.ref_id = ar.message_id || ':attachment:' || ar.position "
-                "WHERE ar.session_id = ?",
-                (session_id,),
-            )
-        ):
-            scratch.conn.execute(
-                "INSERT INTO captured_attachment_native_ids VALUES (?, ?)",
-                (ordinal, pickle.dumps(tuple(row), protocol=5)),
-            )
         return _CapturedProjections(
             *(
                 scratch.rows(f"captured_{name}")
@@ -5382,44 +5505,54 @@ def _capture_session_projection_rows(
                 )
             )
         )
-    attachment_refs = conn.execute(
+    with connection_cursor(
+        conn,
         "SELECT attachment_id, session_id, message_id, position, upload_origin, direction, producer_ref, source_url, "
         "caption, supplying_raw_id FROM attachment_refs WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        attachment_refs = _input_cursor.fetchall()
     ref_ids = [f"{row[2]}:attachment:{row[3]}" for row in attachment_refs]
     attachment_native_ids: list[sqlite3.Row] = []
     if ref_ids:
         placeholders = ",".join("?" for _ in ref_ids)
-        attachment_native_ids = conn.execute(
+        with connection_cursor(
+            conn,
             f"SELECT ref_id, id_kind, native_id FROM attachment_native_ids WHERE ref_id IN ({placeholders})",
             ref_ids,
-        ).fetchall()
-    paste_spans = conn.execute(
+        ) as _input_cursor:
+            attachment_native_ids = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT message_id, session_id, position, start_offset, end_offset, boundary_state, "
         "source_event_id, source_marker, content_hash, observed_at_ms FROM paste_spans WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    file_edits = conn.execute(
+    ) as _input_cursor:
+        paste_spans = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT tool_use_block_id, session_id, message_id, file_path, structured_patch_json, "
         "original_file, old_string, new_string, replace_all, user_modified, observed_at_ms "
         "FROM file_edits WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    web_content_constructs = conn.execute(
+    ) as _input_cursor:
+        file_edits = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT session_id, message_id, block_id, position, provider, construct_type, provider_key, "
         "title, url, text, source_id, group_id, group_title, query, asset_pointer, mime_type, status, "
         "task_id, task_type, rank, start_index, end_index FROM web_content_constructs WHERE session_id = ?",
         (session_id,),
-    ).fetchall()
-    provider_usage_events = conn.execute(
-        # One column list for capture and restore: a hand-copied second list
-        # silently drops whatever the two disagree about (polylogue-1pzmq).
+    ) as _input_cursor:
+        web_content_constructs = _input_cursor.fetchall()
+    with connection_cursor(
+        conn,
         "SELECT "
         + ", ".join(_PROVIDER_USAGE_EVENT_COLUMNS)
         + " FROM session_provider_usage_events WHERE session_id = ? ORDER BY position",
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        provider_usage_events = _input_cursor.fetchall()
     return _CapturedProjections(
         attachment_refs=[tuple(r) for r in attachment_refs],
         attachment_native_ids=[tuple(r) for r in attachment_native_ids],
@@ -6190,6 +6323,7 @@ def _prepare_cross_acquisition_union(
     *,
     raw_id: str,
     directory: Path,
+    before_input: BeforeIndexInput | None = None,
 ) -> _PreparedCrossAcquisitionUnion | None:
     """Reconcile a different acquisition on a read-only index snapshot.
 
@@ -6198,11 +6332,27 @@ def _prepare_cross_acquisition_union(
     returned predecessor binding is checked again by the publisher before it
     deletes any row; a stale snapshot takes the normal prepared retry route.
     """
-    predecessor_row = conn.execute(
+    if before_input is not None:
+        before_input(
+            "sessions",
+            (
+                "raw_id",
+                "content_hash",
+                "parser_fingerprint",
+                "lowering_fingerprint",
+                "parent_session_id",
+                "active_leaf_message_id",
+            ),
+            "SELECT rowid FROM sessions WHERE session_id=?",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
         "SELECT raw_id, content_hash, parser_fingerprint, lowering_fingerprint, "
         "parent_session_id, active_leaf_message_id FROM sessions WHERE session_id = ?",
         (session_id,),
-    ).fetchone()
+    ) as _input_cursor:
+        predecessor_row = _input_cursor.fetchone()
     if predecessor_row is None or predecessor_row[0] is None or predecessor_row[0] == raw_id:
         return None
     predecessor = tuple(predecessor_row)
@@ -6210,38 +6360,55 @@ def _prepare_cross_acquisition_union(
     b_cols = [col.name for col in archive_tiers_specs.BLOCKS_SPEC.writable_columns if col.extract_placeholder == "?"]
     mi = {name: index for index, name in enumerate(m_cols)}
     bi = {name: index for index, name in enumerate(b_cols)}
+    if before_input is not None:
+        before_input(
+            "messages",
+            tuple(m_cols),
+            "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
+            (session_id,),
+        )
+        before_input(
+            "blocks",
+            tuple(b_cols),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (session_id,),
+        )
     scratch = _UnionScratch(directory)
     try:
-        for ordinal, row in enumerate(
-            conn.execute(
-                f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ? ORDER BY position, variant_index",
-                (session_id,),
-            )
-        ):
-            native = row[mi["native_id"]]
-            if native is not None:
-                scratch.put(
-                    "old_message", ordinal, tuple(row), key=cast(str, native), position=cast(int, row[mi["position"]])
-                )
+        with connection_cursor(
+            conn,
+            f"SELECT {', '.join(m_cols)} FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
+                native = row[mi["native_id"]]
+                if native is not None:
+                    scratch.put(
+                        "old_message",
+                        ordinal,
+                        tuple(row),
+                        key=cast(str, native),
+                        position=cast(int, row[mi["position"]]),
+                    )
         if not len(scratch.rows("old_message")):
             scratch.close()
             return None
         for ordinal, row in enumerate(incoming.message_rows):
             native = row[mi["native_id"]]
             scratch.put("new_message", ordinal, tuple(row), key=cast("str | None", native), position=ordinal)
-        for ordinal, row in enumerate(
-            conn.execute(
-                f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ? ORDER BY message_id, position",
-                (session_id,),
-            )
-        ):
-            scratch.put(
-                "old_block",
-                ordinal,
-                tuple(row),
-                owner=cast(str, row[bi["message_id"]]),
-                position=cast(int, row[bi["position"]]),
-            )
+        with connection_cursor(
+            conn,
+            f"SELECT {', '.join(b_cols)} FROM blocks WHERE session_id = ? ORDER BY message_id, position",
+            (session_id,),
+        ) as _input_cursor:
+            for ordinal, row in enumerate(_input_cursor):
+                scratch.put(
+                    "old_block",
+                    ordinal,
+                    tuple(row),
+                    owner=cast(str, row[bi["message_id"]]),
+                    position=cast(int, row[bi["position"]]),
+                )
         for ordinal, row in enumerate(incoming.block_rows):
             scratch.put(
                 "new_block",
@@ -6250,14 +6417,13 @@ def _prepare_cross_acquisition_union(
                 owner=cast(str, row[bi["message_id"]]),
                 position=cast(int, row[bi["position"]]),
             )
-        parent_guard = (
-            conn.execute(
-                "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
-                f"AND {topology_status_composes_sql()} LIMIT 1",
-                (session_id,),
-            ).fetchone()
-            is not None
-        )
+        with connection_cursor(
+            conn,
+            "SELECT 1 FROM session_links WHERE resolved_dst_session_id = ? AND inheritance = 'prefix-sharing' "
+            f"AND {topology_status_composes_sql()} LIMIT 1",
+            (session_id,),
+        ) as cursor:
+            parent_guard = cursor.fetchone() is not None
 
         # The old-only rows retain their old relative order, anchored after
         # the nearest preceding native id also present in the new evidence.
@@ -6485,7 +6651,7 @@ def _prepare_cross_acquisition_union(
             scratch.conn.execute(
                 "INSERT OR REPLACE INTO message_remap VALUES (?, ?)", (old_id, live[0] if live is not None else None)
             )
-        captured = _capture_session_projection_rows(conn, session_id, scratch=scratch)
+        captured = _capture_session_projection_rows(conn, session_id, scratch=scratch, before_input=before_input)
         scratch.conn.execute(
             "INSERT INTO carried_attachment SELECT DISTINCT owner.attachment_id "
             "FROM captured_attachment_owner owner "
@@ -6965,7 +7131,9 @@ def _next_message_position(conn: sqlite3.Connection, session_id: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> dict[str, int]:
+def _stored_content_occurrences(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> dict[str, int]:
     """Return per-digest content-occurrence counts already stored for a session.
 
     The append-side analogue of ``_next_message_position``: an appended
@@ -6973,7 +7141,15 @@ def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> di
     digest's numbering instead of restarting at zero and colliding with the
     stored row's ``message_id``.
     """
-    rows = conn.execute(
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("content_identity",),
+            "SELECT rowid FROM messages WHERE session_id=? AND content_identity IS NOT NULL",
+            (session_id,),
+        )
+    with connection_cursor(
+        conn,
         """
         SELECT content_identity, COUNT(*)
         FROM messages
@@ -6981,7 +7157,8 @@ def _stored_content_occurrences(conn: sqlite3.Connection, session_id: str) -> di
         GROUP BY content_identity
         """,
         (session_id,),
-    ).fetchall()
+    ) as _input_cursor:
+        rows = _input_cursor.fetchall()
     return {str(row[0]): int(row[1]) for row in rows}
 
 
@@ -7626,6 +7803,7 @@ def _codex_spawn_edge_parent_claim(
     *,
     child_native_id: str,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> _HookParentClaim | None:
     """Return projected or spooled Codex parent evidence for a child.
 
@@ -7642,7 +7820,9 @@ def _codex_spawn_edge_parent_claim(
     try:
         from polylogue.sources.codex_state_projection import read_parent_thread_id
 
-        projected_parent = read_parent_thread_id(conn, child_native_id, source_path=child_source_path)
+        projected_parent = read_parent_thread_id(
+            conn, child_native_id, source_path=child_source_path, before_input=before_input
+        )
     except (ImportError, sqlite3.Error) as exc:
         # Silence here archives a child as a root with no parent edge and no
         # trace that the projection was ever consulted (polylogue-3r36h). The
@@ -7686,21 +7866,29 @@ def _child_tool_use_id_matches(
     conn: sqlite3.Connection,
     child_session_id: str,
     tool_use_ids: Sequence[str],
+    before_input: BeforeIndexInput | None = None,
 ) -> int:
     """Count the hook-attributed tool calls archived as this child's own blocks."""
     matched = 0
     for start in range(0, len(tool_use_ids), _HOOK_TOOL_ID_CHUNK):
         chunk = tool_use_ids[start : start + _HOOK_TOOL_ID_CHUNK]
         placeholders = ", ".join("?" * len(chunk))
-        matched += int(
-            conn.execute(
-                f"""
-                SELECT COUNT(DISTINCT tool_id) FROM blocks
-                WHERE session_id = ? AND block_type = ? AND tool_id IN ({placeholders})
-                """,
+        if before_input is not None:
+            before_input(
+                "blocks",
+                ("tool_id",),
+                f"SELECT rowid FROM blocks WHERE session_id=? AND block_type=? AND tool_id IN ({placeholders})",
                 (child_session_id, BlockType.TOOL_USE.value, *chunk),
-            ).fetchone()[0]
-        )
+            )
+        with connection_cursor(
+            conn,
+            f"""
+            SELECT COUNT(DISTINCT tool_id) FROM blocks
+            WHERE session_id = ? AND block_type = ? AND tool_id IN ({placeholders})
+            """,
+            (child_session_id, BlockType.TOOL_USE.value, *chunk),
+        ) as cursor:
+            matched += int(cursor.fetchone()[0])
     return matched
 
 
@@ -7711,6 +7899,7 @@ def _claude_agent_dispatch_parent_claim(
     child_session_id: str,
     child_provider_values: Iterable[str],
     parent_candidate: str,
+    before_input: BeforeIndexInput | None = None,
 ) -> _HookParentClaim | None:
     """Return the hook-asserted dispatch of one Claude Code subagent child.
 
@@ -7783,11 +7972,15 @@ def _claude_agent_dispatch_parent_claim(
             claimants_by_tool_use_id[tool_use_id].add(agent_id)
     contested = {tool_use_id for tool_use_id, owners in claimants_by_tool_use_id.items() if len(owners) > 1}
     for agent_id in agent_ids:
-        matches = _child_tool_use_id_matches(conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())))
+        matches = _child_tool_use_id_matches(
+            conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())), before_input
+        )
         if not matches:
             continue
         contested_ids = sorted(tool_use_ids.get(agent_id, set()) & contested)
-        contested_matches = contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids) else []
+        contested_matches = (
+            contested_ids if _child_tool_use_id_matches(conn, child_session_id, contested_ids, before_input) else []
+        )
         if contested_matches:
             return _HookParentClaim(
                 None,
@@ -7829,6 +8022,7 @@ def _authoritative_parent_claim(
     child_provider_values: Iterable[str],
     parent_candidate: str | None,
     child_source_path: str | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> _HookParentClaim | None:
     """Return the hook-asserted parent for this child, or ``None`` for silence.
 
@@ -7850,19 +8044,33 @@ def _authoritative_parent_claim(
         return None
     if origin == Origin.CODEX_SESSION.value:
         return _codex_spawn_edge_parent_claim(
-            conn, source_conn, child_native_id=child_native_id, child_source_path=child_source_path
+            conn,
+            source_conn,
+            child_native_id=child_native_id,
+            child_source_path=child_source_path,
+            before_input=before_input,
         )
     if origin != Origin.CLAUDE_CODE_SESSION.value:
         return None
     provider_values = tuple(child_provider_values)
-    preserved = conn.execute(
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("dst_native_id", "evidence_json"),
+            "SELECT rowid FROM session_links WHERE src_session_id=? AND dst_origin=? "
+            "AND method=? AND status IS NULL ORDER BY dst_native_id",
+            (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD),
+        )
+    with connection_cursor(
+        conn,
         """
         SELECT dst_native_id, evidence_json FROM session_links
         WHERE src_session_id = ? AND dst_origin = ? AND method = ? AND status IS NULL
         ORDER BY dst_native_id
         """,
         (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD),
-    ).fetchall()
+    ) as _input_cursor:
+        preserved = _input_cursor.fetchall()
     candidates = dict.fromkeys(
         candidate for candidate in (parent_candidate, *(str(row[0]) for row in preserved)) if candidate
     )
@@ -7874,6 +8082,7 @@ def _authoritative_parent_claim(
                 child_session_id=child_session_id,
                 child_provider_values=provider_values,
                 parent_candidate=candidate,
+                before_input=before_input,
             )
             if claim is not None:
                 return claim
@@ -8591,48 +8800,52 @@ class _CycleWalkResult:
     path: tuple[str, ...]
 
 
-def _walk_parent_of(conn: sqlite3.Connection, session_id: str) -> str | None:
-    """The parent ``session_id`` the cycle walk must follow out of *session_id*.
-
-    polylogue-nzf93: this deliberately reads the same authority
-    ``_refresh_session_projection`` derives ``sessions.parent_session_id``
-    from -- the first composing resolved ``session_links`` edge, in the same
-    order -- rather than the projection column itself.
-
-    The projection is refreshed only at the END of ``_resolve_session_graph``,
-    after its inbound-parent loop. Reading the column therefore made every
-    edge resolved earlier in the SAME write invisible to the guard, which is
-    how a mutual parent pair escaped: writing A(parent=B) before B exists
-    leaves A -> B unresolved, then writing B(parent=A) resolves B -> A
-    outbound, and the inbound loop's walk out of B still saw a NULL column and
-    called A -> B acyclic. Both edges resolved and ``parent_session_id`` itself
-    closed a two-node loop.
-
-    The ``sessions`` column remains the fallback for a session that carries no
-    composing resolved edge at all, so a parent chain projected without
-    ``session_links`` rows still walks.
-    """
-    row = conn.execute(
-        f"""
-        SELECT COALESCE(
-            (
-                SELECT links.resolved_dst_session_id
-                FROM session_links AS links
-                WHERE links.src_session_id = :session_id
-                  AND links.resolved_dst_session_id IS NOT NULL
-                  AND {topology_status_composes_sql("links.status")}
-                ORDER BY links.observed_at_ms IS NULL, links.observed_at_ms,
-                         links.dst_origin, links.dst_native_id, links.link_type
-                LIMIT 1
-            ),
-            (SELECT parent_session_id FROM sessions WHERE session_id = :session_id)
-        )
-        """,
-        {"session_id": session_id},
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    return str(row[0])
+def _walk_parent_of(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
+    # Select the same composing edge before copying its potentially large ID.
+    # The session projection supplies the original COALESCE fallback only
+    # when this canonical edge predicate has no match.
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return _walk_parent_of(conn, session_id, before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+    with connection_cursor(
+        conn,
+        "SELECT rowid FROM session_links AS links WHERE links.src_session_id=? "
+        "AND links.resolved_dst_session_id IS NOT NULL "
+        f"AND {topology_status_composes_sql('links.status')} "
+        "ORDER BY links.observed_at_ms IS NULL,links.observed_at_ms,"
+        "links.dst_origin,links.dst_native_id,links.link_type LIMIT 1",
+        (session_id,),
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is not None:
+        if before_input is not None:
+            before_input(
+                "session_links",
+                ("resolved_dst_session_id",),
+                "SELECT rowid FROM session_links WHERE rowid=?",
+                (selected[0],),
+            )
+        with connection_cursor(
+            conn, "SELECT resolved_dst_session_id FROM session_links WHERE rowid=?", (selected[0],)
+        ) as cursor:
+            row = cursor.fetchone()
+    else:
+        if before_input is not None:
+            before_input(
+                "sessions", ("parent_session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (session_id,)
+            )
+        with connection_cursor(
+            conn, "SELECT parent_session_id FROM sessions WHERE session_id=?", (session_id,)
+        ) as cursor:
+            row = cursor.fetchone()
+    return None if row is None or row[0] is None else str(row[0])
 
 
 def _would_create_cycle(
@@ -8640,6 +8853,7 @@ def _would_create_cycle(
     *,
     child_id: str,
     proposed_parent_id: str,
+    before_input: BeforeIndexInput | None = None,
 ) -> _CycleWalkResult:
     """Classify the proposed edge without conflating exhaustion with a cycle.
 
@@ -8658,7 +8872,7 @@ def _would_create_cycle(
     visited = {proposed_parent_id}
     current = proposed_parent_id
     while True:
-        next_parent = _walk_parent_of(conn, current)
+        next_parent = _walk_parent_of(conn, current, before_input)
         if next_parent is None:
             return _CycleWalkResult("acyclic", tuple(path))
         if next_parent == child_id:
@@ -9446,6 +9660,7 @@ def _write_session_events(
                 conn.executemany(_PROVIDER_USAGE_EVENT_INSERT_SQL, provider_usage_rows)
                 provider_usage_rows.clear()
 
+        source_message_id: str | None
         for event in events:
             source_message_provider_id = event.source_message_provider_id
             if (
@@ -9456,17 +9671,17 @@ def _write_session_events(
             ):
                 continue
             if event.owner_coordinate is not None:
-                owner_key = event_message_owner_key(event, owner_resolution)
+                event_owner_key = event_message_owner_key(event, owner_resolution)
                 source_message_id = (
-                    disk_index.occurrence_message_id(owner_key)
-                    if disk_index is not None and owner_key is not None
-                    else by_owner_key.get(owner_key or "")
+                    disk_index.occurrence_message_id(event_owner_key)
+                    if disk_index is not None and event_owner_key is not None
+                    else by_owner_key.get(event_owner_key or "")
                 )
                 if source_message_id is None:
                     inherited = (
-                        disk_index.has_occurrence(owner_key)
-                        if disk_index is not None and owner_key is not None
-                        else owner_key in by_owner_key
+                        disk_index.has_occurrence(event_owner_key)
+                        if disk_index is not None and event_owner_key is not None
+                        else event_owner_key in by_owner_key
                     )
                     if inherited:
                         continue
@@ -11036,22 +11251,47 @@ def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -
     return str(branch_type) if branch_type is not None else ""
 
 
-def _own_db_signatures(conn: sqlite3.Connection, session_id: str) -> list[tuple[str, str]]:
+def _own_db_signatures(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> list[tuple[str, str]]:
     """Return complete semantic witnesses for this session's own stored rows."""
-    return [
-        (str(message_id), bytes(address).hex())
-        for message_id, address in conn.execute(
-            "SELECT message_id, content_address FROM messages WHERE session_id = ? ORDER BY position, variant_index",
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("message_id", "content_address"),
+            "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
             (session_id,),
         )
-    ]
+    with connection_cursor(
+        conn,
+        "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position,variant_index",
+        (session_id,),
+    ) as cursor:
+        return [(str(message_id), bytes(address).hex()) for message_id, address in cursor]
 
 
 def _iter_own_db_signatures(
     conn: sqlite3.Connection,
     segment: _TranscriptSegment,
-) -> Iterator[tuple[str, str]]:
-    cursor = conn.execute(
+    before_input: BeforeIndexInput | None = None,
+) -> Generator[tuple[str, str], None, None]:
+    if before_input is not None:
+        before_input(
+            "messages",
+            ("message_id", "content_address"),
+            "SELECT rowid FROM messages WHERE session_id=? "
+            "AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?)) "
+            "ORDER BY position,variant_index",
+            (
+                segment.session_id,
+                segment.upto_position,
+                segment.upto_position,
+                segment.upto_position,
+                segment.upto_variant_index,
+            ),
+        )
+    with connection_cursor(
+        conn,
         """
         SELECT message_id, content_address FROM messages
         WHERE session_id = ?
@@ -11065,9 +11305,9 @@ def _iter_own_db_signatures(
             segment.upto_position,
             segment.upto_variant_index,
         ),
-    )
-    for message_id, address in cursor:
-        yield str(message_id), bytes(address).hex()
+    ) as cursor:
+        for message_id, address in cursor:
+            yield str(message_id), bytes(address).hex()
 
 
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):
@@ -11188,31 +11428,36 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
             self.close()
 
 
-def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[tuple[str, str, str]]:
+def _iter_composed_rows(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> Generator[tuple[str, str, str], None, None]:
     """``(message_id, signature, owner)`` of a composed transcript, streamed segment by segment.
 
     The composition rules are ``_composed_db_signatures``': the first
     composing prefix-sharing edge, the branch-point witness, the visited set
     and the dangling-branch-point rule. Only the segment plan is held.
     """
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            with closing(_iter_composed_rows(conn, session_id, before_input)) as rows:
+                yield from rows
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+        return
     chain: list[tuple[str, str]] = []
     visited = {session_id}
     cursor_session_id = session_id
     # ``visited`` bounds the walk: every step adds a new session.
     while True:
-        edge = conn.execute(
-            f"SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address "
-            f"FROM session_links WHERE src_session_id = ? AND inheritance = 'prefix-sharing' "
-            f"AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
-            f"AND {topology_status_composes_sql()} "
-            f"ORDER BY link_type, dst_origin, dst_native_id LIMIT 1",
-            (cursor_session_id,),
-        ).fetchone()
+        edge = _prefix_sharing_edge_row(conn, cursor_session_id, before_input)
         if edge is None:
             break
         parent_id, branch_point = str(edge[0]), str(edge[1])
         witness = bytes(edge[2]) if edge[2] is not None else None
-        if witness is not None and _message_content_address_for_id(conn, branch_point) != witness:
+        if witness is not None and _message_content_address_for_id(conn, branch_point, before_input) != witness:
             break
         if parent_id in visited:
             break
@@ -11222,29 +11467,34 @@ def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[t
     composed = _SegmentList(
         conn,
         (_TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),),
+        before_input,
     )
     for child_id, branch_point in reversed(chain):
         if not composed.cut_at(branch_point):
             composed.clear()
         composed.append(_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
     for segment in list(composed.segments):
-        for message_id, digest in _iter_own_db_signatures(conn, segment):
-            yield message_id, digest, segment.session_id
+        with closing(_iter_own_db_signatures(conn, segment, before_input)) as signatures:
+            for message_id, digest in signatures:
+                yield message_id, digest, segment.session_id
 
 
 def _disk_composed_db_signatures(
     conn: sqlite3.Connection,
     session_id: str,
     directory: Path,
+    *,
+    before_input: BeforeIndexInput | None = None,
 ) -> _DiskSignatureSequence:
     """Compose parent signatures through bounded segment queries."""
     opened_snapshot = not conn.in_transaction
     if opened_snapshot:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
+            pass
     result: _DiskSignatureSequence | None = None
     try:
         result = _DiskSignatureSequence(directory)
-        for message_id, digest, _owner in _iter_composed_rows(conn, session_id):
+        for message_id, digest, _owner in _iter_composed_rows(conn, session_id, before_input):
             result.append(message_id, digest)
         result.finish()
         return result
@@ -11257,7 +11507,8 @@ def _disk_composed_db_signatures(
         raise
     finally:
         if opened_snapshot:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK") as _input_cursor:
+                pass
 
 
 def _signature_cache_get(
@@ -11302,6 +11553,7 @@ def _prefix_lineage_closure(
     conn: sqlite3.Connection,
     session_id: str,
     cache: _SignatureCacheLike | None,
+    before_input: BeforeIndexInput | None = None,
 ) -> frozenset[str]:
     """``session_id`` and every ancestor its composed transcript can draw from.
 
@@ -11316,7 +11568,7 @@ def _prefix_lineage_closure(
             return known
     closure = {session_id}
     cursor = session_id
-    while (edge := _prefix_sharing_edge_sync(conn, cursor)) is not None and edge[0] not in closure:
+    while (edge := _prefix_sharing_edge_sync(conn, cursor, before_input)) is not None and edge[0] not in closure:
         cursor = edge[0]
         closure.add(cursor)
     return frozenset(closure)
@@ -11328,6 +11580,7 @@ def _composed_db_signatures(
     *,
     cache: _SignatureCacheLike | None = None,
     composed_cache: dict[str, list[tuple[str, str]]] | None = None,
+    before_input: BeforeIndexInput | None = None,
 ) -> list[tuple[str, str]]:
     """Return ``[(message_id, signature), ...]`` for ``session_id``'s composed
     transcript (its inherited prefix + own tail). Walk the lineage iteratively
@@ -11347,16 +11600,20 @@ def _composed_db_signatures(
     ``read_archive_session_envelope``'s guard against a torn read.
     """
     if not conn.in_transaction:
-        conn.execute("BEGIN DEFERRED")
+        with connection_cursor(conn, "BEGIN DEFERRED") as _input_cursor:
+            pass
         try:
-            return _composed_db_signatures(conn, session_id, cache=cache, composed_cache=composed_cache)
+            return _composed_db_signatures(
+                conn, session_id, cache=cache, composed_cache=composed_cache, before_input=before_input
+            )
         finally:
-            conn.execute("ROLLBACK")
+            with connection_cursor(conn, "ROLLBACK") as _input_cursor:
+                pass
 
     def own_signatures(target_session_id: str) -> list[tuple[str, str]]:
         own = _signature_cache_get(cache, target_session_id)
         if own is None:
-            own = _own_db_signatures(conn, target_session_id)
+            own = _own_db_signatures(conn, target_session_id, before_input)
             _signature_cache_set(cache, target_session_id, own)
         return own
 
@@ -11381,23 +11638,10 @@ def _composed_db_signatures(
         if cached_composed is not None:
             composed = cached_composed
             if tracks_dependencies:
-                dependencies |= _prefix_lineage_closure(conn, cursor_session_id, cache)
+                dependencies |= _prefix_lineage_closure(conn, cursor_session_id, cache, before_input)
             break
         own = own_signatures(cursor_session_id)
-        edge = conn.execute(
-            f"""
-            SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address
-            FROM session_links
-            WHERE src_session_id = ?
-              AND inheritance = 'prefix-sharing'
-              AND resolved_dst_session_id IS NOT NULL
-              AND branch_point_message_id IS NOT NULL
-              AND {topology_status_composes_sql()}
-            ORDER BY link_type, dst_origin, dst_native_id
-            LIMIT 1
-            """,
-            (cursor_session_id,),
-        ).fetchone()
+        edge = _prefix_sharing_edge_row(conn, cursor_session_id, before_input)
         if edge is None:
             composed = own
             if composed_cache is not None:
@@ -11407,7 +11651,7 @@ def _composed_db_signatures(
         parent_id, branch_point_message_id = str(edge[0]), str(edge[1])
         witness = None if edge[2] is None else bytes(edge[2])
         if witness is not None:
-            current = _message_content_address_for_id(conn, branch_point_message_id)
+            current = _message_content_address_for_id(conn, branch_point_message_id, before_input)
             if current is None or current != witness:
                 composed = own
                 # The refusal holds only while the branch point's content
@@ -11415,7 +11659,7 @@ def _composed_db_signatures(
                 # or one of its ancestors: a rewrite of any of them can restore
                 # the match.
                 if tracks_dependencies:
-                    dependencies |= _prefix_lineage_closure(conn, parent_id, cache)
+                    dependencies |= _prefix_lineage_closure(conn, parent_id, cache, before_input)
                 if composed_cache is not None:
                     composed_cache[cursor_session_id] = composed
                 _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
@@ -13419,6 +13663,7 @@ def _extract_prefix_tail(
     cache: _SignatureCacheLike | None = None,
     parent_composed: Sequence[tuple[str, str]] | None = None,
     attachments: Sequence[ParsedAttachment] = (),
+    before_input: BeforeIndexInput | None = None,
 ) -> tuple[str | None, str | None, Sequence[ParsedMessage], Mapping[str, str], bytes | None, Sequence[str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
@@ -13434,9 +13679,9 @@ def _extract_prefix_tail(
     if parent_composed is None:
         source = messages.messages if isinstance(messages, _MessageTail) else messages
         parent_composed = (
-            _disk_composed_db_signatures(conn, parent_session_id, source.path.parent)
+            _disk_composed_db_signatures(conn, parent_session_id, source.path.parent, before_input=before_input)
             if isinstance(source, SqliteMessageSink)
-            else _composed_db_signatures(conn, parent_session_id, cache=cache)
+            else _composed_db_signatures(conn, parent_session_id, cache=cache, before_input=before_input)
         )
     if not parent_composed:
         if owns_parent and isinstance(parent_composed, _DiskSignatureSequence):
@@ -13623,26 +13868,51 @@ def _lineage_prefix_digest(signatures: Iterable[tuple[str, str]]) -> bytes:
     return digest.digest()
 
 
-def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
-    """Return ``(parent_session_id, branch_point_message_id)`` for a resolved
-    prefix-sharing lineage edge, else ``None``. Mirrors the async reader."""
-    row = conn.execute(
-        f"""
-        SELECT resolved_dst_session_id, branch_point_message_id
-        FROM session_links
-        WHERE src_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND resolved_dst_session_id IS NOT NULL
-          AND branch_point_message_id IS NOT NULL
-          AND {topology_status_composes_sql()}
-        ORDER BY link_type, dst_origin, dst_native_id
-        LIMIT 1
-        """,
+def _prefix_sharing_edge_row(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> sqlite3.Row | None:
+    """Return the canonical first composing prefix-sharing edge."""
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return _prefix_sharing_edge_row(conn, session_id, before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
+    with connection_cursor(
+        conn,
+        "SELECT rowid FROM session_links WHERE src_session_id=? AND inheritance='prefix-sharing' "
+        "AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
+        f"AND {topology_status_composes_sql()} ORDER BY link_type,dst_origin,dst_native_id LIMIT 1",
         (session_id,),
-    ).fetchone()
-    if row is None:
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
         return None
-    return (str(row[0]), str(row[1]))
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("resolved_dst_session_id", "branch_point_message_id", "branch_point_content_address"),
+            "SELECT rowid FROM session_links WHERE rowid=?",
+            (selected[0],),
+        )
+    with connection_cursor(
+        conn,
+        "SELECT resolved_dst_session_id,branch_point_message_id,branch_point_content_address FROM session_links WHERE rowid=?",
+        (selected[0],),
+    ) as cursor:
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("selected lineage edge disappeared inside its owned read")
+    return cast(sqlite3.Row, row)
+
+
+def _prefix_sharing_edge_sync(
+    conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
+) -> tuple[str, str] | None:
+    row = _prefix_sharing_edge_row(conn, session_id, before_input)
+    return None if row is None else (str(row[0]), str(row[1]))
 
 
 def _branch_point_content_address_matches(
@@ -13650,21 +13920,38 @@ def _branch_point_content_address_matches(
     child_session_id: str,
     parent_session_id: str,
     branch_point_message_id: str,
+    before_input: BeforeIndexInput | None = None,
 ) -> bool:
-    row = conn.execute(
-        """
-        SELECT l.branch_point_content_address, m.content_address
-        FROM session_links AS l
-        LEFT JOIN messages AS m ON m.message_id = l.branch_point_message_id
-        WHERE l.src_session_id = ?
-          AND l.resolved_dst_session_id = ?
-          AND l.branch_point_message_id = ?
-          AND l.inheritance = 'prefix-sharing'
-        LIMIT 1
-        """,
+    with connection_cursor(
+        conn,
+        "SELECT l.rowid,m.rowid FROM session_links AS l "
+        "LEFT JOIN messages AS m ON m.message_id=l.branch_point_message_id "
+        "WHERE l.src_session_id=? AND l.resolved_dst_session_id=? AND l.branch_point_message_id=? "
+        "AND l.inheritance='prefix-sharing' LIMIT 1",
         (child_session_id, parent_session_id, branch_point_message_id),
-    ).fetchone()
-    if row is None or row[0] is None:
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
+        return True
+    if before_input is not None:
+        before_input(
+            "session_links",
+            ("branch_point_content_address",),
+            "SELECT rowid FROM session_links WHERE rowid=?",
+            (selected[0],),
+        )
+        if selected[1] is not None:
+            before_input("messages", ("content_address",), "SELECT rowid FROM messages WHERE rowid=?", (selected[1],))
+    with connection_cursor(
+        conn,
+        "SELECT l.branch_point_content_address,m.content_address FROM session_links AS l "
+        "LEFT JOIN messages AS m ON m.message_id=l.branch_point_message_id WHERE l.rowid=?",
+        (selected[0],),
+    ) as cursor:
+        row = cursor.fetchone()
+    if row is None:
+        raise RuntimeError("selected branch-point input disappeared inside its owned read")
+    if row[0] is None:
         return True
     return row[1] is not None and bytes(row[0]) == bytes(row[1])
 
@@ -13712,28 +13999,40 @@ def _resolved_hermes_parent_native_id(conn: sqlite3.Connection, origin_value: st
     return str(rows[0][0]) if len(rows) == 1 else parent_native_id
 
 
-def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession, origin_value: str) -> str | None:
+def _existing_parent_session_id(
+    conn: sqlite3.Connection, session: ParsedSession, origin_value: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
         return None
-    return _existing_session_id_for_native(conn, origin_value, parent_provider_id)
+    return _existing_session_id_for_native(conn, origin_value, parent_provider_id, before_input)
 
 
-def _existing_session_id_for_native(conn: sqlite3.Connection, origin_value: str, provider_id: str) -> str | None:
+def _existing_session_id_for_native(
+    conn: sqlite3.Connection, origin_value: str, provider_id: str, before_input: BeforeIndexInput | None = None
+) -> str | None:
     """Return the archived session one exact provider session id names, if unambiguous."""
     session_id = archive_session_id(origin_value, provider_id.strip())
-    row = conn.execute(
-        "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
-        (session_id,),
-    ).fetchone()
+    with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1", (session_id,)) as _input_cursor:
+        row = _input_cursor.fetchone()
     if row is not None:
         return session_id
-    row = conn.execute(
+    if before_input is not None:
+        before_input(
+            "session_identity_claims",
+            ("claimant_session_id",),
+            "SELECT rowid FROM session_identity_claims WHERE origin=? "
+            "AND identity_namespace='provider-session' AND provider_value=? ORDER BY claimant_session_id",
+            (origin_value, provider_id.strip()),
+        )
+    with connection_cursor(
+        conn,
         """SELECT claimant_session_id FROM session_identity_claims
            WHERE origin = ? AND identity_namespace = 'provider-session'
              AND provider_value = ? ORDER BY claimant_session_id""",
         (origin_value, provider_id.strip()),
-    ).fetchall()
+    ) as _input_cursor:
+        row = _input_cursor.fetchall()
     return str(row[0][0]) if len(row) == 1 else None
 
 
@@ -14303,11 +14602,13 @@ def _write_session_identity_claims(
     return invalidated_children
 
 
-def _message_content_address_for_id(conn: sqlite3.Connection, message_id: str) -> bytes | None:
-    row = conn.execute(
-        "SELECT content_address FROM messages WHERE message_id = ?",
-        (message_id,),
-    ).fetchone()
+def _message_content_address_for_id(
+    conn: sqlite3.Connection, message_id: str, before_input: BeforeIndexInput | None = None
+) -> bytes | None:
+    if before_input is not None:
+        before_input("messages", ("content_address",), "SELECT rowid FROM messages WHERE message_id=?", (message_id,))
+    with connection_cursor(conn, "SELECT content_address FROM messages WHERE message_id = ?", (message_id,)) as cursor:
+        row = cursor.fetchone()
     return None if row is None or row[0] is None else bytes(row[0])
 
 

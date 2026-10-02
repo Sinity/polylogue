@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -31,11 +31,14 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 
 
 @pytest.fixture
-def index_conn() -> sqlite3.Connection:
+def index_conn() -> Iterator[sqlite3.Connection]:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(INDEX_DDL)
-    return conn
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def _write(conn: sqlite3.Connection, **kwargs: object) -> bool:
@@ -441,3 +444,47 @@ def test_graph_authority_reads_propagate_interruption(index_conn: sqlite3.Connec
         index_conn.set_progress_handler(None, 0)
     assert read_parent_thread_id(index_conn, "child-thread") == "parent-thread"
     assert read_thread_titles(index_conn) == {"parent-thread": "Curated title"}
+
+
+def test_thread_parent_accounts_each_exact_scope_winner_before_hydration(
+    index_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import closing, contextmanager
+
+    from polylogue.storage.sqlite import agent_thread_state
+
+    first = "first-" + "x" * 20000
+    second = "second-" + "y" * 20000
+    _write(index_conn, source_scope="/one", spawn_edges=[SpawnRecord(first, "child-thread", "closed")])
+    _write(index_conn, source_scope="/two", spawn_edges=[SpawnRecord(second, "child-thread", "closed")])
+    index_conn.commit()
+    assert read_parent_thread_id(index_conn, "child-thread") is None
+    accounted: dict[int, int] = {}
+    from polylogue.storage.io_phase_metrics import connection_cursor as actual_cursor
+
+    def before_input(table: str, columns: tuple[str, ...], sql: str, parameters: tuple[object, ...]) -> None:
+        assert table == "work_evidence_edges" and columns == ("source_ref",)
+        with closing(index_conn.execute(sql, parameters)) as metadata:
+            rowid = metadata.fetchone()[0]
+        with closing(
+            index_conn.execute(
+                "SELECT length(CAST(source_ref AS BLOB)) FROM work_evidence_edges WHERE rowid=?", (rowid,)
+            )
+        ) as metadata:
+            accounted[rowid] = metadata.fetchone()[0]
+
+    @contextmanager
+    def guarded_cursor(
+        connection: sqlite3.Connection, sql: str, parameters: tuple[object, ...] = ()
+    ) -> Iterator[sqlite3.Cursor]:
+        if sql.startswith("SELECT source_ref FROM work_evidence_edges WHERE rowid="):
+            physical_rowid = parameters[0]
+            assert isinstance(physical_rowid, int)
+            assert accounted[physical_rowid] > 20000
+        with actual_cursor(connection, sql, parameters) as cursor:
+            yield cursor
+
+    monkeypatch.setattr(agent_thread_state, "connection_cursor", guarded_cursor)
+    assert read_parent_thread_id(index_conn, "child-thread", before_input=before_input) is None
+    assert len(accounted) == 2
+    assert not index_conn.in_transaction

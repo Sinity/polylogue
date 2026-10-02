@@ -28,6 +28,7 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
+from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
@@ -109,11 +110,12 @@ def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes, *, schema: 
         raise ValueError(f"unsupported source schema: {schema}")
     if not _table_exists(conn, "excised_content", schema=schema):
         return False
-    row = conn.execute(
+    with connection_cursor(
+        conn,
         f"SELECT 1 FROM {schema}.excised_content WHERE removed_hash = ? AND hash_kind = 'blob_hash' LIMIT 1",
         (blob_hash,),
-    ).fetchone()
-    return row is not None
+    ) as cursor:
+        return cursor.fetchone() is not None
 
 
 def _assert_excision_policy(

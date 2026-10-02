@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 if TYPE_CHECKING:
+    from polylogue.storage.blob_publication import PreparedBlobPublicationClaim
     from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
     from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
 
@@ -50,6 +51,7 @@ from polylogue.storage.block_anchor import (
 from polylogue.storage.io_phase_metrics import (
     bind_readonly_incremental_blob_custody,
     close_connection_cursor,
+    connection_cursor,
     live_connection_cursors,
 )
 from polylogue.storage.sqlite.audit_leaf import VerifiedAuditLeaf
@@ -822,14 +824,51 @@ def index_path_for_connection(conn: sqlite3.Connection) -> Path:
     return Path(str(row[2])).resolve(strict=True)
 
 
-def _json_strings(conn: sqlite3.Connection, value: object, *, field: str) -> Iterator[str]:
-    """Stream one declared JSON string-array field without retaining its rows."""
+def _user_reference_owner(conn: sqlite3.Connection) -> PreparedIndexMutation:
+    owner = native_sql_parent_for_connection(conn)
+    if not isinstance(owner, PreparedIndexMutation) or owner.observer("user") is not conn:
+        raise ReferenceSealError("durable reference extraction requires this seal's original User observer")
+    return owner
+
+
+def _reference_rows(
+    conn: sqlite3.Connection, tier: str, table: str, columns: tuple[str, ...]
+) -> Generator[sqlite3.Row, None, None]:
+    """Hydrate finite declared fields only after original input amendment."""
+    owner = native_sql_parent_for_connection(conn)
+    if not isinstance(owner, PreparedIndexMutation) or owner.observer(tier) is not conn:
+        raise ReferenceSealError("reference fields require this seal's original tier observer")
+    relation = quote_identifier(table)
+    projection = ",".join(quote_identifier(column) for column in columns)
+    with owner._owned_cursor(conn, f"SELECT rowid FROM {relation}") as metadata:
+        for (rowid,) in metadata:
+            _check_reference_cancellation()
+            owner._amend_original_input_fields(tier, table, rowid, columns)
+            with owner._owned_cursor(
+                conn, f"SELECT rowid AS physical_rowid,{projection} FROM {relation} WHERE rowid=?", (rowid,)
+            ) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                raise ReferenceSealStaleError("reference row disappeared inside its original pinned snapshot")
+            yield row
+
+
+def _json_strings(conn: sqlite3.Connection, table: str, column: str, rowid: int) -> Iterator[str]:
+    """Read a declared native JSON array without transferring its scalar cell."""
+    owner = _user_reference_owner(conn)
+    field = f"{table}.{column}"
+    owner._amend_original_input_fields("user", table, rowid, (column,))
+    relation, cell = quote_identifier(table), quote_identifier(column)
     try:
-        with closing(conn.execute("SELECT json_type(?)", (value,))) as cursor:
-            kind = cursor.fetchone()[0]
-        if kind != "array":
+        with owner._owned_cursor(conn, f"SELECT json_type({cell}) FROM {relation} WHERE rowid=?", (rowid,)) as cursor:
+            row = cursor.fetchone()
+        if row is None or row[0] != "array":
             raise ReferenceSealError(f"durable {field} must be a JSON string array")
-        with closing(conn.execute("SELECT type, value FROM json_each(?)", (value,))) as events:
+        with owner._owned_cursor(
+            conn,
+            f"SELECT item.type,item.value FROM {relation} AS owner,json_each(owner.{cell}) AS item WHERE owner.rowid=?",
+            (rowid,),
+        ) as events:
             for event_type, item in events:
                 _check_reference_cancellation()
                 if event_type != "text" or not isinstance(item, str):
@@ -874,9 +913,9 @@ class _ReferenceAnchor:
     assertion_target: str = ""
 
 
-def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
+def _references_from_user(conn: sqlite3.Connection) -> Generator[_ReferenceAnchor, None, None]:
     with closing(
-        conn.execute("SELECT assertion_id, kind, scope_ref, target_ref, author_ref, evidence_refs_json FROM assertions")
+        _reference_rows(conn, "user", "assertions", ("assertion_id", "kind", "scope_ref", "target_ref", "author_ref"))
     ) as cursor:
         for row in cursor:
             for column in ("scope_ref", "target_ref", "author_ref"):
@@ -887,8 +926,6 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor
                         "excision_record",
                         "excision_request",
                     }
-                    # Lifecycle targets describe an absent session, but their other
-                    # fields remain ordinary durable references.
                     yield _ReferenceAnchor(
                         str(value),
                         lifecycle and str(value).startswith("session:"),
@@ -898,7 +935,7 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor
                         str(row["target_ref"]),
                     )
             for position, value in enumerate(
-                _json_strings(conn, row["evidence_refs_json"], field="assertions.evidence_refs_json")
+                _json_strings(conn, "assertions", "evidence_refs_json", row["physical_rowid"])
             ):
                 yield _ReferenceAnchor(
                     value, False, str(row["assertion_id"]), "evidence_refs_json", position, str(row["target_ref"])
@@ -907,34 +944,32 @@ def _references_from_user(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor
         yield _ReferenceAnchor(value, False)
 
 
-def _other_user_references(conn: sqlite3.Connection) -> Iterable[str]:
+def _other_user_references(conn: sqlite3.Connection) -> Generator[str, None, None]:
+    owner = _user_reference_owner(conn)
     with closing(
-        conn.execute(
-            "SELECT target_ref, source_result_ref, actor_ref, model_ref, prompt_ref, assertion_refs_json "
-            "FROM annotation_batches"
+        _reference_rows(
+            conn,
+            "user",
+            "annotation_batches",
+            ("target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref"),
         )
     ) as cursor:
         for row in cursor:
             for column in ("target_ref", "source_result_ref", "actor_ref", "model_ref", "prompt_ref"):
                 yield str(row[column])
-            yield from _json_strings(conn, row["assertion_refs_json"], field="annotation_batches.assertion_refs_json")
-
-    with closing(conn.execute("SELECT model_refs_json FROM query_evaluation_receipts")) as cursor:
-        for (model_refs,) in cursor:
-            yield from _json_strings(conn, model_refs, field="query_evaluation_receipts.model_refs_json")
-
-    with closing(conn.execute("SELECT session_id FROM session_marker_delivery")) as cursor:
-        for (session_id,) in cursor:
-            yield ObjectRef("session", str(session_id)).format()
-
-    with closing(conn.execute("SELECT member_ref FROM result_set_members")) as cursor:
-        for (value,) in cursor:
-            yield str(value)
-
+            yield from _json_strings(conn, "annotation_batches", "assertion_refs_json", row["physical_rowid"])
+    with owner._owned_cursor(conn, "SELECT rowid FROM query_evaluation_receipts") as cursor:
+        for (rowid,) in cursor:
+            yield from _json_strings(conn, "query_evaluation_receipts", "model_refs_json", rowid)
+    with closing(_reference_rows(conn, "user", "session_marker_delivery", ("session_id",))) as cursor:
+        for row in cursor:
+            yield ObjectRef("session", str(row["session_id"])).format()
+    with closing(_reference_rows(conn, "user", "result_set_members", ("member_ref",))) as cursor:
+        for row in cursor:
+            yield str(row["member_ref"])
     with closing(
-        conn.execute(
-            "SELECT snapshot_ref, recipient_ref, run_ref, segment_refs_json, evidence_refs_json, assertion_refs_json, "
-            "delivered_by_ref FROM context_deliveries"
+        _reference_rows(
+            conn, "user", "context_deliveries", ("snapshot_ref", "recipient_ref", "run_ref", "delivered_by_ref")
         )
     ) as cursor:
         for row in cursor:
@@ -942,13 +977,16 @@ def _other_user_references(conn: sqlite3.Connection) -> Iterable[str]:
                 value = row[column]
                 if value is not None:
                     yield str(value)
-            # segment_refs_json holds local image segment identifiers, not public
-            # archive references. Their typed references live in the image model.
             for column in ("evidence_refs_json", "assertion_refs_json"):
-                yield from _json_strings(conn, row[column], field=f"context_deliveries.{column}")
+                yield from _json_strings(conn, "context_deliveries", column, row["physical_rowid"])
             try:
                 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import read_context_delivery
 
+                # The canonical model reader consumes every delivery field.
+                # Account these actual original bytes before model hydration;
+                # its whole-model native/Pydantic allocation remains explicit.
+                columns, _keys = owner._known_tier_table_shape("user", "context_deliveries")
+                owner._amend_original_input_fields("user", "context_deliveries", row["physical_rowid"], columns)
                 delivery = read_context_delivery(conn, str(row["snapshot_ref"]))
                 if delivery is None:
                     raise ReferenceSealError("context delivery disappeared during its read snapshot")
@@ -965,17 +1003,76 @@ def _other_user_references(conn: sqlite3.Connection) -> Iterable[str]:
                 yield from segment.assertion_refs
 
 
-def _references_from_audit(conn: sqlite3.Connection) -> Iterable[_ReferenceAnchor]:
+def _references_from_audit(conn: sqlite3.Connection) -> Generator[_ReferenceAnchor, None, None]:
     for table in ("operation_preview_targets", "operation_targets"):
-        with closing(conn.execute(f"SELECT target_ref FROM {table}")) as cursor:
-            for (value,) in cursor:
+        with closing(_reference_rows(conn, "audit", table, ("target_ref",))) as cursor:
+            for row in cursor:
                 _check_reference_cancellation()
-                yield _ReferenceAnchor(str(value), True)
+                yield _ReferenceAnchor(str(row["target_ref"]), True)
+
+
+def _index_input_hook(
+    conn: sqlite3.Connection,
+) -> Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None:
+    owner = native_sql_parent_for_connection(conn)
+    if not isinstance(owner, PreparedIndexMutation) or owner._original_input_demand is None:
+        return None
+    if owner.observer("index") is not conn:
+        raise ReferenceSealError("Index input amendment requires its original pinned observer")
+    return owner.before_index_input
+
+
+def _index_reference_rows(
+    conn: sqlite3.Connection, table: str, columns: tuple[str, ...], rowid_sql: str, parameters: tuple[object, ...]
+) -> Generator[sqlite3.Row, None, None]:
+    before_input = _index_input_hook(conn)
+    relation = quote_identifier(table)
+    projection = ",".join(quote_identifier(column) for column in columns)
+    with connection_cursor(conn, rowid_sql, parameters) as identities:
+        for (rowid,) in identities:
+            if before_input is not None:
+                before_input(table, columns, f"SELECT rowid FROM {relation} WHERE rowid=?", (rowid,))
+            with connection_cursor(conn, f"SELECT {projection} FROM {relation} WHERE rowid=?", (rowid,)) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                raise ReferenceSealStaleError("selected reference input disappeared inside its owned read")
+            yield cast(sqlite3.Row, row)
+
+
+def _block_reference_row(
+    conn: sqlite3.Connection, predicate: str, parameters: tuple[object, ...], *, first_only: bool = False
+) -> sqlite3.Row | None:
+    limit = " LIMIT 1" if first_only else ""
+    with connection_cursor(
+        conn,
+        "SELECT m.rowid,b.rowid FROM messages AS m JOIN blocks AS b ON b.message_id=m.message_id "
+        f"WHERE {predicate}{limit}",
+        parameters,
+    ) as cursor:
+        selected = cursor.fetchone()
+    if selected is None:
+        return None
+    before_input = _index_input_hook(conn)
+    if before_input is not None:
+        before_input("messages", ("session_id",), "SELECT rowid FROM messages WHERE rowid=?", (selected[0],))
+        before_input(
+            "blocks", ("message_id", "position", "block_id"), "SELECT rowid FROM blocks WHERE rowid=?", (selected[1],)
+        )
+    with connection_cursor(
+        conn,
+        "SELECT m.session_id,b.message_id,b.position,b.block_id "
+        "FROM messages AS m JOIN blocks AS b ON b.message_id=m.message_id WHERE m.rowid=? AND b.rowid=?",
+        (selected[0], selected[1]),
+    ) as cursor:
+        row = cursor.fetchone()
+    if row is None:
+        raise ReferenceSealStaleError("selected block reference inputs disappeared inside their owned read")
+    return cast(sqlite3.Row, row)
 
 
 def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | BlockAnchor) -> _ResolvedReference | None:
     if isinstance(ref, BlockAnchor):
-        resolution = resolve_block_anchor(conn, ref)
+        resolution = resolve_block_anchor(conn, ref, before_input=_index_input_hook(conn))
         if resolution.state not in {"ok", "drifted_position", "drifted_message", "relocated_lineage"}:
             return None
         return _ResolvedReference(
@@ -989,16 +1086,22 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
         from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index
 
         try:
-            scope_session_id = resolve_session_id_in_index(conn, ref.session_id)
+            scope_session_id = resolve_session_id_in_index(conn, ref.session_id, before_input=_index_input_hook(conn))
         except (KeyError, ValueError):
             return None
         if ref.message_id is None:
             return _ResolvedReference("session", scope_session_id, scope_session_id)
         if ref.block_index is None:
             with closing(
-                conn.execute("SELECT session_id FROM messages WHERE message_id = ?", (ref.message_id,))
-            ) as cursor:
-                row = cursor.fetchone()
+                _index_reference_rows(
+                    conn,
+                    "messages",
+                    ("session_id",),
+                    "SELECT rowid FROM messages WHERE message_id=?",
+                    (ref.message_id,),
+                )
+            ) as rows:
+                row = next(rows, None)
             if row is None or _locate_composed_message(conn, scope_session_id, ref.message_id) is None:
                 return None
             return _ResolvedReference(
@@ -1008,15 +1111,8 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
                 scope_session_id=scope_session_id,
                 target_message_id=ref.message_id,
             )
-        with closing(
-            conn.execute(
-                "SELECT m.session_id, b.message_id, b.position FROM messages AS m "
-                "JOIN blocks AS b ON b.message_id = m.message_id "
-                "WHERE m.message_id = ? AND b.position = ?",
-                (ref.message_id, ref.block_index),
-            )
-        ) as cursor:
-            row = cursor.fetchone()
+        row = _block_reference_row(conn, "m.message_id=? AND b.position=?", (ref.message_id, ref.block_index))
+
         if row is None or _locate_composed_message(conn, scope_session_id, ref.message_id) is None:
             return None
         return _ResolvedReference(
@@ -1026,29 +1122,35 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
     if ref.kind == "delegation":
         root = parse_delegation_ancestry_object_id(ref.object_id) or parse_delegation_subtree_object_id(ref.object_id)
         if root is not None:
-            with closing(conn.execute("SELECT session_id FROM sessions WHERE session_id = ?", (root,))) as cursor:
-                row = cursor.fetchone()
+            with closing(
+                _index_reference_rows(
+                    conn, "sessions", ("session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (root,)
+                )
+            ) as rows:
+                row = next(rows, None)
             return None if row is None else _ResolvedReference("delegation-root", root, ref.object_id)
         edge = parse_delegation_edge_object_id(ref.object_id)
+        operands: tuple[object, ...]
         if edge is None:
-            with closing(
-                conn.execute(
-                    "SELECT parent_session_id, child_session_id, instruction_message_id FROM delegation_facts "
-                    "WHERE instruction_tool_use_block_id = ? LIMIT 1",
-                    (ref.object_id,),
-                )
-            ) as cursor:
-                row = cursor.fetchone()
+            predicate = "instruction_tool_use_block_id=?"
+            operands = (ref.object_id,)
         else:
-            with closing(
-                conn.execute(
-                    "SELECT parent_session_id, child_session_id, instruction_message_id FROM delegation_facts "
-                    "WHERE parent_session_id = ? AND child_session_id = ? "
-                    "AND mapping_state IN ('edge_only', 'quarantined', 'authority-contradicted') LIMIT 1",
-                    edge,
-                )
-            ) as cursor:
-                row = cursor.fetchone()
+            predicate = (
+                "parent_session_id=? AND child_session_id=? "
+                "AND mapping_state IN ('edge_only', 'quarantined', 'authority-contradicted')"
+            )
+            operands = edge
+        with closing(
+            _index_reference_rows(
+                conn,
+                "delegation_facts",
+                ("parent_session_id", "child_session_id", "instruction_message_id"),
+                f"SELECT rowid FROM delegation_facts WHERE {predicate} LIMIT 1",
+                operands,
+            )
+        ) as rows:
+            row = next(rows, None)
+
         if row is None:
             return None
         return _ResolvedReference(
@@ -1072,21 +1174,33 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
         else:
             relation, table, column = context_snapshot_relation_sql(), "context_snapshots", "snapshot_ref"
         with closing(
-            conn.execute(f"{relation} SELECT session_id FROM {table} WHERE {column} = ?", (ref.format(),))
-        ) as cursor:
-            row = cursor.fetchone()
+            _index_reference_rows(
+                conn,
+                "sessions",
+                ("session_id",),
+                f"{relation} SELECT s.rowid FROM {table} AS selected JOIN sessions AS s ON s.session_id=selected.session_id "
+                f"WHERE selected.{column}=?",
+                (ref.format(),),
+            )
+        ) as rows:
+            row = next(rows, None)
+
         return None if row is None else _ResolvedReference(ref.kind, str(row[0]), ref.object_id)
     if ref.kind == "session":
         from polylogue.storage.sqlite.session_identity import resolve_session_id_in_index
 
         try:
-            session_id = resolve_session_id_in_index(conn, ref.object_id)
+            session_id = resolve_session_id_in_index(conn, ref.object_id, before_input=_index_input_hook(conn))
         except (KeyError, ValueError):
             return None
         return _ResolvedReference("session", session_id, session_id)
     if ref.kind == "message":
-        with closing(conn.execute("SELECT session_id FROM messages WHERE message_id = ?", (ref.object_id,))) as cursor:
-            row = cursor.fetchone()
+        with closing(
+            _index_reference_rows(
+                conn, "messages", ("session_id",), "SELECT rowid FROM messages WHERE message_id=?", (ref.object_id,)
+            )
+        ) as rows:
+            row = next(rows, None)
         return (
             None
             if row is None
@@ -1094,25 +1208,15 @@ def _resolve_target(conn: sqlite3.Connection, ref: ObjectRef | EvidenceRef | Blo
         )
     if ref.kind in {"block", "action"}:
         if ref.qualifiers:
-            with closing(
-                conn.execute(
-                    "SELECT m.session_id, b.message_id, b.position, b.block_id FROM messages AS m "
-                    "JOIN blocks AS b ON b.message_id = m.message_id "
-                    "WHERE b.block_id = ? OR (m.message_id = ? AND b.position = ?) LIMIT 1",
-                    (ref.object_id, ref.object_id, ref.qualifiers[-1]),
-                )
-            ) as cursor:
-                row = cursor.fetchone()
+            row = _block_reference_row(
+                conn,
+                "b.block_id=? OR (m.message_id=? AND b.position=?)",
+                (ref.object_id, ref.object_id, ref.qualifiers[-1]),
+                first_only=True,
+            )
         else:
-            with closing(
-                conn.execute(
-                    "SELECT m.session_id, b.message_id, b.position, b.block_id FROM messages AS m "
-                    "JOIN blocks AS b ON b.message_id = m.message_id "
-                    "WHERE b.block_id = ?",
-                    (ref.object_id,),
-                )
-            ) as cursor:
-                row = cursor.fetchone()
+            row = _block_reference_row(conn, "b.block_id=?", (ref.object_id,))
+
         if row is None:
             return None
         if str(row[3]) == ref.object_id:
@@ -1163,7 +1267,7 @@ def _locate_composed_message(conn: sqlite3.Connection, session_id: str, message_
     # initialization; calls happen only after the archive substrate is loaded.
     from polylogue.storage.sqlite.archive_tiers.write import locate_composed_message
 
-    return locate_composed_message(conn, session_id, message_id)
+    return locate_composed_message(conn, session_id, message_id, before_input=_index_input_hook(conn))
 
 
 class PreparedIndexMutation:
@@ -1175,6 +1279,7 @@ class PreparedIndexMutation:
         *,
         archive_root: Path,
         destination: IndexMutationDestination | None = None,
+        input_demand: Callable[[int], None] | None = None,
         _source_only: bool = False,
     ) -> None:
         self._capabilities = frozenset({"source"} if _source_only else {"index", "source", "user", "audit"})
@@ -1232,6 +1337,8 @@ class PreparedIndexMutation:
         self._observers: dict[str, sqlite3.Connection] = {}
         self._observer_leaves: dict[str, VerifiedAuditLeaf] = {}
         self._versions: dict[str, int] = {}
+        self._original_input_epochs = dict.fromkeys(self._paths, 0)
+        self._original_input_demand: Callable[[int], None] | None = input_demand
         self._candidate_path: Path | None = None
         self._candidate_identity: tuple[int, int, int, int] | None = None
         self._candidate_version: int | None = None
@@ -1306,6 +1413,17 @@ class PreparedIndexMutation:
                 "qualifier TEXT NOT NULL, scope_session_id TEXT NOT NULL, target_message_id TEXT NOT NULL, "
                 "wire_ref TEXT PRIMARY KEY, has_session_alias INTEGER NOT NULL) "
                 "WITHOUT ROWID;"
+                "CREATE TEMP TABLE original_blob_inputs("
+                "blob_hash BLOB NOT NULL,byte_length INTEGER NOT NULL,charged INTEGER NOT NULL DEFAULT 0,prepared_claim_json TEXT,"
+                "PRIMARY KEY(blob_hash,byte_length)) WITHOUT ROWID;"
+                "CREATE TEMP TABLE original_input_rows("
+                "tier TEXT NOT NULL,epoch INTEGER NOT NULL,table_name TEXT NOT NULL,physical_rowid INTEGER NOT NULL,"
+                "image_id INTEGER,"
+                "PRIMARY KEY(tier,epoch,table_name,physical_rowid)) WITHOUT ROWID;"
+                "CREATE TEMP TABLE original_input_fields("
+                "tier TEXT NOT NULL,epoch INTEGER NOT NULL,table_name TEXT NOT NULL,physical_rowid INTEGER NOT NULL,"
+                "column_name TEXT NOT NULL,byte_length INTEGER NOT NULL,"
+                "PRIMARY KEY(tier,epoch,table_name,physical_rowid,column_name)) WITHOUT ROWID;"
                 "CREATE TABLE known_tier_row_images("
                 "image_id INTEGER PRIMARY KEY, table_name TEXT NOT NULL, columns_blob BLOB NOT NULL, "
                 "physical_rowid INTEGER, cell_ids_blob BLOB NOT NULL);"
@@ -1350,9 +1468,11 @@ class PreparedIndexMutation:
             raise
 
     @classmethod
-    def source_only(cls, *, archive_root: Path) -> PreparedIndexMutation:
+    def source_only(
+        cls, *, archive_root: Path, input_demand: Callable[[int], None] | None = None
+    ) -> PreparedIndexMutation:
         """Prepare the existing durable Source capability without opening Index."""
-        return cls(None, archive_root=archive_root, _source_only=True)
+        return cls(None, archive_root=archive_root, input_demand=input_demand, _source_only=True)
 
     def _require_capability(self, tier: str) -> None:
         if tier not in self._capabilities:
@@ -1446,24 +1566,25 @@ class PreparedIndexMutation:
     def _read_resolved_references(self) -> None:
         self._require_capability("index")
         index_observer = self._observers["index"]
-        with closing(index_observer.execute("PRAGMA data_version")) as cursor:
+        with self._owned_cursor(index_observer, "PRAGMA data_version") as cursor:
             before_index = int(cursor.fetchone()[0])
-        with closing(index_observer.execute("BEGIN")):
+        with self._owned_cursor(index_observer, "BEGIN"):
             pass
         # Failed preparation retains its snapshots for the parent's one
         # terminal cleanup attempt; successful readonly snapshots commit.
         for name in ("source", "user", "audit"):
             observer = self._observers[name]
-            with closing(observer.execute("PRAGMA data_version")) as cursor:
+            with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
                 before = int(cursor.fetchone()[0])
-            with closing(observer.execute("BEGIN")):
+            with self._owned_cursor(observer, "BEGIN"):
                 pass
+            refs: Iterable[_ReferenceAnchor]
             if name == "user":
                 refs = _references_from_user(observer)
             elif name == "audit":
                 refs = _references_from_audit(observer)
             else:
-                with closing(observer.execute("SELECT 1 FROM sqlite_schema LIMIT 1")) as cursor:
+                with self._owned_cursor(observer, "SELECT 1 FROM sqlite_schema LIMIT 1") as cursor:
                     cursor.fetchone()
                 refs = ()
             primary: BaseException | None = None
@@ -1474,37 +1595,35 @@ class PreparedIndexMutation:
                     if parsed is not None:
                         target = _resolve(index_observer, parsed)
                         if target is not None:
-                            with closing(
-                                self._scratch.execute(
-                                    "INSERT OR IGNORE INTO reference_anchors "
-                                    "(wire_ref,tier,assertion_id,field,position,assertion_target,permits_absence) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                                    (
-                                        target.wire_ref,
-                                        name,
-                                        anchor.assertion_id,
-                                        anchor.field,
-                                        anchor.position,
-                                        anchor.assertion_target,
-                                        int(anchor.permits_absence),
-                                    ),
-                                )
+                            with self._owned_cursor(
+                                self._scratch,
+                                "INSERT OR IGNORE INTO reference_anchors "
+                                "(wire_ref,tier,assertion_id,field,position,assertion_target,permits_absence) "
+                                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                                (
+                                    target.wire_ref,
+                                    name,
+                                    anchor.assertion_id,
+                                    anchor.field,
+                                    anchor.position,
+                                    anchor.assertion_target,
+                                    int(anchor.permits_absence),
+                                ),
                             ):
                                 pass
-                            with closing(
-                                self._scratch.execute(
-                                    "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                                    (
-                                        target.kind,
-                                        target.owner_session_id,
-                                        target.object_id,
-                                        target.qualifier or "",
-                                        target.scope_session_id or "",
-                                        target.target_message_id or "",
-                                        target.wire_ref,
-                                        int(target.has_session_alias),
-                                    ),
-                                )
+                            with self._owned_cursor(
+                                self._scratch,
+                                "INSERT OR IGNORE INTO resolved_refs VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                (
+                                    target.kind,
+                                    target.owner_session_id,
+                                    target.object_id,
+                                    target.qualifier or "",
+                                    target.scope_session_id or "",
+                                    target.target_message_id or "",
+                                    target.wire_ref,
+                                    int(target.has_session_alias),
+                                ),
                             ):
                                 pass
             except BaseException as failure:
@@ -1521,13 +1640,13 @@ class PreparedIndexMutation:
                             ) from primary
                         raise
             observer.commit()
-            with closing(observer.execute("PRAGMA data_version")) as cursor:
+            with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
                 after = int(cursor.fetchone()[0])
             if before != after:
                 raise ReferenceSealStaleError(f"{name}.db changed during reference preparation")
             self._versions[name] = after
         index_observer.commit()
-        with closing(index_observer.execute("PRAGMA data_version")) as cursor:
+        with self._owned_cursor(index_observer, "PRAGMA data_version") as cursor:
             after_index = int(cursor.fetchone()[0])
         if before_index != after_index:
             raise ReferenceSealStaleError("index.db changed during reference preparation")
@@ -1730,12 +1849,19 @@ class PreparedIndexMutation:
             raise ValueError(f"unknown reference-seal tier {tier!r}") from exc
 
     @contextmanager
-    def original_read_snapshot(self) -> Iterator[None]:
+    def original_read_snapshot(
+        self,
+        *,
+        input_demand: Callable[[int], None] | None = None,
+        prepaid_blob_inputs: Iterable[tuple[str, bytes, int]] = (),
+    ) -> Iterator[None]:
         """Pin preparation reads on these same observers, then prove currency.
 
         This is a preparation window, never an accepted authority advance.
         Every read cursor and incremental cell handle must settle before the
-        snapshots end and fresh same-observer versions can be sampled.
+        snapshots end and fresh same-observer versions can be sampled. An
+        exclusive creator may register input_demand before any native input
+        hydration; each original coordinate is charged once per accepted epoch.
         """
         self.validate_observers_current()
         if self._original_reads_active:
@@ -1743,6 +1869,9 @@ class PreparedIndexMutation:
         opened: list[sqlite3.Connection] = []
         primary: BaseException | None = None
         self._original_reads_active = True
+        previous_input_demand = self._original_input_demand
+        if input_demand is not None:
+            self._original_input_demand = input_demand
         try:
             for name in self._paths:
                 observer = self._observers[name]
@@ -1751,6 +1880,29 @@ class PreparedIndexMutation:
                 opened.append(observer)
                 with self._owned_cursor(observer, "SELECT 1 FROM sqlite_schema LIMIT 1") as cursor:
                     cursor.fetchone()
+            # Only the actual append owner has already declared accepted plan
+            # payload bytes. Its exact original raw/hash/size operands must
+            # match here before those CAS inputs can be marked prepaid.
+            for raw_id, expected_hash, expected_size in prepaid_blob_inputs:
+                _check_reference_cancellation()
+                if self._original_input_demand is None:
+                    raise ReferenceSealError("prepaid original inputs require the actual creator demand hook")
+                if type(expected_hash) is not bytes or type(expected_size) is not int:
+                    raise ReferenceSealError(
+                        "prepaid acquisition operands require canonical hash and integer byte size"
+                    )
+                actual_hash, actual_size = self._original_blob_input(raw_id)
+                if actual_hash != expected_hash or actual_size != expected_size:
+                    raise ReferenceSealStaleError(
+                        "accepted append input differs from its original acquisition descriptor"
+                    )
+                with self._owned_cursor(
+                    self._scratch,
+                    "INSERT INTO temp.original_blob_inputs(blob_hash,byte_length,charged) VALUES (?,?,1) "
+                    "ON CONFLICT(blob_hash,byte_length) DO UPDATE SET charged=1",
+                    (actual_hash, actual_size),
+                ):
+                    pass
             yield
             for name in self._paths:
                 observer = self._observers[name]
@@ -1781,6 +1933,7 @@ class PreparedIndexMutation:
                 finally:
                     observer.set_progress_handler(lambda: int(compute_cancel_requested()), 2000)
             self._original_reads_active = False
+            self._original_input_demand = previous_input_demand
             if failures:
                 if primary is not None:
                     failures.insert(0, primary)
@@ -3128,6 +3281,145 @@ class PreparedIndexMutation:
                     return False
         return True
 
+    def before_index_input(
+        self, table: str, columns: tuple[str, ...], rowid_sql: str, parameters: tuple[object, ...]
+    ) -> None:
+        """Charge explicit canonical Index input coordinates before hydration.
+
+        Canonical read owners provide their exact selected physical rowids,
+        never SQL rewriting or a borrowed-current-generation connection.
+        """
+        self._require_capability("index")
+        self._require_new_work()
+        if self._original_input_demand is None:
+            return
+        observer = self.observer("index")
+        if not observer.in_transaction:
+            raise ReferenceSealError("Index input demand requires its same original pinned observer")
+        with self._owned_cursor(observer, rowid_sql, parameters) as cursor:
+            for (rowid,) in cursor:
+                _check_reference_cancellation()
+                self._amend_original_input_fields("index", table, rowid, columns)
+
+    def _original_blob_input(self, raw_id: str) -> tuple[bytes, int]:
+        if not self._original_reads_active:
+            raise ReferenceSealError("original CAS input demand requires its pinned acquisition read window")
+        observer = self.observer("source")
+        with self._owned_cursor(observer, "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,)) as cursor:
+            selected = cursor.fetchone()
+        if selected is None:
+            raise ReferenceSealStaleError("original CAS input acquisition descriptor is absent")
+        self._amend_original_input_fields("source", "raw_sessions", selected[0], ("blob_hash", "blob_size"))
+        with self._owned_cursor(
+            observer, "SELECT blob_hash,blob_size FROM raw_sessions WHERE rowid=?", (selected[0],)
+        ) as cursor:
+            row = cursor.fetchone()
+        if row is None:
+            raise ReferenceSealStaleError("original CAS input acquisition descriptor disappeared")
+        if not isinstance(row[0], bytes) or len(row[0]) != 32 or type(row[1]) is not int or row[1] < 0:
+            raise ReferenceSealError("original CAS input has no canonical hash and exact byte size")
+        return row[0], row[1]
+
+    def retain_original_blob_input(self, raw_id: str) -> tuple[bytes, int]:
+        """Amend demand before reading one exact originally acquired CAS input.
+
+        This bookkeeping confers no Blob publication or reference authority.
+        Exclusive discovery starts with zero accounted inputs. Every actual
+        original acquisition is charged before its first payload read.
+        """
+        self._require_new_work()
+        if self._source_statement_active:
+            raise ReferenceSealError("original CAS demand cannot enter a staged statement savepoint")
+        blob_hash, byte_length = self._original_blob_input(raw_id)
+        self._amend_cas_input(blob_hash, byte_length)
+        return blob_hash, byte_length
+
+    def retain_prepared_blob_input(self, claim: PreparedBlobPublicationClaim) -> tuple[bytes, int]:
+        """Enroll this actual prepared input before payload use, not publication.
+
+        The same current creator charges immutable CAS identity once. File
+        and accepted-reservation proof establish input provenance only; this
+        bookkeeping cannot grant a Source write or release an old reservation.
+        """
+        from polylogue.storage.blob_publication import PreparedBlobPublicationClaim, _prepared_claim_record
+
+        self._require_new_work()
+        if not self._original_reads_active or not isinstance(claim, PreparedBlobPublicationClaim):
+            raise ReferenceSealError("prepared CAS input requires its exact claim in the original read window")
+        self._require_capability("source")
+        source_path = claim.publisher.source_db_path
+        if source_path.resolve() != self._paths["source"].resolve():
+            raise ReferenceSealError("prepared CAS input belongs to another Source target")
+        if not _same_incarnation(_tier_identity(source_path), self._identities["source"]):
+            raise ReferenceSealStaleError("prepared CAS input Source incarnation changed")
+        # This input is read under the original window, whose entry/exit
+        # bracket owns currency. Publication's unpinned validator cannot run
+        # inside this caller-owned snapshot.
+        receipt = claim.receipt
+        if (
+            receipt.publisher_id != claim.publisher.publisher_id
+            or receipt.blob_hash != claim.seal.sha256
+            or type(receipt.size_bytes) is not int
+            or receipt.size_bytes != claim.seal.size
+            or receipt.size_bytes < 0
+        ):
+            raise ReferenceSealError("prepared CAS input differs from its actual publisher/file claim")
+        try:
+            blob_hash = bytes.fromhex(receipt.blob_hash)
+        except ValueError as failure:
+            raise ReferenceSealError("prepared CAS input lacks canonical hash bytes") from failure
+        if len(blob_hash) != 32 or blob_hash.hex() != receipt.blob_hash:
+            raise ReferenceSealError("prepared CAS input lacks canonical hash bytes")
+        if claim.prepared_path.exists():
+            claim.publisher._validate_claim_path(claim.prepared_path)
+            claim.seal.verify(claim.prepared_path, full=False)
+        else:
+            # The actual receipt, never a guessed staged raw identity, proves
+            # this same input already entered the final CAS namespace.
+            observer = self.observer("source")
+            with self._owned_cursor(
+                observer,
+                "SELECT rowid FROM blob_publication_reservations WHERE publication_id=?",
+                (receipt.publication_id,),
+            ) as cursor:
+                reservation = cursor.fetchone()
+            if reservation is not None:
+                self._amend_original_input_fields(
+                    "source",
+                    "blob_publication_reservations",
+                    reservation[0],
+                    ("blob_hash", "size_bytes", "publisher_id"),
+                )
+            claim.publisher.validate_published_claim(observer, claim, source_path="")
+        self._amend_cas_input(blob_hash, receipt.size_bytes, prepared_claim=_prepared_claim_record(claim))
+        return blob_hash, receipt.size_bytes
+
+    def _amend_cas_input(self, blob_hash: bytes, byte_length: int, *, prepared_claim: str | None = None) -> None:
+        with self._owned_cursor(
+            self._scratch,
+            "SELECT charged FROM temp.original_blob_inputs WHERE blob_hash=? AND byte_length=?",
+            (blob_hash, byte_length),
+        ) as cursor:
+            row = cursor.fetchone()
+        charged = row is not None and bool(row[0])
+        try:
+            if self._original_input_demand is not None and not charged:
+                self._original_input_demand(byte_length)
+                charged = True
+            with self._owned_cursor(
+                self._scratch,
+                "INSERT INTO temp.original_blob_inputs(blob_hash,byte_length,charged,prepared_claim_json) VALUES (?,?,?,?) "
+                "ON CONFLICT(blob_hash,byte_length) DO UPDATE SET charged=excluded.charged,"
+                "prepared_claim_json=coalesce(original_blob_inputs.prepared_claim_json,excluded.prepared_claim_json)",
+                (blob_hash, byte_length, int(charged), prepared_claim),
+            ):
+                pass
+        except BaseException:
+            # A successful amendment followed by uncertain bookkeeping may
+            # not be retried as if the current creator had not paid it.
+            self._cleanup_requested = True
+            raise
+
     def retain_tier_row(self, tier: str, table: str, rowid: int) -> KnownTierRowImage | None:
         """Retain one selected original row without fetching any TEXT/BLOB cell.
 
@@ -3138,8 +3430,138 @@ class PreparedIndexMutation:
         self._require_new_work()
         if not self._original_reads_active:
             raise ReferenceSealError("selected original cells require the pinned original read window")
+        if self._source_statement_active:
+            raise ReferenceSealError("original input retention cannot enter a staged statement savepoint")
         columns, _keys = self._known_tier_table_shape(tier, table)
-        return self._retain_native_row(self.observer(tier), table, columns, rowid)
+        observer = self.observer(tier)
+        self._amend_original_input_fields(tier, table, rowid, columns)
+        coordinate = (tier, self._original_input_epochs[tier], table, rowid)
+        with self._owned_cursor(
+            self._scratch,
+            "SELECT image_id FROM temp.original_input_rows "
+            "WHERE tier=? AND epoch=? AND table_name=? AND physical_rowid=?",
+            coordinate,
+        ) as cursor:
+            retained = cursor.fetchone()
+        if retained is not None:
+            return self._retained_row_image(retained[0])
+        # The successful demand amendment is outside this copy savepoint.
+        # A settled read/copy failure rolls back every partial literal/image,
+        # so retry reuses the charge without accumulating abandoned slots.
+        with self._owned_cursor(self._scratch, "SAVEPOINT polylogue_original_input_copy"):
+            pass
+        try:
+            image = self._retain_native_row(observer, table, columns, rowid)
+            if image is not None:
+                image_id = self._retain_row_image(image)
+                with self._owned_cursor(
+                    self._scratch,
+                    "INSERT INTO temp.original_input_rows(tier,epoch,table_name,physical_rowid,image_id) VALUES (?,?,?,?,?)",
+                    (*coordinate, image_id),
+                ):
+                    pass
+        except BaseException as failure:
+            children = tuple(
+                child for child in native_sql_children(self) if child.connection in (observer, self._scratch)
+            )
+            if any(
+                child.close_required
+                or child._parent_cleanup_requested
+                or (child.connection is self._scratch and child._incremental_blobs)
+                for child in children
+            ):
+                self._cleanup_requested = True
+                raise
+            try:
+                with self._owned_cursor(self._scratch, "ROLLBACK TO polylogue_original_input_copy"):
+                    pass
+                with self._owned_cursor(self._scratch, "RELEASE polylogue_original_input_copy"):
+                    pass
+            except BaseException as cleanup:
+                self._cleanup_requested = True
+                owner = next(child for child in children if child.connection is self._scratch)
+                owner.close_required = True
+                raise NativeConnectionSettlementError(
+                    owner, BaseExceptionGroup("Original input copy and rollback failed", [failure, cleanup])
+                ) from cleanup
+            raise
+        else:
+            try:
+                with self._owned_cursor(self._scratch, "RELEASE polylogue_original_input_copy"):
+                    pass
+            except BaseException as cleanup:
+                self._cleanup_requested = True
+                owner = next(child for child in native_sql_children(self) if child.connection is self._scratch)
+                owner.close_required = True
+                raise NativeConnectionSettlementError(owner, cleanup) from cleanup
+            return image
+
+    def _amend_original_input_fields(self, tier: str, table: str, rowid: int, columns: tuple[str, ...]) -> None:
+        """Charge exact declared native inputs before any Python hydration.
+
+        Constructor reference reads use the same coordinate and field ledger
+        as complete row retention. Numeric literals have eight bytes; NULL
+        has none. TEXT uses native UTF-8 byte length, not character count.
+        Successful charges survive later literal-copy failure. These calls
+        cannot enter a Source mutation savepoint.
+        """
+        if self._original_input_demand is None:
+            return
+        if self._source_statement_active:
+            raise ReferenceSealError("original input demand cannot enter a staged statement savepoint")
+        observer = self.observer(tier)
+        if not observer.in_transaction:
+            raise ReferenceSealError("original input demand requires the actual pinned native observer")
+        if not table.isidentifier():
+            raise ReferenceSealError("input demand requires an actual declared native relation")
+        # Read inputs include generated fields, such as sessions.session_id.
+        # Effect images deliberately retain only writable table_info fields;
+        # input accounting must also cover generated values actually hydrated.
+        with self._owned_cursor(observer, f"PRAGMA table_xinfo({quote_identifier(table)})") as cursor:
+            canonical = tuple(row[1] for row in cursor)
+        if not columns or any(column not in canonical for column in columns):
+            raise ReferenceSealError("input demand must name actual declared native fields")
+        coordinate = (tier, self._original_input_epochs[tier], table, rowid)
+        with self._owned_cursor(
+            self._scratch,
+            "SELECT column_name FROM temp.original_input_fields "
+            "WHERE tier=? AND epoch=? AND table_name=? AND physical_rowid=?",
+            coordinate,
+        ) as cursor:
+            charged = {row[0] for row in cursor}
+        pending = tuple(column for column in columns if column not in charged)
+        if not pending:
+            return
+        alias = self._physical_rowid_alias(observer, table, canonical)
+        projection = ",".join(
+            f"CASE typeof({quote_identifier(column)}) "
+            f"WHEN 'null' THEN 0 WHEN 'integer' THEN 8 WHEN 'real' THEN 8 "
+            f"ELSE length(CAST({quote_identifier(column)} AS BLOB)) END"
+            for column in pending
+        )
+        with self._owned_cursor(
+            observer,
+            f"SELECT {projection} FROM {quote_identifier(table)} WHERE {quote_identifier(alias)}=?",
+            (rowid,),
+        ) as cursor:
+            lengths = cursor.fetchone()
+        if lengths is None:
+            return
+        try:
+            self._original_input_demand(sum(lengths))
+            for column, length in zip(pending, lengths, strict=True):
+                with self._owned_cursor(
+                    self._scratch,
+                    "INSERT INTO temp.original_input_fields "
+                    "(tier,epoch,table_name,physical_rowid,column_name,byte_length) VALUES (?,?,?,?,?,?)",
+                    (*coordinate, column, length),
+                ):
+                    pass
+        except BaseException:
+            # An uncertain amendment or failed ledger update cannot become
+            # uncharged work again. The original owner must physically settle.
+            self._cleanup_requested = True
+            raise
 
     def _retain_native_row(
         self,
@@ -4895,6 +5317,7 @@ class PreparedIndexMutation:
             self._settle_witness_metadata()
         self._identities[receipt._tier] = identity_after
         self._versions[receipt._tier] = version_after
+        self._original_input_epochs[receipt._tier] += 1
         self._pending_tier_permits.pop(receipt._tier)
         self._pending_tier_receipts.pop(receipt._tier)
         if receipt._tier == "source":
@@ -5287,6 +5710,7 @@ class PreparedIndexMutation:
             and self._publication_exclusion is None
         )
         if self._closed:
+            self._original_input_demand = None
             retire_native_sql_parent(self)
             with _LIVE_SEALS_LOCK:
                 _LIVE_SEALS.pop(id(self), None)

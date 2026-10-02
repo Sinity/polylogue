@@ -13,7 +13,7 @@ import threading
 import time
 import weakref
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -377,6 +377,32 @@ def live_connection_cursors(connection: sqlite3.Connection) -> tuple[sqlite3.Cur
 
 def close_connection_cursor(connection: sqlite3.Connection, cursor: sqlite3.Cursor) -> None:
     cast(_MeasuredConnection, connection).close_cursor(cursor)
+
+
+@contextmanager
+def connection_cursor(
+    connection: sqlite3.Connection, sql: str, parameters: Sequence[object] | Mapping[str, object] = ()
+) -> Iterator[sqlite3.Cursor]:
+    """Retain a statement before execution and settle its actual native cursor."""
+    cursor = connection.cursor()
+    primary: BaseException | None = None
+    try:
+        cursor.execute(sql, parameters)
+        yield cursor
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            if isinstance(connection, _MeasuredConnection):
+                close_connection_cursor(connection, cursor)
+            else:
+                # Plain SQLite callers own their explicit connection context.
+                cursor.close()
+        except BaseException as cleanup:
+            if primary is not None:
+                raise BaseExceptionGroup("Statement and native cursor close failed", [primary, cleanup]) from primary
+            raise
 
 
 def connect_measured(database: str | Path, /, *args: Any, **kwargs: Any) -> sqlite3.Connection:

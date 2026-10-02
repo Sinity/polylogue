@@ -201,6 +201,7 @@ def write_fixture_index_session(
             raw_id=kwargs.get("raw_id"),
             force_replace=bool(kwargs.get("force_replace", False)),
             prepared_rows=rows,
+            signature_cache=kwargs.get("signature_cache"),
         )
         kwargs["prepared_write"] = owned_prepared
         if kwargs.get("content_hash") is None:

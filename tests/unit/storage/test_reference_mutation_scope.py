@@ -1859,3 +1859,136 @@ def test_known_tier_profile_setup_is_exact_and_retires_before_guard_binding(
                     blocked_cursor.allow_cleanup.set()
                 if selected is not None:
                     selected.close()
+
+def test_user_reference_array_census_does_not_fetch_complete_json_cells(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import reference_seal
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    array_fields = frozenset({"evidence_refs_json", "assertion_refs_json", "model_refs_json"})
+    charges: list[int] = []
+
+    class ArrayFetchGuard(ControlledCursor):
+        def execute(self, sql: str, parameters: Any = (), /) -> "ArrayFetchGuard":
+            if sql.startswith("SELECT rowid AS physical_rowid,") and 'FROM "assertions" WHERE rowid=' in sql:
+                assert charges, "constructor reference fields hydrated before demand registration"
+            result = super().execute(sql, parameters)
+            assert self.description is None or not any(column[0] in array_fields for column in self.description), (
+                "reference census transferred a complete durable JSON array"
+            )
+            return result
+
+    original_open = reference_seal.PreparedIndexMutation._open_observer
+
+    def open_observer(seal: reference_seal.PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
+        connection = original_open(seal, name, path)
+        if name == "user":
+            original_cursor = connection.cursor
+
+            def guarded_cursor() -> sqlite3.Cursor:
+                return original_cursor(factory=ArrayFetchGuard)
+
+            monkeypatch.setattr(connection, "cursor", guarded_cursor)
+        return connection
+
+    with write_lease("test.native-user-reference-arrays", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_connection(tmp_path / "user.db", archive_root=tmp_path)) as user:
+            upsert_assertion(
+                user,
+                assertion_id="large-reference-array",
+                target_ref="user:local",
+                kind=AssertionKind.ANNOTATION,
+                evidence_refs=("user:local",) * 20000,
+                now_ms=1,
+            )
+            user.commit()
+        monkeypatch.setattr(reference_seal.PreparedIndexMutation, "_open_observer", open_observer)
+        with reference_seal.PreparedIndexMutation(
+            tmp_path / "index.db", archive_root=tmp_path, input_demand=charges.append
+        ) as seal:
+            assert sum(charges) > 200000
+            initial = tuple(charges)
+            with seal.original_read_snapshot():
+                with closing(reference_seal._references_from_user(seal.observer("user"))) as anchors:
+                    assert sum(anchor.field == "evidence_refs_json" for anchor in anchors) == 20000
+            assert tuple(charges) == initial
+
+
+@pytest.mark.parametrize("reference_kind", ["session", "run", "observed-event", "context-snapshot"])
+def test_constructor_accounts_original_index_identity_before_resolving_long_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reference_kind: str
+) -> None:
+    from typing import Any
+
+    from polylogue.storage.sqlite import reference_seal
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    charges: list[int] = []
+    original_open = reference_seal.PreparedIndexMutation._open_observer
+    checked: list[int] = []
+
+    def open_observer(seal: reference_seal.PreparedIndexMutation, name: str, path: Path) -> sqlite3.Connection:
+        connection = original_open(seal, name, path)
+        if name == "index":
+            original_cursor = connection.cursor
+
+            class IdentityFetchGuard(ControlledCursor):
+                def execute(self, sql: str, parameters: Any = (), /) -> "IdentityFetchGuard":
+                    if sql.startswith(
+                        (
+                            "SELECT session_id FROM sessions WHERE rowid=",
+                            'SELECT "session_id" FROM "sessions" WHERE rowid=',
+                        )
+                    ):
+                        assert isinstance(parameters, tuple)
+                        with seal._owned_cursor(
+                            seal._scratch,
+                            "SELECT byte_length FROM temp.original_input_fields WHERE tier='index' "
+                            "AND table_name='sessions' AND column_name='session_id' AND physical_rowid=?",
+                            parameters,
+                        ) as metadata:
+                            row = metadata.fetchone()
+                        assert row is not None and row[0] > 20000
+                        checked.append(row[0])
+                    return super().execute(sql, parameters)
+
+            def guarded_cursor() -> sqlite3.Cursor:
+                return original_cursor(factory=IdentityFetchGuard)
+
+            monkeypatch.setattr(connection, "cursor", guarded_cursor)
+        return connection
+
+    with write_lease("test.constructor-index-input", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            session_id = write_index_session(archive, reference_session("long-" + "x" * 20000))
+            archive.commit()
+        target_ref = f"{reference_kind}:{session_id}"
+        if reference_kind == "observed-event":
+            target_ref += ":session_started"
+        elif reference_kind == "context-snapshot":
+            target_ref += ":session_start"
+        with closing(open_connection(tmp_path / "user.db", archive_root=tmp_path)) as user:
+            upsert_assertion(
+                user,
+                assertion_id="long-session-reference",
+                target_ref=target_ref,
+                kind=AssertionKind.ANNOTATION,
+                now_ms=1,
+            )
+            user.commit()
+        monkeypatch.setattr(reference_seal.PreparedIndexMutation, "_open_observer", open_observer)
+        with reference_seal.PreparedIndexMutation(
+            tmp_path / "index.db", archive_root=tmp_path, input_demand=charges.append
+        ) as seal:
+            assert checked and sum(charges) >= checked[0]
+            initial = tuple(charges)
+            with seal.original_read_snapshot():
+                seal.before_index_input(
+                    "sessions", ("session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (session_id,)
+                )
+            assert tuple(charges) == initial

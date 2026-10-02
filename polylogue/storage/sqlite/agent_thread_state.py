@@ -31,6 +31,7 @@ from dataclasses import dataclass
 
 from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.logging import DEBUG, emit
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 #: Graph-id namespace for runtime-reported thread state.
 GRAPH_PREFIX = "agent-thread-state:"
@@ -558,7 +559,11 @@ def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
 
 
 def read_parent_thread_id(
-    conn: sqlite3.Connection, child_thread_id: str, *, source_scope: str | None = None
+    conn: sqlite3.Connection,
+    child_thread_id: str,
+    *,
+    source_scope: str | None = None,
+    before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None = None,
 ) -> str | None:
     """Read one child's agreed parent without retaining every scope's graph.
 
@@ -566,6 +571,14 @@ def read_parent_thread_id(
     evidence. SQL failures propagate so publication cannot mistake them for
     an absent parent.
     """
+    if not conn.in_transaction:
+        with connection_cursor(conn, "BEGIN DEFERRED"):
+            pass
+        try:
+            return read_parent_thread_id(conn, child_thread_id, source_scope=source_scope, before_input=before_input)
+        finally:
+            with connection_cursor(conn, "ROLLBACK"):
+                pass
     if not child_thread_id:
         return None
     predicate, parameters = _scope_predicate(source_scope)
@@ -576,10 +589,14 @@ def read_parent_thread_id(
     else:
         child_predicate = "e.target_ref = ?"
         child_parameters = [thread_context_ref(source_scope, child_thread_id)]
-    cursor = conn.execute(
+    operands = (*parameters, *child_parameters)
+    # The same canonical scope winner supplies identity and payload. No
+    # independent tied LIMIT/partition selection occurs after accounting.
+    with connection_cursor(
+        conn,
         f"""
-        SELECT source_ref FROM (
-            SELECT e.source_ref,
+        SELECT physical_rowid FROM (
+            SELECT e.rowid AS physical_rowid,
                    ROW_NUMBER() OVER (
                        PARTITION BY e.graph_id
                        ORDER BY CASE WHEN e.association_state = 'superseded' THEN 1 ELSE 0 END,
@@ -590,19 +607,29 @@ def read_parent_thread_id(
             WHERE {predicate} AND e.edge_kind = 'invoked' AND {child_predicate}
         ) WHERE scope_rank = 1
         """,
-        [*parameters, *child_parameters],
-    )
-    parent: str | None = None
-    try:
-        for (source_ref,) in cursor:
-            candidate = thread_id_from_context_ref(str(source_ref)).strip()
+        operands,
+    ) as identities:
+        parent: str | None = None
+        for (rowid,) in identities:
+            if before_input is not None:
+                before_input(
+                    "work_evidence_edges",
+                    ("source_ref",),
+                    "SELECT rowid FROM work_evidence_edges WHERE rowid=?",
+                    (rowid,),
+                )
+            with connection_cursor(
+                conn, "SELECT source_ref FROM work_evidence_edges WHERE rowid=?", (rowid,)
+            ) as cursor:
+                row = cursor.fetchone()
+            if row is None:
+                raise RuntimeError("selected thread parent disappeared inside its owned snapshot")
+            candidate = thread_id_from_context_ref(str(row[0])).strip()
             if candidate:
                 if parent is not None and candidate != parent:
                     return None
                 parent = candidate
         return parent
-    finally:
-        cursor.close()
 
 
 __all__ = [

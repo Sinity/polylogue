@@ -21,6 +21,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
+from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     open_source_tier_write_connection,
@@ -458,9 +459,8 @@ class ArchiveBlobPublisher(BlobStore):
         """Verify the exact reservation and final bytes inside the owning Source transaction."""
         from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, is_blob_hash_excised
 
-        database_path = next(
-            (str(row[2]) for row in connection.execute("PRAGMA database_list").fetchall() if row[1] == "main"), ""
-        )
+        with connection_cursor(connection, "PRAGMA database_list") as cursor:
+            database_path = next((str(row[2]) for row in cursor if row[1] == "main"), "")
         if not database_path or Path(database_path).resolve() != self.source_db_path.resolve():
             raise ValueError("publication belongs to another Source database")
         if claim.publisher is not self or claim.receipt.publisher_id != self.publisher_id:
@@ -469,10 +469,12 @@ class ArchiveBlobPublisher(BlobStore):
         blob_hash = bytes.fromhex(receipt.blob_hash)
         if is_blob_hash_excised(connection, blob_hash):
             raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
-        row = connection.execute(
+        with connection_cursor(
+            connection,
             "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
             (receipt.publication_id,),
-        ).fetchone()
+        ) as cursor:
+            row = cursor.fetchone()
         if row is None or tuple(row) != (blob_hash, receipt.size_bytes, receipt.publisher_id):
             raise ArchiveStorageFaultError(
                 StorageFaultKind.EVICTED, FileNotFoundError("publication reservation is absent or changed")
