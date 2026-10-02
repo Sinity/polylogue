@@ -1035,7 +1035,7 @@ _SEALED_STAGING_FUNCTIONS = frozenset(
     }
 )
 _SEALED_STAGING_READ_PRAGMAS = frozenset(
-    {"data_version", "query_only", "schema_version", "table_info", "temp_store", "user_version"}
+    {"data_version", "query_only", "schema_version", "table_info", "table_list", "temp_store", "user_version"}
 )
 
 
@@ -1067,7 +1067,9 @@ def _authorize_sealed_staging_operation(
         pragma_name = (argument1 or "").lower()
         # A non-NULL second argument is a PRAGMA assignment.  Setup pragmas
         # run before this authorizer is installed; callers get reads only.
-        if pragma_name == "table_info":
+        # These PRAGMAs take a table/index lookup argument, never a setting.
+        # Keep parameterized schema reads distinct from enforcement setters.
+        if pragma_name in {"table_info", "table_xinfo", "foreign_key_list", "index_list", "index_info", "index_xinfo"}:
             return sqlite3.SQLITE_OK
         return (
             sqlite3.SQLITE_OK
@@ -2133,6 +2135,7 @@ def _authorize_read_operation(
             "schema_version",
             "synchronous",
             "table_info",
+            "table_list",
             "table_xinfo",
             "temp_store",
             "trusted_schema",

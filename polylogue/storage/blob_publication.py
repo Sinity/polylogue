@@ -10,7 +10,7 @@ import stat
 import time
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, BinaryIO
@@ -30,7 +30,8 @@ from polylogue.storage.sqlite.population_admission import assert_population_admi
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 if TYPE_CHECKING:
-    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,9 +187,71 @@ class BlobPublicationReservationStore:
         """
         return open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
 
-    def reserve_many(
-        self, receipts: Sequence[BlobPublicationReceipt], *, reference_seal: PreparedIndexMutation | None = None
-    ) -> frozenset[str]:
+    def prepare_many(
+        self,
+        receipts: Sequence[BlobPublicationReceipt],
+        *,
+        reference_seal: PreparedIndexMutation,
+    ) -> tuple[KnownTierMutationPermit, frozenset[str]]:
+        """Stage the first exact reservation unit on the original witness."""
+        reference_seal.require_source_target(self.source_db_path)
+        now_ms = int(time.time() * 1000)
+        with reference_seal.original_read_snapshot(), reference_seal.source_producer(require_empty_schedule=True):
+            observer = reference_seal.observer("source")
+            excised = _excised_hashes(observer, {receipt.blob_hash for receipt in receipts})
+            for receipt in receipts:
+                if receipt.blob_hash in excised:
+                    continue
+                with reference_seal.original_rows(
+                    "source",
+                    "SELECT rowid FROM blob_publication_reservations WHERE publication_id=?",
+                    (receipt.publication_id,),
+                ) as rows:
+                    found = rows.fetchone()
+                if found is not None:
+                    image = reference_seal.retain_tier_row("source", "blob_publication_reservations", found[0])
+                    assert image is not None
+                    reference_seal.load_source_row(image)
+                    existing = dict(zip(image.columns, image.cells, strict=True))
+                    expected: dict[str, None | int | float | str | bytes] = {
+                        "blob_hash": bytes.fromhex(receipt.blob_hash),
+                        "size_bytes": receipt.size_bytes,
+                        "publisher_id": receipt.publisher_id,
+                    }
+                    if any(
+                        not reference_seal._literal_scalar_equal(existing[column], value)
+                        for column, value in expected.items()
+                    ):
+                        raise ValueError("publication claim collides with another reservation")
+                # Even an existing identical receipt has a canonical DO
+                # NOTHING statement and must consume its no-effect schedule.
+                cells = tuple(
+                    reference_seal.retain_literal_scalar(value)
+                    for value in (
+                        receipt.publication_id,
+                        bytes.fromhex(receipt.blob_hash),
+                        receipt.publisher_id,
+                    )
+                )
+                expressions = []
+                operands: tuple[object, ...] = (None,)
+                for cell in cells:
+                    expression, bindings = reference_seal.source_literal_expression(cell)
+                    expressions.append(expression)
+                    operands += bindings
+                with reference_seal.source_statement(
+                    "INSERT INTO blob_publication_reservations("
+                    "rowid,publication_id,blob_hash,publisher_id,size_bytes,reserved_at_ms) "
+                    f"VALUES(?,{','.join(expressions)},?,?) ON CONFLICT(publication_id) DO NOTHING",
+                    (*operands, receipt.size_bytes, now_ms),
+                    table="blob_publication_reservations",
+                    writable_targets=(("blob_publication_reservations", (cells[0],)),),
+                    allocation_parameter=0,
+                ):
+                    pass
+        return reference_seal.prepare_source_mutation(), excised
+
+    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> frozenset[str]:
         """Reserve ``receipts`` and return the blob hashes refused as excised.
 
         The excision ledger is read in the same write transaction, so no
@@ -200,75 +263,45 @@ class BlobPublicationReservationStore:
             return frozenset()
         now_ms = int(time.time() * 1000)
         require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
-        if reference_seal is not None:
-            reference_seal.require_source_target(self.source_db_path)
-            reference_seal.validate_observers_current()
-            observer = reference_seal.observer("source")
-            excised = _excised_hashes(observer, {receipt.blob_hash for receipt in receipts})
-            rows: list[tuple[object, ...]] = []
-            for receipt in receipts:
-                if receipt.blob_hash in excised:
-                    continue
-                values = (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id)
-                existing = observer.execute(
-                    "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
-                    (receipt.publication_id,),
-                ).fetchone()
-                if existing is None:
-                    rows.append((*values, now_ms, receipt.publication_id))
-                elif tuple(existing) != values:
-                    raise ValueError("publication claim collides with another reservation")
-            reference_seal.validate_observers_current()
-            permit = reference_seal.prepare_known_tier_mutation(
-                "blob_publication_reservations",
-                ("blob_hash", "size_bytes", "publisher_id", "reserved_at_ms"),
-                tuple(rows),
-                tier="source",
-                key_column="publication_id",
-            )
-            with permit.hold_authority(), permit.mutation_connection() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                conn.executemany(
-                    "INSERT INTO blob_publication_reservations "
-                    "(blob_hash, size_bytes, publisher_id, reserved_at_ms, publication_id) VALUES (?, ?, ?, ?, ?)",
-                    rows,
-                )
-                permit.allow_commit(conn)
-                conn.commit()
-                reference_seal.accept_known_tier_commit(permit.committed())
-            return excised
         conn = self._open_connection()
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            with closing(conn.execute("BEGIN IMMEDIATE")):
+                pass
             excised = _excised_hashes(conn, {receipt.blob_hash for receipt in receipts})
             receipts = [receipt for receipt in receipts if receipt.blob_hash not in excised]
             new_receipts = []
             for receipt in receipts:
-                existing = conn.execute(
-                    "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
-                    (receipt.publication_id,),
-                ).fetchone()
+                with closing(
+                    conn.execute(
+                        "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
+                        (receipt.publication_id,),
+                    )
+                ) as cursor:
+                    existing = cursor.fetchone()
                 if existing is None:
                     new_receipts.append(receipt)
                 elif tuple(existing) != (bytes.fromhex(receipt.blob_hash), receipt.size_bytes, receipt.publisher_id):
                     raise ValueError("publication claim collides with another reservation")
-            conn.executemany(
-                """
+            with closing(
+                conn.executemany(
+                    """
                 INSERT INTO blob_publication_reservations (
                     publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (
                     (
-                        receipt.publication_id,
-                        bytes.fromhex(receipt.blob_hash),
-                        receipt.size_bytes,
-                        receipt.publisher_id,
-                        now_ms,
-                    )
-                    for receipt in new_receipts
-                ),
-            )
+                        (
+                            receipt.publication_id,
+                            bytes.fromhex(receipt.blob_hash),
+                            receipt.size_bytes,
+                            receipt.publisher_id,
+                            now_ms,
+                        )
+                        for receipt in new_receipts
+                    ),
+                )
+            ):
+                pass
             conn.commit()
         except Exception:
             conn.rollback()
@@ -287,10 +320,13 @@ def _excised_hashes(conn: sqlite3.Connection, blob_hashes: set[str]) -> frozense
     for start in range(0, len(ordered), 500):
         chunk = ordered[start : start + 500]
         placeholders = ", ".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT removed_hash FROM excised_content WHERE hash_kind = 'blob_hash' AND removed_hash IN ({placeholders})",
-            [bytes.fromhex(blob_hash) for blob_hash in chunk],
-        ).fetchall()
+        with closing(
+            conn.execute(
+                f"SELECT removed_hash FROM excised_content WHERE hash_kind = 'blob_hash' AND removed_hash IN ({placeholders})",
+                [bytes.fromhex(blob_hash) for blob_hash in chunk],
+            )
+        ) as cursor:
+            rows = cursor.fetchall()
         excised.update(bytes(row[0]).hex() for row in rows)
     return frozenset(excised)
 
@@ -326,6 +362,12 @@ class ArchiveBlobPublisher(BlobStore):
         self._latest_receipt_by_hash: dict[str, str] = {}
         self._pending_by_hash: dict[str, PreparedBlob] = {}
         self._refused_as_excised: set[str] = set()
+        self._reservation_seal: PreparedIndexMutation | None = None
+        self._reservation_permit: KnownTierMutationPermit | None = None
+        self._reservation_receipts: tuple[BlobPublicationReceipt, ...] = ()
+        self._reservation_excised: frozenset[str] = frozenset()
+        self._reservation_accepted = False
+        self._reservation_native_owner: NativeSQLCustodyOwner | None = None
 
     def _queue(self, prepared: PreparedBlob, claim: PreparedBlobPublicationClaim | None = None) -> tuple[str, int]:
         receipt = (
@@ -504,6 +546,92 @@ class ArchiveBlobPublisher(BlobStore):
         """
         return bool(self._pending or self._adoptions)
 
+    def prepare_flush(self, *, reference_seal: PreparedIndexMutation) -> None:
+        """Prepare this exact reservation unit before later Source preparation.
+
+        The existing publisher keeps its canonical receipt batch. Publication
+        applies only this first same-witness unit, accepts its receipt, settles
+        the dedicated connection, then exposes paths under publisher exclusion.
+        """
+        if self._reservation_permit is not None:
+            raise ValueError("publisher already retains an original prepared reservation batch")
+        reference_seal.require_source_target(self.source_db_path)
+        receipts = (*(receipt for receipt, _prepared in self._pending), *self._adoptions)
+        if not receipts:
+            return
+        permit, excised = BlobPublicationReservationStore(self.source_db_path).prepare_many(
+            receipts,
+            reference_seal=reference_seal,
+        )
+        self._reservation_seal = reference_seal
+        self._reservation_permit = permit
+        self._reservation_receipts = receipts
+        self._reservation_excised = excised
+
+    def settle_prepared_flush(self, *, reference_seal: PreparedIndexMutation) -> None:
+        """Settle the original accepted child's custody before another gate."""
+        if (
+            self._reservation_seal is not reference_seal
+            or self._reservation_permit is None
+            or not self._reservation_accepted
+        ):
+            raise ValueError("prepared flush settlement requires its original authoritative accepted reservation")
+        reference_seal._require_live_owner()
+        owner = self._reservation_native_owner
+        if owner is None:
+            raise ValueError("accepted reservation lost its original native settlement owner")
+        owner.close()
+
+    def _publish_prepared_reservations(
+        self,
+        receipts: tuple[BlobPublicationReceipt, ...],
+        reference_seal: PreparedIndexMutation,
+    ) -> frozenset[str]:
+        permit = self._reservation_permit
+        original_receipts = iter(self._reservation_receipts)
+        remaining_matches = all(any(candidate == receipt for candidate in original_receipts) for receipt in receipts)
+        if (
+            permit is None
+            or self._reservation_seal is not reference_seal
+            or receipts != self._reservation_receipts
+            and not (self._reservation_accepted and remaining_matches)
+        ):
+            raise ValueError("publisher reservation batch differs from its original off-writer preparation")
+        if self._reservation_accepted:
+            # Only the original authoritative receipt reaches this branch.
+            # Retry physical settlement of its exact retained child, never
+            # replay a consumed schedule or invent a second reservation.
+            self.settle_prepared_flush(reference_seal=reference_seal)
+        else:
+            from polylogue.storage.sqlite.connection_profile import native_sql_children
+
+            with permit.hold_authority(), permit.mutation_connection() as connection:
+                self._reservation_native_owner = next(
+                    child for child in native_sql_children(reference_seal) if child.connection is connection
+                )
+                with reference_seal._owned_cursor(connection, "BEGIN IMMEDIATE"):
+                    pass
+                permit.apply_source_statements(connection)
+                permit.allow_commit(connection)
+                connection.commit()
+                reference_seal.accept_known_tier_commit(permit.committed())
+                self._reservation_accepted = True
+        # Publisher exclusion is still held. A changed reservation/excision
+        # generation after acceptance cannot be absorbed by resumed exposure.
+        reference_seal.validate_observers_current()
+        # Placement can fail after exposing an earlier member. Keep this exact
+        # accepted batch until all placements settle; a retry validates currency
+        # and deduplicates those same bytes without replaying Source statements.
+        return self._reservation_excised
+
+    def _retire_reservation_batch(self) -> None:
+        self._reservation_permit = None
+        self._reservation_seal = None
+        self._reservation_receipts = ()
+        self._reservation_accepted = False
+        self._reservation_native_owner = None
+        self._reservation_excised = frozenset()
+
     def flush(self, *, reference_seal: PreparedIndexMutation | None = None) -> tuple[BlobPublicationReceipt, ...]:
         """Commit all receipts once, then expose all corresponding final paths.
 
@@ -516,6 +644,10 @@ class ArchiveBlobPublisher(BlobStore):
         if not self._pending and not self._adoptions:
             return ()
         if reference_seal is not None:
+            if self._reservation_accepted and self._reservation_seal is reference_seal:
+                # Original physical cleanup precedes currency refusal. A
+                # foreign commit blocks exposure, never the child's close.
+                self.settle_prepared_flush(reference_seal=reference_seal)
             reference_seal.require_source_target(self.source_db_path)
         pending = tuple(self._pending)
         adoptions = tuple(self._adoptions)
@@ -525,8 +657,10 @@ class ArchiveBlobPublisher(BlobStore):
             if missing:
                 self.discard_pending()
                 raise AdoptedBlobEvictedError(missing)
-            excised = BlobPublicationReservationStore(self.source_db_path).reserve_many(
-                receipts, reference_seal=reference_seal
+            excised = (
+                BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
+                if reference_seal is None
+                else self._publish_prepared_reservations(receipts, reference_seal)
             )
             for receipt, prepared in pending:
                 if receipt.blob_hash in excised:
@@ -536,6 +670,8 @@ class ArchiveBlobPublisher(BlobStore):
                 if receipt.blob_hash in excised:
                     self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
             self._store.publish_many(prepared for receipt, prepared in pending if receipt.blob_hash not in excised)
+            if reference_seal is not None:
+                self._retire_reservation_batch()
         self._refused_as_excised.update(excised)
         self._pending.clear()
         self._adoptions.clear()
@@ -602,6 +738,20 @@ class ArchiveBlobPublisher(BlobStore):
         a hash, and dropping one must not strand or drop the other. Returns
         whether the receipt was still queued.
         """
+        if not any(receipt.publication_id == publication_id for receipt, _ in self._pending) and not any(
+            receipt.publication_id == publication_id for receipt in self._adoptions
+        ):
+            return False
+        if self._reservation_permit is not None and not self._reservation_accepted:
+            raise ValueError("an unaccepted prepared reservation requires complete batch abandonment")
+        if self._reservation_native_owner is not None:
+            self._reservation_native_owner.close()
+        discarded = self._discard_receipt_from_queue(publication_id)
+        if not self._pending and not self._adoptions:
+            self._retire_reservation_batch()
+        return discarded
+
+    def _discard_receipt_from_queue(self, publication_id: str) -> bool:
         blob_hash: str | None = None
         for index, (receipt, prepared) in enumerate(self._pending):
             if receipt.publication_id == publication_id:
@@ -633,16 +783,22 @@ class ArchiveBlobPublisher(BlobStore):
         return True
 
     def discard_pending(self) -> None:
+        # Terminal abandonment cannot remove prepared bytes while this batch's
+        # actual native child still owns unsettled SQL/attachment custody.
+        owner = self._reservation_native_owner
+        if owner is not None:
+            owner.close()
         failures: list[BaseException] = []
         for receipt, _prepared in tuple(self._pending):
             try:
-                self.discard_pending_receipt(receipt.publication_id)
+                self._discard_receipt_from_queue(receipt.publication_id)
             except BaseException as exc:
                 failures.append(exc)
         for receipt in tuple(self._adoptions):
-            self.discard_pending_receipt(receipt.publication_id)
+            self._discard_receipt_from_queue(receipt.publication_id)
         if failures:
             raise BaseExceptionGroup("pending blob cleanup failed", failures)
+        self._retire_reservation_batch()
 
     def blob_path(self, hash_hex: str) -> Path:
         final_path = self._store.blob_path(hash_hex)

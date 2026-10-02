@@ -181,6 +181,22 @@ class _MeasuredConnection(sqlite3.Connection):
     _metric_context_exit = False
     _metric_statement_phase: Phase | None = None
     _native_closed = False
+    _incremental_blobs_readonly = False
+    _incremental_blob_register: Callable[[sqlite3.Blob], None] | None = None
+    _incremental_blob_admit: Callable[[], object] | None = None
+
+    def blobopen(
+        self, table: str, column: str, row: int, /, *, readonly: bool = False, name: str = "main"
+    ) -> sqlite3.Blob:
+        if getattr(self, "_incremental_blobs_readonly", False) and not readonly:
+            raise sqlite3.OperationalError("guarded tier connections prohibit writable incremental blobs")
+        if self._incremental_blob_admit is not None:
+            self._incremental_blob_admit()
+        blob = super().blobopen(table, column, row, readonly=readonly, name=name)
+        register = self._incremental_blob_register
+        if register is not None:
+            register(blob)
+        return blob
 
     @overload
     def cursor(self, factory: None = None) -> sqlite3.Cursor: ...
@@ -333,6 +349,16 @@ class _MeasuredConnection(sqlite3.Connection):
                 return super().__exit__(exc_type, exc_value, traceback)
         finally:
             self._metric_context_exit = False
+
+
+def bind_readonly_incremental_blob_custody(
+    connection: sqlite3.Connection, register: Callable[[sqlite3.Blob], None], admit: Callable[[], object]
+) -> None:
+    """Keep guarded incremental handles with the existing actual SQL owner."""
+    measured = cast(_MeasuredConnection, connection)
+    measured._incremental_blobs_readonly = True
+    measured._incremental_blob_register = register
+    measured._incremental_blob_admit = admit
 
 
 def native_connection_physically_closed(connection: sqlite3.Connection) -> bool:

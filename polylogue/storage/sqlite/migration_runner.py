@@ -9,7 +9,6 @@ import os
 import re
 import sqlite3
 import stat
-import struct
 import time
 import types
 import uuid
@@ -17,7 +16,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
-from functools import lru_cache
+from functools import lru_cache, partial
 from importlib import resources
 from pathlib import Path
 from threading import Lock
@@ -30,9 +29,11 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.backup_blob_closure import package_blob_closure
+from polylogue.storage.io_phase_metrics import _MeasuredConnection, close_connection_cursor
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.literal_cells import literal_metadata, stream_literal_blob, stream_literal_cell
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 DURABLE_MIGRATION_TIERS: frozenset[ArchiveTier] = frozenset({ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT})
@@ -459,19 +460,15 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
                 for offset in range(0, len(row), 2):
                     storage_class, value = metadata_text(row[offset]), row[offset + 1]
                     frame(storage_class.encode("ascii"))
-                    if storage_class == "null":
-                        frame(b"")
-                    elif storage_class == "integer":
-                        frame(int(value).to_bytes(8, "big", signed=True))
-                    elif storage_class == "real":
-                        frame(struct.pack(">d", float(value)))
+                    if storage_class in {"null", "integer", "real"}:
+                        frame(literal_metadata(storage_class, value, None).fixed_bytes())
                     elif row_id is not None:
                         # Readonly incremental handles also accept TEXT and
                         # indexed/primary-key columns, preserving literal
                         # bytes without UTF-8 decoding or whole-cell copies.
                         with conn.blobopen(name, selected[offset // 2], row_id, readonly=True) as blob:
                             digest.update(len(blob).to_bytes(8, "big"))
-                            while chunk := blob.read(64 * 1024):
+                            for chunk in stream_literal_blob(blob, len(blob), lambda: None):
                                 digest.update(chunk)
                     else:
                         # Generic synthetic WITHOUT ROWID proofs have no
@@ -484,15 +481,22 @@ def _durable_literal_rows_digest(conn: sqlite3.Connection) -> str:
                             conn.execute(f"SELECT length(CAST({column_sql} AS BLOB)) {cell_sql}", (row_offset + 1,))
                         ) as cell:
                             size = int(cell.fetchone()[0])
+                        cell_metadata = literal_metadata(storage_class, value, size)
                         digest.update(size.to_bytes(8, "big"))
-                        for byte_offset in range(0, size, 64 * 1024):
-                            with closing(
-                                conn.execute(
-                                    f"SELECT substr(CAST({column_sql} AS BLOB), ?, ?) {cell_sql}",
-                                    (byte_offset + 1, min(64 * 1024, size - byte_offset), row_offset + 1),
-                                )
-                            ) as cell:
-                                chunk = cell.fetchone()[0]
+                        for chunk in stream_literal_cell(
+                            conn,
+                            cell_metadata,
+                            expression=column_sql,
+                            source_sql=cell_sql,
+                            parameters=(row_offset + 1,),
+                            incremental=None,
+                            close_cursor=(
+                                partial(close_connection_cursor, conn)
+                                if isinstance(conn, _MeasuredConnection)
+                                else sqlite3.Cursor.close
+                            ),
+                            check_cancel=lambda: None,
+                        ):
                             digest.update(chunk)
         finally:
             if descriptors is not None:
