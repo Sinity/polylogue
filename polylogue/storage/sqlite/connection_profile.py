@@ -452,14 +452,10 @@ class NativeSQLCustodyOwner:
             # so only this existing physical-close proof authorizes retirement.
             self._incremental_blobs[:] = [retained for retained in self._incremental_blobs if retained is not blob]
             return
-        try:
-            len(blob)
-        except ValueError:
-            # A direct native context may already have closed this exact
-            # handle. No numeric descriptor or replacement handle is retried.
-            pass
-        else:
-            blob.close()
+        # Native close is idempotent for this exact child while its original
+        # parent remains live. A length probe refuses already closed children
+        # and cannot prove physical settlement.
+        blob.close()
         self._incremental_blobs[:] = [retained for retained in self._incremental_blobs if retained is not blob]
 
     @contextmanager

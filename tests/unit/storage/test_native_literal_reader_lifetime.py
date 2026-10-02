@@ -198,3 +198,34 @@ def test_failed_external_parent_close_preserves_actual_native_custody(
             controlled.close_failure = None
         if owner is not None:
             owner.close()
+
+
+@pytest.mark.parametrize("native_context", [False, True])
+def test_direct_native_blob_closure_retires_exact_registered_child(tmp_path: Path, native_context: bool) -> None:
+    completed: list[str] = []
+    with scratch_connection_context(
+        prefix="native-blob-direct-", filename="cells.db", directory=tmp_path
+    ) as connection:
+        owner = _original_owner(connection)
+        owner.retain_settlement_callback(lambda: completed.append("settled"))
+        with closing(connection.execute("PRAGMA database_list")) as cursor:
+            database = Path(next(row[2] for row in cursor if row[1] == "main"))
+        with closing(connection.execute("CREATE TABLE cells(value TEXT NOT NULL)")):
+            pass
+        with closing(connection.execute("INSERT INTO cells VALUES('native child')")):
+            pass
+        with owner.readonly_blob("cells", "value", 1) as blob:
+            if native_context:
+                with blob:
+                    assert blob.read() == b"native child"
+            else:
+                blob.close()
+            with pytest.raises(sqlite3.ProgrammingError):
+                len(blob)
+            assert owner._incremental_blobs == [blob]
+            assert owner.connection is connection and completed == []
+        assert not owner._incremental_blobs
+        with closing(connection.execute("SELECT 1")) as cursor:
+            assert cursor.fetchone()[0] == 1
+    assert owner._settled and completed == ["settled"]
+    assert not database.parent.exists()
