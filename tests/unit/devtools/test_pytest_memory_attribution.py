@@ -516,7 +516,8 @@ def test_custody_settlement_refuses_unreadable_eligible_ownership(
     proc = _proc(tmp_path)
     _process(proc, 100, pgid=100, pss_kib=1)
     monkeypatch.setattr(pytest_memory, "_marker_matches", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(os, "pidfd_open", lambda *_args: pytest.fail("unknown ownership was signalled"))
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("unknown ownership was signalled"))
     refusal = pytest_memory.settle_custody(
         "fresh",
         started_ticks=0,
@@ -621,3 +622,64 @@ def test_custody_settlement_retains_known_birth_after_marker_loss_and_catches_fo
         is None
     )
     assert signalled == [100, 101]
+
+
+def test_custody_settlement_waits_for_foreign_startup_readability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=1)
+    reads = 0
+
+    def temporarily_opaque(*_args: Any, **_kwargs: Any) -> bool | None:
+        nonlocal reads
+        reads += 1
+        return None if reads == 1 else False
+
+    monkeypatch.setattr(pytest_memory, "_marker_matches", temporarily_opaque)
+    monkeypatch.setattr(os, "pidfd_open", lambda *_args: os.open(os.devnull, os.O_RDONLY))
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("foreign startup was signalled"))
+    assert (
+        pytest_memory.settle_custody(
+            "fresh", started_ticks=0, known_births={}, term_grace_s=1, kill_grace_s=1, proc=proc
+        )
+        is None
+    )
+    assert reads == 2
+
+
+@pytest.mark.uses_real_clock
+def test_custody_settlement_survives_actual_concurrent_foreign_bwrap_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from devtools import pytest_memory
+
+    started = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+    child = subprocess.Popen(["bwrap", "--bind", "/", "/", "--", "sleep", "0.1"])
+    marker_reader = pytest_memory._marker_matches
+    unreadable = 0
+
+    def observe(pid: int, marker: str, *, proc: Path) -> bool | None:
+        nonlocal unreadable
+        result = marker_reader(pid, marker, proc=proc)
+        if pid == child.pid and result is None:
+            unreadable += 1
+        return result
+
+    monkeypatch.setattr(pytest_memory, "_marker_matches", observe)
+    monkeypatch.setattr(signal, "pidfd_send_signal", lambda *_args: pytest.fail("foreign bwrap was signalled"))
+    try:
+        assert (
+            pytest_memory.settle_custody(
+                "synthetic-unshared-custody", started_ticks=started, known_births={}, term_grace_s=2, kill_grace_s=2
+            )
+            is None
+        )
+        assert child.wait() == 0
+        assert unreadable > 0
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait()

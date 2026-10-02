@@ -130,7 +130,7 @@ def settle_custody(
                         identity = _identity(pid, proc=proc)
                         if identity is None:
                             try:
-                                unavailable |= entry.stat().st_uid == os.getuid()
+                                raced |= entry.stat().st_uid == os.getuid()
                             except FileNotFoundError:
                                 raced = True
                             continue
@@ -143,17 +143,30 @@ def settle_custody(
                             dead_births.add(birth)
                             continue
                         matched = _marker_matches(pid, marker, proc=proc)
-                        if not known and matched is not True:
+                        owns = known or matched is True
+                        if not owns and matched is False:
                             after = _identity(pid, proc=proc)
                             if after is None or after.start_ticks != identity.start_ticks:
                                 raced = True
-                            elif matched is None:
-                                try:
-                                    unavailable |= entry.stat().st_uid == os.getuid()
-                                except FileNotFoundError:
-                                    raced = True
+                            else:
+                                proof = pinned.pop(pid, None)
+                                if proof is not None:
+                                    os.close(proof[1])
                             continue
-                        births[pid] = identity.start_ticks
+                        if not owns:
+                            try:
+                                if entry.stat().st_uid != os.getuid():
+                                    continue
+                            except FileNotFoundError:
+                                raced = True
+                                continue
+                        # A foreign bwrap startup can temporarily make environ
+                        # unreadable. Pin its birth without signalling it; only
+                        # readability or exact death can settle that uncertainty.
+                        if owns:
+                            births[pid] = identity.start_ticks
+                        else:
+                            raced = True
                         proof = pinned.get(pid)
                         if proof is None or proof[0].start_ticks != identity.start_ticks:
                             if proof is not None:
@@ -161,7 +174,7 @@ def settle_custody(
                                 os.close(proof[1])
                             try:
                                 descriptor = os.pidfd_open(pid)
-                            except ProcessLookupError:
+                            except OSError:
                                 raced = True
                                 continue
                             after = _identity(pid, proc=proc)
@@ -170,7 +183,8 @@ def settle_custody(
                                 raced = True
                                 continue
                             pinned[pid] = identity, descriptor
-                        owned.append(pid)
+                        if owns:
+                            owned.append(pid)
                 except (OSError, ValueError):
                     unavailable = True
                 if not owned and not raced:
@@ -181,10 +195,6 @@ def settle_custody(
                     raced = any(descriptor not in dead for _proof, descriptor in pinned.values())
                     if not raced:
                         return "execution custody coverage unavailable" if unavailable else None
-                if not owned:
-                    if time.monotonic() >= deadline:
-                        break
-                    continue
                 for pid in owned:
                     try:
                         signal.pidfd_send_signal(pinned[pid][1], termination)
@@ -195,8 +205,8 @@ def settle_custody(
                 if time.monotonic() >= deadline:
                     break
                 poller = select.poll()
-                for pid in owned:
-                    poller.register(pinned[pid][1], select.POLLIN)
+                for _proof, descriptor in pinned.values():
+                    poller.register(descriptor, select.POLLIN)
                 poller.poll(max(1, int(min(0.05, deadline - time.monotonic()) * 1000)))
         return "execution custody did not settle"
     finally:
