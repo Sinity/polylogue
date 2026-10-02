@@ -49,6 +49,29 @@ def _rowid_batches(conn: sqlite3.Connection, rowids: Sequence[int]) -> Iterable[
         yield tuple(rowids[index : index + size])
 
 
+def _partition_rowid_pages(
+    conn: sqlite3.Connection, sql: str, params: tuple[object, ...], key_columns: tuple[str, ...]
+) -> Iterable[tuple[int, ...]]:
+    """Close each indexed keyset read before its page's companion deletes."""
+    page_size = max(1, min(_MAX_ROWID_BATCH, conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)))
+    last_key: tuple[object, ...] | None = None
+    order = ", ".join(key_columns)
+    while True:
+        after = "" if last_key is None else f" AND ({order}) > ({', '.join('?' for _ in last_key)})"
+        bindings = params if last_key is None else (*params, *last_key)
+        # A work-page LIMIT is literal so the full residue predicate and
+        # continuation fit a connection with only four bind variables.
+        cursor = conn.execute(f"{sql}{after} ORDER BY {order} LIMIT {page_size}", bindings)
+        try:
+            rows = cursor.fetchall()
+        finally:
+            cursor.close()
+        if not rows:
+            return
+        last_key = tuple(rows[-1][1:])
+        yield tuple(int(row[0]) for row in rows)
+
+
 @dataclass(frozen=True, slots=True)
 class FtsInputRow:
     rowid: int
@@ -557,23 +580,30 @@ class FtsDerivationAdapter:
     def _replace_rows(self, conn: sqlite3.Connection, key: str) -> None:
         if key == GLOBAL_PARTITION:
             raise ValueError("the global FTS key only retires docsize-backed orphan residue")
-        rowids = {int(row[0]) for row in conn.execute("SELECT rowid FROM blocks WHERE session_id = ?", (key,))}
-        rowids.update(
-            int(row[0])
-            for row in conn.execute(
-                """
-                SELECT i.rowid FROM messages_fts_identity AS i
+        # Blocks remain unchanged throughout publication. Their keyset can be
+        # walked while deleting companions; the second walk then removes only
+        # identity residue the first did not reach, under the same snapshot.
+        scans = (
+            (
+                "SELECT rowid, message_id, position FROM blocks WHERE session_id = ?",
+                (key,),
+                ("message_id", "position"),
+            ),
+            (
+                """SELECT i.rowid, i.block_id FROM messages_fts_identity AS i
                 LEFT JOIN blocks AS b ON b.block_id = i.block_id
                 WHERE i.block_id >= ? AND i.block_id < ?
-                  AND (b.block_id IS NULL OR b.session_id = ?)
-                """,
+                  AND (b.block_id IS NULL OR b.session_id = ?)""",
                 (*_session_block_id_range(key), key),
-            )
+                ("i.block_id",),
+            ),
         )
-        for batch in _rowid_batches(conn, sorted(rowids)):
-            placeholders = ", ".join("?" for _ in batch)
-            conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", batch)
-            conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", batch)
+        for sql, params, key_columns in scans:
+            for page in _partition_rowid_pages(conn, sql, params, key_columns):
+                for batch in _rowid_batches(conn, page):
+                    placeholders = ", ".join("?" for _ in batch)
+                    conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({placeholders})", batch)
+                    conn.execute(f"DELETE FROM messages_fts_identity WHERE rowid IN ({placeholders})", batch)
         self._insert_rows(conn, key)
 
     def _insert_rows(self, conn: sqlite3.Connection, key: str) -> None:

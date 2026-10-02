@@ -108,6 +108,16 @@ that shape, and this is not a general native SQLite memory bound.
 
 ## Parsed-session write choke point
 
+Canonical message FTS publication retains the caller's transaction and reads
+deletion targets in connection-bounded pages. It first walks the unchanged
+blocks by their indexed `(message_id, position)` key, then walks remaining
+owned identity residue by `block_id`. Each page cursor closes before companion
+deletes; both scans preserve signed rowids and the existing session ownership
+predicate. SQL inserts read text directly from blocks. A caller-owned
+transaction needs no Python text digest, while publication prepared outside
+the transaction retains its optimistic input revalidation
+(`storage/fts/derivation.py`; `storage/fts/fts_lifecycle.py`).
+
 - `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (function `write_parsed_session_to_archive` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - It owns its transaction by default; bulk callers pass `manage_transaction=False` and own the surrounding commit to amortize per-commit fsync and WAL churn (the `manage_transaction` argument and transaction context in `write_parsed_session_to_archive`, `polylogue/storage/sqlite/archive_tiers/write.py`).
 - It is the parsed-session lowering choke point shared by batch ingest (`polylogue/pipeline/services/ingest_batch/_core.py`) and authoritative revision replay/reindex (`write_with_reparse_receipt` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). It is not the only mutation function in the six-tier substrate.
