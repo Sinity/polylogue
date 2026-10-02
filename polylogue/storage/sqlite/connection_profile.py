@@ -288,6 +288,7 @@ class NativeSQLCustodyOwner:
         )
         self._lifetime_dependencies: list[object] = list({id(item): item for item in dependencies}.values())
         self._settlement_callbacks: list[Callable[[], None]] = []
+        self._incremental_blobs: list[sqlite3.Blob] = []
         self.leaf = leaf
         self.cache_entry = cache_entry
         self.anchored_descriptors = anchored_descriptors
@@ -354,15 +355,20 @@ class NativeSQLCustodyOwner:
 
     def require_connection(self) -> sqlite3.Connection:
         """Admit new native work only on the exact current creator task."""
+        connection = self._require_incremental_read()
+        from polylogue.core.compute_cancel import compute_cancel_requested
+
+        if compute_cancel_requested():
+            raise asyncio.CancelledError("native SQLite work was cancelled")
+        return connection
+
+    def _require_incremental_read(self) -> sqlite3.Connection:
+        """Check exact native custody, including committed settlement reads."""
         self._require_owner()
         if self.task is not _native_owner_task():
             raise RuntimeError("native SQLite work belongs to another task")
         if self.connection is None or self.close_required or self._parent_cleanup_requested:
             raise RuntimeError("native SQLite connection requires terminal cleanup")
-        from polylogue.core.compute_cancel import compute_cancel_requested
-
-        if compute_cancel_requested():
-            raise asyncio.CancelledError("native SQLite work was cancelled")
         return self.connection
 
     def handoff(self) -> sqlite3.Connection:
@@ -375,6 +381,7 @@ class NativeSQLCustodyOwner:
             or self.scratch_directory is not None
             or self._lifetime_dependencies
             or self._settlement_callbacks
+            or self._incremental_blobs
         ):
             raise RuntimeError("native SQLite handle with terminal obligations cannot be handed off")
         connection = self.connection
@@ -427,6 +434,61 @@ class NativeSQLCustodyOwner:
             if all(retained is not dependency for retained in self._lifetime_dependencies):
                 self._lifetime_dependencies.append(dependency)
 
+    def retain_incremental_blob(self, blob: sqlite3.Blob) -> None:
+        """Retain the actual readonly incremental handle on its SQL creator."""
+        self._require_owner()
+        if self._settled or self.close_required or self._parent_cleanup_requested:
+            raise RuntimeError("incremental handle requires its existing live native owner")
+        if all(retained is not blob for retained in self._incremental_blobs):
+            self._incremental_blobs.append(blob)
+
+    def close_incremental_blob(self, blob: sqlite3.Blob) -> None:
+        self._require_owner()
+        if not any(retained is blob for retained in self._incremental_blobs):
+            raise RuntimeError("incremental close requires its original native owner")
+        if self.connection is not None and native_connection_physically_closed(self.connection):
+            # The supported measured parent's successful native close retires
+            # its actual Blob handles too. Their Python methods now refuse,
+            # so only this existing physical-close proof authorizes retirement.
+            self._incremental_blobs[:] = [retained for retained in self._incremental_blobs if retained is not blob]
+            return
+        try:
+            len(blob)
+        except ValueError:
+            # A direct native context may already have closed this exact
+            # handle. No numeric descriptor or replacement handle is retried.
+            pass
+        else:
+            blob.close()
+        self._incremental_blobs[:] = [retained for retained in self._incremental_blobs if retained is not blob]
+
+    @contextmanager
+    def readonly_blob(self, table: str, column: str, row: int, *, settlement: bool = False) -> Iterator[sqlite3.Blob]:
+        connection = self._require_incremental_read() if settlement else self.require_connection()
+        blob = connection.blobopen(table, column, row, readonly=True)
+        self.retain_incremental_blob(blob)
+        primary: BaseException | None = None
+        try:
+            yield blob
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
+            try:
+                # This context registered this exact child before yielding.
+                # An explicit owner.close inside the body may already have
+                # retired it before completing the original parent connection.
+                if any(retained is blob for retained in self._incremental_blobs):
+                    self.close_incremental_blob(blob)
+            except BaseException as cleanup:
+                self.close_required = True
+                failure = (
+                    cleanup
+                    if primary is None
+                    else BaseExceptionGroup("Incremental read and close failed", [primary, cleanup])
+                )
+                raise NativeConnectionSettlementError(self, failure) from cleanup
+
     def retain_settlement_callback(self, callback: Callable[[], None]) -> None:
         """Notify this actual handle's successful creator-owned settlement."""
         self._require_owner()
@@ -456,6 +518,11 @@ class NativeSQLCustodyOwner:
                 settle_connection_cursors(connection)
             except BaseException as error:
                 failures.append(error)
+            for blob in tuple(self._incremental_blobs):
+                try:
+                    self.close_incremental_blob(blob)
+                except BaseException as error:
+                    failures.append(error)
             if failures:
                 if self.frame is not None:
                     live_ids = {id(cursor) for cursor in live_connection_cursors(connection)}
@@ -545,7 +612,12 @@ class NativeSQLCustodyOwner:
                 failures.append(error)
             else:
                 self.scratch_directory = None
-        resources_settled = self.leaf is None and self.scratch_directory is None and not self.anchored_descriptors
+        resources_settled = (
+            self.leaf is None
+            and self.scratch_directory is None
+            and not self.anchored_descriptors
+            and not self._incremental_blobs
+        )
         if resources_settled and self.custody is not None:
             try:
                 self.custody.release_sql_owner(self)
