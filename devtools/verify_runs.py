@@ -469,11 +469,10 @@ class VerifyRun:
             statistics: dict[str, Any] | None = None
             if str(step.get("name", "")).startswith("pytest"):
                 step_dir = self.run_dir / "steps" / step_id
-                with contextlib.suppress(OSError, ValueError):
-                    statistics = aggregate_pytest_statistics(step_dir, command=step.get("cmd", []), step_result=result)
-                # A run that never started leaves no evidence to aggregate, so
-                # the evidence verdict would restate the absence and lose the
-                # reason for it. The reason is what the receipt is read for.
+                raw_exit = result.get("exit")
+                finalized["process_exit"] = raw_exit
+                # Keep the execution reason when pytest could not start or was
+                # interrupted, independently of any evidence delivery fault.
                 explicit_terminal = result.get("diagnosis") in {
                     "oom_killed",
                     "focused_test_runner_exception",
@@ -481,24 +480,46 @@ class VerifyRun:
                     "pytest_slot_unavailable",
                     "verification_interrupted",
                 }
-                if statistics is not None:
-                    raw_exit = result.get("exit")
-                    finalized["process_exit"] = raw_exit
+                phase = "aggregation"
+                try:
+                    statistics = aggregate_pytest_statistics(step_dir, command=step.get("cmd", []), step_result=result)
+                    phase = "statistics_publication"
+                    _write_json(step_dir / "statistics.json", statistics)
+                    finalized["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
+                    if self.mirror_current:
+                        phase = "statistics_mirror"
+                        shutil.copyfile(step_dir / "statistics.json", self.root / CURRENT_STATISTICS_PATH)
+                except (OSError, ValueError, TypeError) as exc:
+                    finalized["evidence_error"] = {
+                        "phase": phase,
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                    if raw_exit == 0:
+                        finalized["exit"] = 1
+                    if not explicit_terminal:
+                        finalized["diagnosis"] = "pytest_evidence_unavailable"
+                    if statistics is not None:
+                        # Measured outcomes remain available, but failed delivery
+                        # cannot advertise eligible verification evidence.
+                        statistics = {
+                            **statistics,
+                            "ok": False,
+                            "ordinary_eligible": False,
+                            "diagnosis": "pytest_evidence_unavailable",
+                        }
+                else:
                     if not explicit_terminal and raw_exit == 0 and not statistics.get("ok"):
                         finalized["exit"] = 5 if statistics.get("diagnosis") == "pytest_no_tests_selected" else 1
                     if not explicit_terminal:
                         finalized["diagnosis"] = str(statistics.get("diagnosis") or "pytest_no_evidence")
+                if statistics is not None:
+                    finalized["statistics"] = statistics
+            # Publish a terminal step only after its evidence publication outcome
+            # is known. The run-local receipt retains faults in either phase.
             step.update(finalized)
             step["finished_at"] = utc_now()
             step["status"] = "success" if finalized.get("exit") == 0 else "failed"
-            if str(step.get("name", "")).startswith("pytest"):
-                step_dir = self.run_dir / "steps" / step_id
-                if statistics is not None:
-                    _write_json(step_dir / "statistics.json", statistics)
-                    step["statistics"] = statistics
-                    step["statistics_path"] = str(self.relative_run_dir / "steps" / step_id / "statistics.json")
-                    if self.mirror_current:
-                        shutil.copyfile(step_dir / "statistics.json", self.root / CURRENT_STATISTICS_PATH)
             self.write()
             return dict(step)
         return None
@@ -626,15 +647,16 @@ def copy_current_pytest_artifacts(
 
 
 def merge_worker_events(events_dir: Path, merged_path: Path) -> int:
-    if not events_dir.exists():
+    try:
+        with os.scandir(events_dir) as entries:
+            paths = sorted(Path(entry.path) for entry in entries if entry.name.endswith(".jsonl"))
+    except FileNotFoundError:
+        return 0
+    if not paths:
         return 0
     rows: list[dict[str, Any]] = []
-    for path in sorted(events_dir.glob("*.jsonl")):
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                row = json.loads(line)
-                if isinstance(row, dict):
-                    rows.append(row)
+    for path in paths:
+        rows.extend(_read_pytest_events(path))
     rows.sort(key=lambda row: str(row.get("updated_at", "")))
     merged_path.parent.mkdir(parents=True, exist_ok=True)
     merged_path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
@@ -644,12 +666,11 @@ def merge_worker_events(events_dir: Path, merged_path: Path) -> int:
 def aggregate_pytest_statistics(
     step_dir: Path, *, command: Sequence[object] = (), step_result: Mapping[str, object] = {}
 ) -> dict[str, Any]:
-    report = _read_json(step_dir / PYTEST_CANONICAL_REPORT_NAME)
-    selection = _read_json(step_dir / "selection.json") or {}
-    # Deliberately not ``or {}``: an absent or unreadable terminal summary is a
-    # different fact from a present one, and the evidence predicate refuses the
-    # step on the former rather than accepting a missing exitstatus.
-    summary = _read_json(step_dir / "summary.json")
+    report = _read_terminal_json(step_dir / PYTEST_CANONICAL_REPORT_NAME)
+    selection = _read_terminal_json(step_dir / "selection.json") or {}
+    # Absence is evaluated by the evidence predicate; an existing unreadable
+    # summary is a read failure, not evidence that pytest omitted its summary.
+    summary = _read_terminal_json(step_dir / "summary.json")
     outcomes: dict[str, int] = {}
     for test in (report or {}).get("tests", []):
         if isinstance(test, Mapping):
@@ -657,27 +678,16 @@ def aggregate_pytest_statistics(
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
     event_path = step_dir / "events.jsonl"
     worker_events_dir = step_dir / "events"
-    event_count = (
-        merge_worker_events(worker_events_dir, event_path)
-        if worker_events_dir.is_dir() and any(worker_events_dir.glob("*.jsonl"))
-        else len(event_path.read_text(encoding="utf-8", errors="replace").splitlines())
-        if event_path.exists()
-        else 0
-    )
-    event_rows: list[dict[str, Any]] = []
-    if event_path.exists():
-        for line in event_path.read_text(encoding="utf-8", errors="replace").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                event = json.loads(line)
-                if isinstance(event, dict):
-                    event_rows.append(event)
-    if not outcomes and event_path.exists():
-        for line in event_path.read_text(encoding="utf-8").splitlines():
-            with contextlib.suppress(json.JSONDecodeError):
-                event = json.loads(line)
-                if isinstance(event, dict) and isinstance(event.get("outcome"), str):
-                    outcome = event["outcome"]
-                    outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    merge_worker_events(worker_events_dir, event_path)
+    try:
+        event_rows = list(_read_pytest_events(event_path))
+    except FileNotFoundError:
+        event_rows = []
+    if not outcomes:
+        for event in event_rows:
+            if isinstance(event.get("outcome"), str):
+                outcome = event["outcome"]
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
     raw_exit = step_result.get("exit")
     evidence = evaluate_pytest_evidence(
         report=report,
@@ -696,9 +706,28 @@ def aggregate_pytest_statistics(
         "selected_count": selection.get("selected_count"),
         "deselected_count": selection.get("deselected_count"),
         "summary_exitstatus": None if summary is None else summary.get("exitstatus"),
-        "event_count": event_count,
+        "event_count": len(event_rows),
         **evidence,
     }
+
+
+def _read_terminal_json(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(payload, dict):
+        raise ValueError(f"pytest evidence must be a JSON object: {path}")
+    return payload
+
+
+def _read_pytest_events(path: Path) -> Iterator[dict[str, Any]]:
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            event = json.loads(line)
+            if not isinstance(event, dict):
+                raise ValueError(f"pytest event must be a JSON object: {path}")
+            yield event
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -940,6 +969,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 if raw.get("exit") == 0
                 else "failed",
                 "exit_code": raw.get("exit"),
+                "process_exit": raw.get("process_exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
                 "termination_reason": raw.get("termination_reason"),
@@ -950,6 +980,12 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 if raw.get("step_id") is not None
                 else None,
             }
+            evidence_error = raw.get("evidence_error")
+            if isinstance(evidence_error, Mapping):
+                # The canonical contract excludes paths and log contents.
+                step["evidence_error"] = {
+                    key: evidence_error[key] for key in ("phase", "type") if key in evidence_error
+                }
             # A step that went green only because its failures passed alone is
             # not the same evidence as a step that never failed. The receipt
             # names the flakes so a reader can tell the two apart.
