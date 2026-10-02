@@ -51,7 +51,7 @@ def make_message(
     session_id: str = "conv-1",
     role: str = "user",
     text: str = "This is a sufficiently long test message for embedding.",
-    content_hash: str = "hash-1",
+    content_hash: str = "db48dd12723234f37e2c19a952b9a6f685a18632c8446a2d527f1cd074dd3454",
     source_name: str = "test-provider",
 ) -> MessageRecord:
     return MessageRecord(
@@ -153,6 +153,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
         recipe: EmbeddingRecipe,
         attach_index: bool = True,
         register_identity: bool = True,
+        index_connection: sqlite3.Connection | None = None,
     ) -> None:
         # A TEMP setup executescript would implicitly commit, admitting these
         # later writes into the allegedly pinned semantic snapshot.
@@ -168,6 +169,7 @@ def test_open_vector_read_snapshot_uses_only_the_explicit_pinned_paths(
             recipe=recipe,
             attach_index=attach_index,
             register_identity=register_identity,
+            index_connection=index_connection,
         )
 
     monkeypatch.setattr(runtime, "_configure_current_embedding_messages", publish_after_pin)
@@ -497,11 +499,22 @@ def test_query_route_contract(
         row_1.__getitem__.side_effect = lambda key: "msg-1" if key == "message_id" else 0.5
         row_2 = MagicMock(spec=sqlite3.Row)
         row_2.__getitem__.side_effect = lambda key: "msg-2" if key == "message_id" else 0.7
-        return MagicMock(fetchall=MagicMock(return_value=[row_1, row_2]))
+        result = MagicMock()
+        result.__iter__.return_value = iter([row_1, row_2])
+        return result
 
     mock_provider._get_embeddings = capture_embeddings
     connection = MagicMock()
     connection.execute = capture_execute
+    cursor = MagicMock()
+
+    def cursor_execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
+        result = capture_execute(sql, params)
+        cursor.__iter__.return_value = iter(result)
+        return cursor
+
+    cursor.execute = cursor_execute
+    connection.cursor.return_value = cursor
     connection.close = MagicMock()
     mock_provider._get_read_connection = MagicMock(return_value=connection)
 
@@ -618,3 +631,26 @@ def test_snapshot_admission_refuses_index_replacement_and_closes_its_handle(tmp_
     assert len(acquired) == 1
     with pytest.raises(sqlite3.ProgrammingError):
         acquired[0].execute("SELECT 1")
+
+
+@pytest.mark.parametrize("bad_hash", ("not-hex", "ab" * 31, "ab" * 33))
+@pytest.mark.parametrize("bad_text", ("short", "Invalid batch member otherwise has enough prose to embed"))
+def test_upsert_invalid_carried_hash_refuses_whole_batch_before_acquisition(
+    mock_provider: MutableSqliteVecProvider,
+    bad_hash: str,
+    bad_text: str,
+) -> None:
+    calls: list[str] = []
+
+    def embed(texts: list[str], input_type: str = "document") -> list[Embedding]:
+        calls.append(input_type)
+        return [[0.1] * 1024 for _ in texts]
+
+    mock_provider._get_embeddings = embed
+    mock_provider._get_connection = MagicMock(side_effect=AssertionError("invalid batch must not acquire a writer"))
+    with pytest.raises(ValueError):
+        mock_provider.upsert(
+            "conv-1", [make_message(), make_message(message_id="bad", content_hash=bad_hash, text=bad_text)]
+        )
+    assert calls == []
+    assert not mock_provider._get_connection.called

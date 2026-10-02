@@ -12,6 +12,7 @@ unfiltered listing.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -214,14 +215,14 @@ async def test_text_semantic_pages_apply_the_ranked_offset_once(
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, text, seed_session_id, index_connection, configure_connection
             check_cancelled()
             yield ScopedVectorQuery(rows=iter(scored))
@@ -361,14 +362,14 @@ async def test_sorted_semantic_pages_concatenate_the_sorted_candidate_relation(
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, text, seed_session_id, index_connection, configure_connection
             check_cancelled()
             yield ScopedVectorQuery(rows=iter(scored))

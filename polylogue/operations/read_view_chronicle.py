@@ -191,15 +191,15 @@ def _select_summaries(
         # a page is hydrated. A sample retains only its requested summary rows.
         from polylogue.archive.query.sorting import SessionReservoir
 
-        reservoir = SessionReservoir[ArchiveSessionSummary](plan.sample) if plan.sample is not None else None
+        ranked_reservoir = SessionReservoir[ArchiveSessionSummary](plan.sample) if plan.sample is not None else None
         remaining_offset = plan.offset
 
         def sample_batch(rows: list[ArchiveSessionSummary]) -> None:
             nonlocal remaining_offset
             skipped = min(remaining_offset, len(rows))
             remaining_offset -= skipped
-            assert reservoir is not None
-            reservoir.offer(rows[skipped:])
+            assert ranked_reservoir is not None
+            ranked_reservoir.offer(rows[skipped:])
 
         rows = _archive_summaries(
             plan,
@@ -207,11 +207,11 @@ def _select_summaries(
             config=None,
             archive_root=archive.archive_root,
             default_limit=5,
-            complete=reservoir is not None,
-            on_batch=sample_batch if reservoir is not None else None,
+            complete=ranked_reservoir is not None,
+            on_batch=sample_batch if ranked_reservoir is not None else None,
             full_sort=plan.needs_content_loading() or plan.sort in _COMPOSED_COUNT_SORTS,
         )
-        rows = reservoir.items() if reservoir is not None else rows[plan.offset :]
+        rows = ranked_reservoir.items() if ranked_reservoir is not None else rows[plan.offset :]
         return plan._finalize([archive_summary_to_domain(row) for row in rows])
 
     # A composed-count sort (messages/words/longest/tokens) ranks a lineage

@@ -186,13 +186,18 @@ def open_vector_read_snapshot(
     or provider default participates here. The returned handle retains the
     selected index path, generation and creating thread; provider construction consumes
     that proof instead of certifying a held handle by its later pathname.
+    With a lent Index frame, only Embeddings is opened and pinned; the transient
+    handle cannot be exported as a standalone Index-bound snapshot.
     """
 
-    if not index_path.is_file():
-        raise SqliteVecError(f"pinned vector snapshot found no index at {index_path}")
-    selected_index = index_path.resolve(strict=True)
-    selected_stat = selected_index.stat()
-    selected_generation = GenerationToken(device=selected_stat.st_dev, inode=selected_stat.st_ino)
+    selected_index = index_path.absolute()
+    selected_generation: GenerationToken | None = None
+    if index_connection is None:
+        if not index_path.is_file():
+            raise SqliteVecError(f"pinned vector snapshot found no index at {index_path}")
+        selected_index = index_path.resolve(strict=True)
+        selected_stat = selected_index.stat()
+        selected_generation = GenerationToken(device=selected_stat.st_dev, inode=selected_stat.st_ino)
     opening_thread_id = threading.get_ident()
     with _vector_projection_errors():
         conn = open_readonly_connection(
@@ -209,29 +214,33 @@ def open_vector_read_snapshot(
             if not loaded:
                 raise SqliteVecUnavailableError(f"sqlite-vec extension failed to load: {error or 'unknown error'}")
             register_embedding_identity_sql(conn, recipe=recipe)
-            # Each persistent database has its own read-only URI.
-            attach_readonly_database(conn, selected_index, alias="archive_index")
+            # A lent canonical frame is the only Index evidence source. An
+            # ordinary scoped reader cannot certify a later pathname or export
+            # a standalone Index binding; constructor admission therefore
+            # refuses this transient handle as a supplied operation snapshot.
+            if index_connection is None:
+                attach_readonly_database(conn, selected_index, alias="archive_index")
             with closing(conn.cursor()) as cursor:
                 cursor.execute("BEGIN")
                 cursor.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()
-                cursor.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
-                attached = cursor.execute("PRAGMA database_list").fetchall()
-            attached_index = next((row[2] for row in attached if row[1] == "archive_index"), None)
-            current_stat = selected_index.stat()
-            current_generation = GenerationToken(device=current_stat.st_dev, inode=current_stat.st_ino)
-            if (
-                not attached_index
-                or Path(attached_index).absolute() != selected_index
-                or current_generation != selected_generation
-            ):
-                raise SqliteVecError("selected archive index changed while pinning the vector snapshot; retry")
-            # The existing measured connection owns this proof across later
-            # provider construction, including after its pathname is replaced.
-            vars(conn)["_polylogue_vector_read_snapshot_binding"] = (
-                selected_index,
-                selected_generation,
-                opening_thread_id,
-            )
+                if index_connection is None:
+                    cursor.execute("SELECT rootpage FROM archive_index.sqlite_schema LIMIT 1").fetchone()
+                    attached = cursor.execute("PRAGMA database_list").fetchall()
+            if index_connection is None:
+                attached_index = next((row[2] for row in attached if row[1] == "archive_index"), None)
+                current_stat = selected_index.stat()
+                current_generation = GenerationToken(device=current_stat.st_dev, inode=current_stat.st_ino)
+                if (
+                    not attached_index
+                    or Path(attached_index).absolute() != selected_index
+                    or current_generation != selected_generation
+                ):
+                    raise SqliteVecError("selected archive index changed while pinning the vector snapshot; retry")
+                vars(conn)["_polylogue_vector_read_snapshot_binding"] = (
+                    selected_index,
+                    selected_generation,
+                    opening_thread_id,
+                )
             if not defer_projection:
                 prepare_vector_read_projection(conn, recipe=recipe, index_connection=index_connection)
         return conn
@@ -381,6 +390,11 @@ class SqliteVecRuntimeMixin:
                 ):
                     raise SqliteVecError("operation vector snapshot does not match the requested archive index")
             if index_connection is not None:
+                if (
+                    getattr(self._snapshot_connection, "_polylogue_vector_read_canonical_connection", None)
+                    is not index_connection
+                ):
+                    raise SqliteVecError("canonical archive frame does not match the operation vector snapshot")
                 prepare_vector_read_projection(
                     self._snapshot_connection,
                     recipe=EmbeddingRecipe.current(model=self.model, dimensions=self.dimension),
@@ -401,7 +415,11 @@ class SqliteVecRuntimeMixin:
         else:
             selected = index_path if index_path is not None else resolve_active_index_path(self.archive_root)
         try:
-            selected.resolve(strict=True).relative_to(self.archive_root.resolve(strict=True))
+            # SQLite reports the canonical frame's selected filename. Namespace
+            # admission uses that retained name without re-resolving the Index
+            # pathname to certify a different incarnation after publication.
+            admitted_name = selected.absolute() if index_connection is not None else selected.resolve(strict=True)
+            admitted_name.relative_to(self.archive_root.resolve(strict=True))
         except ValueError as exc:
             raise SqliteVecError("selected index is outside the provider's trusted archive root") from exc
         return open_vector_read_snapshot(

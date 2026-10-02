@@ -308,6 +308,10 @@ def open_operation_read(
             archive.operation_degraded_components = degraded
             if ArchiveIdentity.resolve_location(ArchiveLocation.resolve(root)) != identity:
                 raise RuntimeError("archive changed while pinning operation read authority")
+            if archive.operation_vector_connection is not None:
+                # Joint admission owns this exact lender/vector pair. A later
+                # connection with the same filename cannot inherit the proof.
+                vars(archive.operation_vector_connection)["_polylogue_vector_read_canonical_connection"] = archive._conn
             pinned = PinnedOperationRead(archive, identity, versions, degraded, vector_failure, read_view)
         vector_connection = archive.operation_vector_connection
         if vector_connection is not None:

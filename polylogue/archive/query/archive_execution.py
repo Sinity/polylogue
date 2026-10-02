@@ -691,12 +691,13 @@ def _qualified_scope(
                 qualified = keep(batch)
             elif plan.has_post_filters():
                 if plan.can_use_summaries():
-                    survivors = plan._apply_common_filters(
+                    summary_survivors = plan._apply_common_filters(
                         [archive_summary_to_domain(row) for row in batch],
                         sql_pushed=True,
                     )
+                    surviving = {str(row.id) for row in summary_survivors}
                 else:
-                    survivors = plan._apply_full_filters(
+                    session_survivors = plan._apply_full_filters(
                         [
                             archive_envelope_to_session(
                                 archive.read_session(row.session_id),
@@ -707,7 +708,7 @@ def _qualified_scope(
                         ],
                         sql_pushed=True,
                     )
-                surviving = {str(row.id) for row in survivors}
+                    surviving = {str(row.id) for row in session_survivors}
                 qualified = [row for row in batch if row.session_id in surviving]
             else:
                 qualified = batch
@@ -943,9 +944,9 @@ def archive_search_hits(
                 archive_root=archive_root,
                 vector_failure=vector_failure,
             ) as (ranked_hits, execution),
-            _ordered_scoped_hits(plan, archive, ranked_hits, full=False) as hits,
+            _ordered_scoped_hits(plan, archive, ranked_hits, full=False) as ordered_hits,
         ):
-            page = list(islice(hits, offset, None if plan.limit is None else offset + plan.limit))
+            page = list(islice(ordered_hits, offset, None if plan.limit is None else offset + plan.limit))
             return ArchiveSearchResult(
                 _pair_hits(archive, page),
                 "hybrid" if plan.retrieval_lane == "hybrid" else "semantic",

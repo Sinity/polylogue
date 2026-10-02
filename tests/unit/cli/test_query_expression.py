@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Never, cast
@@ -5377,6 +5378,9 @@ class TestBooleanQueryExpression:
         class StubVectorProvider:
             model = "stub"
 
+            def query(self, text: str, limit: int = 10) -> Never:
+                raise AssertionError("this fixture uses scoped retrieval")
+
             def upsert(
                 self,
                 session_id: str,
@@ -5389,14 +5393,14 @@ class TestBooleanQueryExpression:
             @contextmanager
             def scoped_query(
                 self,
-                session_ids,
+                session_ids: Iterable[str],
                 *,
-                text=None,
-                seed_session_id=None,
-                index_connection,
-                configure_connection,
-                check_cancelled,
-            ):
+                text: str | None = None,
+                seed_session_id: str | None = None,
+                index_connection: sqlite3.Connection,
+                configure_connection: Callable[[sqlite3.Connection], None],
+                check_cancelled: Callable[[], None],
+            ) -> Iterator[ScopedVectorQuery]:
                 del session_ids, index_connection, configure_connection
                 check_cancelled()
                 assert text == "query compiler"

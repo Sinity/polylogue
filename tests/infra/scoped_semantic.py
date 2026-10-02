@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import httpx
@@ -24,9 +26,13 @@ def ranking_archive(
     *,
     query_axis: float,
     monkeypatch: pytest.MonkeyPatch,
+    concurrent_writes: bool = False,
 ) -> tuple[Config, SqliteVecProvider, dict[tuple[str, str], tuple[str, str]], list[dict[str, object]]]:
     bootstrap_archive_root(root)
     identities = seed_vector_archive(root, [(sid, mid, text, axis_vector(value)) for sid, mid, text, value in samples])
+    if concurrent_writes:
+        with closing(sqlite3.connect(root / "index.db")) as connection, closing(connection.cursor()) as cursor:
+            cursor.execute("PRAGMA journal_mode=WAL")
     requests: list[dict[str, object]] = []
 
     def reply(request: httpx.Request) -> httpx.Response:

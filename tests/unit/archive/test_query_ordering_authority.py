@@ -200,28 +200,28 @@ async def test_post_filtered_page_stops_once_the_page_is_full(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_ranked_composed_sort_keeps_the_requested_candidate_pool(
+async def test_ranked_composed_sort_ranks_the_complete_scoped_population(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A vector-ranked composed sort sizes its candidate pool from the request.
+    """A requested page does not bound the semantic candidate relation."""
+    from tests.infra.scoped_semantic import ranking_archive
 
-    Anti-vacuity: clear the window for ranked routes too and the semantic leg
-    sees ``limit=None``, falling back to its small default pool.
-    """
-    _seed(tmp_path, "only", updated_at="2026-01-01T00:00:00Z", messages=1)
-    pools: list[int | None] = []
-
-    def semantic(plan: SessionQueryPlan, *args: object, **kwargs: object) -> list[object]:
-        pools.append(plan.limit)
-        return []
-
-    monkeypatch.setattr("polylogue.archive.query.archive_execution._semantic_hits", semantic)
-
-    await list_archive(
-        SessionQueryPlan(similar_text="anything", sort="messages", limit=200), archive_root=tmp_path, config=None
+    config, provider, identities, requests = ranking_archive(
+        tmp_path,
+        [
+            ("closest", "m", "Closest purchased occurrence has enough prose", 0.0),
+            ("largest", "m", "Later purchased occurrence " + "neutral " * 50, 10.0),
+        ],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
     )
-
-    assert pools == [200]
+    sessions = await list_archive(
+        SessionQueryPlan(similar_text="anything", sort="words", limit=1, vector_provider=provider),
+        archive_root=tmp_path,
+        config=config,
+    )
+    assert [str(session.id) for session in sessions] == [identities[("largest", "m")][0]]
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

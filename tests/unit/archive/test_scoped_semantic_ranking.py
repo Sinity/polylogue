@@ -6,7 +6,7 @@ import sqlite3
 import threading
 from contextlib import closing
 from pathlib import Path
-from typing import cast
+from typing import Any, Never, cast
 
 import pytest
 
@@ -14,6 +14,7 @@ from polylogue.archive.query.archive_execution import archive_search_hits, list_
 from polylogue.archive.query.execution_control import QueryCancelledError
 from polylogue.archive.query.expression import ExpressionCompileError, compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.session.domain_models import Session
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.operations.operation_context import open_operation_read
 from tests.infra.scoped_semantic import ranking_archive
@@ -180,6 +181,7 @@ def test_post_pin_edit_does_not_replace_the_original_vector_witness(
         [("only", "m", "Original pinned purchased occurrence has enough prose", 0.0)],
         query_axis=0.0,
         monkeypatch=monkeypatch,
+        concurrent_writes=True,
     )
     with open_operation_read(root) as frame:
         with closing(sqlite3.connect(root / "index.db")) as writer:
@@ -239,7 +241,7 @@ def test_residual_predicate_precedes_all_hybrid_lane_ranks(
     config, provider, ids, _requests = ranking_archive(root, samples, query_axis=0.0, monkeypatch=monkeypatch)
     visited: list[str] = []
 
-    def qualifies(session) -> bool:
+    def qualifies(session: Session) -> bool:
         visited.append(str(session.id))
         return session.title == "eligible"
 
@@ -277,13 +279,13 @@ def test_scoped_cursor_exits_settle_owned_handle_and_preserve_borrowed_frame(
     probe = EmbeddingReadProbe(root, monkeypatch)
     original_open = probe.open
 
-    def capture(*args, **kwargs):
+    def capture(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         connection = original_open(*args, **kwargs)
         creator = connection.cursor
 
-        def cursor(*args, **kwargs):
+        def cursor(*args: Any, **kwargs: Any) -> TrackedCursor:
             kwargs.setdefault("factory", TrackedCursor)
-            result = creator(*args, **kwargs)
+            result = cast(TrackedCursor, creator(*args, **kwargs))
             probe.cursors.append(result)
             return result
 
@@ -294,9 +296,9 @@ def test_scoped_cursor_exits_settle_owned_handle_and_preserve_borrowed_frame(
     with open_operation_read(root) as frame:
         creator = frame.archive._conn.cursor
 
-        def canonical_cursor(*args, **kwargs):
+        def canonical_cursor(*args: Any, **kwargs: Any) -> TrackedCursor:
             kwargs.setdefault("factory", TrackedCursor)
-            result = creator(*args, **kwargs)
+            result = cast(TrackedCursor, creator(*args, **kwargs))
             probe.cursors.append(result)
             return result
 
@@ -309,7 +311,7 @@ def test_scoped_cursor_exits_settle_owned_handle_and_preserve_borrowed_frame(
             if exit_route == "cancel" and checkpoints == 3:
                 raise QueryCancelledError("operation_cancelled")
 
-        def failed_embedding(*args, **kwargs):
+        def failed_embedding(*args: Any, **kwargs: Any) -> Never:
             raise SqliteVecError("synthetic_transport_error")
 
         if exit_route == "error":
@@ -388,7 +390,9 @@ async def test_repository_session_grain_text_and_near_use_complete_same_snapshot
         ("runner", "m", "Repository runner is the second session", 1.0),
         ("seed", "m", "Repository seed has a retained vector", 0.0),
     ]
-    _config, provider, ids, requests = ranking_archive(root, samples, query_axis=0.0, monkeypatch=monkeypatch)
+    _config, provider, ids, requests = ranking_archive(
+        root, samples, query_axis=0.0, monkeypatch=monkeypatch, concurrent_writes=True
+    )
     with closing(sqlite3.connect(root / "index.db")) as connection:
         connection.execute(
             "INSERT INTO session_events (session_id, position, event_type, payload_json) VALUES (?, 0, 'notice', ?)",
@@ -526,8 +530,6 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
             for sort in ("date", "messages", "words", "longest", "tokens"):
                 for reverse in (False, True):
                     plan = SessionQueryPlan(sort=sort, reverse=reverse)
-                    rows = sessions if full else summaries
-                    comparator = session_order_values if full else summary_order_values
                     expected = plan._sort_sessions(sessions) if full else plan._sort_summaries(summaries)
                     with frame.archive.scoped_search_population(selected_ids):
                         hits = [
@@ -535,9 +537,18 @@ def test_sql_comparison_keys_match_current_python_owner_on_held_rows(
                             for sid in ("d", "b", "c", "a")
                         ]
                         frame.archive.settle_scoped_search_lane("vector", hits)
-                        frame.archive.settle_scoped_search_order(
-                            (str(row.id), *comparator(plan, row), ordinal) for ordinal, row in enumerate(rows, start=1)
+                        keys = (
+                            (
+                                (str(row.id), *session_order_values(plan, row), ordinal)
+                                for ordinal, row in enumerate(sessions, start=1)
+                            )
+                            if full
+                            else (
+                                (str(row.id), *summary_order_values(plan, row), ordinal)
+                                for ordinal, row in enumerate(summaries, start=1)
+                            )
                         )
+                        frame.archive.settle_scoped_search_order(keys)
                         actual = list(
                             frame.archive.iter_scoped_search_hits(hybrid=False, explicit_sort=True, reverse=reverse)
                         )
@@ -621,12 +632,12 @@ def test_ranked_read_views_sort_the_full_session_population_before_offset(
     with open_operation_read(root) as frame:
         if view == "chronicle":
             result = execute_chronicle_read(payload, archive=frame.archive, vector_provider=provider)
-            selected = [row["session_id"] for row in result["payload"]["sessions"]]
+            selected = [row["session_id"] for row in cast(dict[str, Any], result["payload"])["sessions"]]
         else:
             result = execute_temporal_read(payload, archive=frame.archive, vector_provider=provider)
             selected = [
                 event["source_ref"].removeprefix("session:")
-                for event in result["payload"]["temporal_window"]["events"]
+                for event in cast(dict[str, Any], result["payload"])["temporal_window"]["events"]
                 if event["family"] == "archive-session"
             ]
     assert selected == [ids[("runner", "m-0")][0]]
@@ -652,3 +663,236 @@ def test_numeric_sort_collation_observes_python_cancellation_below_sql_interval(
         with closing(frame.archive._conn.cursor()) as cursor, pytest.raises(QueryCancelledError):
             cursor.execute("SELECT '9223372036854775808' COLLATE polylogue_result_number < '9223372036854775809'")
         frame.archive.clear_read_progress_guard()
+
+
+def test_scoped_ranking_keeps_borrowed_index_after_path_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+
+    root = tmp_path / "archive"
+    config, provider, ids, requests = ranking_archive(
+        root,
+        [
+            ("seed", "m", "Original seed has a retained purchased output", 1.0),
+            ("neighbor", "m", "Original neighbor has a retained purchased output", 0.0),
+        ],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    with open_operation_read(root) as frame:
+        replacement = root / "replacement.db"
+        with closing(sqlite3.connect(replacement)) as writer, closing(writer.cursor()) as cursor:
+            frame.archive._conn.backup(writer)
+            cursor.execute("DELETE FROM blocks")
+            cursor.execute("DELETE FROM messages")
+            cursor.execute("DELETE FROM sessions")
+            writer.commit()
+        replacement.replace(root / "index.db")
+        original_open = provider._get_read_connection
+
+        def open_scoped(**kwargs: Any) -> sqlite3.Connection:
+            connection = original_open(**kwargs)
+            with closing(connection.cursor()) as cursor:
+                assert "archive_index" not in {row[1] for row in cursor.execute("PRAGMA database_list")}
+            with pytest.raises(SqliteVecError):
+                SqliteVecProvider(None, snapshot_connection=connection)
+            return connection
+
+        monkeypatch.setattr(provider, "_get_read_connection", open_scoped)
+        for plan in (
+            SessionQueryPlan(similar_text="question", vector_provider=provider),
+            SessionQueryPlan(similar_session_id=ids[("seed", "m")][0], vector_provider=provider),
+        ):
+            result = archive_search_hits(plan, archive_root=root, config=config, archive=frame.archive)
+            assert result.hits[0][0].message_id == ids[("neighbor", "m")][1]
+            assert result.hits[0][0].snippet == "Original neighbor has a retained purchased output"
+        with closing(frame.archive._conn.cursor()) as cursor:
+            assert cursor.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+        with closing(sqlite3.connect(root / "index.db")) as observer, closing(observer.cursor()) as cursor:
+            assert cursor.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+    assert len(requests) == 1
+
+
+def test_public_upsert_preserves_original_hash_for_compatible_scoped_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.enums import MaterialOrigin, Role
+    from polylogue.core.types import ContentHash, MessageId, SessionId
+    from polylogue.storage.runtime import MessageRecord
+    from tests.infra.scoped_semantic import axis_vector
+
+    root = tmp_path / "archive"
+    text = "Actual public producer sends this exact canonical authored prose"
+    config, provider, ids, requests = ranking_archive(
+        root, [("only", "m", text, 2.0)], query_axis=0.0, monkeypatch=monkeypatch
+    )
+    sid, mid = ids[("only", "m")]
+    calls: list[str] = []
+
+    def embed(texts: list[str], input_type: str = "document") -> list[list[float]]:
+        calls.append(input_type)
+        return [axis_vector(2.0 if input_type == "document" else 0.0) for _ in texts]
+
+    monkeypatch.setattr(provider, "_get_embeddings", embed)
+    provider.model = "voyage-4"
+    message = MessageRecord(
+        message_id=MessageId(mid),
+        session_id=SessionId(sid),
+        role=Role.USER,
+        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+        text=text,
+        content_hash=ContentHash((b"m" * 32).hex()),
+    )
+    provider.upsert(sid, [message], origin="codex-session")
+    with closing(sqlite3.connect(root / "embeddings.db")) as observer, closing(observer.cursor()) as cursor:
+        assert (
+            cursor.execute(
+                "SELECT message_content_hash FROM message_embedding_refs WHERE message_id=?", (mid,)
+            ).fetchone()[0]
+            == b"m" * 32
+        )
+        original_meta = cursor.execute("SELECT * FROM message_embeddings_meta").fetchall()
+    provider.model = "voyage-4-lite"
+    with open_operation_read(root) as frame:
+        result = archive_search_hits(
+            SessionQueryPlan(similar_text="question", vector_provider=provider),
+            archive_root=root,
+            config=config,
+            archive=frame.archive,
+        )
+    assert result.hits[0][0].message_id == mid
+    assert calls == ["document", "query"]
+    assert requests == []
+    with closing(sqlite3.connect(root / "embeddings.db")) as observer, closing(observer.cursor()) as cursor:
+        assert cursor.execute("SELECT * FROM message_embeddings_meta").fetchall() == original_meta
+
+
+@pytest.mark.parametrize("supplied", (False, True))
+def test_scoped_provider_refuses_a_borrowed_frame_outside_its_archive_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    supplied: bool,
+) -> None:
+    from contextlib import nullcontext
+
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_runtime import open_vector_read_snapshot
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.scoped_semantic import axis_vector
+    from tests.infra.vector_archive import seed_vector_archive
+
+    root_a, root_b = tmp_path / "a", tmp_path / "b"
+    _, _, identities_a, requests_a = ranking_archive(
+        root_a,
+        [("a", "m", "Original archive A has exact purchased prose", 0.0)],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    bootstrap_archive_root(root_b)
+    seed_vector_archive(root_b, [("b", "m", "Different archive B has exact purchased prose", axis_vector(0.0))])
+    ordinary = SqliteVecProvider("synthetic-key", db_path=root_b / "embeddings.db", archive_root=root_b)
+    snapshot = (
+        open_vector_read_snapshot(
+            embeddings_path=root_b / "embeddings.db", index_path=root_b / "index.db", recipe=ordinary.document_recipe
+        )
+        if supplied
+        else None
+    )
+    with closing(snapshot) if snapshot is not None else nullcontext():
+        provider_b = SqliteVecProvider("synthetic-key", snapshot_connection=snapshot) if supplied else ordinary
+        with open_operation_read(root_a) as frame:
+            with (
+                pytest.raises(SqliteVecError),
+                provider_b.scoped_query(
+                    (sid for sid, _mid in identities_a.values()),
+                    index_connection=frame.archive._conn,
+                    configure_connection=frame.archive.configure_operation_read_connection,
+                    check_cancelled=frame.archive.check_operation_read,
+                    text="question",
+                ),
+            ):
+                raise AssertionError("cross-archive scope must refuse before scoring")
+            with closing(frame.archive._conn.cursor()) as cursor:
+                assert cursor.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert requests_a == []
+
+
+def test_joint_operation_owner_admits_only_its_original_canonical_lender(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+
+    root = tmp_path / "archive"
+    config, ordinary, identities, requests = ranking_archive(
+        root,
+        [("only", "m", "Joint operation retains original canonical purchased prose", 0.0)],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    with open_operation_read(root, vector_recipe=ordinary.document_recipe) as frame:
+        vector = frame.archive.operation_vector_connection
+        assert vector is not None
+        supplied = SqliteVecProvider("synthetic-key", snapshot_connection=vector)
+        result = archive_search_hits(
+            SessionQueryPlan(similar_text="question", vector_provider=supplied),
+            archive_root=root,
+            config=config,
+            archive=frame.archive,
+        )
+        assert result.hits[0][0].message_id == identities[("only", "m")][1]
+        with closing(vector.cursor()) as cursor:
+            assert cursor.execute("SELECT 1").fetchone()[0] == 1
+        with closing(frame.archive._conn.cursor()) as cursor:
+            assert cursor.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert len(requests) == 1
+
+
+def test_supplied_old_snapshot_refuses_new_lender_at_the_same_index_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+    from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError
+
+    root = tmp_path / "archive"
+    _, ordinary, identities, requests = ranking_archive(
+        root,
+        [("only", "m", "Old operation owns exactly this canonical purchased prose", 0.0)],
+        query_axis=0.0,
+        monkeypatch=monkeypatch,
+    )
+    with open_operation_read(root, vector_recipe=ordinary.document_recipe) as original:
+        vector = original.archive.operation_vector_connection
+        assert vector is not None
+        supplied = SqliteVecProvider("synthetic-key", snapshot_connection=vector)
+        replacement = root / "replacement.db"
+        with closing(sqlite3.connect(replacement)) as writer, closing(writer.cursor()) as cursor:
+            original.archive._conn.backup(writer)
+            cursor.execute("UPDATE sessions SET title = 'Replacement frame'")
+            writer.commit()
+        replacement.replace(root / "index.db")
+        with open_operation_read(root) as current:
+            with (
+                pytest.raises(SqliteVecError),
+                supplied.scoped_query(
+                    (sid for sid, _mid in identities.values()),
+                    index_connection=current.archive._conn,
+                    configure_connection=current.archive.configure_operation_read_connection,
+                    check_cancelled=current.archive.check_operation_read,
+                    text="question",
+                ),
+            ):
+                raise AssertionError("a different lender cannot inherit original owner admission")
+            with closing(current.archive._conn.cursor()) as cursor:
+                assert cursor.execute("SELECT title FROM sessions").fetchone()[0] == "Replacement frame"
+        with closing(original.archive._conn.cursor()) as cursor:
+            assert cursor.execute("SELECT title FROM sessions").fetchone()[0] == "only"
+        with closing(vector.cursor()) as cursor:
+            assert cursor.execute("SELECT 1").fetchone()[0] == 1
+    assert requests == []

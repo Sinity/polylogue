@@ -161,7 +161,10 @@ class SqliteVecProvider(
                                     "text retrieval requires embedding acquisition credentials",
                                     readiness_status="disabled",
                                 )
-                            parameters = (self._query_vector(connection, text), limit)
+                            query_vector = self._query_vector(connection, text)
+                            if query_vector is None:
+                                return project(connection, count, [])
+                            parameters = (query_vector, limit)
                         cursor.execute(
                             self._distance_sql(session_grain=True, session_seed=seed_session_id is not None)
                             + " LIMIT ?",

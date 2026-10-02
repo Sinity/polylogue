@@ -25,7 +25,7 @@ from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -481,9 +481,14 @@ class TestSimilarEndpoint:
 
         # Inject a broken ranking join at the provider seam. Production projection
         # filters stale vectors; a malformed provider result must still stay typed.
-        monkeypatch.setattr(
-            SqliteVecProvider, "query_by_session", lambda self, session_id, **kwargs: [("orphan-message", 0.1)]
-        )
+        original_read = SqliteVecProvider.read_similarity
+
+        async def broken_join(self: SqliteVecProvider, **kwargs: Any) -> Any:
+            project = kwargs["project"]
+            kwargs["project"] = lambda connection, count, _hits: project(connection, count, [("orphan-message", 0.1)])
+            return await original_read(self, **kwargs)
+
+        monkeypatch.setattr(SqliteVecProvider, "read_similarity", broken_join)
 
         handler = _make_handler("GET", f"/api/sessions/{seed_session_id}/similar?limit=3")
         _, send_json = _capture_responses(handler)

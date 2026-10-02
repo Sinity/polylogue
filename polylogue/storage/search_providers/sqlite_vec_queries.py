@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+from polylogue.core.errors import EmbeddingRetrievalNotReadyError, SessionNotFoundError
 from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_runtime import _assert_vec0_dimension
@@ -78,13 +78,20 @@ class SqliteVecQueryMixin:
         if not messages:
             return
 
+        carried_hashes = [bytes.fromhex(msg.content_hash) for msg in messages]
+        if any(len(digest) != 32 for digest in carried_hashes):
+            raise ValueError("message content hash must be a SHA-256 value")
+        eligible = [
+            (msg, digest)
+            for msg, digest in zip(messages, carried_hashes, strict=True)
+            if self._should_embed_message(msg)
+        ]
+        if not eligible:
+            return
+        embeddable = [msg for msg, _digest in eligible]
+        content_hashes = [digest for _msg, digest in eligible]
         self._ensure_vec_available()
         self._ensure_tables()
-
-        embeddable = [msg for msg in messages if self._should_embed_message(msg)]
-        if not embeddable:
-            return
-
         texts = [msg.text for msg in embeddable if msg.text]
 
         try:
@@ -119,6 +126,7 @@ class SqliteVecQueryMixin:
                     embedding=embedding,
                     model=self.model,
                     embedded_at_ms=now_ms,
+                    message_content_hash=content_hash,
                     vector_derivation_hash=EmbeddingRequestSpec(
                         recipe=EmbeddingRecipe.current(
                             model=self.model, dimensions=self.dimension, input_type="document"
@@ -126,7 +134,7 @@ class SqliteVecQueryMixin:
                         input_text=str(msg.text),
                     ).vector_derivation_hash,
                 )
-                for msg, embedding in zip(embeddable, embeddings, strict=True)
+                for msg, embedding, content_hash in zip(embeddable, embeddings, content_hashes, strict=True)
             ]
             upsert_message_embeddings(conn, writes)
 
@@ -163,6 +171,8 @@ class SqliteVecQueryMixin:
         conn = self._get_read_connection()
         try:
             embedding = self._query_vector(conn, text)
+            if embedding is None:
+                return []
             with closing(conn.cursor()) as cursor:
                 cursor.execute(self._distance_sql(session_grain=False), (embedding, max(limit, 0)))
                 return [(str(row["message_id"]), float(row["distance"])) for row in cursor]
@@ -190,7 +200,7 @@ class SqliteVecQueryMixin:
         finally:
             self._release_connection(conn)
 
-    def _query_vector(self, conn: sqlite3.Connection, text: str, *, scoped: bool = False) -> bytes:
+    def _query_vector(self, conn: sqlite3.Connection, text: str, *, scoped: bool = False) -> bytes | None:
         _assert_vec0_dimension(conn, self.dimension)
         scope = "JOIN scoped_vector_sessions USING (session_id)" if scoped else ""
         with closing(conn.cursor()) as cursor:
@@ -202,7 +212,7 @@ class SqliteVecQueryMixin:
             )
         embeddings = self._get_embeddings([text], input_type="query")
         if not embeddings:
-            raise SqliteVecError("query embedding provider returned no vector")
+            return None
         return _serialize_f32(embeddings[0])
 
     @staticmethod
@@ -301,16 +311,28 @@ class SqliteVecQueryMixin:
                 check_cancelled()
                 with closing(conn.cursor()) as cursor:
                     if seed_session_id is not None:
+                        with closing(index_connection.cursor()) as seed_cursor:
+                            if (
+                                seed_cursor.execute(
+                                    "SELECT 1 FROM sessions WHERE session_id = ?", (seed_session_id,)
+                                ).fetchone()
+                                is None
+                            ):
+                                raise SessionNotFoundError(seed_session_id)
                         _assert_vec0_dimension(conn, self.dimension)
                         self._require_seed(conn, seed_session_id)
                     if cursor.execute("SELECT 1 FROM scoped_vector_sessions LIMIT 1").fetchone() is None:
                         yield ScopedVectorQuery(rows=iter(()))
                         return
+                    args: tuple[object, ...]
                     if seed_session_id is not None:
                         args = (seed_session_id, seed_session_id, seed_session_id)
                     else:
                         assert text is not None
-                        args = (self._query_vector(conn, text, scoped=True),)
+                        query_vector = self._query_vector(conn, text, scoped=True)
+                        if query_vector is None:
+                            raise SqliteVecError("query embedding provider returned no vector")
+                        args = (query_vector,)
                     cursor.execute(
                         self._distance_sql(session_grain=True, session_seed=seed_session_id is not None, scoped=True),
                         args,

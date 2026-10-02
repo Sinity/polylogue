@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -2194,21 +2194,23 @@ def test_async_execute_query_archive_uses_vector_provider_for_semantic_search(
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, index_connection, configure_connection
             check_cancelled()
             assert text == "meaningful prompt"
             yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def iter_summaries(self, *, limit=None, **kwargs):
+        def iter_summaries(
+            self, *, limit: int | None = None, **kwargs: object
+        ) -> Generator[ArchiveSessionSummary, None, None]:
             assert limit is None
             return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
 
@@ -2311,21 +2313,23 @@ def test_async_execute_query_archive_refuses_a_cursor_minted_by_a_different_quer
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, index_connection, configure_connection
             check_cancelled()
             del text
             yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def iter_summaries(self, *, limit=None, **kwargs):
+        def iter_summaries(
+            self, *, limit: int | None = None, **kwargs: object
+        ) -> Generator[ArchiveSessionSummary, None, None]:
             assert limit is None
             return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
 
@@ -2427,14 +2431,14 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, index_connection, configure_connection
             check_cancelled()
             session_id = seed_session_id
@@ -2442,12 +2446,14 @@ def test_async_execute_query_archive_uses_vector_provider_for_session_seed_simil
             yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2), ("codex-session:native-2:m1", 0.3)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def iter_summaries(self, *, limit=None, **kwargs):
+        def iter_summaries(
+            self, *, limit: int | None = None, **kwargs: object
+        ) -> Generator[ArchiveSessionSummary, None, None]:
             assert limit is None
             return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
 
-        def resolve_session_id(self, session_id):
-            return session_id
+        def resolve_session_id(self, token: str) -> str:
+            return token
 
         index_db_path = archive_root / "index.db"
 
@@ -2688,23 +2694,25 @@ def test_async_execute_query_archive_accepts_explicit_semantic_lane(
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, index_connection, configure_connection
             check_cancelled()
             assert text == "meaningful prompt"
             yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def iter_summaries(self, *, limit=None, **kwargs):
+        def iter_summaries(
+            self, *, limit: int | None = None, **kwargs: object
+        ) -> Generator[ArchiveSessionSummary, None, None]:
             assert limit is None
-            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1"])
 
         index_db_path = archive_root / "index.db"
 
@@ -2784,23 +2792,25 @@ def test_archive_tiers_semantic_query_uses_active_root_embeddings_db(
         @contextmanager
         def scoped_query(
             self,
-            session_ids,
+            session_ids: Iterable[str],
             *,
-            text=None,
-            seed_session_id=None,
-            index_connection,
-            configure_connection,
-            check_cancelled,
-        ):
+            text: str | None = None,
+            seed_session_id: str | None = None,
+            index_connection: sqlite3.Connection,
+            configure_connection: Callable[[sqlite3.Connection], None],
+            check_cancelled: Callable[[], None],
+        ) -> Iterator[ScopedVectorQuery]:
             del session_ids, index_connection, configure_connection
             check_cancelled()
             assert text == "meaningful prompt"
             yield ScopedVectorQuery(rows=iter([("codex-session:native-1:m1", 0.2)]))
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def iter_summaries(self, *, limit=None, **kwargs):
+        def iter_summaries(
+            self, *, limit: int | None = None, **kwargs: object
+        ) -> Generator[ArchiveSessionSummary, None, None]:
             assert limit is None
-            return iter(self.read_summary(sid) for sid in ["codex-session:native-1", "codex-session:native-2"])
+            return iter(self.read_summary(sid) for sid in ["codex-session:native-1"])
 
         index_db_path = active_root / "index.db"
 
