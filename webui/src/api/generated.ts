@@ -643,6 +643,7 @@ export type SearchEnvelope = {
   readonly action_affordances?: ReadonlyArray<ActionAffordancePayload>;
   readonly advisories?: ReadonlyArray<string>;
   readonly authority?: AuthorityEnvelope | null;
+  readonly completed_lanes?: ReadonlyArray<string>;
   readonly diagnostics?: QueryMissDiagnosticsPayload | null;
   readonly exactness?: "exact" | "capped" | "sampled" | "estimate" | null;
   readonly executed_lanes?: ReadonlyArray<string>;

@@ -279,6 +279,14 @@ has, not a window-specific gap.
 | `lane` | Retrieval lane | `lane:dialogue` |
 | `lineage` | Sessions sharing topology with a seed | `lineage:id:<session>` |
 
+Session semantic and hybrid ranking first qualify the full hard scope and residual predicates, then rank eligible purchased occurrences and select one actual message witness per session. The result limit and offset apply to that session order. A shared purchased output can witness multiple real occurrences in different sessions. Distance is exact L2. Existing-session similarity takes the minimum distance over every distinct retained seed output and excludes the seed session. Equal distances use session ID and then message ID as stable keys. Explicit sorts operate on the full qualified ranked relation.
+
+Hybrid retrieval settles complete text, action, and vector lane session ranks in SQLite TEMP relations before one reciprocal rank fusion with `k=60`. The public `completed_lanes` field records successful full settlement; `exactness=exact` describes the executed ranked relation. An unavailable lane remains a named gap, including on an empty page. Archive and vector TEMP work selects FILE storage at acquisition before any projection exists. The canonical held archive read frame supplies the current prose and occurrence projection, and borrowed frames stay with their caller.
+
+The executable semantic DSL leg is session-scoped. In `semantic:"question" AND exists message(role:user AND text:gate)`, the correlated user predicate qualifies the session independently; an assistant message may supply the semantic witness. Semantic predicates inside `exists` or terminal message/block sources remain typed compilation refusals.
+
+The Python repository uses the same session ordering before its result limit and hydrates selected sessions from that held index snapshot. In existing-session similarity payloads, `matched_message_count` counts the selected best message witness (one per returned session), not all relevant messages.
+
 Existing-session similarity (`near:id:<ref>`) reads retained vectors without Voyage acquisition credentials. Text semantic queries require a new query embedding and therefore still require an API key. Unavailable vector storage produces typed uncertainty rather than certifying an empty answer.
 
 Python callers supplying a SQLite snapshot provider use an archive-owned handle returned by `open_vector_read_snapshot`; `from_vector_read_snapshot` consumes the index identity recorded when that handle was pinned. The owner records its creating thread at admission, and the caller retains the handle lifetime. Raw connections without this owner proof are refused, and an API read requesting a different or replaced index is refused before hydration. Existing-session similarity checks seed existence on that same handle: an absent seed raises `SessionNotFoundError`, while a present seed with no retained vectors returns a measured zero count.
@@ -712,7 +720,7 @@ a concrete lane — see below).
 | `semantic` | Pure vector similarity over configured Voyage embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
 Implementation: `polylogue/storage/search/query_builders.py`,
-`polylogue/storage/search_providers/hybrid.py`,
+`polylogue/storage/sqlite/archive_tiers/archive.py` (scoped SQL lane settlement),
 `polylogue/storage/search_providers/sqlite_vec_support.py`.
 
 ### Lane Semantics

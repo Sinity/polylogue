@@ -1,11 +1,8 @@
 """Search provider implementations and factory functions.
 
-This package provides the concrete ``VectorProvider`` implementation
-(``SqliteVecProvider``) and its factory function, plus the shared
-Reciprocal Rank Fusion primitive that production hybrid retrieval composes
-directly. It no longer provides a ``SearchProvider`` implementation or
-factory — see :mod:`polylogue.storage.search_providers.hybrid` for why
-(polylogue-a7xr.10).
+The package provides the concrete ``VectorProvider`` implementation
+(``SqliteVecProvider``) and its factory. Canonical archive reads own lexical
+retrieval and complete SQL lane-rank fusion.
 """
 
 from __future__ import annotations
@@ -15,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.logging import get_logger
-from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -148,6 +144,5 @@ def create_vector_provider(
 
 
 __all__ = [
-    "reciprocal_rank_fusion",
     "create_vector_provider",
 ]

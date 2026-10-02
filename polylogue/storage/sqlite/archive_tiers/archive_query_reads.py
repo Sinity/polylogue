@@ -66,6 +66,9 @@ from polylogue.storage.sqlite.run_projection_relations import (
     run_relation_sql,
 )
 
+# Shared by full SQL fusion and bounded public contribution explanations.
+HYBRID_RRF_K = 60
+
 
 class _ArchiveQueryReadsHost(Protocol):
     _conn: sqlite3.Connection

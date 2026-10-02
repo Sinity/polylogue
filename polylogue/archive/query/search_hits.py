@@ -10,6 +10,7 @@ from polylogue.archive.query.retrieval import search_query_text as plan_search_q
 from polylogue.archive.query.search_contract import SearchExecution
 from polylogue.archive.query.support import session_to_summary
 from polylogue.storage.archive_identity import archive_file_set_root
+from polylogue.storage.sqlite.archive_tiers.archive_query_reads import HYBRID_RRF_K
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
@@ -32,7 +33,7 @@ class SessionSearchHit:
       values are typically negative; never compare across queries).
     - ``"rrf"`` — Reciprocal Rank Fusion (higher is better; bounded by
       ``sum(1/(k+1))`` across lanes).
-    - ``"vector_distance"`` — vector cosine distance (lower is closer).
+    - ``"vector_distance"`` — vector L2 distance (lower is closer).
     - ``None`` — no rank-derived score, e.g. action or attachment lanes
       that surface evidence without a numeric score.
     """
@@ -222,9 +223,6 @@ def session_search_hit_from_summary(
     )
 
 
-_HYBRID_RRF_K = 60
-
-
 def _hybrid_score_components(
     lane_info: dict[str, int | None],
 ) -> tuple[dict[str, float], float | None]:
@@ -234,7 +232,7 @@ def _hybrid_score_components(
     contains ``<lane>_rank`` and ``<lane>_rrf`` entries for every lane that
     contributed, and ``fused_score`` is the sum of those RRF contributions
     (``None`` when no lane contributed). The constant ``k=60`` matches
-    :func:`polylogue.storage.search_providers.hybrid.reciprocal_rank_fusion`.
+    the archive SQL lane-rank settlement owner.
     """
     components: dict[str, float] = {}
     fused = 0.0
@@ -245,7 +243,7 @@ def _hybrid_score_components(
         any_lane = True
         lane_rank = int(lane_rank_val)
         components[f"{lane_name}_rank"] = float(lane_rank)
-        contribution = 1.0 / (_HYBRID_RRF_K + lane_rank)
+        contribution = 1.0 / (HYBRID_RRF_K + lane_rank)
         components[f"{lane_name}_rrf"] = contribution
         fused += contribution
     return components, (fused if any_lane else None)

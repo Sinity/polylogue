@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
+from typing import TypeVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.api import Polylogue
 from polylogue.core.errors import VectorRuntimeUnavailableError
+
+_SimilarityT = TypeVar("_SimilarityT")
 
 
 @pytest.mark.asyncio
@@ -240,14 +242,15 @@ async def test_public_provider_projection_owns_rows_without_changing_connection(
     )
 
     class TupleProvider(SqliteVecProvider):
-        async def read_session_similarity(
+        async def read_similarity(
             self,
-            session_id: str,
             *,
             index_path: Path,
+            text: str | None = None,
+            seed_session_id: str | None = None,
             limit: int = 10,
-            project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
-        ) -> dict[str, object]:
+            project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        ) -> _SimilarityT:
             with closing(sqlite3.connect(":memory:")) as connection:
                 connection.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
                 assert connection.row_factory is None

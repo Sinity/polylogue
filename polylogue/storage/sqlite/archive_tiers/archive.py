@@ -16,7 +16,7 @@ import itertools
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
@@ -330,11 +330,13 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
+    READ_CONNECTION_PROFILE,
     WRITE_CONNECTION_PROFILE,
     attach_readonly_database,
     open_connection,
     open_readonly_connection,
     open_source_tier_write_connection,
+    readonly_temp_staging,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
@@ -1005,6 +1007,7 @@ class ArchiveStore:
                     timeout=read_timeout,
                     opened_main_fd=opened_index_fd,
                     validate_schema=False,
+                    profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
                 )
             except sqlite3.OperationalError as exc:
                 # A read-only open of an index tier that is not there is the
@@ -1060,6 +1063,15 @@ class ArchiveStore:
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
         self._conn.row_factory = sqlite3.Row
+        # One comparator belongs to this actual frame. SQLite retires
+        # its callback when this owner's connection closes, after its cursors.
+        from polylogue.archive.query.sorting import compare_numeric_order_values
+
+        def compare_result_number(left: str, right: str) -> int:
+            self.check_operation_read()
+            return compare_numeric_order_values(left, right)
+
+        self._conn.create_collation("polylogue_result_number", compare_result_number)
         for statement in pragma_statements:
             self._conn.execute(statement)
         if read_only and validate_index_layout:
@@ -1346,7 +1358,13 @@ class ArchiveStore:
             for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
         )
 
-    def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
+    def set_read_progress_guard(
+        self,
+        guard: Callable[[], int],
+        *,
+        n_opcodes: int = 2000,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> None:
         """Install a SQLite progress handler on the index read connection.
 
         ``guard`` returning nonzero aborts the active statement with
@@ -1357,9 +1375,16 @@ class ArchiveStore:
         """
         self._conn.set_progress_handler(guard, n_opcodes)
         self._operation_read_guard = (guard, n_opcodes)
+        self._operation_read_checkpoint = check_cancelled
         for connection in (self._source_conn, self.operation_vector_connection):
             if connection is not None:
                 connection.set_progress_handler(guard, n_opcodes)
+
+    def check_operation_read(self) -> None:
+        """Check Python work without inventing SQLite progress measurements."""
+        checkpoint = getattr(self, "_operation_read_checkpoint", None)
+        if checkpoint is not None:
+            checkpoint()
 
     def configure_operation_read_connection(self, connection: sqlite3.Connection) -> None:
         """Extend the current read budget to a newly acquired sibling handle."""
@@ -1372,6 +1397,7 @@ class ArchiveStore:
 
         self._conn.set_progress_handler(None, 0)
         self._operation_read_guard = None
+        self._operation_read_checkpoint = None
         for connection in (self._source_conn, self.operation_vector_connection):
             if connection is not None:
                 connection.set_progress_handler(None, 0)
@@ -6401,7 +6427,7 @@ class ArchiveStore:
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
-    ) -> Iterator[ArchiveSessionSummary]:
+    ) -> Generator[ArchiveSessionSummary, None, None]:
         """Stream session summaries ordered like the normal archive recency view.
 
         One cursor serves the whole read, fetched in batches of
@@ -6451,50 +6477,54 @@ class ArchiveStore:
             params.append(resolved_id)
         order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
         params.extend([-1 if limit is None else limit, 0 if sample else offset])
-        cursor = self._conn.execute(
-            f"""
-            SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id, s.branch_type,
-                   s.session_kind,
-                   s.message_count, s.word_count, s.reported_duration_ms,
-                   s.tool_use_count, s.thinking_count, s.paste_count,
-                   s.user_message_count, s.authored_user_message_count,
-                   s.assistant_message_count, s.system_message_count,
-                   s.tool_message_count, s.user_word_count, s.authored_user_word_count,
-                   s.assistant_word_count,
-                   s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
-                   s.display_name,
-                   sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   COALESCE(
-                       (
-                           SELECT json_group_array(swd.path)
-                           FROM session_working_dirs swd
-                           WHERE swd.session_id = s.session_id
-                           ORDER BY swd.position, swd.path
-                       ),
-                       '[]'
-                   ) AS working_directories_json,
-                   COALESCE(
-                       json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
-                       '[]'
-                   ) AS tags_json
-            FROM sessions s
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            LEFT JOIN {self._tags_relation} st
-              ON st.session_id = s.session_id
-             AND st.tag_source = 'user'
-            {where}
-            GROUP BY s.session_id
-            {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            params,
-        )
-        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
-            for row in rows:
-                yield _summary_from_row(row, self._conn)
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                       s.parent_session_id, s.branch_type,
+                       s.session_kind,
+                       s.message_count, s.word_count, s.reported_duration_ms,
+                       s.tool_use_count, s.thinking_count, s.paste_count,
+                       s.user_message_count, s.authored_user_message_count,
+                       s.assistant_message_count, s.system_message_count,
+                       s.tool_message_count, s.user_word_count, s.authored_user_word_count,
+                       s.assistant_word_count,
+                       s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                       s.display_name,
+                       sp.terminal_state,
+                       (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                       (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                       COALESCE(
+                           (
+                               SELECT json_group_array(swd.path)
+                               FROM session_working_dirs swd
+                               WHERE swd.session_id = s.session_id
+                               ORDER BY swd.position, swd.path
+                           ),
+                           '[]'
+                       ) AS working_directories_json,
+                       COALESCE(
+                           json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
+                           '[]'
+                       ) AS tags_json
+                FROM sessions s
+                LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+                LEFT JOIN {self._tags_relation} st
+                  ON st.session_id = s.session_id
+                 AND st.tag_source = 'user'
+                {where}
+                GROUP BY s.session_id
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    yield _summary_from_row(row, self._conn)
+        finally:
+            cursor.close()
 
     def list_summaries(self, *, limit: int = 50, **filters: Any) -> list[ArchiveSessionSummary]:
         """List one page of session summaries; see :meth:`iter_summaries`."""
@@ -6542,7 +6572,7 @@ class ArchiveStore:
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
         root: bool | None = None,
-    ) -> Iterator[ArchiveSessionSearchHit]:
+    ) -> Generator[ArchiveSessionSearchHit, None, None]:
         """Stream block-text search hits with snippets over one cursor.
 
         ``limit=None`` streams every hit; rows are fetched in batches of
@@ -6609,41 +6639,45 @@ class ArchiveStore:
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
         params.extend([-1 if limit is None else limit, offset])
-        cursor = self._conn.execute(
-            f"""
-            SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
-                   b.search_text AS fallback_text,
-                   snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
-                   rank
-            FROM messages_fts
-            JOIN blocks b ON b.rowid = messages_fts.rowid
-            JOIN sessions s ON s.session_id = b.session_id
-            WHERE messages_fts MATCH ?
-            {where}
-            {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            params,
-        )
-        index = offset
-        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
-            for row in rows:
-                index += 1
-                yield (
-                    ArchiveSessionSearchHit(
-                        rank=index,
-                        session_id=str(row["session_id"]),
-                        block_id=str(row["block_id"]),
-                        message_id=str(row["message_id"]),
-                        origin=str(row["origin"]),
-                        title=str(row["title"]) if row["title"] is not None else None,
-                        snippet=_highlight_search_snippet(
-                            str(row["snippet"] or ""),
-                            fallback=str(row["fallback_text"] or ""),
-                            query=match_query,
-                        ),
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
+                       b.search_text AS fallback_text,
+                       snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
+                       rank
+                FROM messages_fts
+                JOIN blocks b ON b.rowid = messages_fts.rowid
+                JOIN sessions s ON s.session_id = b.session_id
+                WHERE messages_fts MATCH ?
+                {where}
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
+            index = offset
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    index += 1
+                    yield (
+                        ArchiveSessionSearchHit(
+                            rank=index,
+                            session_id=str(row["session_id"]),
+                            block_id=str(row["block_id"]),
+                            message_id=str(row["message_id"]),
+                            origin=str(row["origin"]),
+                            title=str(row["title"]) if row["title"] is not None else None,
+                            snippet=_highlight_search_snippet(
+                                str(row["snippet"] or ""),
+                                fallback=str(row["fallback_text"] or ""),
+                                query=match_query,
+                            ),
+                        )
                     )
-                )
+        finally:
+            cursor.close()
 
     def search_summaries(self, query: str, *, limit: int = 20, **filters: Any) -> list[ArchiveSessionSearchHit]:
         """Return one page of block-text search hits; see :meth:`iter_search_summaries`."""
@@ -6862,6 +6896,139 @@ class ArchiveStore:
         ).fetchall()
         return tuple(str(row["session_id"]) for row in rows)
 
+    @contextmanager
+    def scoped_search_population(self, session_ids: Iterable[str]) -> Iterator[None]:
+        """Own disk-backed scope and lane ranks on the canonical read frame."""
+        try:
+            with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+                cursor.execute("CREATE TEMP TABLE scoped_search_sessions (session_id TEXT PRIMARY KEY)")
+                cursor.execute(
+                    "CREATE TEMP TABLE scoped_search_lane_hits ("
+                    "lane TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL, "
+                    "block_id TEXT NOT NULL, message_id TEXT NOT NULL, origin TEXT NOT NULL, "
+                    "title TEXT, snippet TEXT NOT NULL, PRIMARY KEY (lane, session_id))"
+                )
+                cursor.execute(
+                    "CREATE TEMP TABLE scoped_search_order (session_id TEXT PRIMARY KEY, "
+                    "unmeasured INTEGER NOT NULL, sort_value TEXT NOT NULL COLLATE polylogue_result_number, "
+                    "sort_time INTEGER NOT NULL, "
+                    "sort_id TEXT NOT NULL, sort_ordinal INTEGER NOT NULL) STRICT"
+                )
+                cursor.executemany(
+                    "INSERT OR IGNORE INTO scoped_search_sessions VALUES (?)", ((sid,) for sid in session_ids)
+                )
+            yield
+        finally:
+            self._conn.set_progress_handler(None, 0)
+            try:
+                with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_order")
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_lane_hits")
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_sessions")
+            finally:
+                self.configure_operation_read_connection(self._conn)
+
+    def iter_scoped_search_session_ids(self) -> Generator[str, None, None]:
+        with closing(self._conn.cursor()) as cursor:
+            cursor.execute("SELECT session_id FROM scoped_search_sessions ORDER BY session_id")
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                yield from (str(row[0]) for row in rows)
+
+    def settle_scoped_search_lane(self, lane: str, hits: Iterable[ArchiveSessionSearchHit]) -> None:
+        """Exhaust one lane and retain its first actual witness per scoped session."""
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.executemany(
+                """INSERT OR IGNORE INTO scoped_search_lane_hits
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                   WHERE EXISTS (SELECT 1 FROM scoped_search_sessions WHERE session_id = ?)""",
+                (
+                    (
+                        lane,
+                        hit.session_id,
+                        ordinal,
+                        hit.block_id,
+                        hit.message_id,
+                        hit.origin,
+                        hit.title,
+                        hit.snippet,
+                        hit.session_id,
+                    )
+                    for ordinal, hit in enumerate(hits, start=1)
+                ),
+            )
+
+    def discard_scoped_search_lane(self, lane: str) -> None:
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.execute("DELETE FROM scoped_search_lane_hits WHERE lane = ?", (lane,))
+
+    def settle_scoped_search_order(self, keys: Iterable[tuple[str, bool, int | float, int, str, int]]) -> None:
+        """Stage exact current comparator values without retaining candidates."""
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.executemany(
+                "INSERT INTO scoped_search_order VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    (sid, unmeasured, str(value), time, tie_id, ordinal)
+                    for sid, unmeasured, value, time, tie_id, ordinal in keys
+                ),
+            )
+
+    def iter_scoped_search_hits(
+        self,
+        *,
+        hybrid: bool,
+        explicit_sort: bool = False,
+        reverse: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> Generator[ArchiveSessionSearchHit, None, None]:
+        """Order fully settled session lane ranks, then apply the session window."""
+        ordering = "score DESC, session_id" if hybrid else "vector_rank, session_id"
+        order_join = ""
+        if explicit_sort:
+            direction = "ASC" if reverse else "DESC"
+            ordering = (
+                f"unmeasured ASC, sort_value {direction}, sort_time {direction}, sort_id {direction}, sort_ordinal ASC"
+            )
+            order_join = "JOIN scoped_search_order USING (session_id)"
+        with closing(self._conn.cursor()) as cursor:
+            cursor.execute(
+                f"""WITH lane_ranks AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY lane ORDER BY ordinal, session_id) AS lane_rank
+                    FROM scoped_search_lane_hits
+                ), scores AS (
+                    SELECT session_id, SUM(1.0 / ({_archive_query_reads.HYBRID_RRF_K} + lane_rank)) AS score,
+                           MAX(CASE WHEN lane = 'text' THEN lane_rank END) AS text_rank,
+                           MAX(CASE WHEN lane = 'action' THEN lane_rank END) AS action_rank,
+                           MAX(CASE WHEN lane = 'vector' THEN lane_rank END) AS vector_rank
+                    FROM lane_ranks GROUP BY session_id
+                ), selected AS (
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY {ordering}) AS result_rank
+                    FROM scores {order_join} ORDER BY {ordering} LIMIT ? OFFSET ?
+                ), witnesses AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id
+                        ORDER BY CASE lane WHEN 'text' THEN 0 WHEN 'action' THEN 1 ELSE 2 END) AS witness_rank
+                    FROM lane_ranks
+                )
+                SELECT chosen.*, witness.block_id, witness.message_id, witness.origin, witness.title, witness.snippet
+                FROM selected chosen JOIN witnesses witness USING (session_id)
+                WHERE witness.witness_rank = 1 ORDER BY chosen.result_rank""",
+                (-1 if limit is None else max(limit, 0), offset),
+            )
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    yield ArchiveSessionSearchHit(
+                        rank=int(row["result_rank"]),
+                        session_id=str(row["session_id"]),
+                        block_id=str(row["block_id"]),
+                        message_id=str(row["message_id"]),
+                        origin=str(row["origin"]),
+                        title=row["title"],
+                        snippet=str(row["snippet"]),
+                        lane_ranks={lane: row[f"{lane}_rank"] for lane in ("text", "action", "vector")}
+                        if hybrid
+                        else None,
+                    )
+
     def semantic_summaries(
         self,
         scored_message_ids: list[tuple[str, float]],
@@ -6954,10 +7121,12 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = m.session_id
             LEFT JOIN blocks b
               ON b.message_id = m.message_id
+             AND b.block_type = 'text'
              AND b.position = (
                  SELECT MIN(position)
                  FROM blocks
                  WHERE message_id = m.message_id
+                   AND block_type = 'text'
                    AND text IS NOT NULL
              )
             {where}

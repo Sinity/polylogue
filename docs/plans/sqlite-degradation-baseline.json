@@ -807,10 +807,6 @@
       "digest": "cb7167b3325a15636f2cbc4c82fcde97e67ff56d"
     },
     {
-      "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
-      "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44"
-    },
-    {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",
       "digest": "521aacc1dc4345c4827c7c3ace113ce663bd8b96"
     },

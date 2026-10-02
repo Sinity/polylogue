@@ -50,23 +50,30 @@ def _row_to_session_event(row: sqlite3.Row) -> SessionEventRecord:
     )
 
 
+_SESSION_EVENTS_SQL = """
+    SELECT se.*, s.origin
+    FROM session_events se
+    JOIN sessions s ON s.session_id = se.session_id
+    WHERE se.session_id = ?
+    ORDER BY se.position
+"""
+
+
+def read_session_events(conn: sqlite3.Connection, session_id: str) -> list[SessionEventRecord]:
+    """Read events from a caller-held index snapshot, including attached indexes."""
+    from contextlib import closing
+
+    with closing(conn.cursor()) as cursor:
+        cursor.row_factory = sqlite3.Row
+        return [_row_to_session_event(row) for row in cursor.execute(_SESSION_EVENTS_SQL, (session_id,))]
+
+
 async def get_session_events(
     conn: aiosqlite.Connection,
     session_id: str,
 ) -> list[SessionEventRecord]:
-    rows = await (
-        await conn.execute(
-            """
-            SELECT se.*, s.origin
-            FROM session_events se
-            JOIN sessions s ON s.session_id = se.session_id
-            WHERE se.session_id = ?
-            ORDER BY se.position
-            """,
-            (session_id,),
-        )
-    ).fetchall()
-    return [_row_to_session_event(row) for row in rows]
+    async with conn.execute(_SESSION_EVENTS_SQL, (session_id,)) as cursor:
+        return [_row_to_session_event(row) for row in await cursor.fetchall()]
 
 
 async def get_session_events_batch(

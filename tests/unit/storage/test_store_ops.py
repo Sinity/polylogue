@@ -13,7 +13,7 @@ import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Never, TypeVar, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -56,6 +56,9 @@ from tests.infra.strategies.storage import (
 from tests.infra.strategies.storage import (
     tag_assignment_strategy as infra_tag_assignment_strategy,
 )
+
+_SimilarityT = TypeVar("_SimilarityT")
+
 
 pytestmark = pytest.mark.uses_real_clock(
     "Backend round-trip tests use now() to label a row; storage echoes it back without comparison."
@@ -1638,12 +1641,24 @@ class _VectorSpy:
         del origin
         self.upsert_calls.append((session_id, messages))
 
-    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
-        raise AssertionError("this fixture does not perform retained-session reads")
+    def scoped_query(self, *args: object, **kwargs: object) -> Never:
+        raise AssertionError("document-only fixture does not perform scoped retrieval")
+
+    async def read_similarity(
+        self,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+        limit: int = 10,
+    ) -> _SimilarityT:
+        self.query_calls.append((text or seed_session_id or "", limit))
+        return cast(_SimilarityT, [_session_model("conv-1")])
 
 
 class TestRepositoryVectorAsyncBoundary:
-    async def test_search_similar_offloads_vector_query(
+    async def test_search_similar_delegates_snapshot_and_session_grain(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
@@ -1651,8 +1666,11 @@ class TestRepositoryVectorAsyncBoundary:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = SessionRepository(backend=backend)
         provider = _VectorSpy()
-        monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
-        monkeypatch.setattr(repo, "get_many", AsyncMock(return_value=[_session_model("conv-1")]))
+
+        async def forbidden_get_many(*args: object, **kwargs: object) -> Never:
+            raise AssertionError("hydration must finish in the provider snapshot")
+
+        monkeypatch.setattr(repo, "get_many", forbidden_get_many)
 
         to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
 
@@ -1665,10 +1683,8 @@ class TestRepositoryVectorAsyncBoundary:
         result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
 
         assert [str(session.id) for session in result] == ["conv-1"]
-        assert provider.query_calls == [("semantic query", 12)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+        assert provider.query_calls == [("semantic query", 4)]
+        assert to_thread_calls == []
 
     async def test_embed_session_offloads_vector_upsert(
         self,

@@ -41,6 +41,7 @@ from polylogue.surfaces.payloads import (
 # Canonical fields every surface MUST expose on the search envelope.
 REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
     {
+        "completed_lanes",
         "hits",
         "total",
         "limit",
