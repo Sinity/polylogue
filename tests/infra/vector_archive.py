@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 from typing import Literal
@@ -20,7 +21,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 def seed_vector_archive(
     root: Path,
-    samples: list[tuple[str, str, str, list[float]]],
+    samples: Sequence[tuple[str, str, str, list[float] | None]],
     *,
     model: str = "voyage-4",
 ) -> dict[tuple[str, str], tuple[str, str]]:
@@ -52,21 +53,22 @@ def seed_vector_archive(
                    VALUES (?, ?, 0, 'text', ?, ?)""",
                 (session_id, message_id, text, b"b" * 32),
             )
-            upsert_message_embeddings(
-                vectors,
-                [
-                    ArchiveEmbeddingWrite(
-                        message_id=message_id,
-                        session_id=session_id,
-                        origin=Origin.CODEX_SESSION,
-                        embedding=vector,
-                        model=model,
-                        embedded_at_ms=1_767_225_700_000,
-                        vector_derivation_hash=vector_derivation_hash(model=model, input_text=text),
-                        message_content_hash=b"m" * 32,
-                    )
-                ],
-            )
+            if vector is not None:
+                upsert_message_embeddings(
+                    vectors,
+                    [
+                        ArchiveEmbeddingWrite(
+                            message_id=message_id,
+                            session_id=session_id,
+                            origin=Origin.CODEX_SESSION,
+                            embedding=vector,
+                            model=model,
+                            embedded_at_ms=1_767_225_700_000,
+                            vector_derivation_hash=vector_derivation_hash(model=model, input_text=text),
+                            message_content_hash=b"m" * 32,
+                        )
+                    ],
+                )
             identities[(native_session, native_message)] = (session_id, message_id)
         index_cursor.execute(
             "UPDATE sessions SET message_count = (SELECT COUNT(*) FROM messages m WHERE m.session_id=sessions.session_id), word_count = (SELECT COALESCE(SUM(word_count),0) FROM messages m WHERE m.session_id=sessions.session_id)"

@@ -220,6 +220,7 @@ def open_vector_read_snapshot(
             # refuses this transient handle as a supplied operation snapshot.
             if index_connection is None:
                 attach_readonly_database(conn, selected_index, alias="archive_index")
+            attached: list[sqlite3.Row] = []
             with closing(conn.cursor()) as cursor:
                 cursor.execute("BEGIN")
                 cursor.execute("SELECT rootpage FROM main.sqlite_schema LIMIT 1").fetchone()

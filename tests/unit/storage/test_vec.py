@@ -354,14 +354,13 @@ def test_should_embed_message_contract(
 
 
 @pytest.mark.parametrize(
-    ("messages", "should_ensure"),
-    [([], False), ([make_message(text="short")], True)],
+    "messages",
+    [[], [make_message(text="short")]],
     ids=["empty", "no-embeddable"],
 )
 def test_upsert_noop_contract(
     mock_provider: MutableSqliteVecProvider,
     messages: list[MessageRecord],
-    should_ensure: bool,
 ) -> None:
     """Upsert should short-circuit on empty or non-embeddable input."""
     ensure_vec_available = MagicMock()
@@ -373,12 +372,8 @@ def test_upsert_noop_contract(
 
     mock_provider.upsert("conv-1", messages)
 
-    if should_ensure:
-        ensure_vec_available.assert_called_once()
-        ensure_tables.assert_called_once()
-    else:
-        ensure_vec_available.assert_not_called()
-        ensure_tables.assert_not_called()
+    ensure_vec_available.assert_not_called()
+    ensure_tables.assert_not_called()
     get_connection.assert_not_called()
 
 
@@ -647,6 +642,10 @@ def test_upsert_invalid_carried_hash_refuses_whole_batch_before_acquisition(
         return [[0.1] * 1024 for _ in texts]
 
     mock_provider._get_embeddings = embed
+    mock_provider._ensure_vec_available = MagicMock(
+        side_effect=AssertionError("invalid batch must not admit a provider")
+    )
+    mock_provider._ensure_tables = MagicMock(side_effect=AssertionError("invalid batch must not initialize tables"))
     mock_provider._get_connection = MagicMock(side_effect=AssertionError("invalid batch must not acquire a writer"))
     with pytest.raises(ValueError):
         mock_provider.upsert(

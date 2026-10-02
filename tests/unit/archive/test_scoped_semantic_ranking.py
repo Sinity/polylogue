@@ -17,7 +17,7 @@ from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.operations.operation_context import open_operation_read
-from tests.infra.scoped_semantic import ranking_archive
+from tests.infra.scoped_semantic import declare_ranking_repository, ranking_archive
 
 
 def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,9 +28,7 @@ def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.
         ("eligible-b", "m", "Scoped eligible second result has enough prose", 2.0),
     ]
     config, provider, ids, requests = ranking_archive(root, samples, query_axis=0.0, monkeypatch=monkeypatch)
-    with closing(sqlite3.connect(root / "index.db")) as connection:
-        connection.execute("UPDATE sessions SET git_repository_url = 'target' WHERE title LIKE 'eligible-%'")
-        connection.commit()
+    declare_ranking_repository(root, [ids[(sid, "m")][0] for sid in ("eligible-a", "eligible-b")])
     plan = SessionQueryPlan(similar_text="question", repo_names=("target",), limit=2, vector_provider=provider)
     with open_operation_read(root) as frame:
         result = archive_search_hits(plan, archive_root=root, config=config, archive=frame.archive)
@@ -209,7 +207,9 @@ def test_later_hybrid_winner_uses_complete_original_lane_ranks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "archive"
-    samples = [(f"text-{i}", "m", "needle " * 12 + f"lexical candidate number {i}", 100.0 + i) for i in range(3)]
+    samples: list[tuple[str, str, str, float | None]] = [
+        (f"text-{i}", "m", "needle " * 12 + f"lexical candidate number {i}", None) for i in range(3)
+    ]
     samples += [
         (f"vector-{i}", "m", f"Retained vector candidate without lexical term number {i}", i / 10) for i in range(3)
     ]
@@ -402,7 +402,7 @@ async def test_repository_session_grain_text_and_near_use_complete_same_snapshot
     original_query = provider._query_vector
     caller_thread = threading.get_ident()
 
-    def after_pin(connection: sqlite3.Connection, text: str) -> bytes:
+    def after_pin(connection: sqlite3.Connection, text: str) -> bytes | None:
         assert threading.get_ident() != caller_thread
         # A concurrent replacement after projection must not leak into hydration.
         with closing(sqlite3.connect(root / "index.db")) as writer:
@@ -577,10 +577,8 @@ def test_scope_with_no_current_vectors_refuses_before_query_acquisition(
         query_axis=0.0,
         monkeypatch=monkeypatch,
     )
+    declare_ranking_repository(root, [ids[("inside", "m")][0]])
     with closing(sqlite3.connect(root / "index.db")) as connection:
-        connection.execute(
-            "UPDATE sessions SET git_repository_url = 'target' WHERE session_id = ?", (ids[("inside", "m")][0],)
-        )
         connection.execute(
             "UPDATE blocks SET text = 'Changed scoped prose without a purchased output' WHERE message_id = ?",
             (ids[("inside", "m")][1],),

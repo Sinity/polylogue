@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
 
@@ -22,14 +23,16 @@ def axis_vector(value: float) -> list[float]:
 
 def ranking_archive(
     root: Path,
-    samples: list[tuple[str, str, str, float]],
+    samples: Sequence[tuple[str, str, str, float | None]],
     *,
     query_axis: float,
     monkeypatch: pytest.MonkeyPatch,
     concurrent_writes: bool = False,
 ) -> tuple[Config, SqliteVecProvider, dict[tuple[str, str], tuple[str, str]], list[dict[str, object]]]:
     bootstrap_archive_root(root)
-    identities = seed_vector_archive(root, [(sid, mid, text, axis_vector(value)) for sid, mid, text, value in samples])
+    identities = seed_vector_archive(
+        root, [(sid, mid, text, axis_vector(value) if value is not None else None) for sid, mid, text, value in samples]
+    )
     if concurrent_writes:
         with closing(sqlite3.connect(root / "index.db")) as connection, closing(connection.cursor()) as cursor:
             cursor.execute("PRAGMA journal_mode=WAL")
@@ -49,3 +52,23 @@ def ranking_archive(
     provider = SqliteVecProvider("synthetic-key", db_path=root / "embeddings.db", archive_root=root)
     config = Config(archive_root=root, render_root=root / "render", db_path=root / "index.db", sources=[])
     return config, provider, identities, requests
+
+
+def declare_ranking_repository(root: Path, session_ids: Sequence[str]) -> None:
+    """Project parser-declared repo evidence through the actual edge writer."""
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base_models import ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.write import _write_repo_edges
+
+    remote = "https://example.invalid/neutral/target.git"
+    with closing(sqlite3.connect(root / "index.db")) as connection, closing(connection.cursor()) as cursor:
+        for session_id in session_ids:
+            cursor.execute("UPDATE sessions SET git_repository_url = ? WHERE session_id = ?", (remote, session_id))
+            _write_repo_edges(
+                connection,
+                session_id,
+                ParsedSession(
+                    source_name=Provider.CODEX, provider_session_id=session_id, messages=[], git_repository_url=remote
+                ),
+            )
+        connection.commit()
