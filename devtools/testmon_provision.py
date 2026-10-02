@@ -143,6 +143,7 @@ def inspect_testmon_graph(root: Path, *, datafile: Path | None = None, profile: 
         return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile cannot be opened: {exc}")
     try:
         with contextlib.closing(connection):
+            packages, version = current_environment_key()
             data_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             environment = None
@@ -163,7 +164,6 @@ def inspect_testmon_graph(root: Path, *, datafile: Path | None = None, profile: 
                         raise sqlite3.DatabaseError(f"incompatible {table} columns")
                 recorded_tests = 0
                 source_dependencies = 0
-                packages, version = current_environment_key()
                 environment = connection.execute(
                     "SELECT id, system_packages, python_version FROM environment WHERE environment_name = ? "
                     "ORDER BY (system_packages = ? AND python_version = ?) DESC, id DESC",

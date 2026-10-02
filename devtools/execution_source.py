@@ -40,6 +40,7 @@ class ExecutionSourceGuard:
         self.bindings: list[str] = []
         self.digest: str | None = None
         self.launched = False
+        self.bytecode = Path(tempfile.mkdtemp(prefix=".bytecode-", dir=self.copy))
         try:
             listed = subprocess.run(
                 ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
@@ -108,6 +109,9 @@ class ExecutionSourceGuard:
             "--info-fd",
             str(info.fileno()),
             "--die-with-parent",
+            "--unshare-pid",
+            "--proc",
+            "/proc",
             "--bind",
             "/",
             "/",
@@ -121,6 +125,11 @@ class ExecutionSourceGuard:
             str(self.copy),
             str(self.root),
             *self.bindings,
+            # Source lookups cannot read a timestamp-valid shared pyc or
+            # write a replacement into their immutable lookup directory.
+            "--setenv",
+            "PYTHONPYCACHEPREFIX",
+            str(self.bytecode),
             "--chdir",
             str(self.root),
             "--",
@@ -139,8 +148,22 @@ class ExecutionSourceGuard:
             try:
                 info.seek(0)
                 setup = json.load(info)
-                if not isinstance(setup, dict) or not isinstance(setup.get("child-pid"), int):
+                if (
+                    not isinstance(setup, dict)
+                    or not isinstance(setup.get("child-pid"), int)
+                    or not isinstance(setup.get("pid-namespace"), int)
+                ):
                     self.failure = "readonly boundary setup was not proved"
+                else:
+                    # bwrap reports the namespace init. Its death settles all
+                    # namespace descendants in the kernel, including setsid
+                    # children; a live same namespace cannot publish authority.
+                    try:
+                        namespace = Path(f"/proc/{setup['child-pid']}/ns/pid").stat().st_ino
+                    except FileNotFoundError:
+                        namespace = None
+                    if namespace == setup["pid-namespace"]:
+                        self.failure = "execution PID namespace remains alive"
             except (OSError, ValueError):
                 self.failure = "readonly boundary setup was not proved"
             finally:
@@ -161,6 +184,7 @@ class ExecutionSourceGuard:
             "observer": "readonly_snapshot",
             "reason": self.failure or (None if self.launched else "execution never launched"),
             "git_worktree_content_sha256": self.digest,
+            "pid_namespace_settled": self.launched and bool(self.infos) and self.failure is None,
         }
 
 

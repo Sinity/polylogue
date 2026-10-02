@@ -127,6 +127,85 @@ def test_managed_snapshot_executes_admitted_bytes_despite_transient_mmap_restore
     assert inspect_testmon_graph(root).usable
 
 
+@pytest.mark.parametrize("cache_style", ["prefix", "ordinary"])
+def test_managed_snapshot_rejects_transient_timestamp_valid_shared_bytecode(
+    source_repository: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_style: str,
+) -> None:
+    """Reading a shared timestamp-valid pyc executes 2 despite copied source 1."""
+    import os
+    import py_compile
+    import sys
+
+    from devtools import execution_source
+
+    root = source_repository
+    helper = root / "helper.py"
+    helper.write_text("value = 1\n")
+    (root / "tests/nested/test_one.py").write_text(
+        "import sys, pytest\nfrom pathlib import Path\n"
+        "def test_one():\n"
+        "    import helper\n    assert helper.value == 1\n"
+        "    assert sys.pycache_prefix is not None\n"
+        "    with pytest.raises(OSError):\n"
+        "        (Path(sys.pycache_prefix) / 'write').write_text('synthetic')\n"
+    )
+    prefix = root / ".cache/shared-bytecode"
+    if cache_style == "prefix":
+        monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(prefix))
+        cache = prefix / str(root).lstrip("/") / f"helper.{sys.implementation.cache_tag}.pyc"
+    else:
+        monkeypatch.delenv("PYTHONPYCACHEPREFIX", raising=False)
+        cache = root / "__pycache__" / f"helper.{sys.implementation.cache_tag}.pyc"
+    original = execution_source.ExecutionSourceGuard.__init__
+    before = git_worktree_content_sha256(root)
+
+    def start(guard: Any, checkout: Path) -> None:
+        original(guard, checkout)
+        original_stat = helper.stat()
+        # The cached temporary value has the exact timestamp and byte count
+        # of the already copied source, then the original bytes are restored.
+        timestamp = (guard.copy / "helper.py").stat().st_mtime
+        helper.write_text("value = 2\n")
+        os.utime(helper, (timestamp, timestamp))
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        py_compile.compile(str(helper), cfile=str(cache), doraise=True)
+        helper.write_text("value = 1\n")
+        os.utime(helper, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+
+    monkeypatch.setattr(execution_source.ExecutionSourceGuard, "__init__", start)
+    exit_code, receipt = _record(root)
+    assert exit_code == 0, receipt
+    assert git_worktree_content_sha256(root) == before
+    assert receipt["execution_source"]["status"] == "stable"
+    assert inspect_testmon_graph(root).usable
+
+
+def test_managed_snapshot_settles_detached_children_before_source_publication(source_repository: Path) -> None:
+    """Group-only settlement leaves a setsid writer alive after the receipt."""
+    import time
+
+    root = source_repository
+    (root / "tests/nested/test_one.py").write_text(
+        "import subprocess, sys, time\nfrom pathlib import Path\n"
+        "def test_one():\n"
+        "    subprocess.Popen([sys.executable, '-c',\n"
+        "        \"import time; from pathlib import Path; p=Path('.cache/heartbeat'); \"\n"
+        "        \"exec('while True:\\n p.write_text(str(time.monotonic_ns()))\\n time.sleep(0.01)')\"],\n"
+        "        start_new_session=True)\n"
+        "    while not Path('.cache/heartbeat').exists():\n        time.sleep(0.01)\n"
+    )
+    exit_code, receipt = _record(root)
+    assert exit_code == 0, receipt
+    assert receipt["execution_source"]["pid_namespace_settled"] is True
+    heartbeat = root / ".cache/heartbeat"
+    terminal = heartbeat.read_text()
+    time.sleep(0.1)
+    assert heartbeat.read_text() == terminal
+    assert inspect_testmon_graph(root).usable
+
+
 @pytest.mark.parametrize("mutation", ["write", "replace", "new-directory"])
 def test_managed_snapshot_refuses_source_writes(source_repository: Path, mutation: str) -> None:
     root = source_repository
