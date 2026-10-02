@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from devtools import pytest_slot, verify
+from devtools import pytest_memory, pytest_slot, verify
 from devtools.testmon_provision import inspect_testmon_graph
 from devtools.testmon_provision import testmon_datafile as _testmon_datafile
 from devtools.verify_runs import git_worktree_content_sha256
@@ -226,13 +226,21 @@ def test_managed_snapshot_settles_detached_children_before_source_publication(
     root = source_repository
     samplers: list[Any] = []
     if new_userns:
-        sampler_type = pytest_slot.ProcessGroupMemorySampler
+        sampler_type = pytest_memory.ProcessGroupMemorySampler
 
         def sparse_sampler(*args: Any, **kwargs: Any) -> Any:
             # The initial root sample precedes the nested namespace/detach;
             # this descendant must be discovered from its actual marker.
             kwargs["interval_s"] = 60
             sampler = sampler_type(*args, **kwargs)
+            actual_sample = sampler.sample
+
+            def sample_then_release() -> Any:
+                sample = actual_sample()
+                (root / ".cache/initial-sample").touch()
+                return sample
+
+            monkeypatch.setattr(sampler, "sample", sample_then_release)
             samplers.append(sampler)
             return sampler
 
@@ -261,6 +269,7 @@ def test_managed_snapshot_settles_detached_children_before_source_publication(
         "def test_one():\n"
         f"    command = [sys.executable, '-c', {detached!r}]\n"
         + (
+            "    while not Path('.cache/initial-sample').exists():\n        time.sleep(0.001)\n"
             "    command = ['bwrap', '--unshare-user', '--uid', '0', '--gid', '0', '--bind', '/', '/', '--', *command]\n"
             if new_userns
             else ""

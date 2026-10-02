@@ -786,7 +786,9 @@ def test_custody_settlement_excludes_actual_opaque_host_ancestor_peer(
         )
         is None
     )
-    assert pytest_memory._identity(pid, proc=host_proc) == identity
+    after = pytest_memory._identity(pid, proc=host_proc)
+    assert after is not None and after.state not in {"Z", "X"}
+    assert (after.start_ticks, after.group) == (identity.start_ticks, identity.group)
 
 
 def test_namespace_exclusion_revalidates_the_exact_birth_after_map_read(

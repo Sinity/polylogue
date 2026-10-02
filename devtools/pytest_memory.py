@@ -145,6 +145,7 @@ def settle_custody(
     pinned: dict[int, tuple[_Identity, int]] = {}
     unavailable = False
     dead_births: set[tuple[int, int]] = set()
+    raced = False
     try:
         for termination, grace in ((signal.SIGTERM, term_grace_s), (signal.SIGKILL, kill_grace_s)):
             deadline = time.monotonic() + grace
@@ -248,21 +249,25 @@ def settle_custody(
                     poller.register(descriptor, select.POLLIN)
                 poller.poll(max(1, int(min(0.05, deadline - time.monotonic()) * 1000)))
         evidence = []
-        for pid, (proof, descriptor) in pinned.items():
+        for pid, (identity_proof, descriptor) in pinned.items():
             poller = select.poll()
             poller.register(descriptor, select.POLLIN)
-            dead = any(events & select.POLLIN for _descriptor, events in poller.poll(0))
+            physically_dead = any(events & select.POLLIN for _descriptor, events in poller.poll(0))
             current = _identity(pid, proc=proc)
-            same_birth = current is not None and current.start_ticks == proof.start_ticks
+            same_birth = current is not None and current.start_ticks == identity_proof.start_ticks
             marker_state = _marker_matches(pid, marker, proc=proc) if same_birth else None
             evidence.append(
                 {
                     "pid": pid,
-                    "start_ticks": proof.start_ticks,
-                    "state": "exited" if dead else "reused" if current is not None and not same_birth else "live",
+                    "start_ticks": identity_proof.start_ticks,
+                    "state": "exited"
+                    if physically_dead
+                    else "reused"
+                    if current is not None and not same_birth
+                    else "live",
                     "proc_state": current.state if same_birth and current is not None else None,
                     "marker": "owned" if marker_state is True else "foreign" if marker_state is False else "unreadable",
-                    "owned_birth": births.get(pid) == proof.start_ticks,
+                    "owned_birth": births.get(pid) == identity_proof.start_ticks,
                 }
             )
         return "execution custody did not settle: " + json.dumps(
