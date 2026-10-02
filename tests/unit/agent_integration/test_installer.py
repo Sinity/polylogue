@@ -642,3 +642,117 @@ def test_a_killed_uninstall_converges_on_rerun(tmp_path: Path, monkeypatch: pyte
     assert receipt["ok"] is True
     clients = cast(list[dict[str, object]], receipt["clients"])
     assert all(not client["retained_drift"] for client in clients)
+
+
+@pytest.mark.parametrize("updated_client", ["claude-code", "codex", "gemini", "hermes"])
+@pytest.mark.parametrize("upgrade", ["digest", "version"])
+def test_selective_package_upgrade_reports_each_clients_currency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, updated_client: str, upgrade: str
+) -> None:
+    """Aggregate-only currency hides the other three untouched native installs."""
+    from click.testing import CliRunner
+
+    from polylogue.agent_integration import assets, installer
+    from polylogue.agent_integration.spec import ASSET_VERSION
+    from polylogue.cli.commands import agent
+    from tests.infra.agent_asset_package import copy_agent_package
+
+    package = copy_agent_package(tmp_path / "package")
+    monkeypatch.setattr(assets, "files", lambda _name: package)
+    manager, _, polylogue, server = _manager(tmp_path)
+    manager.install(_options(polylogue, server))
+    original_state = json.loads(manager.state_path.read_text())
+    assert manager.doctor()["ok"] is True
+    current_version = ASSET_VERSION
+    if upgrade == "digest":
+        manual = package / "standing-manual.md"
+        manual.write_text(manual.read_text() + "\nNeutral package revision B.\n")
+    else:
+        current_version += "-neutral-B"
+        monkeypatch.setattr(installer, "ASSET_VERSION", current_version)
+    before_reinstall = manager.status()
+    assert before_reinstall["asset_current"] is False
+    assert all(row["asset_current"] is False for row in cast(list[dict[str, object]], before_reinstall["clients"]))
+
+    manager.install(_options(polylogue, server, clients=(updated_client,)))
+    after_state = json.loads(manager.state_path.read_text())
+    stale = set(original_state["clients"]) - {updated_client}
+    for name in stale:
+        assert after_state["clients"][name] == original_state["clients"][name]
+    assert after_state["asset_digest"] == agent_asset_digest()
+    assert after_state["content_version"] == current_version
+    # Native evidence is still intact; stale package provenance is independent.
+    for observe in (manager.status, manager.doctor):
+        payload = observe()
+        assert payload["ok"] is False and payload["blocking"] is True
+        assert payload["asset_current"] is False
+        clients = {row["client"]: row for row in cast(list[dict[str, object]], payload["clients"])}
+        assert clients[updated_client]["asset_current"] is True
+        assert {name for name, row in clients.items() if row["asset_current"] is False} == stale
+        assert all(row["native_ok"] is True for row in clients.values())
+        assert len(cast(list[str], payload["problems"])) == len(stale)
+
+    monkeypatch.setattr(agent, "_manager", lambda: manager)
+    for command in ("status", "doctor"):
+        plain = CliRunner().invoke(agent.agent_command, [command])
+        assert plain.exit_code == 1
+        assert f"  {updated_client}: ok\n" in plain.output
+        assert all(f"  {name}: attention\n" in plain.output for name in stale)
+        output = CliRunner().invoke(agent.agent_command, [command, "--format", "json"])
+        assert output.exit_code == 1
+        assert json.loads(output.output) == getattr(manager, command)()
+    # Reconcile remaining clients through the real native owner, not state edits.
+    manager.install(_options(polylogue, server))
+    assert manager.status()["asset_current"] is True
+    assert manager.doctor()["ok"] is True
+
+
+@pytest.mark.parametrize(
+    "field,value", [("asset_digest", "neutral-old-digest"), ("content_version", "neutral-old-version")]
+)
+def test_current_clients_do_not_inherit_stale_aggregate_observations(tmp_path: Path, field: str, value: str) -> None:
+    from polylogue.agent_integration.installer import _sign_state
+
+    manager, _, polylogue, server = _manager(tmp_path)
+    manager.install(_options(polylogue, server))
+    state = json.loads(manager.state_path.read_text())
+    state[field] = value
+    manager.state_path.write_text(json.dumps(_sign_state(state)))
+    before = manager.state_path.read_bytes()
+    for observe in (manager.status, manager.doctor):
+        payload = observe()
+        assert payload[field] == value
+        assert payload["asset_current"] is True and payload["ok"] is True
+        assert all(row["asset_current"] is True for row in cast(list[dict[str, object]], payload["clients"]))
+    assert manager.state_path.read_bytes() == before
+
+
+def test_uninstalled_currency_and_selective_removal_use_remaining_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.agent_integration import assets
+    from tests.infra.agent_asset_package import copy_agent_package
+
+    package = copy_agent_package(tmp_path / "package")
+    monkeypatch.setattr(assets, "files", lambda _name: package)
+    manager, _, polylogue, server = _manager(tmp_path)
+    assert manager.status()["asset_current"] is True
+    assert manager.status()["installed"] is False
+    assert manager.doctor()["ok"] is False
+    manager.install(_options(polylogue, server, clients=("codex", "gemini")))
+    manual = package / "standing-manual.md"
+    manual.write_text(manual.read_text() + "\nNeutral package revision B.\n")
+    manager.install(_options(polylogue, server, clients=("codex",)))
+    manager.uninstall(("codex",))
+    assert manager.status()["asset_current"] is False
+    assert manager.doctor()["ok"] is False
+    manager.install(_options(polylogue, server, clients=("codex",)))
+    manager.uninstall(("gemini",))
+    payload = manager.status()
+    assert payload["asset_current"] is True and payload["ok"] is True
+    assert [row["client"] for row in cast(list[dict[str, object]], payload["clients"])] == ["codex"]
+    assert manager.doctor()["ok"] is True
+    manager.uninstall()
+    assert manager.status()["installed"] is False
+    assert manager.status()["asset_current"] is True
+    assert manager.doctor()["ok"] is False

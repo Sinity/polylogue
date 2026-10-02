@@ -1476,16 +1476,19 @@ class AgentIntegrationManager:
         clients_state = cast(dict[str, object], clients_raw) if isinstance(clients_raw, dict) else {}
         clients_payload: list[dict[str, object]] = []
         current_asset_digest = agent_asset_digest()
-        asset_current = (
-            state.get("asset_digest") == current_asset_digest and state.get("content_version") == ASSET_VERSION
-        )
-        blocking = not asset_current
-        problems: list[str] = (
-            [] if asset_current else ["installed guidance assets are stale; reinstall to reconcile them"]
-        )
+        asset_current = True
+        blocking = False
+        problems: list[str] = []
         for client, raw_client in sorted(clients_state.items()):
             if not isinstance(raw_client, dict):
                 continue
+            client_asset_current = (
+                raw_client.get("asset_digest") == current_asset_digest
+                and raw_client.get("content_version") == ASSET_VERSION
+            )
+            asset_current = asset_current and client_asset_current
+            if not client_asset_current:
+                problems.append(f"{client}: installed guidance assets are stale; reinstall to reconcile them")
             operation_statuses = [
                 _observe_operation(operation).to_dict()
                 for operation in _as_operation_map(raw_client.get("operations")).values()
@@ -1500,7 +1503,7 @@ class AgentIntegrationManager:
             )
             if interrupted:
                 problems.append(f"{client}: an install was interrupted; rerun install or uninstall to resolve it")
-            blocking = blocking or operation_blocking
+            blocking = blocking or operation_blocking or not client_asset_current
             server_command = cast(str, raw_client.get("server_command", "polylogue-mcp"))
             polylogue_command = cast(str, raw_client.get("polylogue_command", "polylogue"))
             executables = {
@@ -1518,6 +1521,7 @@ class AgentIntegrationManager:
                     "config_path": raw_client.get("config_path"),
                     "content_version": raw_client.get("content_version"),
                     "asset_digest": raw_client.get("asset_digest"),
+                    "asset_current": client_asset_current,
                     "operations": operation_statuses,
                     "executables": executables,
                     "interrupted": interrupted,
