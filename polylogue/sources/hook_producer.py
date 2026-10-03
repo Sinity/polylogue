@@ -393,7 +393,7 @@ class _CompactionSink:
         return path
 
     def seal(self) -> None:
-        """Fsync every carrier written, and the directories holding them."""
+        """Persist carriers and their path from the durable spool root."""
 
         directories: set[Path] = set()
         for path in self.carriers:
@@ -402,8 +402,15 @@ class _CompactionSink:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-            directories.add(path.parent)
-        for directory in directories:
+            directory = path.parent
+            while True:
+                directories.add(directory)
+                if directory == self._root:
+                    break
+                directory = directory.parent
+        # Existing directories can be left by an interrupted checkpoint whose
+        # directory barrier failed. Existence is not a durability receipt.
+        for directory in sorted(directories, key=lambda path: (len(path.parts), str(path))):
             fsync_directory(directory)
 
 

@@ -44,7 +44,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
 )
-from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.durable_fs import atomic_replace, sync_directory
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import dumps_bytes
@@ -895,6 +895,10 @@ def admit_staged_capture(
             if convergence is not CaptureConvergence.PUBLISH:
                 # A duplicate echoes the incoming fingerprint; a superseded
                 # delivery echoes the fingerprint of the revision that stays.
+                # A previous rename may have succeeded before its directory
+                # barrier failed. Settle that path before acknowledging reuse.
+                sync_directory(root)
+                sync_directory(target.parent)
                 return BrowserCaptureWriteResult(
                     provider=summary.provider.value,
                     provider_session_id=summary.provider_session_id,
@@ -920,12 +924,10 @@ def admit_staged_capture(
         else:
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=None)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Establish the provider entry in the durable spool root first.
+        sync_directory(root)
         os.replace(staged.path, target)
-        directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        sync_directory(target.parent)
     return BrowserCaptureWriteResult(
         provider=summary.provider.value,
         provider_session_id=summary.provider_session_id,

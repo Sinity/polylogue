@@ -1520,3 +1520,63 @@ def test_selection_without_native_session_coordinates_is_refused(tmp_path: Path,
         body = json.loads(response.read())
     assert response.status == HTTPStatus.BAD_REQUEST
     assert body["error"] == "exact_message_evidence_required"
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("fault_directory", [None, "root", "provider"])
+def test_receiver_settles_ancestor_barriers_before_http_ack_and_duplicate_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool, fault_directory: str | None
+) -> None:
+    """Failed post-rename sync cannot become an acknowledged duplicate on retry."""
+    import os
+    import stat
+
+    provider_dir = tmp_path / "chatgpt"
+    if preexisting:
+        provider_dir.mkdir()
+    events: list[Path | str] = []
+    real_sync, real_replace = os.fsync, os.replace
+    fault = None if fault_directory is None else {"root": tmp_path, "provider": provider_dir}[fault_directory]
+    envelope = BrowserCaptureEnvelope.model_validate(_payload())
+    target = capture_artifact_path(envelope, tmp_path)
+
+    def sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            events.append(directory)
+            if directory == fault:
+                raise OSError(errno.EIO, "injected directory barrier failure")
+        else:
+            events.append("file")
+        real_sync(fd)
+
+    def replace(source: object, destination: object) -> None:
+        if Path(destination) == target:  # type: ignore[arg-type]
+            assert events == ["file", tmp_path]
+            events.append("publish")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(os, "replace", replace)
+    with _running_receiver(tmp_path) as (host, port):
+
+        def post() -> tuple[int, dict[str, object]]:
+            response = _request(host, port, "POST", "/v1/browser-captures", body=_payload(), origin=_EXTENSION_ORIGIN)
+            return response.status, json.loads(response.read())
+
+        if fault is not None:
+            status, body = post()
+            assert status == HTTPStatus.INTERNAL_SERVER_ERROR
+            assert body["error"] == "write_failed"
+            assert target.exists() is (fault_directory == "provider")
+            fault = None
+            events.clear()
+        status, body = post()
+        assert status == HTTPStatus.ACCEPTED
+        assert body["ok"] is True
+        if fault_directory == "provider":
+            assert body["deduplicated"] is True
+            assert events == ["file", tmp_path, provider_dir]
+        else:
+            assert events == ["file", tmp_path, "publish", provider_dir]
+        assert target.exists()
