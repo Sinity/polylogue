@@ -1,4 +1,4 @@
-"""A queued focused run adjudicates its failures inside the slot it holds."""
+"""Explicit retry diagnostics retain attempt-bound evidence."""
 
 from __future__ import annotations
 
@@ -26,9 +26,7 @@ def _failed_report(path: Path, nodeid: str) -> None:
 def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The job writes the rerun record the client adjudicates from.
 
-    Anti-vacuity: drop the ``_rerun_failures_in_slot`` call from the launch
-    path's exit-1 branch (or this helper's write) and no record appears, so
-    the client queues a second job for its rerun.
+    This calls the diagnostic helper explicitly; ordinary launches do not retry.
     """
     step = tmp_path / "step"
     step.mkdir()
@@ -127,12 +125,10 @@ def test_a_rerun_that_fails_again_stays_red(tmp_path: Path) -> None:
     ("rerun_exit", "outcome", "cleared"),
     [(0, "passed", True), (1, "failed", False), (0, "skipped", False)],
 )
-def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int, outcome: str, cleared: bool) -> None:
-    """A queued run whose in-slot rerun cleared every failure disposes of its scratch.
-
-    Anti-vacuity: ignore the rerun record in ``run_pytest`` and a cleared run
-    keeps its scratch tree, which only a later sweep would remove.
-    """
+def test_explicit_diagnostic_record_reports_only_complete_passes(
+    tmp_path: Path, rerun_exit: int, outcome: str, cleared: bool
+) -> None:
+    """A diagnostic pass needs every attempted node, including skipped nodes."""
     step = tmp_path / "step"
     step.mkdir()
     (step / RERUN_IN_SLOT_RESULT).write_text(
@@ -511,3 +507,68 @@ def test_rerun_provenance_is_taken_after_the_first_group_is_reaped(
         )
 
     assert order == ["reap", "provenance"]
+
+
+def test_failed_launch_retains_scratch_even_with_a_passing_diagnostic_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "attempt.tmpdir"
+    scratch.mkdir()
+    basetemp = tmp_path / "attempt"
+    basetemp.mkdir()
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / RERUN_IN_SLOT_RESULT).write_text(json.dumps({"attempted": ["t"], "rerun_exit": 0}), encoding="utf-8")
+    (step / "pytest-rerun.json").write_text(
+        json.dumps({"tests": [{"nodeid": "t", "outcome": "passed"}]}), encoding="utf-8"
+    )
+    env = {RERUN_IN_SLOT_ENV: json.dumps({"step_dir": str(step)})}
+    monkeypatch.setattr(pytest_slot, "contained_pytest_run", lambda command, **_kwargs: (command, env, scratch))
+    monkeypatch.setattr(pytest_slot, "sweep_stale_temp_trees", lambda _path: None)
+    monkeypatch.setattr(pytest_slot, "holds_pytest_slot", lambda _env: False)
+    monkeypatch.setattr(
+        pytest_slot, "_submit", lambda *_args, **_kwargs: pytest_slot.SlotOutcome(returncode=1, slot="fixture")
+    )
+    outcome = pytest_slot.run_pytest(["pytest"], cwd=str(tmp_path), env=env, root=tmp_path)
+    assert outcome.returncode == 1
+    assert scratch.is_dir()
+    assert basetemp.is_dir()
+
+
+def test_queued_failure_does_not_launch_an_automatic_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools import worker_memory
+
+    marker = tmp_path / "first-attempt"
+    monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+    monkeypatch.setattr(pytest_slot, "charge_profile_for", lambda _env: (worker_memory.ChargeProfile(1, 1, 1), 1))
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv, **_kwargs: (list(argv), {"admission": "admitted", "workers": 1, "requested_workers": 1}),
+    )
+
+    def unexpected_retry(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("queued ordinary failure must not automatically retry")
+
+    monkeypatch.setattr(pytest_slot, "_rerun_failures_in_slot", unexpected_retry)
+    launch = tmp_path / "launch.json"
+    launch.write_text(
+        json.dumps(
+            {
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    f"from pathlib import Path; Path({str(marker)!r}).write_text('ran'); raise SystemExit(1)",
+                ],
+                "working_directory": str(tmp_path),
+                "environment": dict(os.environ),
+                "log_path": str(tmp_path / "pytest.log"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert pytest_slot._run_launch(launch) == 1
+    assert marker.read_text(encoding="utf-8") == "ran"
+    receipt = json.loads(pytest_slot._slot_result_path(tmp_path / "pytest.log").read_text(encoding="utf-8"))
+    assert receipt["exit_code"] == 1
+    assert receipt["status"] == "failed"

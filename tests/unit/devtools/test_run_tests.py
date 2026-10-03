@@ -1050,138 +1050,46 @@ def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
     assert recorded["diagnosis"] == "pytest_slot_unavailable"
 
 
-def test_a_focused_run_reruns_its_failures_alone_before_reporting_red(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("runner", ["managed", "isolated"])
+def test_a_focused_failure_retains_its_first_report_without_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runner: str
 ) -> None:
-    """``devtools test`` adjudicates contention the same way ``devtools verify`` does.
-
-    The pool runs many focused selections at once, so a focused run is if
-    anything MORE exposed to load-induced failure than the broad verifier --
-    yet only the broad verifier reran. Three tests went red under contention
-    in one session and cost real lane budget proving they were not
-    regressions.
-
-    Anti-vacuity: delete the ``rerun_failed_once`` call from
-    ``devtools.run_tests._run`` and this returns 1 with no ``rerun`` key;
-    delete the ``not rerun["still_failed"]`` guard and ``test_red`` below is
-    reported as green.
-    """
-    step_dir = tmp_path / "step"
-    step_dir.mkdir()
     report_path = tmp_path / "pytest-report.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "exitcode": 1,
-                "summary": {"failed": 2, "passed": 1, "exitstatus": 1},
-                "tests": [
-                    {"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"},
-                    {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
-                    {"nodeid": "tests/test_a.py::test_ok", "outcome": "passed"},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    rerun_selections: list[list[str]] = []
+    original = json.dumps({"exitcode": 1, "tests": [{"nodeid": "tests/test_a.py::test_red", "outcome": "failed"}]})
+    report_path.write_text(original, encoding="utf-8")
+    calls: list[list[str]] = []
 
-    def fake_rerun_pytest(cmd: list[str], **_kwargs: Any) -> SlotOutcome:
-        rerun_selections.append([arg for arg in cmd if arg.startswith("tests/")])
-        rerun_report = Path(next(arg for arg in cmd if arg.startswith("--polylogue-report-file=")).split("=", 1)[1])
-        rerun_report.write_text(
-            json.dumps(
-                {
-                    "tests": [
-                        {"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"},
-                        {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
+    def execute(command: list[str], **kwargs: Any) -> SlotOutcome:
+        calls.append(command)
+        assert "POLYLOGUE_PYTEST_RERUN_IN_SLOT" not in kwargs["env"]
         return SlotOutcome(returncode=1, slot="held")
 
-    monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
-    monkeypatch.setattr("devtools.pytest_rerun.venv_python", lambda root: "python")
-    monkeypatch.setattr("devtools.pytest_rerun.run_pytest", fake_rerun_pytest)
-    monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: SlotOutcome(returncode=1, slot="held"))
+    def unexpected_retry(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("ordinary failure must not trigger a diagnostic retry")
 
+    monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
+    monkeypatch.setattr(run_tests, "run_pytest", execute)
+    monkeypatch.setattr(run_tests, "run_pytest_isolated", execute)
+    monkeypatch.setattr("devtools.pytest_rerun.rerun_failed_once", unexpected_retry)
     exit_code, _elapsed, metadata = run_tests._run(
         "pytest focused",
         ["pytest"],
         cwd=str(tmp_path),
         env={},
         run=cast(VerifyRun, None),
-        artifacts=cast(Any, SimpleNamespace(step_dir=step_dir)),
+        artifacts=cast(Any, SimpleNamespace(step_dir=tmp_path)),
         report_path=report_path,
+        runner=runner,
     )
-
-    # Exactly the failures are reselected; the passing test is not rerun.
-    assert rerun_selections == [["tests/test_a.py::test_flaky", "tests/test_a.py::test_red"]]
-    assert metadata["rerun"]["flaky"] == ["tests/test_a.py::test_flaky"]
-    assert metadata["rerun"]["still_failed"] == ["tests/test_a.py::test_red"]
-    # A test that failed twice still decides the run.
     assert exit_code == 1
     assert metadata["diagnosis"] == "pytest_failed"
-    patched = json.loads(report_path.read_text(encoding="utf-8"))
-    by_id = {test["nodeid"]: test for test in patched["tests"]}
-    assert by_id["tests/test_a.py::test_flaky"]["flaky"] is True
-    assert by_id["tests/test_a.py::test_red"]["outcome"] == "failed"
-
-
-def test_a_focused_run_whose_every_failure_passes_alone_is_green_with_its_flakes_named(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Anti-vacuity: drop the ``returncode = 0`` promotion and this stays 1."""
-    step_dir = tmp_path / "step"
-    step_dir.mkdir()
-    report_path = tmp_path / "pytest-report.json"
-    report_path.write_text(
-        json.dumps(
-            {
-                "exitcode": 1,
-                "summary": {"failed": 1, "exitstatus": 1},
-                "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"}],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    def fake_rerun_pytest(cmd: list[str], **_kwargs: Any) -> SlotOutcome:
-        Path(next(arg for arg in cmd if arg.startswith("--polylogue-report-file=")).split("=", 1)[1]).write_text(
-            json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]}),
-            encoding="utf-8",
-        )
-        return SlotOutcome(returncode=0, slot="held")
-
-    monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
-    monkeypatch.setattr("devtools.pytest_rerun.venv_python", lambda root: "python")
-    monkeypatch.setattr("devtools.pytest_rerun.run_pytest", fake_rerun_pytest)
-    monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: SlotOutcome(returncode=1, slot="held"))
-
-    exit_code, _elapsed, metadata = run_tests._run(
-        "pytest focused",
-        ["pytest"],
-        cwd=str(tmp_path),
-        env={},
-        run=cast(VerifyRun, None),
-        artifacts=cast(Any, SimpleNamespace(step_dir=step_dir)),
-        report_path=report_path,
-    )
-
-    assert exit_code == 0
-    assert metadata["diagnosis"] == "pytest_passed"
-    assert metadata["rerun"]["flaky"] == ["tests/test_a.py::test_flaky"]
-    # Green, never green silently: the receipt names what only passed alone.
-    assert json.loads(report_path.read_text(encoding="utf-8"))["flaky_nodeids"] == ["tests/test_a.py::test_flaky"]
+    assert "rerun" not in metadata
+    assert calls == [["pytest"]]
+    assert report_path.read_text(encoding="utf-8") == original
 
 
 def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Exit 2/3/4 describe the run, not its tests; a rerun cannot speak to them.
-
-    Anti-vacuity: widen the ``returncode == 1`` guard to ``!= 0`` and the
-    rerun fires for an internal error, reporting a broken run as flaky.
-    """
+    """An internal execution failure also retains its original exit."""
     report_path = tmp_path / "pytest-report.json"
     report_path.write_text(
         json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_x", "outcome": "failed"}]}), encoding="utf-8"

@@ -42,9 +42,6 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import (
     report_nodeid_to_selector,
-    rerun_failed_once,
-    semantic_rerun_options,
-    testmon_rerun_environment,
 )
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
@@ -811,7 +808,6 @@ def _run(
     hypothesis_profile: str | None = None
     hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
-    rerun: dict[str, Any] | None = None
     termination: dict[str, Any] = {}
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
@@ -862,26 +858,6 @@ def _run(
         termination = termination_metadata(outcome)
         completed = subprocess.CompletedProcess(command, outcome.returncode)
         metadata_receipt = outcome.receipt
-        # Exit 1 is "tests failed", the only outcome a rerun can speak to.
-        # Exit 2 (interrupted), 3 (internal error), 4 (usage) and the signal
-        # codes describe the run itself; recovering them would report a
-        # broken run as a recovered flake.
-        rerun = (
-            rerun_failed_once(
-                report_path=_pytest_report_path(command),
-                step_dir=artifacts.step_dir,
-                env=env,
-                root=ROOT,
-                runner=runner,
-                first_provenance=(
-                    metadata_receipt.get("worktree_provenance") if isinstance(metadata_receipt, dict) else None
-                ),
-                options=semantic_rerun_options(command),
-                testmon_env=testmon_rerun_environment(command),
-            )
-            if completed.returncode == 1
-            else None
-        )
     else:
         try:
             completed = _run_gate_process(command, env=env)
@@ -908,13 +884,6 @@ def _run(
         suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
         if suite_cost_receipt is not None:
             metadata["suite_cost_receipt"] = str(suite_cost_receipt)
-        if rerun is not None:
-            metadata["rerun"] = rerun
-            if not rerun["still_failed"]:
-                # Every failure passed alone: the step is green with its
-                # flakes named, never green silently.
-                metadata["diagnosis"] = "gate_passed"
-                completed = subprocess.CompletedProcess(command, 0)
         metadata.update(_copy_pytest_report(command, artifacts))
         _project_latest_pytest_report(command)
         copy_current_pytest_artifacts(

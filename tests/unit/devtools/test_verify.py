@@ -1204,6 +1204,47 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
     assert statistics["event_count"] == 1
 
 
+@pytest.mark.parametrize("runner", ["managed", "isolated"])
+def test_verify_retains_first_failure_without_retry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, runner: str
+) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    calls: list[list[str]] = []
+
+    def execute(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        calls.append(command)
+        report = verify._pytest_report_path(command)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(
+            json.dumps(
+                {
+                    "exitcode": 1,
+                    "summary": {"failed": 1},
+                    "tests": [{"nodeid": "tests/test_a.py::test_red", "outcome": "failed"}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=1, slot="held", receipt=None, termination=None)
+
+    def unexpected_retry(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("ordinary verification must not retry")
+
+    monkeypatch.setattr(verify, "run_pytest", execute)
+    monkeypatch.setattr(verify, "run_pytest_isolated", execute)
+    monkeypatch.setattr(pytest_rerun, "rerun_failed_once", unexpected_retry)
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+    exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run, runner=runner)
+    assert exit_code == 1
+    assert len(calls) == 1
+    assert "rerun" not in metadata
+    assert (
+        json.loads(verify._pytest_report_path(calls[0]).read_text(encoding="utf-8"))["tests"][0]["outcome"] == "failed"
+    )
+
+
 def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
