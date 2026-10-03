@@ -20,12 +20,6 @@ from polylogue.analysis.run_projection import (
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.core.types import SessionId
-from polylogue.storage.runtime import (
-    SessionContextSnapshotRecord,
-    SessionObservedEventRecord,
-    SessionRunRecord,
-)
 from polylogue.storage.sqlite.action_pairs import action_pairing_ctes_sql
 
 
@@ -38,16 +32,6 @@ def _tuple_from_json_array(value: object) -> tuple[str, ...]:
     if not isinstance(loaded, list):
         return ()
     return tuple(str(item) for item in loaded if item is not None)
-
-
-def _int_value(value: object, *, default: int) -> int:
-    if value is None:
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str | bytes | bytearray):
-        return int(value)
-    return default
 
 
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
@@ -78,17 +62,16 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
     def visit(current: QueryPredicate) -> bool:
         if isinstance(current, QueryBoolPredicate):
             if current.op != "and":
-                return False
+                # An OR cannot be narrowed by one arm. The final predicate
+                # remains authoritative; leave this source scan unrestricted.
+                return True
             return all(visit(child) for child in current.children)
         if isinstance(current, QueryFieldPredicate):
             field = current.bound_field_name(context="lowering observed-event source predicates")
             if field == "kind":
-                # 'tool_finished' discriminates against session_started_base
-                # (the other branch of the source_observed_events UNION), so
-                # it is itself selective -- without this, "kind:tool_finished"
-                # alone (no tool:/handler:/status: predicate alongside it)
-                # falls through to the "not selective" 0=1 fallback below and
-                # silently returns zero rows despite real matching evidence.
+                # This branch contains only tool completions. A kind that
+                # excludes them can omit its scan; otherwise the outer
+                # predicate still selects the requested event kinds.
                 add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=True)
                 return "tool_finished" in {value.strip().lower() for value in current.values}
             if field == "delivery_state":
@@ -141,8 +124,10 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
         return True
 
     supported = visit(predicate)
-    if not supported or not selective:
+    if not supported:
         return "0=1", []
+    if not selective:
+        return "1=1", []
     return " AND ".join(clauses) if clauses else "1=1", params
 
 
@@ -565,40 +550,4 @@ def context_snapshot_from_row(row: RowLike) -> ContextSnapshot:
         segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
         evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
         metadata=dict(json.loads(str(row["metadata_json"] or "{}"))),
-    )
-
-
-def row_to_session_run_record(row: RowLike) -> SessionRunRecord:
-    return SessionRunRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        run=projected_run_from_row(row),
-        search_text=str(row["search_text"] or ""),
-    )
-
-
-def row_to_session_observed_event_record(row: RowLike) -> SessionObservedEventRecord:
-    return SessionObservedEventRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        event=observed_event_from_row(row),
-        search_text=str(row["search_text"] or ""),
-    )
-
-
-def row_to_session_context_snapshot_record(row: RowLike) -> SessionContextSnapshotRecord:
-    return SessionContextSnapshotRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        snapshot=context_snapshot_from_row(row),
-        search_text=str(row["search_text"] or ""),
     )
