@@ -4978,6 +4978,9 @@ def query_observed_events(
     else:
         order_by = "e.session_id, e.position, e.event_ref"
     source_where, source_params = observed_event_source_pushdown(predicate)
+    session_ids = _exact_session_ids_from_predicate(predicate)
+    session_scoped = session_ids is not None and len(session_ids) == 1
+    pairing_params: list[object] = [session_ids[0], session_ids[0]] if session_scoped and session_ids else []
     clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
     session_clause = ""
     session_params: list[object] = []
@@ -4985,7 +4988,7 @@ def query_observed_events(
         session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
     rows = self._conn.execute(
         f"""
-        {observed_event_relation_sql(source_where=source_where)}
+        {observed_event_relation_sql(source_where=source_where, session_scoped=session_scoped)}
         SELECT e.*, s.origin, s.title
         FROM observed_events e
         JOIN sessions s ON e.session_id = s.session_id
@@ -4994,7 +4997,7 @@ def query_observed_events(
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
         """,
-        [*source_params, *params, *session_params, normalized_limit, normalized_offset],
+        [*pairing_params, *source_params, *params, *session_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [
         ArchiveObservedEventQueryRow(

@@ -1,13 +1,7 @@
-"""Run-projection relation reads: source-derived only, no materialized cache.
+"""Source-derived run projections through the canonical archive query route.
 
-polylogue-dab stopped materializing session_runs/session_observed_events/
-session_context_snapshots into cache tables (they no longer exist in the
-schema at all). These tests exercise the CTE-based source-derived read
-path in run_projection_relations.py / session_insight_run_projection_reads.py
-directly against a real archive, replacing the old materialize-then-read
-parity tests that exercised the now-deleted write path
-(session_insight_run_projection_writes.py, storage.py's
-replace_session_runs_sync family). See polylogue-itvd.
+These controls preserve tool pairing, typed hydration, continuation boundaries
+and session-scoped window costs without a parallel async read facade.
 """
 
 from __future__ import annotations
@@ -16,7 +10,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-import aiosqlite
 import pytest
 
 pytestmark = pytest.mark.storage_scale
@@ -25,17 +18,20 @@ from polylogue.analysis.transforms import compile_session_digest
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
+from polylogue.archive.query.expression import parse_unit_source_expression
+from polylogue.archive.query.predicate import QueryPredicate
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.storage.query_models import RunProjectionListQuery
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
-from polylogue.storage.sqlite.queries.session_insight_run_projection_reads import (
-    list_context_snapshots,
-    list_observed_events,
-    list_runs,
-)
+
+
+def _predicate(expression: str) -> QueryPredicate:
+    source = parse_unit_source_expression(expression)
+    assert source is not None
+    return source.predicate
 
 
 def _session() -> Session:
@@ -75,7 +71,7 @@ def _session() -> Session:
     )
 
 
-async def test_run_projection_reads_source_rows_for_claude_code_session(tmp_path: Path) -> None:
+def test_run_projection_reads_source_rows_for_claude_code_session(tmp_path: Path) -> None:
     from tests.infra.storage_records import SessionBuilder
 
     db_path = tmp_path / "index.db"
@@ -96,17 +92,13 @@ async def test_run_projection_reads_source_rows_for_claude_code_session(tmp_path
         .save()
     )
     session_id = "claude-code-session:ext-source-claude-code"
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-
-        runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
-        events = await list_observed_events(
-            conn,
-            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        runs = archive.query_runs(_predicate(f"runs where session.id:{session_id} AND role:main"))
+        events = archive.query_observed_events(
+            _predicate(f"observed-events where session.id:{session_id} AND kind:tool_finished")
         )
-        snapshots = await list_context_snapshots(
-            conn,
-            RunProjectionListQuery(session_id=session_id, boundary="session_start", limit=None),
+        snapshots = archive.query_context_snapshots(
+            _predicate(f"context-snapshots where session.id:{session_id} AND boundary:session_start")
         )
 
     assert [record.run.run_ref.format() for record in runs] == [f"run:{session_id}"]
@@ -119,7 +111,7 @@ async def test_run_projection_reads_source_rows_for_claude_code_session(tmp_path
     ]
 
 
-async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path) -> None:
+def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path) -> None:
     from tests.infra.storage_records import SessionBuilder
 
     db_path = tmp_path / "index.db"
@@ -145,17 +137,15 @@ async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path
         .save()
     )
     session_id = "codex-session:ext-source-codex"
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-
-        runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
-        events = await list_observed_events(
-            conn,
-            RunProjectionListQuery(session_id=session_id, kind="tool_finished", query="serena", limit=None),
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        runs = archive.query_runs(_predicate(f"runs where session.id:{session_id} AND role:main"))
+        events = archive.query_observed_events(
+            _predicate(
+                f"observed-events where session.id:{session_id} AND kind:tool_finished AND tool:mcp__serena__find_symbol"
+            )
         )
-        snapshots = await list_context_snapshots(
-            conn,
-            RunProjectionListQuery(session_id=session_id, boundary="session_start", limit=None),
+        snapshots = archive.query_context_snapshots(
+            _predicate(f"context-snapshots where session.id:{session_id} AND boundary:session_start")
         )
 
     assert [record.run.run_ref.format() for record in runs] == [f"run:{session_id}"]
@@ -164,7 +154,7 @@ async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path
     assert [record.snapshot.run_ref.format() for record in snapshots] == [f"run:{session_id}"]
 
 
-async def test_a_reused_tool_id_pairs_by_rank_and_does_not_fan_out(tmp_path: Path) -> None:
+def test_a_reused_tool_id_pairs_by_rank_and_does_not_fan_out(tmp_path: Path) -> None:
     """polylogue-3sic0: one tool_id used twice yields two events, not four.
 
     ``tool_finished_base`` joined ``blocks`` to ``blocks`` on
@@ -209,11 +199,9 @@ async def test_a_reused_tool_id_pairs_by_rank_and_does_not_fan_out(tmp_path: Pat
         .save()
     )
     session_id = "codex-session:ext-reused-tool-id"
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        events = await list_observed_events(
-            conn,
-            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        events = archive.query_observed_events(
+            _predicate(f"observed-events where session.id:{session_id} AND kind:tool_finished")
         )
 
     # Two uses, two results, two events -- and each use keeps its OWN result,
@@ -285,7 +273,7 @@ def test_continuation_session_projection_boundary_is_resume() -> None:
     assert fresh_projection.context_snapshots[0].boundary == "session_start"
 
 
-async def test_continuation_session_resume_boundary_read_through_source(tmp_path: Path) -> None:
+def test_continuation_session_resume_boundary_read_through_source(tmp_path: Path) -> None:
     """The source-derived read path reflects branch_type='continuation' directly.
 
     The cheap ``sessions``-derived relation (``run_projection_relations.py``)
@@ -313,25 +301,25 @@ async def test_continuation_session_resume_boundary_read_through_source(tmp_path
     )
     session_id = "claude-code-session:ext-resume-boundary-child"
 
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-
-        source_snapshots = await list_context_snapshots(conn, RunProjectionListQuery(session_id=session_id, limit=None))
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        source_snapshots = archive.query_context_snapshots(
+            _predicate(f"context-snapshots where session.id:{session_id}")
+        )
         assert [record.snapshot.boundary for record in source_snapshots] == ["resume"]
         assert source_snapshots[0].snapshot.snapshot_ref.object_id == f"{session_id}:resume"
 
-        resume_filtered = await list_context_snapshots(
-            conn, RunProjectionListQuery(session_id=session_id, boundary="resume", limit=None)
+        resume_filtered = archive.query_context_snapshots(
+            _predicate(f"context-snapshots where session.id:{session_id} AND boundary:resume")
         )
         assert [record.snapshot.snapshot_ref for record in resume_filtered] == [
             source_snapshots[0].snapshot.snapshot_ref
         ]
 
-        main_runs = await list_runs(conn, RunProjectionListQuery(session_id=session_id, role="main", limit=None))
+        main_runs = archive.query_runs(_predicate(f"runs where session.id:{session_id} AND role:main"))
         assert main_runs[0].run.context_snapshot_ref == source_snapshots[0].snapshot.snapshot_ref
 
 
-async def test_run_projection_relations_expose_typed_columns_not_a_payload_bundle(tmp_path: Path) -> None:
+def test_run_projection_relations_expose_typed_columns_not_a_payload_bundle(tmp_path: Path) -> None:
     """The three relations carry typed columns, with no payload_json round trip.
 
     polylogue-dab.1: `tool_finished_base` already computes tool_name, tool_id,
@@ -401,11 +389,9 @@ async def test_run_projection_relations_expose_typed_columns_not_a_payload_bundl
     assert rows[0]["tool_name"] == "Bash"
     assert rows[0]["status"] == "ok"
 
-    async with aiosqlite.connect(db_path) as aconn:
-        aconn.row_factory = sqlite3.Row
-        events = await list_observed_events(
-            aconn,
-            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        events = archive.query_observed_events(
+            _predicate(f"observed-events where session.id:{session_id} AND kind:tool_finished")
         )
 
     assert len(events) == 1
@@ -481,7 +467,7 @@ def test_compaction_snapshot_cites_only_a_composable_parent_prefix(
     assert f"{parent_id}::{parent_messages[2]}" not in evidence
 
 
-async def _observed_event_read_steps(db_path: Path, session_id: str) -> tuple[int, list[str]]:
+def _observed_event_read_steps(db_path: Path, session_id: str) -> tuple[int, list[str]]:
     """SQLite VM steps (in units of 100) spent listing one session's events."""
     steps = 0
 
@@ -490,18 +476,18 @@ async def _observed_event_read_steps(db_path: Path, session_id: str) -> tuple[in
         steps += 1
         return 0
 
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        await conn.set_progress_handler(count, 100)
-        events = await list_observed_events(
-            conn,
-            RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
-        )
-        await conn.set_progress_handler(None, 0)  # type: ignore[arg-type]  # None clears the handler, as in sqlite3
+    with ArchiveStore(db_path.parent, read_only=True) as archive:
+        archive._conn.set_progress_handler(count, 100)
+        try:
+            events = archive.query_observed_events(
+                _predicate(f"observed-events where session.id:{session_id} AND kind:tool_finished")
+            )
+        finally:
+            archive._conn.set_progress_handler(None, 0)
     return steps, [str(record.event.tool_id) for record in events]
 
 
-async def test_single_session_observed_events_rank_only_that_session(tmp_path: Path) -> None:
+def test_single_session_observed_events_rank_only_that_session(tmp_path: Path) -> None:
     """A one-session read must not rank every archived tool block.
 
     ``ranked_tool_uses``/``ranked_tool_results`` project only ``block_id``,
@@ -509,7 +495,7 @@ async def test_single_session_observed_events_rank_only_that_session(tmp_path: P
     The cost of reading one small session must therefore stay flat when an
     unrelated session with many tool calls is added.
 
-    Anti-vacuity: drop ``session_scoped`` from ``list_observed_events`` (or
+    Anti-vacuity: drop ``session_scoped`` from ``ArchiveStore.query_observed_events`` (or
     the per-window ``session_id = ?`` predicates) and the second read ranks
     the bulk session's 400 pairs too, multiplying its VM step count.
     """
@@ -531,7 +517,7 @@ async def test_single_session_observed_events_rank_only_that_session(tmp_path: P
         .save()
     )
     session_id = "codex-session:ext-small"
-    baseline_steps, baseline_events = await _observed_event_read_steps(db_path, session_id)
+    baseline_steps, baseline_events = _observed_event_read_steps(db_path, session_id)
 
     bulk = SessionBuilder(db_path, "bulk").provider("codex")
     for index in range(400):
@@ -545,7 +531,79 @@ async def test_single_session_observed_events_rank_only_that_session(tmp_path: P
             ],
         )
     bulk.save()
-    scoped_steps, scoped_events = await _observed_event_read_steps(db_path, session_id)
+    scoped_steps, scoped_events = _observed_event_read_steps(db_path, session_id)
 
     assert baseline_events == scoped_events == ["tool-small"]
     assert scoped_steps <= baseline_steps * 2 + 10, (baseline_steps, scoped_steps)
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        ("session.id:codex-session:ext-bound-left", ["left"]),
+        ("(session.id:codex-session:ext-bound-left OR session.id:codex-session:ext-bound-right)", ["left", "right"]),
+        ("(session.id:codex-session:ext-bound-left OR tool:Bash)", ["left", "right"]),
+        ("session.id:codex-session:ext-bound-left AND session.id:codex-session:ext-bound-right", []),
+    ],
+)
+def test_observed_event_session_bound_preserves_boolean_scope(tmp_path: Path, scope: str, expected: list[str]) -> None:
+    """A safe physical bound preserves OR branches and contradictory AND scopes."""
+    from tests.infra.storage_records import SessionBuilder
+
+    for name in ("left", "right"):
+        (
+            SessionBuilder(tmp_path / "index.db", f"bound-{name}")
+            .provider("codex")
+            .add_message(
+                "tool",
+                role="assistant",
+                text="Attempt.",
+                blocks=[
+                    {"type": "tool_use", "id": "reused", "name": "Bash", "tool_input": {"command": name}},
+                    {"type": "tool_result", "tool_id": "reused", "text": "ok", "tool_result_exit_code": 0},
+                ],
+            )
+            .save()
+        )
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        predicate = _predicate(f"observed-events where ({scope}) AND kind:tool_finished")
+        events = archive.query_observed_events(predicate)
+        counts = archive.query_unit_counts("observed-event", predicate)
+    assert [row.event.command for row in events] == expected
+    assert sum(row.count for row in counts) == len(expected)
+
+
+@pytest.mark.parametrize(
+    ("suffix", "expected_kinds"),
+    [
+        ("", ["session_started", "tool_finished"]),
+        (" AND kind:session_started", ["session_started"]),
+        (" AND (kind:session_started OR kind:tool_finished)", ["session_started", "tool_finished"]),
+        (" AND kind:session_started AND kind:tool_finished", []),
+    ],
+)
+def test_observed_event_source_pushdown_preserves_unrestricted_and_impossible_scopes(
+    tmp_path: Path, suffix: str, expected_kinds: list[str]
+) -> None:
+    from tests.infra.storage_records import SessionBuilder
+
+    (
+        SessionBuilder(tmp_path / "index.db", "unrestricted-events")
+        .provider("codex")
+        .add_message(
+            "tool",
+            role="assistant",
+            text="Attempt.",
+            blocks=[
+                {"type": "tool_use", "id": "tool", "name": "Bash", "tool_input": {"command": "true"}},
+                {"type": "tool_result", "tool_id": "tool", "text": "ok", "tool_result_exit_code": 0},
+            ],
+        )
+        .save()
+    )
+    with ArchiveStore(tmp_path, read_only=True) as archive:
+        predicate = _predicate(f"observed-events where session.id:codex-session:ext-unrestricted-events{suffix}")
+        events = archive.query_observed_events(predicate)
+        counts = archive.query_unit_counts("observed-event", predicate)
+    assert [row.event.kind for row in events] == expected_kinds
+    assert sum(row.count for row in counts) == len(expected_kinds)

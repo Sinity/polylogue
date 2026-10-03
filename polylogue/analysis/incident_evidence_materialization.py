@@ -12,7 +12,7 @@ already-real, already-evidence-backed :class:`~polylogue.analysis.run_projection
 and :class:`~polylogue.analysis.run_projection.ObservedEvent` rows every
 session origin produces (``storage/sqlite/run_projection_relations.py``
 computes them from ``sessions``/``blocks`` on every read -- see
-``polylogue.storage.repository.insight.run_projection_reads``), and adapts
+``polylogue.storage.sqlite.archive_tiers.archive_query_reads``), and adapts
 them into the same generic :class:`~polylogue.analysis.work_evidence.WorkEvidenceGraph`
 shape ``work_effects``/``work_reconciliation`` already know how to reconcile.
 This makes it provider-neutral by construction: Claude Code, Codex, or any
