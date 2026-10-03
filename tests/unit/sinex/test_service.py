@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sqlite3
 from collections.abc import Mapping
@@ -182,7 +181,7 @@ def test_publication_status_reads_durable_ledger_without_transport(
     assert status.blocking == 0
 
 
-def test_compat_retry_reports_lag_only_for_staged_subjects(workspace_env: dict[str, Path]) -> None:
+def test_drain_reports_lag_only_for_selected_durable_subjects(workspace_env: dict[str, Path]) -> None:
     db = workspace_env["archive_root"] / "source.db"
     service = PublicationService(db, PublicationMode.MIRROR, LocalReferenceTransport())
     selected_payload = publication_payload(object_id="claude-code-session:selected")
@@ -191,13 +190,13 @@ def test_compat_retry_reports_lag_only_for_staged_subjects(workspace_env: dict[s
     service.stage_payload(other_payload)
     assert selected is not None
 
-    summary = asyncio.run(
-        service.retry_pending([(selected, selected_payload.manifest_bytes, selected_payload.segment_bytes)])
-    )
+    summary = service.drain_once(object_ids=[selected.object_id])
 
+    assert summary.attempted == 1
     assert summary.confirmed == 1
     assert summary.remaining_lag == 0
     assert service.lag() == 1
+    assert [pending.object_id for pending in service.pending()] == [other_payload.object_id]
 
 
 def test_status_payload_reads_durable_ledger_without_transport(workspace_env: dict[str, Path]) -> None:

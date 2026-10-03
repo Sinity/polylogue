@@ -6,7 +6,7 @@ import asyncio
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -180,49 +180,6 @@ class PublicationService:
         delay = int(self.base_retry_ms) * (2**exponent)
         return int(now_ms + min(int(self.max_retry_ms), delay))
 
-    def stage(
-        self,
-        *,
-        object_id: str,
-        protocol_version: str,
-        revision_id: str,
-        manifest_digest: str,
-        conn: sqlite3.Connection | None = None,
-    ) -> PublicationObligation | None:
-        """Compatibility metadata stage; production ingest uses stage_payload."""
-        if self.mode is PublicationMode.OFF:
-            return None
-        now_ms = self.clock()
-        if conn is not None:
-            return obligations_store.record_obligation(
-                conn,
-                object_id=object_id,
-                protocol_version=protocol_version,
-                revision_id=revision_id,
-                manifest_digest=manifest_digest,
-                mode=self.mode,
-                now_ms=now_ms,
-            )
-        owned = self._connect()
-        try:
-            owned.execute("BEGIN IMMEDIATE")
-            obligation = obligations_store.record_obligation(
-                owned,
-                object_id=object_id,
-                protocol_version=protocol_version,
-                revision_id=revision_id,
-                manifest_digest=manifest_digest,
-                mode=self.mode,
-                now_ms=now_ms,
-            )
-            owned.commit()
-            return obligation
-        except Exception:
-            owned.rollback()
-            raise
-        finally:
-            owned.close()
-
     def stage_payload(
         self,
         payload: PublicationPayload,
@@ -246,37 +203,6 @@ class PublicationService:
             raise
         finally:
             owned.close()
-
-    async def publish(
-        self,
-        *,
-        object_id: str,
-        protocol_version: str,
-        revision_id: str,
-        manifest_digest: str,
-        manifest_bytes: bytes,
-        segment_bytes: Mapping[str, bytes],
-        conn: sqlite3.Connection | None = None,
-        on_confirmed: Callable[[PublicationObligation], None] | None = None,
-    ) -> PublicationObligation | None:
-        """Stage exact bytes and make one bounded transport attempt."""
-        if conn is not None:
-            raise ValueError(
-                "publish cannot invoke transport inside an uncommitted caller transaction; "
-                "use stage_payload(..., conn=conn), commit, then drain_once()"
-            )
-        payload = PublicationPayload(
-            object_id=object_id,
-            protocol_version=protocol_version,
-            revision_id=revision_id,
-            manifest_digest=manifest_digest,
-            manifest_bytes=manifest_bytes,
-            segments=tuple(sorted((str(name), bytes(value)) for name, value in segment_bytes.items())),
-        )
-        obligation = self.stage_payload(payload)
-        if obligation is None:
-            return None
-        return await self._attempt_async(obligation, payload, on_confirmed=on_confirmed)
 
     def _lease(self, obligation: PublicationObligation) -> PublicationObligation:
         # Leasing and persisting the outcome are the two short writes of a
@@ -363,40 +289,6 @@ class PublicationService:
             raise
         finally:
             conn.close()
-
-    async def _attempt_async(
-        self,
-        obligation: PublicationObligation,
-        payload: PublicationPayload,
-        *,
-        on_confirmed: Callable[[PublicationObligation], None] | None = None,
-    ) -> PublicationObligation:
-        transport = self.transport
-        assert transport is not None
-        leased = self._lease(obligation)
-        if leased.status is not ObligationStatus.PUBLISHING:
-            return leased
-        receipt: PublicationReceipt | None = None
-        error_code: str | None = None
-        try:
-            receipt = await asyncio.wait_for(
-                transport.publish_revision(
-                    request_id=leased.request_id,
-                    manifest_bytes=payload.manifest_bytes,
-                    segment_bytes=payload.segment_bytes,
-                ),
-                timeout=self.attempt_timeout_s,
-            )
-            if receipt.request_id != leased.request_id:
-                raise ValueError("transport returned a receipt for a different request_id")
-        except TimeoutError:
-            error_code = "transport_timeout"
-        except Exception as exc:
-            error_code = f"transport_exception:{type(exc).__name__}"
-        updated = self._persist_outcome(leased, receipt=receipt, error_code=error_code)
-        if updated.progress_unlocked and on_confirmed is not None:
-            on_confirmed(updated)
-        return updated
 
     def _run_transport_sync(self, obligation: PublicationObligation, payload: PublicationPayload) -> PublicationReceipt:
         transport = self.transport
@@ -553,42 +445,6 @@ class PublicationService:
             counts.record(updated, payload_failed=payload_failed)
         return DrainSummary(
             attempted=len(due),
-            confirmed=counts.confirmed,
-            durable_debt=counts.durable_debt,
-            rejected=counts.rejected,
-            deferred=counts.deferred,
-            transport_failures=counts.transport_failures,
-            payload_failures=counts.payload_failures,
-            remaining_lag=self.lag(object_ids=object_ids),
-        )
-
-    async def retry_pending(
-        self,
-        staged: Sequence[tuple[PublicationObligation, bytes, Mapping[str, bytes]]] | None = None,
-        *,
-        on_confirmed: Callable[[PublicationObligation], None] | None = None,
-    ) -> DrainSummary:
-        """Compatibility async redrive; durable bytes are authoritative when omitted."""
-        if self.mode is PublicationMode.OFF:
-            return DrainSummary()
-        if staged is None:
-            return await asyncio.to_thread(self.drain_once)
-        counts = _OutcomeCounts()
-        object_ids: list[str] = []
-        for obligation, manifest_bytes, segments in staged[: self.max_batch]:
-            object_ids.append(obligation.object_id)
-            payload = PublicationPayload(
-                object_id=obligation.object_id,
-                protocol_version=obligation.protocol_version,
-                revision_id=obligation.revision_id,
-                manifest_digest=obligation.manifest_digest,
-                manifest_bytes=manifest_bytes,
-                segments=tuple(sorted((str(name), bytes(value)) for name, value in segments.items())),
-            )
-            updated = await self._attempt_async(obligation, payload, on_confirmed=on_confirmed)
-            counts.record(updated)
-        return DrainSummary(
-            attempted=min(len(staged), self.max_batch),
             confirmed=counts.confirmed,
             durable_debt=counts.durable_debt,
             rejected=counts.rejected,
