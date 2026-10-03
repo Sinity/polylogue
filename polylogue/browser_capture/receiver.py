@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from polylogue.browser_capture.capture_stream import (
     AttachmentFact,
@@ -46,7 +46,7 @@ from polylogue.browser_capture.models import (
 )
 from polylogue.core.durable_fs import atomic_replace, sync_directory
 from polylogue.core.enums import Provider
-from polylogue.core.hashing import hash_text_short
+from polylogue.core.hashing import hash_file, hash_text_short
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -307,9 +307,19 @@ class BrowserCaptureWriteResult:
     replaced: bool
     deduplicated: bool
     dedup_content_hash: str
+    content_hash: str
+    capture_id: str | None
     capture_instance_id: str | None
     accepted_identities: tuple[BrowserCaptureAcceptedIdentity, ...] = ()
     convergence: CaptureConvergence = CaptureConvergence.PUBLISH
+
+    @property
+    def outcome(self) -> Literal["accepted", "noop", "superseded"]:
+        if self.convergence is CaptureConvergence.DUPLICATE:
+            return "noop"
+        if self.convergence is CaptureConvergence.SUPERSEDED:
+            return "superseded"
+        return "accepted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,8 +903,7 @@ def admit_staged_capture(
             if convergence is CaptureConvergence.NAME_COLLISION:
                 raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
             if convergence is not CaptureConvergence.PUBLISH:
-                # A duplicate echoes the incoming fingerprint; a superseded
-                # delivery echoes the fingerprint of the revision that stays.
+                # Both receipts identify the bytes and revision that stay.
                 # A previous rename may have succeeded before its directory
                 # barrier failed. Settle that path before acknowledging reuse.
                 sync_directory(root)
@@ -907,11 +916,9 @@ def admit_staged_capture(
                     bytes_written=target.stat().st_size,
                     replaced=True,
                     deduplicated=True,
-                    dedup_content_hash=(
-                        summary.dedup_content_hash
-                        if convergence is CaptureConvergence.DUPLICATE
-                        else existing.dedup_content_hash
-                    ),
+                    dedup_content_hash=existing.dedup_content_hash,
+                    content_hash=hash_file(target),
+                    capture_id=existing.capture_id,
                     capture_instance_id=summary.head.provenance.extension_instance_id,
                     # The retained artifact is `existing`, so the identities
                     # this delivery acknowledges are its identities. Echoing
@@ -937,6 +944,8 @@ def admit_staged_capture(
         replaced=replaced,
         deduplicated=False,
         dedup_content_hash=summary.dedup_content_hash,
+        content_hash=staged.sha256,
+        capture_id=summary.capture_id,
         capture_instance_id=summary.head.provenance.extension_instance_id,
         accepted_identities=_accepted_identities(summary, root),
         convergence=CaptureConvergence.PUBLISH,

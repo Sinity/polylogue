@@ -402,19 +402,20 @@ export class BackfillCoordinator {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
       const contractError = receiverAckContractError(receipt, hash);
       if (contractError) throw contractError;
-      const completeItem = { ...item, state: "complete", envelope: null, content_hash: hash, capture_fidelity: captureFidelity, receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: "receiver_acked", completed_at: nowIso(now) };
-      const revision = item.provider_updated_at
+      const superseded = receipt.outcome === "superseded";
+      const completeItem = { ...item, state: superseded ? "superseded" : "complete", envelope: null, content_hash: superseded ? null : receipt.content_hash, capture_fidelity: captureFidelity, receiver_receipt: receipt, lease_owner: null, lease_expires_at_ms: null, last_response_class: superseded ? "receiver_superseded" : "receiver_acked", completed_at: nowIso(now) };
+      const revision = !superseded && item.provider_updated_at
         ? {
           id: `${item.provider}:${item.native_id}`,
           provider: item.provider,
           native_id: item.native_id,
           provider_updated_at: item.provider_updated_at,
-          receiver_content_hash: hash,
+          receiver_content_hash: receipt.content_hash,
           receiver_request_id: receipt.receiver_request_id,
           completed_at: nowIso(now),
         }
         : null;
-      const lastAck = { receiver_request_id: receipt.receiver_request_id, content_hash: hash, at: nowIso(now) };
+      const lastAck = { receiver_request_id: receipt.receiver_request_id, content_hash: receipt.content_hash, outcome: receipt.outcome, at: nowIso(now) };
       const next = await this.store.finalizeCaptureCas(
         job,
         this.instanceId,

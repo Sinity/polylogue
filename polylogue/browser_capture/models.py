@@ -378,6 +378,8 @@ class BrowserCaptureAcceptedPayload(BaseModel):
     provider: str
     provider_session_id: str
     artifact_ref: str
+    outcome: Literal["accepted", "noop", "superseded"]
+    submitted_content_hash: str
     content_hash: str
     dedup_content_hash: str
     bytes_written: int
@@ -393,10 +395,9 @@ class BrowserCaptureCapabilitiesPayload(BaseModel):
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
     schema_version: Literal[1] = BROWSER_CAPTURE_SCHEMA_VERSION
-    durable_ack_fields: tuple[Literal["receiver_request_id"], Literal["content_hash"]] = (
-        "receiver_request_id",
-        "content_hash",
-    )
+    durable_ack_fields: tuple[
+        Literal["receiver_request_id"], Literal["content_hash"], Literal["submitted_content_hash"], Literal["outcome"]
+    ] = ("receiver_request_id", "content_hash", "submitted_content_hash", "outcome")
     assertion_candidates: Literal[True] = True
 
 

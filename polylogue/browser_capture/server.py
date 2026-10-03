@@ -784,11 +784,13 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
-                capture_id=capture_response_id(result.provider, result.provider_session_id, summary.capture_id),
+                capture_id=capture_response_id(result.provider, result.provider_session_id, result.capture_id),
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
-                content_hash=staged.sha256,
+                outcome=result.outcome,
+                submitted_content_hash=staged.sha256,
+                content_hash=result.content_hash,
                 dedup_content_hash=result.dedup_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,

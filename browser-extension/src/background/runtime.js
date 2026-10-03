@@ -894,6 +894,18 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
   });
 }
 
+async function recordSupersededCapture(summary, receipt, reason) {
+  await updateSessionLedger({
+    provider: summary.provider, providerSessionId: summary.providerSessionId,
+    patch: { receiver_request_id: receipt.receiver_request_id || null,
+      artifact_ref: receipt.artifact_ref || null, last_error: "receiver_superseded" },
+  });
+  await appendConversationTimeline({
+    provider: summary.provider, providerSessionId: summary.providerSessionId,
+    event: "held_with_reason", reason, detail: "receiver_superseded",
+  });
+}
+
 async function drainCaptureQueue(trigger = "alarm") {
   return serializeCaptureQueueMutation(async () => {
   const queue = await getCaptureQueue();
@@ -915,6 +927,10 @@ async function drainCaptureQueue(trigger = "alarm") {
     try {
       const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
+      if (result.outcome === "superseded") {
+        await recordSupersededCapture(summary, result, "capture_retry_superseded");
+        continue;
+      }
       const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({
         provider: summary.provider || result.provider,
@@ -2189,6 +2205,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       }
       return result;
     });
+    if (resultWithTimeout?.ok && resultWithTimeout.captureResult?.outcome === "superseded") return resultWithTimeout;
     if (resultWithTimeout?.ok) {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
@@ -2440,10 +2457,10 @@ async function processCaptureFreshnessQueueOnce() {
         providerUpdatedAt: claim.provider_updated_at || null,
       },
     );
-    needsFollowUp = chatGptCaptureNeedsFollowUp(result.envelope);
+    needsFollowUp = result.captureResult?.outcome !== "superseded" && chatGptCaptureNeedsFollowUp(result.envelope);
     retryDelayMs = needsFollowUp ? runningPollDelayMs(claim.running_poll_count || 0) : 0;
     const receipt = result.captureResult || {};
-    if (claim.provider_updated_at && receipt.content_hash) {
+    if (claim.provider_updated_at && receipt.content_hash && receipt.outcome !== "superseded") {
       const coordinator = await backfillCoordinator();
       await coordinator.store.putRevision({
         id: `${claim.provider}:${claim.native_id}`,
@@ -2458,9 +2475,9 @@ async function processCaptureFreshnessQueueOnce() {
     await appendConversationTimeline({
       provider: claim.provider,
       providerSessionId: claim.native_id,
-      event: needsFollowUp ? "detected_new" : "captured",
+      event: receipt.outcome === "superseded" ? "held_with_reason" : (needsFollowUp ? "detected_new" : "captured"),
       reason: "freshness_convergence",
-      detail: needsFollowUp ? "provider_still_running" : "provider_head_current",
+      detail: receipt.outcome === "superseded" ? "receiver_superseded" : (needsFollowUp ? "provider_still_running" : "provider_head_current"),
     });
   } catch (error) {
     failure = String(error?.message || error);
@@ -3542,6 +3559,16 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           tabId: sender.tab?.id || null,
         });
         throw error;
+      }
+      if (result.outcome === "superseded") {
+        await recordSupersededCapture(summary, result, message.reason || "content_script_capture");
+        await setStateForTab(sender.tab?.id || null, {
+          online: true, captured: false, last_capture: result,
+          provider: summary.provider, provider_session_id: summary.providerSessionId,
+          error: "receiver_superseded", last_receiver_request_id: result.receiver_request_id || null,
+        }, sender.tab?.url || sender.tab?.pendingUrl || null);
+        sendResponse({ ok: true, ...result, captured: false });
+        return;
       }
       const archiveState = { state: result.state || "spooled_only" };
       await updateSessionLedger({

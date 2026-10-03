@@ -68,10 +68,7 @@ The filename is deterministic from provider and provider session id, so repeated
 observation of the same web session replaces the same source artifact. Receiver
 responses expose this artifact as an `artifact_ref` relative to the spool root;
 absolute filesystem paths stay inside the receiver process.
-An accepted response also carries `content_hash`, the SHA-256 of the exact
-UTF-8 JSON request bytes. The receiver returns it only after the atomic spool
-write succeeds. Background backfill therefore treats a response as a durable
-ACK only when both `X-Request-ID` and the expected content hash match.
+A response carries a typed `outcome`: `accepted` publishes the submission, `noop` retains semantically identical content, and `superseded` retains a different resident revision. `submitted_content_hash` binds the receipt to the exact posted bytes; `content_hash`, `capture_id` and `accepted_identities` identify the retained artifact. Backfill completes accepted/noop captures using the retained hash. It retires superseded items explicitly, releases their retained envelopes and does not advance the incoming provider revision. A superseded response is not proof that its incoming turns were captured.
 
 Every receiver response carries `X-Request-ID`. If the extension or a local
 debug probe sends a safe `X-Request-ID` header, the receiver echoes its

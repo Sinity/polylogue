@@ -254,7 +254,7 @@ export class IndexedDbBackfillStore {
     if (status === "cancelled") {
       const items = await requestResult(queueStore.getAll());
       for (const item of items) {
-        if (item.job_id === jobId && !["complete", "unchanged", "no_turns"].includes(item.state)) {
+        if (item.job_id === jobId && !["complete", "unchanged", "superseded", "no_turns"].includes(item.state)) {
           queueStore.put({ ...item, state: "cancelled", lease_owner: null, lease_expires_at_ms: null });
         }
       }
@@ -555,7 +555,7 @@ export class MemoryBackfillStore {
     }
     if (status === "cancelled") {
       for (const item of this.queue.values()) {
-        if (item.job_id === jobId && !["complete", "unchanged", "no_turns"].includes(item.state)) {
+        if (item.job_id === jobId && !["complete", "unchanged", "superseded", "no_turns"].includes(item.state)) {
           this.queue.set(item.id, { ...item, state: "cancelled", lease_owner: null, lease_expires_at_ms: null });
         }
       }
@@ -663,10 +663,11 @@ export class MemoryBackfillStore {
 }
 
 export function progressBuckets(items) {
-  const buckets = { total: items.length, eligible: 0, complete: 0, no_turns: 0, retry: 0, error: 0, operator_action: 0 };
+  const buckets = { total: items.length, eligible: 0, complete: 0, superseded: 0, no_turns: 0, retry: 0, error: 0, operator_action: 0 };
   for (const item of items) {
     if (["discovered", "eligible", "leased"].includes(item.state)) buckets.eligible += 1;
     if (["complete", "unchanged"].includes(item.state)) buckets.complete += 1;
+    if (item.state === "superseded") buckets.superseded += 1;
     if (item.state === "no_turns") buckets.no_turns += 1;
     if (["retry_wait", "captured_waiting_receiver"].includes(item.state)) buckets.retry += 1;
     if (["auth_required", "recovery_required", "bridge_oversize"].includes(item.state)) buckets.operator_action += 1;
