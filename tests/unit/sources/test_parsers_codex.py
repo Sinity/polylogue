@@ -3892,10 +3892,12 @@ def test_codex_empty_tool_output_survives_parser_and_reopened_index(
 ) -> None:
     """An empty provider vector remains evidence, independently of a reported verdict."""
     import sqlite3
+    from contextlib import closing
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from tests.infra.index_writer import write_fixture_index_session
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     payload: dict[str, object] = {"type": record_type, "call_id": "empty-call"}
     if record_type == "tool_search_output":
@@ -3919,11 +3921,17 @@ def test_codex_empty_tool_output_survives_parser_and_reopened_index(
         assert results[0].outcome_unknown_reason == "not_reported"
         index_path = tmp_path / label / "index.db"
         index_path.parent.mkdir()
-        with sqlite3.connect(index_path) as index:
-            index.row_factory = sqlite3.Row
-            initialize_archive_tier(index, ArchiveTier.INDEX)
-            session_id = write_fixture_index_session(index, parsed)
-        with sqlite3.connect(index_path) as index:
+        with write_lease("Codex parser persistence fixture", archive_root=index_path.parent):
+            initialize_active_archive_root(index_path.parent)
+            with closing(
+                open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=index_path.parent)
+            ) as index:
+                index.row_factory = sqlite3.Row
+                with index:
+                    session_id = write_parsed_session_to_archive(
+                        index, parsed, content_hash=session_content_hash(parsed)
+                    )
+        with closing(sqlite3.connect(index_path)) as index:
             stored = index.execute(
                 "SELECT tool_id,text,tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_result'",
                 (session_id,),
@@ -3961,10 +3969,12 @@ def test_codex_mcp_application_verdict_survives_parser_and_reopened_index(
 ) -> None:
     """Outer transport success cannot replace the provider's typed inner verdict."""
     import sqlite3
+    from contextlib import closing
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from tests.infra.index_writer import write_fixture_index_session
+    from polylogue.storage.sqlite.connection_profile import open_connection as open_owned_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
 
     records = [
         {
@@ -3994,11 +4004,17 @@ def test_codex_mcp_application_verdict_survives_parser_and_reopened_index(
             assert json.loads(output.blocks[0].text) == result["Ok"]
         index_path = tmp_path / label / "index.db"
         index_path.parent.mkdir()
-        with sqlite3.connect(index_path) as index:
-            index.row_factory = sqlite3.Row
-            initialize_archive_tier(index, ArchiveTier.INDEX)
-            session_id = write_fixture_index_session(index, parsed)
-        with sqlite3.connect(index_path) as index:
+        with write_lease("Codex parser persistence fixture", archive_root=index_path.parent):
+            initialize_active_archive_root(index_path.parent)
+            with closing(
+                open_owned_connection(index_path, tier=ArchiveTier.INDEX, archive_root=index_path.parent)
+            ) as index:
+                index.row_factory = sqlite3.Row
+                with index:
+                    session_id = write_parsed_session_to_archive(
+                        index, parsed, content_hash=session_content_hash(parsed)
+                    )
+        with closing(sqlite3.connect(index_path)) as index:
             rows = index.execute(
                 "SELECT tool_id,text,tool_result_is_error,tool_outcome FROM blocks "
                 "WHERE session_id=? AND block_type='tool_result'",
