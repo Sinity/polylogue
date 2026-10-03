@@ -397,3 +397,19 @@ def test_pattern_entrypoint_marks_sha1_as_non_security_use(
     assert verify_patterns.main(["--json"]) == 0
     assert observations and not any(observations)
     assert json.loads(capsys.readouterr().out)["blocking"] is False
+
+
+@pytest.mark.parametrize("barrier", ["sync_directory", "_fsync_directory", "_fsync_dir", None])
+def test_parent_sync_rule_recognizes_canonical_barriers(tmp_path: Path, barrier: str | None) -> None:
+    source = tmp_path / "polylogue/example.py"
+    source.parent.mkdir()
+    suffix = "" if barrier is None else f"    {barrier}(target.parent)\n"
+    source.write_text("def publish(source, target):\n    os.replace(source, target)\n" + suffix, encoding="utf-8")
+    rule = verify_patterns.Rule(
+        "replace-without-parent-fsync",
+        Path(__file__).parents[3] / "devtools/patterns/replace-without-parent-fsync.yml",
+        tmp_path / "unused-baseline.txt",
+        "fhikb",
+        "enforcing",
+    )
+    assert sum(verify_patterns._scan(tmp_path, rule).values()) == (1 if barrier is None else 0)

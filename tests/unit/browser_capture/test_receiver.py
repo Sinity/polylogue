@@ -1536,7 +1536,7 @@ def test_receiver_settles_ancestor_barriers_before_http_ack_and_duplicate_retry(
         provider_dir.mkdir()
     events: list[Path | str] = []
     real_sync, real_replace = os.fsync, os.replace
-    fault = {"root": tmp_path, "provider": provider_dir}.get(fault_directory)
+    fault = None if fault_directory is None else {"root": tmp_path, "provider": provider_dir}[fault_directory]
     envelope = BrowserCaptureEnvelope.model_validate(_payload())
     target = capture_artifact_path(envelope, tmp_path)
 
