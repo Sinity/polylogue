@@ -3889,8 +3889,11 @@ def _mcp_result_outcome(result: object) -> tuple[bool | None, str | None, str | 
     """Extract (is_error, text, unknown reason) from an ``mcp_tool_call_end`` ``result``.
 
     Codex wraps MCP results as a Rust-style ``{"Ok": ...}`` / ``{"Err": "..."}``
-    tagged union rather than the ``is_error``/``exit_code`` shape other Codex
-    tool records use. A mapping carrying neither tag is that union with a
+    tagged union. An Ok payload is a CallToolResult whose optional camelCase
+    ``isError`` reports application failure independently of transport success.
+    The required content vector and typed verdict distinguish this object from
+    malformed payloads, whose complete text remains outcome-unknown. A mapping
+    carrying neither tag is that union with a
     variant this mapping does not read; anything that is not a mapping is not
     the union at all and reports no outcome.
     """
@@ -3899,7 +3902,16 @@ def _mcp_result_outcome(result: object) -> tuple[bool | None, str | None, str | 
     if "Err" in result:
         return True, _codex_tool_output_text(result.get("Err")), None
     if "Ok" in result:
-        return False, _codex_tool_output_text(result.get("Ok")), None
+        payload = result.get("Ok")
+        text = _codex_tool_output_text(payload)
+        if not isinstance(payload, dict) or not isinstance(payload.get("content"), list):
+            return None, text, unknown_reason(is_error=None, outcome_field_present=True)
+        is_error = payload.get("isError")
+        if is_error is None:
+            return False, text, None
+        if isinstance(is_error, bool):
+            return is_error, text, None
+        return None, text, unknown_reason(is_error=None, outcome_field_present=True)
     return None, _codex_tool_output_text(result), unknown_reason(is_error=None, outcome_field_present=True)
 
 
@@ -3997,7 +4009,7 @@ def _codex_tool_output_text(output: object) -> str | None:
             return json.dumps(sanitized_parsed, sort_keys=True)
         return output
     sanitized = _sanitize_codex_large_inline_payloads(output)
-    return json.dumps(sanitized, sort_keys=True) if sanitized else None
+    return json.dumps(sanitized, sort_keys=True)
 
 
 #: Container nesting this sanitizer will descend through. Tool output is
