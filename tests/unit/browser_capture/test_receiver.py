@@ -1591,11 +1591,31 @@ def test_http_receipt_preserves_resident_identity_through_backfill_retirement(tm
     retained["capture_id"] = "resident-capture"
     retained_session = cast(dict[str, object], retained["session"])
     retained_session["updated_at"] = "2026-04-24T00:05:00Z"
+    cast(list[dict[str, object]], retained_session["turns"])[0]["identity_observation"] = {
+        "origin": "chatgpt-export",
+        "provider_conversation_id": "conv-123",
+        "provider_message_id": "u1",
+        "adapter_name": "chatgpt-dom-v1",
+        "fidelity": "native",
+    }
     incoming = copy.deepcopy(retained)
     incoming["capture_id"] = "incoming-capture"
     incoming_session = cast(dict[str, object], incoming["session"])
     if outcome != "noop":
-        incoming_session["turns"] = [{"provider_turn_id": "other-turn", "role": "user", "text": "Different"}]
+        incoming_session["turns"] = [
+            {
+                "provider_turn_id": "other-turn",
+                "role": "user",
+                "text": "Different",
+                "identity_observation": {
+                    "origin": "chatgpt-export",
+                    "provider_conversation_id": "conv-123",
+                    "provider_message_id": "other-turn",
+                    "adapter_name": "chatgpt-dom-v1",
+                    "fidelity": "native",
+                },
+            }
+        ]
         incoming_session["updated_at"] = "2026-04-24T00:01:00Z" if outcome == "superseded" else "2026-04-24T00:06:00Z"
     cast(dict[str, object], incoming["provenance"])["captured_at"] = "2026-04-24T00:06:00Z"
     with _running_receiver(tmp_path) as (host, port):
