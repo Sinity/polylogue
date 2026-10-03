@@ -9,13 +9,16 @@ costly failures are data silently lost or duplicated, a durable reference that
 re-points, a build that never converges, and work reported as done when it was
 skipped. Weight your attention there.
 
-## Review exhaustively
+## Review the changed behavior
 
-Report every issue you can find in this review, in one pass. Do not stop at
-the first defect or hold findings back for a later round. When you find a
-defect, search the diff and the code it calls for every other site of the
-same class and report each of them in this review. A later round should
-find nothing that this one could have seen.
+Review the changed delta and the contracts it affects. Report concrete
+findings together, including relevant sibling sites. Reuse prior review of
+unchanged code rather than restarting a full review after each small fix.
+Scale depth to consequence: durable data loss, destructive operations and
+purchased-vector preservation warrant stronger scrutiny than ordinary edits.
+Known failures and untested areas stay explicit; a perfect unrelated suite
+is not a prerequisite for a routine fix. Required hosted reviews remain in
+force.
 
 ## Writing a finding
 
@@ -62,11 +65,11 @@ docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
 it makes a required gate vacuous or crosses the public boundary.
 
-## Checklist (every diff)
+## Invariant reference
 
-Codex applies this list to each review. A coding agent applies the same list
-to its own full diff before every push, narrating each item (`AGENTS.md`,
-"Commits and PRs"). Area rules live in the `## Code Review Rules` section of
+Use the relevant items to inspect changed behavior. No item-by-item narration,
+15+6 report, or full-list restart is required for each result or small fix.
+Area rules live in the `## Code Review Rules` section of
 the nested `AGENTS.md` beside the code (`polylogue/storage/`,
 `polylogue/sources/`, `polylogue/daemon/`, `devtools/`).
 
