@@ -758,7 +758,7 @@ def test_chatgpt_idless_message_does_not_get_a_positional_provider_id() -> None:
 
     messages, _attachments = extract_messages_from_mapping(mapping)
 
-    assert [message.provider_message_id for message in messages] == [""]
+    assert [message.provider_message_id for message in messages] == ["node"]
 
 
 def test_chatgpt_idless_message_reordering_keeps_revision_identity_and_native_ids() -> None:
@@ -791,7 +791,7 @@ def test_chatgpt_idless_message_reordering_keeps_revision_identity_and_native_id
         "fallback",
     )
 
-    assert [message.provider_message_id for message in forward.messages] == ["", "native-message"]
+    assert [message.provider_message_id for message in forward.messages] == ["idless", "native-message"]
     assert (
         session_revision_projection(forward).message_contents == session_revision_projection(reordered).message_contents
     )
@@ -1836,7 +1836,7 @@ def test_idless_active_path_marks_only_the_current_node_as_leaf() -> None:
 
     conv = chatgpt_parse(payload, "fallback-id")
 
-    assert [message.provider_message_id for message in conv.messages] == ["", ""]
+    assert [message.provider_message_id for message in conv.messages] == ["first", "last"]
     assert sum(message.is_active_leaf is True for message in conv.messages) == 1
     assert conv.messages[-1].is_active_leaf is True
 
@@ -4045,3 +4045,208 @@ def test_tether_quote_construct_keeps_its_url_and_own_title() -> None:
     }
     fallback_messages, _ = extract_messages_from_mapping(fallback_mapping)
     assert fallback_messages[0].blocks[0].web_constructs[0].title == "example.test"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        {"content_type": "execution_output", "text": "neutral result"},
+        {"content_type": "computer_output", "state": {"title": "Neutral", "url": "https://example.test"}},
+        {"content_type": "system_error", "text": "neutral failure", "name": "fixture_error"},
+        {"content_type": "citable_code_output", "output_str": "neutral result"},
+        {"content_type": "text", "parts": ["neutral result"]},
+        {"content_type": "code", "text": "neutral result", "language": "python"},
+    ],
+)
+def test_tool_result_node_reference_resolves_to_emitted_message_identity(
+    tmp_path: Path, content: dict[str, object]
+) -> None:
+    """Every result carrier joins the emitted call ID, including chained answers."""
+    from contextlib import closing
+
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    mapping: dict[str, object] = {
+        "call-node": {
+            "id": "call-node",
+            "parent": None,
+            "children": ["first-node"],
+            "message": {
+                "id": "call-message",
+                "author": {"role": "assistant"},
+                "recipient": "python",
+                "content": {"content_type": "code", "text": "print('neutral')", "language": "python"},
+            },
+        }
+    }
+    for node_id, message_id, parent, children in (
+        ("first-node", "first-message", "call-node", ["second-node"]),
+        ("second-node", "second-message", "first-node", []),
+    ):
+        mapping[node_id] = {
+            "id": node_id,
+            "parent": parent,
+            "children": children,
+            "message": {
+                "id": message_id,
+                "author": {"role": "tool"},
+                "content": content,
+                "status": "finished_successfully",
+            },
+        }
+    parsed = chatgpt_parse({"id": "tool-pair", "mapping": mapping, "current_node": "second-node"}, "fallback")
+    use = [block for message in parsed.messages for block in message.blocks if block.type is BlockType.TOOL_USE]
+    results = [block for message in parsed.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT]
+    assert len(use) == 1
+    assert use[0].tool_id == "call-message"
+    assert len(results) == 2
+    assert [block.tool_id for block in results] == ["call-message", "call-message"]
+    expected_error = content["content_type"] == "system_error"
+    assert [block.is_error for block in results] == [expected_error, expected_error]
+    expected_text = (
+        "Neutral — https://example.test"
+        if content["content_type"] == "computer_output"
+        else ("neutral failure" if expected_error else "neutral result")
+    )
+    assert [block.text for block in results] == [expected_text, expected_text]
+    index_path = tmp_path / "index.db"
+    with write_lease("ChatGPT tool pairing fixture", archive_root=tmp_path):
+        initialize_active_archive_root(tmp_path)
+        with closing(open_connection(index_path, tier=ArchiveTier.INDEX, archive_root=tmp_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            with conn:
+                session_id = write_parsed_session_to_archive(conn, parsed, content_hash=session_content_hash(parsed))
+    with closing(sqlite3.connect(index_path)) as conn:
+        rows = conn.execute(
+            "SELECT result.tool_id,result.text,result.tool_outcome FROM blocks AS result "
+            "JOIN blocks AS call ON call.session_id=result.session_id AND call.tool_id=result.tool_id "
+            "AND call.block_type='tool_use' WHERE result.session_id=? AND result.block_type='tool_result' "
+            "ORDER BY result.message_id",
+            (session_id,),
+        ).fetchall()
+    assert rows == [("call-message", expected_text, "error" if expected_error else "ok")] * 2
+
+
+def test_native_chatgpt_fixture_tool_ids_use_emitted_message_identity() -> None:
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json"
+    parsed = chatgpt_parse(json.loads(fixture.read_text()), "fallback")
+    call = next(message for message in parsed.messages if message.provider_message_id == "tool-call-message")
+    result = next(message for message in parsed.messages if message.provider_message_id == "tool-result-message")
+    assert next(block for block in call.blocks if block.type is BlockType.TOOL_USE).tool_id == "tool-call-message"
+    assert next(block for block in result.blocks if block.type is BlockType.TOOL_RESULT).tool_id == "tool-call-message"
+
+
+@pytest.mark.parametrize("parent", [None, "missing-node", "result-node"])
+def test_chatgpt_tool_result_without_an_owner_stays_unlinked_and_unknown(parent: str | None) -> None:
+    parsed = chatgpt_parse(
+        {
+            "id": "orphan-result",
+            "mapping": {
+                "result-node": {
+                    "id": "result-node",
+                    "parent": parent,
+                    "children": [],
+                    "message": {
+                        "id": "result-message",
+                        "author": {"role": "tool"},
+                        "content": {"content_type": "execution_output", "text": "retained result"},
+                    },
+                }
+            },
+            "current_node": "result-node",
+        },
+        "fallback",
+    )
+    result = next(
+        block for message in parsed.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    )
+    assert result.tool_id is None
+    assert result.is_error is None
+    assert result.outcome_unknown_reason == "not_reported"
+    assert result.text == "retained result"
+
+
+def test_idless_mapping_branch_switch_changes_hash_and_stored_active_leaf(tmp_path: Path) -> None:
+    from contextlib import closing
+
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    mapping = {
+        "question": {
+            "parent": None,
+            "children": ["left", "right"],
+            "message": {"author": {"role": "user"}, "content": {"content_type": "text", "parts": ["Question"]}},
+        },
+        "left": {
+            "parent": "question",
+            "children": [],
+            "message": {
+                "author": {"role": "assistant"},
+                "content": {"content_type": "text", "parts": ["Left answer"]},
+                "weight": 0,
+                "metadata": {},
+            },
+        },
+        "right": {
+            "parent": "question",
+            "children": [],
+            "message": {
+                "author": {"role": "assistant"},
+                "content": {"content_type": "text", "parts": ["Right answer"]},
+            },
+        },
+    }
+    sessions = [
+        chatgpt_parse({"id": "mapping-choice", "mapping": mapping, "current_node": leaf}, "fallback")
+        for leaf in ("left", "right")
+    ]
+    assert [session.active_leaf_message_provider_id for session in sessions] == ["left", "right"]
+    assert [[message.provider_message_id for message in session.messages] for session in sessions] == [
+        ["question", "left", "right"]
+    ] * 2
+    hashes = [session_content_hash(session) for session in sessions]
+    assert hashes[0] != hashes[1]
+    assert all(
+        event.source_message_provider_id == "left"
+        for session in sessions
+        for event in session.session_events
+        if event.event_type == "chatgpt_message_delivery"
+    )
+    assert all(
+        any(event.event_type == "chatgpt_message_delivery" for event in session.session_events) for session in sessions
+    )
+    index_path = tmp_path / "index.db"
+    session_id: str | None = None
+    with write_lease("ChatGPT mapping selection fixture", archive_root=tmp_path):
+        initialize_active_archive_root(tmp_path)
+        with closing(open_connection(index_path, tier=ArchiveTier.INDEX, archive_root=tmp_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            for session, digest, leaf in zip(sessions, hashes, ("left", "right"), strict=True):
+                with conn:
+                    session_id = write_parsed_session_to_archive(conn, session, content_hash=digest)
+                selected = conn.execute(
+                    "SELECT native_id FROM messages WHERE session_id=? AND is_active_leaf=1", (session_id,)
+                ).fetchall()
+                assert [row[0] for row in selected] == [leaf]
+                assert conn.execute("SELECT content_hash FROM sessions WHERE session_id=?", (session_id,)).fetchone()[
+                    0
+                ] == bytes.fromhex(digest)
+    assert session_id is not None
+    with closing(sqlite3.connect(index_path)) as conn:
+        rows = conn.execute(
+            "SELECT m.native_id,b.text,m.is_active_leaf FROM messages AS m "
+            "JOIN blocks AS b ON b.message_id=m.message_id WHERE m.session_id=? "
+            "ORDER BY m.position,b.position",
+            (session_id,),
+        ).fetchall()
+    assert rows == [("question", "Question", 0), ("left", "Left answer", 0), ("right", "Right answer", 1)]
