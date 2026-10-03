@@ -1200,3 +1200,74 @@ def test_the_carrier_route_admits_before_it_materializes(tmp_path: Path, monkeyp
     assert acquire_hook_carriers(archive_root) == 1
     assert hook_event_count(archive_root) == 0
     assert materialize_hook_carriers(archive_root) == 3
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("fault_depth", [None, 0, 1, 2, 3])
+def test_compaction_settles_every_carrier_ancestor_before_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, preexisting: bool, fault_depth: int | None
+) -> None:
+    """A failed ancestor barrier retains the original, including on a retry."""
+    import stat
+
+    root = tmp_path / "spool"
+    pending = root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    original = pending / "event.json"
+    original.write_text(_envelope(0), encoding="utf-8")
+    directories = [
+        root,
+        root / "carriers",
+        root / "carriers" / "claude-code",
+        root / "carriers" / "claude-code" / "2026-09-14",
+    ]
+    if preexisting:
+        directories[-1].mkdir(parents=True)
+    events: list[Path | str] = []
+    real_sync, real_replace = os.fsync, os.replace
+    fault = directories[fault_depth] if fault_depth is not None else None
+
+    def sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            directory = Path(os.readlink(f"/proc/self/fd/{fd}"))
+            assert original.exists()
+            events.append(directory)
+            if directory == fault:
+                raise OSError("injected directory barrier failure")
+        else:
+            events.append("file")
+        real_sync(fd)
+
+    def replace(source: object, destination: object) -> None:
+        if Path(source) == original:  # type: ignore[arg-type]
+            assert events == ["file", *directories]
+            events.append("retire")
+        real_replace(source, destination)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "fsync", sync)
+    monkeypatch.setattr(os, "replace", replace)
+    if fault is not None:
+        with pytest.raises(OSError, match="injected directory barrier"):
+            compact_legacy_spool(root)
+        assert original.exists()
+        assert "retire" not in events
+        fault = None
+        events.clear()
+    result = compact_legacy_spool(root)
+    assert result["retired"] == 1
+    assert not original.exists()
+    assert events == ["file", *directories, "retire"]
+
+
+def test_ordinary_hook_emission_does_not_synchronize_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources.hook_producer import append_event
+
+    def forbidden(_fd: int) -> None:
+        pytest.fail("ordinary hook emission acquired a durability barrier")
+
+    monkeypatch.setattr(os, "fsync", forbidden)
+    record = json.loads(_envelope(0))
+    append_event(root=str(tmp_path), **record)
+    assert len(list(tmp_path.rglob("*.ndjson"))) == 1
