@@ -73,12 +73,6 @@ from devtools.pytest_options import (
     short_options_with_value,
     split_short_cluster,
 )
-from devtools.pytest_rerun import (
-    RERUN_IN_SLOT_ENV,
-    rerun_failed_once,
-    semantic_rerun_options,
-    testmon_rerun_environment,
-)
 from devtools.pytest_slot import (
     OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
@@ -1012,20 +1006,6 @@ def _run(
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
         env[WORKTREE_PROVENANCE_ENV] = "1"
-        # A queued job reruns its own failures before releasing the slot, so a
-        # red run is adjudicated without a second queue wait.
-        if artifacts is not None:
-            env[RERUN_IN_SLOT_ENV] = json.dumps(
-                {
-                    "report_path": str(report_path),
-                    "step_dir": str(artifacts.step_dir),
-                    "root": str(ROOT),
-                    # The slot derives the rerun's options inside its admitted
-                    # job: reading pytest's option table configures pytest and
-                    # imports the suite's conftests, which is test work.
-                    "command": command,
-                }
-            )
         output_option = {"stdout": stdout} if stdout is not None else {}
         outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
@@ -1073,31 +1053,6 @@ def _run(
             time.monotonic() - started,
             {"diagnosis": "worktree_provenance_unavailable", **killed, "pytest_slot": outcome.slot},
         )
-    # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
-    # (interrupted), 3 (internal error), 4 (usage) and the signal codes
-    # describe the run itself. This is the same adjudication `devtools verify`
-    # performs, from the same module: a focused run is the one MORE likely to
-    # sit beside six sibling jobs in the pool, so it needs it at least as much.
-    rerun = (
-        rerun_failed_once(
-            report_path=report_path,
-            step_dir=artifacts.step_dir,
-            env=env,
-            root=ROOT,
-            runner=runner,
-            first_provenance=(
-                outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
-            ),
-            options=semantic_rerun_options(command),
-            testmon_env=testmon_rerun_environment(command),
-        )
-        if returncode == 1
-        else None
-    )
-    if rerun is not None and not rerun["still_failed"]:
-        # Every failure passed alone: the run is green with its flakes named,
-        # never green silently.
-        returncode = 0
     suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
     return (
         returncode,
@@ -1107,7 +1062,6 @@ def _run(
             # Another recorded killer (a unit timeout) keeps its attribution.
             **killed,
             "pytest_slot": outcome.slot,
-            **({"rerun": rerun} if rerun is not None else {}),
             **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
             # Named per client pid: the checkout accumulates one log per run,
             # and a glob over them reaches an arbitrary one.

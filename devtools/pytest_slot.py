@@ -1465,13 +1465,8 @@ def run_pytest(
                 resource_state=resource_state,
                 preserve_guard=guard.cancel,
             )
-        # A queued job keeps its first attempt's exit code even when its
-        # in-slot rerun cleared every failure; that run is green, so its
-        # scratch goes like any green run's.
-        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(
-            env,
-            first_provenance=outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None,
-        )
+        # A separate diagnostic cannot clear the original failed launch.
+        keep = outcome.returncode != 0
         return outcome
     finally:
         dispose()
@@ -1549,13 +1544,10 @@ def _rerun_failures_in_slot(
 ) -> None:
     """Rerun a failed run's failures once, alone, while this job holds the slot.
 
-    A focused client used to adjudicate its failures by queueing a second
-    job, which on a contended pool cost another full queue wait for a
-    handful of tests. The client names its report and step directory in
-    ``RERUN_IN_SLOT_ENV``; this job runs the same one-process rerun the client
-    would have, and records its exit so the client adjudicates from it. The
-    exit code of the job stays the first run's: adjudication belongs to the
-    client, which also owns the report it patches.
+    This helper is an explicit diagnostic entry point, not part of ordinary
+    launch completion. The caller names its original report and step
+    directory in ``RERUN_IN_SLOT_ENV``. The separate retry record preserves
+    its exit and provenance; the original launch exit remains unchanged.
     """
     from devtools.pytest_rerun import (
         RERUN_IN_SLOT_ENV,
@@ -1855,8 +1847,7 @@ def _run_launch(launch_path: Path) -> int:
                     stderr=log,
                     start_new_session=True,
                 )
-                # The process being measured; the in-slot rerun replaces it, and
-                # live telemetry names whichever attempt is running now.
+                # Live telemetry remains bound to this original attempt.
                 if guard is not None:
                     guard.launched_process(child)
                 measured = [child]
@@ -1875,24 +1866,6 @@ def _run_launch(launch_path: Path) -> int:
                 )
                 sampler.start()
                 returncode = child.wait()
-                if returncode == 1:
-
-                    def register(process: subprocess.Popen[Any]) -> None:
-                        nonlocal child
-                        child = process
-                        measured[0] = process
-                        started_groups.append(process.pid)
-                        if sampler is not None:
-                            sampler.follow(process.pid)
-
-                    _rerun_failures_in_slot(
-                        environment,
-                        cwd=launch["working_directory"],
-                        log=log,
-                        on_start=register,
-                        first_group=child.pid,
-                        source_guard=guard,
-                    )
                 terminal_status = "passed" if returncode == 0 else "failed"
             except (OSError, PytestSlotUnavailableError) as exc:
                 log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
