@@ -223,12 +223,15 @@ class Observation:
     #: Open debt rows whose retry time is still in the future (in backoff),
     #: by stage: a backlog that is waiting, not being worked.
     debt_waiting_by_stage: dict[str, int] = field(default_factory=dict)
-    #: Sum of retry attempts over open debt: a scheduled retry that fails
-    #: again still moves it.
+    #: Retry activity, independent of useful progress.
     debt_attempts: int = 0
     #: Summed cursor failures, and cursors waiting on a scheduled retry.
     cursor_failures: int = 0
     cursor_retry_waiting: int = 0
+    debt_next_retry_at: str | None = None
+    cursor_next_retry_at: str | None = None
+    useful_progress_at_s: float | None = None
+    activity_at_s: float | None = None
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -303,21 +306,27 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
                     observation.cursor_failing,
                     observation.cursor_deferred,
                 ) = (int(value) for value in row)
+                cursor_row = conn.execute(
+                    "SELECT COALESCE(SUM(failure_count), 0),"
+                    " COALESCE(SUM(next_retry_at IS NOT NULL AND next_retry_at > ?), 0) FROM ingest_cursor",
+                    (datetime.now(UTC).isoformat(),),
+                ).fetchone()
+                observation.cursor_failures, observation.cursor_retry_waiting = (int(v) for v in cursor_row)
+                observation.cursor_next_retry_at = conn.execute(
+                    "SELECT MIN(next_retry_at) FROM ingest_cursor WHERE next_retry_at > ?",
+                    (datetime.now(UTC).isoformat(),),
+                ).fetchone()[0]
             if "convergence_debt" in tables:
                 for stage, count in conn.execute("SELECT stage, COUNT(*) FROM convergence_debt GROUP BY stage"):
                     observation.debt_by_stage[str(stage)] = int(count)
                 observation.open_debt = sum(observation.debt_by_stage.values())
-                if "ingest_cursor" in tables:
-                    cursor_row = conn.execute(
-                        "SELECT COALESCE(SUM(failure_count), 0),"
-                        " COALESCE(SUM(next_retry_at IS NOT NULL AND next_retry_at > ?), 0) FROM ingest_cursor",
-                        (datetime.now(UTC).isoformat(),),
-                    ).fetchone()
-                    observation.cursor_failures, observation.cursor_retry_waiting = (int(v) for v in cursor_row)
                 observation.debt_attempts = int(
                     conn.execute("SELECT COALESCE(SUM(attempts), 0) FROM convergence_debt").fetchone()[0]
                 )
                 now_iso = datetime.now(UTC).isoformat()
+                observation.debt_next_retry_at = conn.execute(
+                    "SELECT MIN(next_retry_at) FROM convergence_debt WHERE next_retry_at > ?", (now_iso,)
+                ).fetchone()[0]
                 for stage, count in conn.execute(
                     "SELECT stage, COUNT(*) FROM convergence_debt "
                     "WHERE next_retry_at IS NOT NULL AND next_retry_at > ? GROUP BY stage",
@@ -365,6 +374,22 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
         observation.error = f"{type(exc).__name__}: {exc}"
         observation.error_retryable = _retryable_observation_error(exc)
     return observation
+
+
+def _useful_progress(previous: Observation | None, current: Observation) -> bool:
+    """Accepted material, reduced required work, or a new publication/readiness."""
+    if previous is None:
+        return False
+    return (
+        any(getattr(current, key) > getattr(previous, key) for key in ("cursor_rows", "cursor_complete", "raw_rows"))
+        or current.raw_rows - current.raw_pending - current.raw_failed
+        > previous.raw_rows - previous.raw_pending - previous.raw_failed
+        or any(getattr(current, key) < getattr(previous, key) for key in ("memberships_pending", "open_debt"))
+        or any(current.debt_by_stage.get(stage, 0) < count for stage, count in previous.debt_by_stage.items())
+        or current.promoted_index is not None
+        and current.promoted_index != previous.promoted_index
+        or any(ready and not previous.readiness.get(domain, False) for domain, ready in current.readiness.items())
+    )
 
 
 def _retryable_observation_error(exc: BaseException) -> bool:
@@ -801,8 +826,10 @@ def _measure_and_write_receipt(
     promoted_at: float | None = None
     stable = 0
     last_report = 0.0
-    last_progress_key: tuple[object, ...] | None = None
+    last_observation: Observation | None = None
     last_progress_at = 0.0
+    last_useful_progress_at: float | None = None
+    last_activity_at: float | None = None
     # Wall minus monotonic elapsed, sampled every poll: a step that is
     # restored before the end still displaced the milestones logged meanwhile.
     clock_steps: list[float] = [0.0]
@@ -833,34 +860,27 @@ def _measure_and_write_receipt(
                 # its all-zero counts must not alternate with the real ones.
                 time.sleep(config.poll_s)
                 continue
-            progress_key = (
-                observation.cursor_rows,
-                observation.cursor_complete,
-                observation.raw_rows,
-                observation.raw_pending,
-                observation.memberships_pending,
-                observation.open_debt,
-                # A stage that resolves one debt row while the next stage
-                # creates another leaves the total unchanged even though the
-                # daemon is actively converging; the per-stage breakdown
-                # moves and must count as progress too.
-                tuple(sorted(observation.debt_by_stage.items())),
-                # Each scheduled retry attempt, even one that fails again.
-                observation.debt_attempts,
-                observation.cursor_failures,
-                observation.promoted_index,
-                # Derived convergence after promotion may move nothing but
-                # readiness; each domain turning ready is progress.
-                tuple(sorted(observation.readiness.items())),
-            )
-            if progress_key != last_progress_key:
-                last_progress_key, last_progress_at = progress_key, observation.t
-            elif observation.debt_waiting_by_stage or observation.cursor_retry_waiting:
-                # Debt waits on its scheduled retry (the production backoff
-                # reaches 960 s, beyond the stall window): waiting on the
-                # schedule is not a stall.
+            useful_progress = _useful_progress(last_observation, observation)
+            if last_observation is None or useful_progress:
                 last_progress_at = observation.t
-            elif observation.t - last_progress_at > config.stall_timeout_s:
+            if useful_progress:
+                last_useful_progress_at = observation.t
+            if (
+                useful_progress
+                or last_observation is not None
+                and (
+                    observation.debt_attempts != last_observation.debt_attempts
+                    or observation.cursor_failures != last_observation.cursor_failures
+                )
+            ):
+                last_activity_at = observation.t
+            observation.useful_progress_at_s = last_useful_progress_at
+            observation.activity_at_s = last_activity_at
+            last_observation = observation
+            # Preserve declared recovery backoff without recording waiting or
+            # failed attempts as new useful progress.
+            waiting = bool(observation.debt_waiting_by_stage or observation.cursor_retry_waiting)
+            if not useful_progress and not waiting and observation.t - last_progress_at > config.stall_timeout_s:
                 # Nothing observable moved: a starved backlog or a refused
                 # promotion. Stop and report it rather than burning the
                 # whole timeout on a build that is not converging.
@@ -908,6 +928,8 @@ def _measure_and_write_receipt(
     finished = time.monotonic()
     finished_wall = time.time()
     final = observe(paths["archive"], started)
+    final.useful_progress_at_s = last_useful_progress_at
+    final.activity_at_s = last_activity_at
     # The watcher may have read a file edited after the launch-time check.
     try:
         verify_manifest(config.corpus, manifest)

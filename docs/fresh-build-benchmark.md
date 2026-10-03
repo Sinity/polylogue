@@ -76,6 +76,8 @@ summarises it or writes flame-graph input.
 | `timing_s` | event log | preparation, first and last intake chunk, promotion, terminal, derived phase |
 | `stages` | ops `ingestion_batch` rows | the daemon's own stage timers summed over batches, and a declared rollup (acquire, parse, materialize, index, fts, derived) |
 | `writer` | `daemon.writer.released` events | busy share to promotion, queue depth, holds per actor |
+| `event_log` | complete event file scan | valid events and malformed JSON, non-object or invalid event records; missing files remain unavailable |
+| `progress` | driver observations | accepted material, reduced required work and readiness/publication changes, separately from retry activity and declared next retry times |
 | `by_source`, `projection` | `live.ingest.source_group` events, corpus population | seconds per MiB per origin and the intake projection for the sampled population |
 | `thread_cpu_s` | in-daemon sampler | CPU seconds per writer actor and per other thread group |
 | `process_tree` | driver samples | peak and p95 RSS, CPU seconds, mean cores, block I/O |
@@ -102,6 +104,14 @@ the timed work, exits non-zero. They iterate in seconds;
 the end-to-end run proves the total.
 
 ## Reading the numbers
+
+Missing or null batch metrics stay unknown: their totals are `null`, with
+observed and missing batch counts in `metric_coverage`. A measured zero stays
+zero. A lossless event verdict requires a present, fully parsed file and known
+zero terminal dropped, failure and undrained counters. Scheduled recovery
+waiting remains visible without advancing the useful-progress timestamp.
+Embeddings are disabled in this isolated benchmark; it does not qualify paid
+embedding-backup reuse or complete configured-operation delivery.
 
 The RSS budget uses the larger of the 4 Hz process-tree peak and the daemon
 process's own high-water mark (`VmHWM`); a worker child's spike shorter than
