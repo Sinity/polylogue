@@ -32,6 +32,13 @@ The generic worker `focused` profile maps to `pytest_focused`, which requires
 an explicit selector after `--`; the static `verify_quick` operation remains
 available by name and does not count as behavioral test evidence.
 
+For a routine fix, choose a small check that distinguishes the changed
+behavior, or imports/basic static checks when sufficient. Broader regression
+belongs at integration milestones. Keep first failures visible; retry only
+as an explicitly named flake or contention diagnostic, retaining both results.
+An unrelated inherited fixture failure does not require another full run.
+Required hooks and hosted checks still apply.
+
 ### Managed pytest pools
 
 The operation owns pytest admission. `.agentctl/project.toml` declares
@@ -52,6 +59,9 @@ candidate. A job ID, principal, or operation name is not slot ownership.
   the launch file the job consumes and deletes.
 - `agentctl job start polylogue pytest_focused --wait -- <selection>` runs
   `devtools test <selection>` inside the pool directly.
+- A worker's bare `verify` wrapper does not supply focused arguments. Use
+  `agentctl job start polylogue pytest_focused --workspace <checkout> -- <selection>`
+  instead, with an explicit test path or selector.
 - If the runtime is unreachable the run refuses rather than running unqueued:
   `systemctl --user start pueued`, then rerun.
 
