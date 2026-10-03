@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "../backfill/coordinator.js";
-import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS, retryAfterMs } from "../backfill/models.js";
+import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS, receiverAckContractError, serializedContentHash, retryAfterMs } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "../backfill/storage.js";
@@ -1525,6 +1525,7 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
   await ensureTrustedReceiver();
   const settings = await receiverSettings();
   const requestId = buildReceiverRequestId();
+  const serialized = serializedBody || JSON.stringify(payload);
   await appendDebugLog({ stage: "receiver_request", method: "POST", path, request_id: requestId, has_body: true });
   const controller = timeoutMs ? new AbortController() : null;
   const timeout = timeoutMs ? globalThis.setTimeout(() => controller.abort("receiver_request_timeout"), timeoutMs) : 0;
@@ -1532,7 +1533,7 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
     const response = await runtimeNetwork(`${settings.baseUrl}${path}`, {
       method: "POST",
       headers: await requestHeaders({ hasBody: true, requestId }),
-      body: serializedBody || JSON.stringify(payload),
+      body: serialized,
       signal: controller?.signal,
     });
     const acknowledgedRequestId = response.headers.get("X-Request-ID");
@@ -1563,7 +1564,18 @@ async function postJson(path, payload, serializedBody = null, timeoutMs = null, 
       error.status = response.status;
       throw error;
     }
-    return { ...body, receiver_request_id: receiverRequestId };
+    const receipt = { ...body, receiver_request_id: receiverRequestId };
+    if (path === "/v1/browser-captures") {
+      const contractError = receiverAckContractError(
+        { ...receipt, receiver_request_id: acknowledgedRequestId }, await serializedContentHash(serialized),
+      );
+      if (contractError) {
+        contractError.receiverRequestId = acknowledgedRequestId;
+        contractError.status = response.status;
+        throw contractError;
+      }
+    }
+    return receipt;
   } catch (error) {
     await appendDebugLog({
       stage: "receiver_error",

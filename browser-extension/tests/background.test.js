@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 
@@ -44,9 +45,17 @@ function installChromeMock(storagePatch = {}) {
   globalThis.chrome = {
     // The worker captures this per-instance seam. A stale instance must not
     // forward a request into the next test's fetch stub.
-    __polylogueNetwork: (...args) => {
-      if (!live()) return Promise.reject(new Error("stale_background_network"));
-      return globalThis.fetch(...args);
+    __polylogueNetwork: async (...args) => {
+      if (!live()) throw new Error("stale_background_network");
+      const response = await globalThis.fetch(...args);
+      if (response.ok && String(args[0]).endsWith("/v1/browser-captures") && args[1]?.method === "POST") {
+        // Synthetic successful receivers use the current wire receipt. Explicit
+        // malformed fields override these defaults in refusal controls.
+        const body = await response.json();
+        const hash = createHash("sha256").update(args[1].body).digest("hex");
+        response.json = async () => ({ outcome: "accepted", content_hash: hash, submitted_content_hash: hash, ...body });
+      }
+      return response;
     },
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
@@ -272,12 +281,25 @@ describe("background receiver diagnostics", () => {
     await loadBackground();
   });
 
+  it.each(["foreign_submission", "missing_outcome"])("refuses %s in the original foreground receipt boundary", async (fault) => {
+    globalThis.fetch = vi.fn(async () => responseJson(
+      fault === "foreign_submission" ? { submitted_content_hash: "foreign" } : { outcome: null },
+    ));
+    const response = await sendRuntimeMessage({ type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-refused", turns: [] } },
+    });
+    expect(response.ok).toBe(false);
+    expect(response.error).toMatch(/^receiver_contract_incompatible:/);
+    expect(stored.polylogueState?.captured).not.toBe(true);
+    expect(stored.polylogueSessionLedger["chatgpt:conv-refused"].last_error).toMatch(/^receiver_contract_incompatible:/);
+  });
+
   it("retires a superseded capture without certifying incoming turn counts", async () => {
     stored.polylogueSessionLedger = { "chatgpt:conv-stale": { turn_count: 7, attachment_count: 2 } };
     globalThis.fetch = vi.fn(async () => responseJson({
       ok: true, outcome: "superseded", provider: "chatgpt", provider_session_id: "conv-stale",
       artifact_ref: "chatgpt/conv-stale.json", content_hash: "resident-hash",
-      submitted_content_hash: "incoming-hash", accepted_identities: [],
+      accepted_identities: [],
     }));
     const response = await sendRuntimeMessage({ type: "polylogue.capture",
       envelope: { session: { provider: "chatgpt", provider_session_id: "conv-stale",
