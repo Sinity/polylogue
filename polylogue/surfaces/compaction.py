@@ -17,6 +17,7 @@ from pydantic import Field
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.refs import EvidenceRef
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 # The calibrated words-per-token ratio for the default estimator; not a
 # credential, but its identifier reads as one to a generic secret scanner, so
@@ -69,6 +70,7 @@ class CompactItem(ArchiveInsightModel):
     reasons: tuple[str, ...] = ()
     refs: tuple[EvidenceRef, ...] = ()
     degradation: str | None = None
+    occurrence_count: int = Field(default=1, ge=1)
 
 
 class CompactOmission(ArchiveInsightModel):
@@ -103,6 +105,7 @@ class CorpusCompactionPack(ArchiveInsightModel):
     items: tuple[CompactItem, ...]
     omissions: tuple[CompactOmission, ...] = ()
     manifest: CompactManifest
+    outcome: OutcomeEnvelope
     token_estimate: int
     query_run_ref: str | None = None
     result_relation_ref: str | None = None
@@ -247,7 +250,7 @@ def compact_sessions(
     drops: Counter[str] = Counter()
     drop_origins: Counter[str] = Counter()
     dropped_tokens: defaultdict[str, int] = defaultdict(int)
-    included_tokens: defaultdict[str, int] = defaultdict(int)
+    runs: list[list[str]] = []
     inherited: set[tuple[str, str]] = set()
     for session_id in sorted(by_id):
         session = by_id[session_id]
@@ -260,7 +263,9 @@ def compact_sessions(
         )
         parent_ids = {str(_get(m, "id", _get(m, "message_id", ""))) for m in parent_messages}
         branch_seen = branch is None
-        for _position, message in enumerate(messages):
+        previous_key: tuple[str, str] | None = None
+        previous_position = -2
+        for position, message in enumerate(messages):
             text = _message_text(message)
             origin = _origin(message)
             anchor = _anchor(session_id, message)
@@ -313,49 +318,46 @@ def compact_sessions(
                     refs=(anchor.ref,),
                 )
             )
-            included_tokens[session_id] += tokens
+            run_key = (origin, text)
+            if run_key == previous_key and position == previous_position + 1:
+                runs[-1].append(anchor.ref.format())
+            else:
+                runs.append([anchor.ref.format()])
+            previous_key, previous_position = run_key, position
     items.sort(key=lambda item: (-item.score, item.anchor.ref.format()))
     budget = spec.max_tokens
-    kept: list[CompactItem] = []
-    used = 0
-    for item in items:
-        tokens = estimate_tokens(item.text)
-        if used + tokens <= budget:
-            kept.append(item)
-            used += tokens
-        elif used < budget and item.text.split():
-            # First degradation is clipping.  The remaining ladder is
-            # represented in the manifest and is applied only after this
-            # deterministic lossless-by-item attempt.
-            words = item.text.split()
-            room = max(1, int((budget - used) / 1.3))
-            clipped = " ".join(words[:room]).rstrip() + " …"
-            clipped_item = item.model_copy(update={"text": clipped, "degradation": "clip"})
-            kept.append(clipped_item)
-            used += estimate_tokens(clipped)
-            drops["budget_clip"] += 1
-        else:
-            drops["budget_drop"] += 1
-            dropped_tokens[item.session_id] += tokens
-            omissions.append(
-                CompactOmission(
-                    anchor=item.anchor, reason="budget_drop", detail="drop_with_manifest", token_estimate=tokens
-                )
-            )
-    # Measure the complete public object: projection, items, omissions, the
-    # manifest and the estimate field itself. A partial probe can fit while the
-    # emitted pack exceeds the budget. Omission rows go first, then kept items,
-    # then per-session totals; each truncation is named in ``unknown``.
-    manifest_included: dict[str, int] = {}
-    for item in kept:
-        manifest_included[item.session_id] = manifest_included.get(item.session_id, 0) + estimate_tokens(item.text)
-    manifest_dropped = dict(dropped_tokens)
+    kept = list(items)
+    # These are source-prose estimates, excluding the clip marker and other
+    # synthesized presentation metadata. Every reduction transfers its exact
+    # difference to dropped_tokens; the source total never silently shrinks.
+    retained = {item.anchor.ref.format(): estimate_tokens(item.text) for item in items}
     unknown: tuple[str, ...] = (
         ("lineage_unresolved",)
         if any(str(_get(s, "parent_id", "")) and str(_get(s, "id", "")) not in parent_of for s in sessions)
         else ()
     )
-    while True:
+    manifest_included: dict[str, int] = {}
+    manifest_dropped: dict[str, int] = {}
+
+    def account(item: CompactItem, reason: DropReason, remaining: int, detail: str) -> None:
+        key = item.anchor.ref.format()
+        removed = retained[key] - remaining
+        retained[key] = remaining
+        dropped_tokens[item.session_id] += removed
+        drops[reason] += 1
+        drop_origins[item.material_origin] += 1
+        omissions.append(CompactOmission(anchor=item.anchor, reason=reason, detail=detail, token_estimate=removed))
+
+    def refresh_totals() -> None:
+        nonlocal manifest_included, manifest_dropped
+        manifest_included = {}
+        for item in kept:
+            tokens = retained[item.anchor.ref.format()]
+            manifest_included[item.session_id] = manifest_included.get(item.session_id, 0) + tokens
+        manifest_dropped = dict(dropped_tokens)
+
+    def measured_pack() -> CorpusCompactionPack:
+        gaps = tuple(reason for reason, count in sorted(drops.items()) if reason.startswith("budget_") and count)
         candidate = CorpusCompactionPack(
             projection=spec,
             items=tuple(kept),
@@ -368,44 +370,160 @@ def compact_sessions(
                 duplicate_prefix_omissions=drops["duplicate_lineage_prefix"],
                 unknown=unknown,
             ),
+            outcome=decide_outcome(matched=len(kept), degraded=(*gaps, *unknown)),
             token_estimate=0,
             query_run_ref=query_run_ref,
             result_relation_ref=result_relation_ref,
             pack_ref=_PLACEHOLDER_PACK_REF,
         )
-        # The estimate is part of what it measures. Starting from zero it only
-        # grows, and it reaches a fixed point once its decimal width is stable.
         serialized_tokens = estimate_serialized_tokens(_serialized_pack(candidate))
         while serialized_tokens != candidate.token_estimate:
             candidate = candidate.model_copy(update={"token_estimate": serialized_tokens})
             serialized_tokens = estimate_serialized_tokens(_serialized_pack(candidate))
-        if serialized_tokens <= budget:
-            # The identity commits to the whole emitted pack. It has a fixed
-            # width, so filling it in does not change the measured size.
-            identity = sha256(_serialized_pack(candidate.model_copy(update={"pack_ref": ""})).encode("utf-8"))
-            return candidate.model_copy(update={"pack_ref": f"compact:{identity.hexdigest()}"})
-        if omissions:
+        return candidate
+
+    def finish_if_fits() -> CorpusCompactionPack | None:
+        nonlocal unknown
+        candidate = measured_pack()
+        # Detailed omission evidence yields to the requested budget before
+        # retained prose does; aggregate accounting stays complete and this
+        # provenance gap is explicit. Re-evaluate after every ladder stage.
+        while candidate.token_estimate > budget and omissions:
             omissions.pop()
             if "omission_rows_truncated" not in unknown:
                 unknown += ("omission_rows_truncated",)
-        elif kept:
-            dropped = kept.pop()
-            tokens = estimate_tokens(dropped.text)
-            drops["budget_drop"] += 1
-            drop_origins[dropped.material_origin] += 1
-            manifest_dropped[dropped.session_id] = manifest_dropped.get(dropped.session_id, 0) + tokens
-            remaining = manifest_included[dropped.session_id] - tokens
-            if remaining:
-                manifest_included[dropped.session_id] = remaining
+            candidate = measured_pack()
+        if candidate.token_estimate > budget:
+            return None
+        identity = sha256(_serialized_pack(candidate.model_copy(update={"pack_ref": ""})).encode("utf-8"))
+        return candidate.model_copy(update={"pack_ref": f"compact:{identity.hexdigest()}"})
+
+    refresh_totals()
+    finished = finish_if_fits()
+    if finished is not None:
+        return finished
+
+    # Clip: share the available prose allowance across the selected items.
+    # Binary search a source prefix, never a character-by-character ladder.
+    # Even a long unbroken run can therefore be clipped without invented text.
+    def text_charge(text: str) -> int:
+        return estimate_serialized_tokens(json.dumps(text, ensure_ascii=False))
+
+    def clipped_prefix(text: str, allowance: int) -> str:
+        words = text.split()
+        low, high = 0, len(words)
+        while low < high:
+            middle = (low + high + 1) // 2
+            if text_charge(" ".join(words[:middle]) + " …") <= allowance:
+                low = middle
             else:
-                del manifest_included[dropped.session_id]
-        elif manifest_included or manifest_dropped:
-            target = manifest_included if manifest_included else manifest_dropped
-            target.pop(sorted(target)[-1])
-            if "session_token_totals_truncated" not in unknown:
-                unknown += ("session_token_totals_truncated",)
-        else:
-            raise CompactionBudgetTooSmallError(budget, serialized_tokens)
+                high = middle - 1
+        prefix = " ".join(words[:low])
+        if prefix:
+            return prefix
+        low, high = 1, len(words[0])
+        while low < high:
+            middle = (low + high + 1) // 2
+            if text_charge(words[0][:middle] + " …") <= allowance:
+                low = middle
+            else:
+                high = middle - 1
+        return words[0][:low]
+
+    overflow = measured_pack().token_estimate - budget
+    available_prose = sum(text_charge(item.text) for item in kept) - overflow
+    # If metadata alone is oversized, keep a budget-proportional prefix for
+    # the following run collapse instead of erasing prose before it can act.
+    allowance = max(1, (available_prose if available_prose > 0 else budget) // max(1, len(kept)))
+    while True:
+        for index, item in enumerate(kept):
+            original = items[index]
+            if text_charge(item.text) <= allowance:
+                continue
+            prefix = clipped_prefix(original.text, allowance)
+            text = prefix + " …"
+            if prefix == original.text or text == item.text:
+                continue
+            remaining = estimate_tokens(prefix)
+            if item.degradation == "clip":
+                # Refining the same stage is one clip event, with each extra
+                # suffix charged exactly once rather than charging it twice.
+                ref_key = item.anchor.ref.format()
+                removed = retained[ref_key] - remaining
+                retained[ref_key] = remaining
+                dropped_tokens[item.session_id] += removed
+                omissions.append(
+                    CompactOmission(
+                        anchor=item.anchor, reason="budget_clip", detail="removed_source_suffix", token_estimate=removed
+                    )
+                )
+            else:
+                account(item, "budget_clip", remaining, "removed_source_suffix")
+            kept[index] = item.model_copy(update={"text": text, "degradation": "clip"})
+        refresh_totals()
+        finished = finish_if_fits()
+        if finished is not None:
+            return finished
+        overflow = measured_pack().token_estimate - budget
+        if allowance == 1 or sum(text_charge(item.text) for item in kept) <= overflow:
+            break
+        allowance = max(1, allowance - max(1, (overflow + len(kept) - 1) // max(1, len(kept))))
+
+    # Collapse runs defined by original adjacent source text, not the clipped
+    # prefixes (which could make different messages appear equal).
+    by_ref = {item.anchor.ref.format(): item for item in kept}
+    for run in runs:
+        if len(run) < 2:
+            continue
+        representative = by_ref[run[0]]
+        refs = tuple(by_ref[key].anchor.ref for key in run)
+        by_ref[run[0]] = representative.model_copy(
+            update={"refs": refs, "occurrence_count": len(run), "degradation": "collapse_runs_to_counts"}
+        )
+        for member_ref in run[1:]:
+            account(by_ref[member_ref], "budget_collapsed", 0, "repeated_source_text")
+            del by_ref[member_ref]
+    kept = [by_ref[item.anchor.ref.format()] for item in kept if item.anchor.ref.format() in by_ref]
+    refresh_totals()
+    finished = finish_if_fits()
+    if finished is not None:
+        return finished
+
+    # Skeleton: source pointers and typed provenance survive without prose.
+    for index, item in enumerate(kept):
+        account(item, "budget_skeleton", 0, "prose_removed_anchor_retained")
+        kept[index] = item.model_copy(update={"text": "", "degradation": "skeleton_only"})
+    refresh_totals()
+    finished = finish_if_fits()
+    if finished is not None:
+        return finished
+
+    # Drop lower-score items only after the prior stages have been tried.
+    # Source reductions were already accounted; these omission rows carry
+    # zero prose tokens rather than charging the same loss a second time.
+    while kept:
+        dropped = kept.pop()
+        account(dropped, "budget_drop", 0, "drop_with_manifest")
+        refresh_totals()
+        if not kept and "index_only_pack_failure" not in unknown:
+            unknown += ("index_only_pack_failure",)
+        finished = finish_if_fits()
+        if finished is not None:
+            return finished
+
+    # Index-only: no retained item falsely implies an empty selected scope.
+    # Keep the omission index and complete aggregate manifest where possible.
+    # If those totals must be shortened, name that gap explicitly. A budget
+    # below the final typed envelope remains a refusal, never an oversized pack.
+    while manifest_included or manifest_dropped:
+        target = manifest_included if manifest_included else manifest_dropped
+        target.pop(sorted(target)[-1])
+        if "session_token_totals_truncated" not in unknown:
+            unknown += ("session_token_totals_truncated",)
+        finished = finish_if_fits()
+        if finished is not None:
+            return finished
+    raise CompactionBudgetTooSmallError(budget, measured_pack().token_estimate)
 
 
 def render_compaction_markdown(pack: CorpusCompactionPack) -> str:
@@ -414,6 +532,7 @@ def render_compaction_markdown(pack: CorpusCompactionPack) -> str:
         "",
         f"- Pack: `{pack.pack_ref}`",
         f"- Tokens: {pack.token_estimate}/{pack.projection.max_tokens}",
+        f"- Outcome: {pack.outcome.state}",
         f"- Included items: {len(pack.items)}",
         f"- Omitted items: {len(pack.omissions)}",
         "",
@@ -430,8 +549,20 @@ def render_compaction_markdown(pack: CorpusCompactionPack) -> str:
         )
     for item in pack.items:
         lines.extend(
-            ["", f"## {item.anchor.ref.format()}", "", f"_Reasons: {', '.join(item.reasons) or 'none'}_", "", item.text]
+            [
+                "",
+                f"## {item.anchor.ref.format()}",
+                "",
+                f"_Reasons: {', '.join(item.reasons) or 'none'}_",
+                "",
+                f"_Occurrences: {item.occurrence_count}; degradation: {item.degradation or 'none'}_",
+                "",
+                item.text,
+            ]
         )
+        if item.occurrence_count > 1:
+            lines.extend(["", "### Run source references", ""])
+            lines.extend(f"- `{ref.format()}`" for ref in item.refs)
     return "\n".join(lines).rstrip() + "\n"
 
 

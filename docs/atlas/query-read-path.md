@@ -149,3 +149,22 @@ CLI selection adapters carry the operation's rows, terminal outcome and answerin
 Query-set summary and transcript exports select through resident `cli.query` and hydrate through bounded `session.read` domain pages. `session_projection=domain` uses the canonical session hydration fields, including tool blocks; the default `archive` projection keeps the existing archive transcript vocabulary. A selected read sends `selection_epoch`, the query's actual Index/User view token. The resident reader compares it before cache lookup or hydration on every page. Dialogue and registered per-session handlers carry the same declared epoch through their resident read requests; standalone unbound reads omit it. Domain transcript continuations bind their projection and selected epoch. A changed view refuses rather than combining sessions from different snapshots. The CLI stages the rendered set before output, then reports the original selector and hydration verdicts; a named gap remains degraded even when every returned session reads successfully.
 
 This materialized client selection does not implement scalable resident mutation references or bound the memory required by a single fully rendered session. Existing operation-result bounds also remain an unmet transport obligation for an individual transcript row larger than one deliverable window.
+
+Corpus compaction is an operator-budgeted projection over the pinned selected
+sessions, without changing source evidence. Its executable degradation order
+is clipping, exact adjacent run collapse, source-reference skeletons, item
+drops with a manifest, then an index-only pack or typed envelope refusal.
+Collapse keeps one original-text representation, an actual occurrence count
+and every run member's reference; skeletons keep typed identity/provenance
+without prose. Markdown exposes the same count, degradation and outcome as
+the typed pack. Budget reductions and missing manifest detail are named gaps;
+a no-item index-only pack stays degraded, and CLI exit follows that outcome.
+
+Per-session included and dropped estimates partition original source prose.
+Clip markers and run-count metadata consume the complete serialized-pack
+budget but do not claim retained source tokens. Drop counters count reduction
+events by stage (a source item may pass through several); token differences
+are transferred once. Detailed omission rows may yield to the requested
+budget with `omission_rows_truncated`; session totals remain exact unless
+`session_token_totals_truncated` explicitly names missing totals. Budgets below
+the final typed envelope are refused rather than enlarged.
