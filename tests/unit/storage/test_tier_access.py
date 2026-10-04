@@ -8,7 +8,10 @@ and these assertions fail.
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
@@ -71,3 +74,48 @@ def test_acquisition_lifts_into_the_shared_evidence_union(tmp_path: Path) -> Non
     _initialize_tiers(tmp_path)
     with open_tier_reader(ArchiveTier.INDEX, _index_path(tmp_path)) as acquired:
         assert isinstance(tier_evidence(acquired), Measured)
+
+
+@pytest.mark.parametrize("close_fails", [False, True])
+def test_settlement_callback_follows_physical_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, close_fails: bool
+) -> None:
+    from polylogue.archive.query.execution_control import QueryExecutionContext
+    from polylogue.storage import tier_access
+
+    class CloseFaultConnection(sqlite3.Connection):
+        refuse_close = False
+
+        def close(self) -> None:
+            if self.refuse_close:
+                raise RuntimeError("synthetic physical close failure")
+            super().close()
+
+    _initialize_tiers(tmp_path)
+    path = tmp_path / "user.db"
+    acquired = acquire_tier_reader(ArchiveTier.USER, path)
+    assert isinstance(acquired, TierHandle)
+    acquired.connection.close()
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, factory=CloseFaultConnection)
+    connection.refuse_close = close_fails
+    monkeypatch.setattr(
+        tier_access, "acquire_tier_reader", lambda _tier, _path: replace(acquired, connection=connection)
+    )
+    ctx = QueryExecutionContext(call_id="synthetic-tier-close", query_ref="settings")
+    try:
+        if close_fails:
+            with pytest.raises(RuntimeError, match="synthetic physical close failure"):
+                with open_tier_reader(ArchiveTier.USER, path, on_settled=ctx.mark_cleanup_complete) as handle:
+                    assert isinstance(handle, TierHandle)
+                    handle.connection.execute("SELECT 1").fetchone()
+            assert not ctx.receipt.cleanup_complete
+            assert connection.execute("SELECT 1").fetchone() == (1,)
+        else:
+            with open_tier_reader(ArchiveTier.USER, path, on_settled=ctx.mark_cleanup_complete):
+                assert not ctx.receipt.cleanup_complete
+            assert ctx.receipt.cleanup_complete
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+    finally:
+        connection.refuse_close = False
+        connection.close()

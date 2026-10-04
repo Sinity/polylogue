@@ -120,7 +120,9 @@ def acquire_tier_reader(tier: ArchiveTier, path: Path) -> TierHandle | TierRefus
 
 
 @contextmanager
-def open_tier_reader(tier: ArchiveTier, path: Path) -> Iterator[TierHandle | TierRefusal]:
+def open_tier_reader(
+    tier: ArchiveTier, path: Path, *, on_settled: Callable[[], None] | None = None
+) -> Iterator[TierHandle | TierRefusal]:
     """Scope-own the handle; a refusal yields with nothing to close."""
     acquired = acquire_tier_reader(tier, path)
     try:
@@ -128,6 +130,8 @@ def open_tier_reader(tier: ArchiveTier, path: Path) -> Iterator[TierHandle | Tie
     finally:
         if isinstance(acquired, TierHandle):
             acquired.connection.close()
+            if on_settled is not None:
+                on_settled()
 
 
 def tier_evidence(acquired: TierHandle | TierRefusal) -> Evidence[TierHandle]:
