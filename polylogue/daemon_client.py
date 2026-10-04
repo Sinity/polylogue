@@ -278,8 +278,10 @@ class DaemonClient:
                 if request.index_schema_version is None and operation not in {
                     "maintenance.backup",
                     "maintenance.restore_verified_backup",
+                    "user.settings.get",
+                    "user.settings.list",
                 }:
-                    # These controls copy/recover declared tiers without an Index
+                    # These operations read or copy declared tiers without an Index
                     # reader. An explicit Index precondition still reaches the
                     # server unchanged and must be verified there.
                     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION

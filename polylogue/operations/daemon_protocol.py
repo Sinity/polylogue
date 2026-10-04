@@ -256,6 +256,10 @@ class UserOverlayGetRequest(_OperationPayload):
     id: str = Field(min_length=1)
 
 
+class UserSettingGetRequest(_OperationPayload):
+    setting_key: str = Field(min_length=1)
+
+
 class UserMarkMutationRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     mark_type: str = Field(min_length=1)
@@ -979,6 +983,14 @@ class AssertionClaimsListResult(UserOverlayListResult):
 class UserOverlayGetResult(_OperationResult):
     found: bool
     item: dict[str, object] | None
+
+
+class UserSettingGetResult(UserOverlayGetResult):
+    outcome: dict[str, object]
+
+
+class UserSettingListResult(UserOverlayListResult):
+    outcome: dict[str, object]
 
 
 class StatusResult(_OperationResult):
@@ -1707,6 +1719,24 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="user.assertions.list.result/v1",
         request_model=AssertionClaimsListRequest,
         result_model=AssertionClaimsListResult,
+    ),
+    DaemonOperationSpec(
+        "user.settings.get",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.settings.get.request/v1",
+        result_contract="user.settings.get.result/v1",
+        request_model=UserSettingGetRequest,
+        result_model=UserSettingGetResult,
+    ),
+    DaemonOperationSpec(
+        "user.settings.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="user.settings.list.request/v1",
+        result_contract="user.settings.list.result/v1",
+        request_model=UserOverlayListRequest,
+        result_model=UserSettingListResult,
     ),
     DaemonOperationSpec(
         "user.marks.list",

@@ -184,3 +184,13 @@ are transferred once. Detailed omission rows may yield to the requested
 budget with `omission_rows_truncated`; session totals remain exact unless
 `session_token_totals_truncated` explicitly names missing totals. Budgets below
 the final typed envelope are refused rather than enlarged.
+
+## Durable setting reads
+
+`setting get` and `setting list` use the resident `user.settings.get` and
+`user.settings.list` operations. They pin one read transaction in `user.db`
+and verify archive identity before and after the read. Missing or corrupt User
+authority refuses; an absent Index, Source or Audit tier does not withhold
+durable preferences. Reads require the daemon and never fall back to the local
+Python facade. Explicit Index version preconditions still refuse because these
+operations do not observe Index authority.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 
 
 @contextmanager
-def readable_required_tier(path: Path, tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
+def readable_required_tier(
+    path: Path, tier: ArchiveTier, *, on_settled: Callable[[], None] | None = None
+) -> Iterator[sqlite3.Connection]:
     """Refuse inaccessible required read authority without recreating a tier."""
     guidance = (
         "Restore the user tier from a verified backup before reading."
@@ -28,7 +30,7 @@ def readable_required_tier(path: Path, tier: ArchiveTier) -> Iterator[sqlite3.Co
         else "Restore readable archive authority, then retry."
     )
     try:
-        with open_tier_reader(tier, path) as acquired:
+        with open_tier_reader(tier, path, on_settled=on_settled) as acquired:
             if isinstance(acquired, TierRefusal):
                 raise ArchiveTierUnavailableError(
                     tier=tier.value, path=str(path), reason=acquired.reason, guidance=guidance
@@ -50,6 +52,31 @@ def _list(items: list[dict[str, object]]) -> dict[str, object]:
 
 def _get(item: dict[str, object] | None) -> dict[str, object]:
     return {"found": item is not None, "item": item}
+
+
+def read_user_settings(
+    name: str, payload: Mapping[str, object], *, connection: sqlite3.Connection, checkpoint: Callable[[], None]
+) -> dict[str, object]:
+    """Read durable settings without requiring a derived Index generation."""
+    from dataclasses import asdict
+
+    from polylogue.storage.sqlite.archive_tiers.user_settings_write import get_user_setting, list_user_settings
+    from polylogue.surfaces.outcome import decide_outcome
+
+    checkpoint()
+    if name == "user.settings.get":
+        row = get_user_setting(connection, str(payload["setting_key"]))
+        result = _get(asdict(row) if row is not None else None)
+        matched = int(row is not None)
+    elif name == "user.settings.list":
+        items = [asdict(row) for row in list_user_settings(connection)]
+        result = _list(items)
+        matched = len(items)
+    else:
+        raise ValueError(f"user setting read is not declared: {name}")
+    checkpoint()
+    result["outcome"] = decide_outcome(matched=matched).to_dict()
+    return result
 
 
 def _saved_view(row: dict[str, str]) -> dict[str, object]:

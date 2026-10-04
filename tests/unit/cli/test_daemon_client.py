@@ -926,6 +926,8 @@ def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() ->
             False,
             True,
         ),
+        ("user.settings.get", {"setting_key": "subscription_tier"}, False, True),
+        ("user.settings.list", {}, False, True),
         ("status", {}, False, False),
         ("operation.status", {"request_id": "original"}, False, False),
         ("operation.cancel", {"request_id": "original"}, False, False),
@@ -972,6 +974,8 @@ def test_connected_operation_binds_versions_without_a_discovery_exchange(
     ("operation", "payload"),
     [
         ("cli.query", {}),
+        ("user.settings.get", {"setting_key": "subscription_tier"}),
+        ("user.settings.list", {}),
         ("maintenance.backup", {"output_dir": "/synthetic/backups"}),
         ("maintenance.restore_verified_backup", {"backup_dir": "/synthetic/package", "destination": "/synthetic/new"}),
     ],
