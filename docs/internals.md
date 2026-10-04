@@ -1134,6 +1134,11 @@ and committed references in batches of 500, so a slow following artifact
 could age an earlier blob past 60 seconds. Source v4 therefore reserves at
 the only boundary that closes the race: before final-path visibility.
 
+Publication listings expose the canonical `liveness_state` and its `blockers`,
+separately from physical blob presence. Status counts blocked receipts in
+`retained_blocked_count`, including those whose blob is absent; unavailable
+reference authority cannot certify either an unreferenced or a missing receipt.
+
 Publication reconciliation has no TTL. It classifies and retains receipts by
 default, including missing-path receipts: absence is not proof that a paused
 publisher died. Automatic clearing requires archive-wide writer exclusion.

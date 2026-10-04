@@ -132,6 +132,9 @@ class GCRunEvidence:
     skipped_unlink_error: int = 0
     dry_run: bool = False
     max_batch: int = 0
+    requested_hashes: frozenset[str] | None = None
+    requested_deleted_count: int = 0
+    requested_reclaimed_bytes: int = 0
 
 
 @dataclass
@@ -917,6 +920,9 @@ def _execute_gc_generation_members(
                         source_conn.commit()
                         deleted_now += 1
                         reclaimed_bytes_now += observed.size_bytes
+                        if evidence.requested_hashes is not None and blob_hash in evidence.requested_hashes:
+                            evidence.requested_deleted_count += 1
+                            evidence.requested_reclaimed_bytes += observed.size_bytes
         except _BlobNamespaceUnavailableError as exc:
             report.blocked_reason = str(exc)
             _emit_gc_refusal(
@@ -958,6 +964,7 @@ def _resume_pending_gc_generation(
     blob_root: Path,
     report: BlobGCResult,
     max_batch: int,
+    evidence: GCRunEvidence | None = None,
 ) -> bool:
     """Run the sole pending generation and report whether the gate was used."""
     pending_generation, pending_blocker = _pending_gc_generation(control_db_path)
@@ -990,7 +997,8 @@ def _resume_pending_gc_generation(
             error_detail=namespace_blocker,
         )
         return False
-    evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
+    if evidence is None:
+        evidence = GCRunEvidence(dry_run=False, max_batch=max_batch)
     deleted, reclaimed_bytes = _execute_gc_generation_members(
         control_db_path=control_db_path,
         sibling_index_db=sibling_index_db,
@@ -1023,7 +1031,10 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
     separate blob authority. It delegates its physical deletion to this
     bounded GC seam: publisher exclusion, source then index write locks, and
     the final canonical-owner/reservation recheck all happen immediately
-    before unlink.
+    before unlink. A pending generation settles first; returned counts include
+    only requested hashes physically unlinked in this invocation, independently
+    from the durable generation totals. Blocked recovery leaves new candidates
+    unattempted and retains any requested partial effects in the result.
     """
     from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
@@ -1041,6 +1052,8 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             namespace_identity = _blob_namespace_identity(blob_root, create_marker=True)
         except _BlobNamespaceUnavailableError as exc:
             return 0, 0, (str(exc),)
+        evidence = GCRunEvidence(max_batch=len(blob_hashes), requested_hashes=frozenset(blob_hashes))
+        resumed_errors: tuple[str, ...] = ()
         # This direct writer entry point must obey the exact same one-pending
         # generation gate as recurring GC.  In particular, it cannot create a
         # second incomplete plan after raw retention has independently removed
@@ -1051,21 +1064,28 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             blob_root=blob_root,
             report=report,
             max_batch=max(len(blob_hashes), 1),
+            evidence=evidence,
         ):
             if report.blocked_reason is not None:
-                return report.deleted_count, report.reclaimed_bytes, (report.blocked_reason,)
+                return evidence.requested_deleted_count, evidence.requested_reclaimed_bytes, (report.blocked_reason,)
             with closing(_readonly(source_db_path)) as source_conn:
-                errors = tuple(
+                resumed_errors = tuple(
                     f"{str(row[0])[:16]}: {row[1]}"
                     for row in source_conn.execute(
                         "SELECT hex(blob_hash), outcome_detail FROM gc_generation_members "
                         "WHERE generation_id = ? AND outcome = 'failed' ORDER BY blob_hash",
                         (report.generation_id,),
                     )
+                    if str(row[0]).lower() in blob_hashes
                 )
-            return report.deleted_count, report.reclaimed_bytes, errors
+            if not report.generation_completed:
+                return (
+                    evidence.requested_deleted_count,
+                    evidence.requested_reclaimed_bytes,
+                    (*resumed_errors, "blob GC prior generation remains pending"),
+                )
         if not blob_hashes:
-            return 0, 0, ()
+            return evidence.requested_deleted_count, evidence.requested_reclaimed_bytes, resumed_errors
         members: list[_GCMemberIntent] = []
         try:
             with (
@@ -1074,7 +1094,11 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             ):
                 preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
                 if preflight.state is LivenessState.BLOCKED:
-                    return 0, 0, preflight.blockers
+                    return (
+                        evidence.requested_deleted_count,
+                        evidence.requested_reclaimed_bytes,
+                        (*resumed_errors, *preflight.blockers),
+                    )
                 index_authority_blocker = index_liveness_authority_blocker(
                     blob_root=blob_root,
                     index_path=index_db_path,
@@ -1085,7 +1109,11 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                         blob_root, blob_hash, namespace_identity=namespace_identity
                     )
                     if namespace_blockers:
-                        return 0, 0, namespace_blockers
+                        return (
+                            evidence.requested_deleted_count,
+                            evidence.requested_reclaimed_bytes,
+                            (*resumed_errors, *namespace_blockers),
+                        )
                     if size_bytes is None:
                         # A caller may hand us a stale candidate set.  A
                         # readable object absence has no unlink and no member
@@ -1099,14 +1127,22 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                         final_recheck=False,
                     )
                     if protection.blockers:
-                        return 0, 0, protection.blockers
+                        return (
+                            evidence.requested_deleted_count,
+                            evidence.requested_reclaimed_bytes,
+                            (*resumed_errors, *protection.blockers),
+                        )
                     if protection.is_live:
                         continue
                     members.append(_GCMemberIntent(blob_hash, size_bytes))
         except Exception as exc:
-            return 0, 0, (f"blob GC planning failed: {exc}",)
+            return (
+                evidence.requested_deleted_count,
+                evidence.requested_reclaimed_bytes,
+                (*resumed_errors, f"blob GC planning failed: {exc}"),
+            )
         if not members:
-            return 0, 0, ()
+            return evidence.requested_deleted_count, evidence.requested_reclaimed_bytes, resumed_errors
         generation_id = f"gc-{uuid4().hex}"
         _commit_gc_generation_intent(
             source_db_path,
@@ -1116,8 +1152,8 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             namespace_identity=namespace_identity,
         )
         report = BlobGCResult(str(source_db_path), str(blob_root), False, len(members), generation_id=generation_id)
-        evidence = GCRunEvidence(max_batch=len(members))
-        deleted, deleted_bytes = _execute_gc_generation_members(
+        evidence.max_batch = len(members)
+        _execute_gc_generation_members(
             control_db_path=source_db_path,
             sibling_index_db=index_db_path,
             blob_root=blob_root,
@@ -1126,7 +1162,11 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
             evidence=evidence,
         )
         if report.blocked_reason is not None:
-            return deleted, deleted_bytes, (report.blocked_reason,)
+            return (
+                evidence.requested_deleted_count,
+                evidence.requested_reclaimed_bytes,
+                (*resumed_errors, report.blocked_reason),
+            )
         _populate_generation_summary(report, source_db_path, generation_id)
         with closing(_readonly(source_db_path)) as source_conn:
             errors = tuple(
@@ -1137,7 +1177,7 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
                     (generation_id,),
                 )
             )
-        return deleted, deleted_bytes, errors
+        return evidence.requested_deleted_count, evidence.requested_reclaimed_bytes, (*resumed_errors, *errors)
 
 
 def run_blob_gc(

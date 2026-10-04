@@ -520,6 +520,8 @@ class BlobPublicationReservationStatus(BaseModel):
     total_reserved_count: int | None = None
     retained_referenced_count: int | None = None
     retained_missing_count: int | None = None
+    retained_blocked_count: int | None = None
+    blockers: tuple[str, ...] = ()
     unresolved_count: int | None = None
     unresolved_oldest_age_s: float | None = None
 
@@ -767,13 +769,17 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
             total_reserved_count=0,
             retained_referenced_count=0,
             retained_missing_count=0,
+            retained_blocked_count=0,
             unresolved_count=0,
         )
     inspections = inspect_blob_publication_receipts(source_db, root / "blob", index_db_path=index_db_path())
     now = datetime.now(UTC)
-    unresolved = [item for item in inspections if not item.referenced and item.blob_present]
-    retained_referenced = sum(1 for item in inspections if item.referenced)
-    retained_missing = sum(1 for item in inspections if not item.referenced and not item.blob_present)
+    unresolved = [item for item in inspections if item.liveness.state.value == "unreferenced" and item.blob_present]
+    retained_referenced = sum(1 for item in inspections if item.liveness.state.value == "live")
+    retained_missing = sum(
+        1 for item in inspections if item.liveness.state.value == "unreferenced" and not item.blob_present
+    )
+    blocked = [item for item in inspections if item.liveness.state.value == "blocked"]
     oldest_unresolved_age_s = (
         max((now - datetime.fromtimestamp(item.reserved_at_ms / 1000.0, UTC)).total_seconds() for item in unresolved)
         if unresolved
@@ -783,6 +789,8 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
         total_reserved_count=len(inspections),
         retained_referenced_count=retained_referenced,
         retained_missing_count=retained_missing,
+        retained_blocked_count=len(blocked),
+        blockers=tuple(dict.fromkeys(reason for item in blocked for reason in item.liveness.blockers)),
         unresolved_count=len(unresolved),
         unresolved_oldest_age_s=round(oldest_unresolved_age_s, 3) if oldest_unresolved_age_s is not None else None,
     )
@@ -3225,7 +3233,7 @@ def daemon_status_payload(
             # no consumer: not /api/status, not the periodic snapshot, not the
             # CLI. Its component pass/fail rode along in status_components,
             # which is what hid the gap.
-            "blob_publication_reservations": status.blob_publication_reservations.model_dump(),
+            "blob_publication_reservations": status.blob_publication_reservations.model_dump(mode="json"),
             "raw_replay_backlog": status.raw_replay_backlog,
             "embedding_readiness": status.embedding_readiness.model_dump(),
             "memory": {

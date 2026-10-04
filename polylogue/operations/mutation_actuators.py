@@ -839,7 +839,7 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
         )
         present = {item.publication_id: item for item in receipts if item.publication_id in requested}
         unreferenced = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.UNREFERENCED)
-        referenced = sorted(pid for pid, item in present.items() if item.referenced)
+        referenced = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.LIVE)
         blocked = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.BLOCKED)
         return build_plan(
             operation=self.operation,

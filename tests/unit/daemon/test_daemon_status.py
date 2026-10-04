@@ -3268,9 +3268,11 @@ def test_status_payload_projects_blob_publication_reservations(monkeypatch: pyte
     from polylogue.daemon.status import BlobPublicationReservationStatus, DaemonStatus
 
     reservations = BlobPublicationReservationStatus(
-        total_reserved_count=7,
+        total_reserved_count=9,
         retained_referenced_count=3,
         retained_missing_count=1,
+        retained_blocked_count=2,
+        blockers=("index unavailable",),
         unresolved_count=3,
         unresolved_oldest_age_s=1234.5,
     )
@@ -3285,7 +3287,9 @@ def test_status_payload_projects_blob_publication_reservations(monkeypatch: pyte
     projected = payload["blob_publication_reservations"]
     assert isinstance(projected, dict)
     assert projected["unresolved_count"] == 3
-    assert projected["total_reserved_count"] == 7
+    assert projected["total_reserved_count"] == 9
+    assert projected["retained_blocked_count"] == 2
+    assert projected["blockers"] == ["index unavailable"]
     assert projected["unresolved_oldest_age_s"] == 1234.5
 
 
@@ -4005,3 +4009,56 @@ async def test_failed_service_privacy_work_stays_within_existing_display_prefix(
     assert len(reason) <= status_module._SERVICE_FAILURE_REASON_MAX_CHARS
     assert "[redacted]" in reason
     assert all(fragment not in reason for fragment in ("/opt", "private space", "例.json"))
+
+
+@pytest.mark.parametrize("blob_present", [False, True])
+def test_publication_surfaces_preserve_blocked_liveness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blob_present: bool
+) -> None:
+    """Missing index authority blocks classification irrespective of blob presence."""
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.cli.commands.maintenance import _blob_publications as listing
+    from polylogue.operations.mutation_actuators import BlobPublicationAbandonActuator, BlobPublicationAbandonArgs
+    from polylogue.storage.blob_store import BlobStore
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    blob_hash, _size = publisher.write_from_bytes(b"blocked publication surface control")
+    receipt = publisher.flush()[0]
+    if not blob_present:
+        BlobStore(root / "blob").blob_path(blob_hash).unlink()
+    (root / "index.db").unlink()
+    monkeypatch.setattr(status_module, "archive_root", lambda: root)
+    monkeypatch.setattr(status_module, "index_db_path", lambda: root / "index.db")
+    monkeypatch.setattr(listing, "archive_root", lambda: root)
+
+    info = status_module._blob_publication_reservation_info()
+    assert info.total_reserved_count == 1
+    assert info.retained_blocked_count == 1
+    assert info.blockers
+    assert info.retained_missing_count == 0
+    assert info.retained_referenced_count == 0
+    assert info.unresolved_count == 0
+    assert info.unresolved_oldest_age_s is None
+
+    runner = CliRunner()
+    result = runner.invoke(listing.blob_publications_command, ["--output-format", "json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["receipts"][0]["liveness_state"] == "blocked"
+    assert payload["receipts"][0]["blockers"] == list(info.blockers)
+    assert payload["receipts"][0]["blob_present"] is blob_present
+    assert "referenced" not in payload["receipts"][0]
+    plain = runner.invoke(listing.blob_publications_command, [])
+    assert plain.exit_code == 0, plain.output
+    assert f"blocked present={blob_present}" in plain.output
+    assert info.blockers[0] in plain.output
+
+    plan = BlobPublicationAbandonActuator().prepare(BlobPublicationAbandonArgs(root, (receipt.publication_id,)))
+    assert plan.context["blocked"] == [receipt.publication_id]
+    assert plan.context["unreferenced"] == []
+    assert plan.context["referenced"] == []
