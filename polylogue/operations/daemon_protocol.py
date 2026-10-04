@@ -111,6 +111,7 @@ class QueryUnitsRequest(QueryRequest):
 
 
 class DialogueReadRequest(QueryRequest):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
     projection: dict[str, object] = Field(default_factory=dict)
     offset: int = Field(default=0, ge=0)
@@ -119,6 +120,7 @@ class DialogueReadRequest(QueryRequest):
 
 
 class TemporalReadRequest(QueryRequest):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str | None = None
     projection: dict[str, object] = Field(default_factory=dict)
 
@@ -134,15 +136,18 @@ class CompactReadRequest(QueryRequest):
 
 
 class EffectiveContextReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
     at_position: int | None = None
 
 
 class OrchestrationReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
 
 
 class LineageReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
     node_offset: int = Field(default=0, ge=0)
     node_limit: int | None = Field(default=None, ge=1)
@@ -151,6 +156,7 @@ class LineageReadRequest(_OperationPayload):
 
 
 class TopologyReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
     node_offset: int = Field(default=0, ge=0)
     node_limit: int = Field(default=200, ge=1)
@@ -158,6 +164,7 @@ class TopologyReadRequest(_OperationPayload):
 
 
 class NeighborReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str | None = None
     query: str | None = None
     origin: str | None = None
@@ -172,6 +179,7 @@ class NeighborReadRequest(_OperationPayload):
 
 
 class CorrelationReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str = Field(min_length=1)
     repo_path: str | None = None
     since_hours: int = 2
@@ -179,6 +187,7 @@ class CorrelationReadRequest(_OperationPayload):
 
 
 class ContextPreambleReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     session_id: str | None = None
     related_limit: int = Field(default=5, ge=1, le=100)
     repo_path: str | None = None
@@ -194,6 +203,7 @@ class ContextPreambleReadRequest(_OperationPayload):
 
 
 class ContextImageReadRequest(_OperationPayload):
+    selection_epoch: str | None = Field(default=None, min_length=1)
     seed_session_id: str | None = None
     seed_session_ids: list[str] = Field(default_factory=list)
     project_path: str | None = None

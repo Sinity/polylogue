@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -131,7 +132,7 @@ def page_next_offset(*, offset: int, returned: int, total: int | None, limit: in
     answer the same client question -- "is there another page, and where does
     it start?" -- so they must answer it identically.  Deciding it per payload
     is how the list page came to omit the key entirely, which silently ended
-    ``query_complete_session_ids``' walk after one page and let
+    ``query_complete_session_selection``' walk after one page and let
     ``delete --all`` act on the first page only (#1873 regression, polylogue-w3s0q).
 
     ``total`` may be an honest ``None`` (a vector lane exposes a bounded
@@ -174,6 +175,13 @@ def execute_read_operation(
         from polylogue.archive.query.transaction import archive_snapshot_epoch
 
         snapshot_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+    selected_epoch = payload.get("selection_epoch")
+    if selected_epoch is not None:
+        from polylogue.archive.query.transaction import QueryContinuationStaleError, archive_snapshot_epoch
+
+        current_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        if selected_epoch != current_epoch:
+            raise QueryContinuationStaleError(issued_epoch=str(selected_epoch), current_epoch=current_epoch)
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
     # A grammar completion is a pure protocol read and deliberately accepts the
@@ -436,7 +444,11 @@ def _query_payload(
     # CLI root payloads retain presentation-only keys.  The existing query
     # contract intentionally ignores those while compiling selection intent.
     spec = cli_read_request({**params, "limit": limit, "offset": offset}).selection
-    spec = _resolved_scope_spec(spec, archive=archive)
+    # A proved missing explicit scope still runs the canonical query. Its
+    # exact-ID predicate yields no rows on this pinned snapshot, while normal
+    # validation and ranked-lane failures remain visible.
+    with suppress(SessionNotFoundError):
+        spec = _resolved_scope_spec(spec, archive=archive)
 
     searching = bool(
         spec.query_terms
@@ -1360,10 +1372,14 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     arguments differ from the typed sessions.read owner contract.
     """
 
+    from types import SimpleNamespace
+
     from polylogue.operations.transcript_window import read_transcript_window_sync
-    from polylogue.surfaces.outcome import decide_outcome
+    from polylogue.surfaces.outcome import lineage_page_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
 
+    selection_epoch = payload.get("selection_epoch")
+    session_projection = payload.get("session_projection", "archive")
     ref = str(payload.get("ref") or "").strip()
     if not ref:
         raise ValueError("session.read requires a session reference")
@@ -1395,33 +1411,64 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     def read(window_limit: int, window_offset: int) -> tuple[list[object], int, object]:
         nonlocal latest_envelope
         latest_envelope = archive.read_session_page(session_id, limit=window_limit, offset=window_offset)
-        total = (
-            latest_envelope.total_message_count
-            if latest_envelope.total_message_count is not None
-            else len(latest_envelope.messages)
-        )
+        total = latest_envelope.total_message_count
+        if total is None:
+            raise ValueError("session.read page omitted its composed message count")
         return (
             list(latest_envelope.messages),
             total,
-            {
-                "complete": latest_envelope.lineage_complete,
-                "truncation_reason": latest_envelope.lineage_truncation_reason,
-            },
+            SimpleNamespace(
+                complete=latest_envelope.lineage_complete,
+                truncation_reason=latest_envelope.lineage_truncation_reason,
+            ),
         )
 
+    window_arguments: dict[str, object] = {"projection": dict(raw_projection) if raw_projection else {}}
+    if session_projection != "archive":
+        window_arguments["session_projection"] = session_projection
+    if selection_epoch is not None:
+        window_arguments["selection_epoch"] = selection_epoch
     window = read_transcript_window_sync(
         archive,
         request,
         read=read,
         transaction_operation="session.read",
         projection=_SESSION_READ_PROJECTION,
-        extra_arguments={"projection": dict(raw_projection) if raw_projection else {}},
+        extra_arguments=window_arguments,
     )
     assert latest_envelope is not None
     envelope = replace(latest_envelope, messages=tuple(window.rows))
+    session_body = _session_identity_projection(envelope, excluded_blocks=excluded_blocks)
+    if session_projection == "domain":
+        from polylogue.archive.hydration import archive_envelope_to_session
+
+        summary = archive.read_summary(session_id)
+        if excluded_blocks:
+            envelope = replace(
+                envelope,
+                messages=tuple(
+                    replace(
+                        message,
+                        blocks=tuple(block for block in message.blocks if block.block_type not in excluded_blocks),
+                    )
+                    for message in envelope.messages
+                ),
+            )
+        session_body = archive_envelope_to_session(
+            envelope,
+            display_label=summary.display_label,
+            display_label_source=summary.display_label_source,
+        ).model_dump(mode="json")
     result: dict[str, object] = {
-        "outcome": decide_outcome(matched=len(window.rows)).to_dict(),
-        "session": _session_identity_projection(envelope, excluded_blocks=excluded_blocks),
+        "outcome": lineage_page_outcome(
+            matched=len(window.rows),
+            complete=window.lineage_complete,
+            truncation_reason=window.lineage_truncation_reason,
+        ).to_dict(),
+        "session": session_body,
+        "selection_epoch": selection_epoch,
+        "lineage_complete": window.lineage_complete,
+        "lineage_truncation_reason": window.lineage_truncation_reason,
         "session_id": session_id,
         "total": window.total,
         "limit": window.limit,

@@ -221,7 +221,7 @@ _READ_VIEW_HANDLER_TEMPLATES: dict[str, ReadViewHandlerMetadata] = {
         "optional",
         accepts_query_set=True,
         execution_kind="renderer",
-        operations=("cli.query",),
+        operations=("cli.query", "session.read"),
         example="polylogue find id:codex-session:demo-receipts then read --view summary",
     ),
     "transcript": ReadViewHandlerMetadata(
@@ -229,7 +229,7 @@ _READ_VIEW_HANDLER_TEMPLATES: dict[str, ReadViewHandlerMetadata] = {
         "optional",
         accepts_query_set=True,
         execution_kind="renderer",
-        operations=("cli.query",),
+        operations=("cli.query", "session.read"),
         example="polylogue find id:codex-session:demo-receipts then read --view transcript",
     ),
     "dialogue": ReadViewHandlerMetadata(

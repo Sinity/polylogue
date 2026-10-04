@@ -28,6 +28,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
+from tests.infra.cli_selection import fixture_query_page, selection_for_rows
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -231,7 +232,7 @@ def test_select_reads_rows_from_one_declared_query_operation(tmp_path: Path) -> 
     Anti-vacuity: read only ``items`` and the ranked case yields no rows; stop
     forwarding ``limit`` and the payload assertion goes red.
     """
-    from polylogue.cli.session_rows import query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     config = Config(
         archive_root=tmp_path,
@@ -246,26 +247,28 @@ def test_select_reads_rows_from_one_declared_query_operation(tmp_path: Path) -> 
     def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
         captured["operation"] = operation_request.operation
         captured["payload"] = operation_request.payload
-        return SimpleNamespace(value={**page, "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
+        return SimpleNamespace(
+            value={**fixture_query_page(page), "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None
+        )
 
     row = {"id": "conv-7", "origin": "claude-code-session", "title": "Seven", "message_count": 3}
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
         page.clear()
         page.update({"items": [row], "total": 1})
-        listed = query_session_rows(config, request, limit=3)
+        listed = query_session_selection(config, request, limit=3)
 
         page.clear()
         page.update({"hits": [{"session": row, "match": {"rank": 1}}], "total": 1})
-        ranked = query_session_rows(config, request, limit=3)
+        ranked = query_session_selection(config, request, limit=3)
 
     assert captured["operation"] == "cli.query"
     params = cast("dict[str, object]", cast("dict[str, object]", captured["payload"])["params"])
     assert params["query"] == ["id:abc"]
     assert params["limit"] == 3
-    assert [r.session_id for r in listed] == ["conv-7"]
-    assert [r.session_id for r in ranked] == ["conv-7"]
-    assert listed[0].title == "Seven"
+    assert [r.session_id for r in listed.rows] == ["conv-7"]
+    assert [r.session_id for r in ranked.rows] == ["conv-7"]
+    assert listed.rows[0].title == "Seven"
 
 
 def test_noninteractive_select_does_not_initialize_ui() -> None:
@@ -288,7 +291,9 @@ def test_run_select_prints_candidates_when_selection_is_ambiguous(
     request = RootModeRequest.from_params({})
 
     with (
-        patch("polylogue.cli.session_rows.query_session_rows", return_value=[_row(1), _row(2)]),
+        patch(
+            "polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows([_row(1), _row(2)])
+        ),
         patch("polylogue.cli.select.choose_select_row", return_value=None),
     ):
         run_select(env, request, limit=10, print_field="id")
@@ -296,7 +301,7 @@ def test_run_select_prints_candidates_when_selection_is_ambiguous(
     assert captured.out == "conv-1\nconv-2\n"
     assert captured.err == ""
 
-    with patch("polylogue.cli.session_rows.query_session_rows", return_value=[]):
+    with patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows([])):
         with pytest.raises(SystemExit) as exc_info:
             run_select(env, request, limit=10, print_field="id")
     assert exc_info.value.code == 2
@@ -308,7 +313,7 @@ def test_run_select_formats_query_errors(capsys: pytest.CaptureFixture[str]) -> 
     request = RootModeRequest.from_params({})
 
     with patch(
-        "polylogue.cli.session_rows.query_session_rows",
+        "polylogue.cli.session_rows.query_session_selection",
         side_effect=QuerySpecError("since", "bogus"),
     ):
         with pytest.raises(SystemExit) as exc_info:
@@ -333,7 +338,7 @@ def test_selection_of_an_absent_session_is_empty_not_a_failure(tmp_path: Path) -
     in ``scripts/golden_find_bytes.py``.
     """
     from polylogue.cli.operation_kernel import OperationFailedError
-    from polylogue.cli.session_rows import query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     config = Config(
         archive_root=tmp_path,
@@ -347,14 +352,14 @@ def test_selection_of_an_absent_session_is_empty_not_a_failure(tmp_path: Path) -
         "polylogue.cli.operation_kernel.dispatch",
         side_effect=OperationFailedError("invalid_request", "session not found: absent"),
     ):
-        assert query_session_rows(config, request, limit=5) == []
+        assert query_session_selection(config, request, limit=5).rows == ()
 
     with patch(
         "polylogue.cli.operation_kernel.dispatch",
         side_effect=OperationFailedError("invalid_request", "index is unreadable"),
     ):
         with pytest.raises(OperationFailedError):
-            query_session_rows(config, request, limit=5)
+            query_session_selection(config, request, limit=5)
 
 
 def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
@@ -367,7 +372,7 @@ def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
 
     Anti-vacuity: return after the first page and the assertion loses ``b``.
     """
-    from polylogue.cli.session_rows import query_complete_session_ids
+    from polylogue.cli.session_rows import query_complete_session_selection
 
     config = Config(
         archive_root=tmp_path,
@@ -385,11 +390,13 @@ def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
         offset = cast("dict[str, object]", operation_request.payload["params"])["offset"]
         seen.append(cast("int", offset))
         return SimpleNamespace(
-            value={**pages[len(seen) - 1], "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None
+            value={**fixture_query_page(pages[len(seen) - 1]), "snapshot_epoch": "fixture-frame"},
+            authority={},
+            envelope=None,
         )
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
-        assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
+        assert query_complete_session_selection(config, RootModeRequest.from_params({})).ids == ["a", "b"]
 
     assert seen == [0, 1]
 
@@ -404,7 +411,7 @@ def test_ranked_selection_rows_are_distinct_sessions(tmp_path: Path) -> None:
     Anti-vacuity: return the first hit page as rows and this yields
     ``["a", "a"]``.
     """
-    from polylogue.cli.session_rows import query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     config = Config(
         archive_root=tmp_path,
@@ -423,14 +430,20 @@ def test_ranked_selection_rows_are_distinct_sessions(tmp_path: Path) -> None:
             "total": 3,
             "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
         }
-        return SimpleNamespace(value={**value, "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
+        return SimpleNamespace(
+            value={**fixture_query_page(value), "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None
+        )
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
-        assert [row.session_id for row in query_session_rows(config, RootModeRequest.from_params({}), limit=2)] == [
+        assert [
+            row.session_id for row in query_session_selection(config, RootModeRequest.from_params({}), limit=2).rows
+        ] == [
             "a",
             "b",
         ]
-        assert [row.session_id for row in query_session_rows(config, RootModeRequest.from_params({}), limit=None)] == [
+        assert [
+            row.session_id for row in query_session_selection(config, RootModeRequest.from_params({}), limit=None).rows
+        ] == [
             "a",
             "b",
             "c",
@@ -447,7 +460,7 @@ def test_complete_ranked_selection_admits_repeated_hits(tmp_path: Path) -> None:
     """
     import click
 
-    from polylogue.cli.session_rows import query_complete_session_ids
+    from polylogue.cli.session_rows import query_complete_session_selection
 
     config = Config(
         archive_root=tmp_path,
@@ -464,11 +477,86 @@ def test_complete_ranked_selection_admits_repeated_hits(tmp_path: Path) -> None:
     pages: list[dict[str, object]] = []
 
     def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
-        return SimpleNamespace(value={**pages.pop(0), "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
+        return SimpleNamespace(
+            value={**fixture_query_page(pages.pop(0)), "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None
+        )
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
         pages.extend(ranked)
-        assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
+        assert query_complete_session_selection(config, RootModeRequest.from_params({})).ids == ["a", "b"]
         pages.extend(listed)
         with pytest.raises(click.ClickException, match="repeated a session id"):
-            query_complete_session_ids(config, RootModeRequest.from_params({}))
+            query_complete_session_selection(config, RootModeRequest.from_params({}))
+
+
+@pytest.mark.parametrize("matched", [0, 1])
+def test_selector_preserves_a_degraded_selection_after_display(
+    matched: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from polylogue.cli.session_rows import SessionSelection
+    from polylogue.surfaces.outcome import decide_outcome
+
+    outcome = decide_outcome(matched=matched, degraded=("vector_unavailable",), detail={"lane": "hybrid"})
+    selection = SessionSelection(tuple(_row(n) for n in range(matched)), outcome, "daemon", "fixture-selected-frame")
+    env = cast(AppEnv, SimpleNamespace(ui=MagicMock(), config=MagicMock()))
+    with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection),
+        patch("polylogue.cli.select.choose_select_row", return_value=selection.rows[0] if matched else None),
+    ):
+        with pytest.raises(SystemExit) as caught:
+            run_select(env, RootModeRequest.from_params({}), limit=10, print_field="id")
+    assert caught.value.code == 1
+    output = capsys.readouterr()
+    assert json.loads(output.err)["outcome"] == outcome.to_dict()
+    assert "No sessions matched" not in output.err
+    assert output.out == ("conv-0\n" if matched else "")
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_selection_keeps_a_later_page_gap_and_refuses_target_authority(tmp_path: Path, complete: bool) -> None:
+    from polylogue.cli.operation_kernel import OperationFailedError
+    from polylogue.cli.session_rows import query_complete_session_selection, query_session_selection
+    from polylogue.surfaces.outcome import decide_outcome
+
+    pages = iter(
+        [
+            {"items": [{"id": "a"}], "total": 2, "next_offset": 1, "outcome": decide_outcome(matched=1).to_dict()},
+            {
+                "items": [{"id": "b"}],
+                "total": 2,
+                "next_offset": None,
+                "outcome": decide_outcome(matched=1, degraded=("projection_incomplete",)).to_dict(),
+            },
+        ]
+    )
+
+    def dispatch(*_args: object, **_kwargs: object) -> object:
+        return SimpleNamespace(
+            value={**cast(dict[str, object], next(pages)), "snapshot_epoch": "original-frame"},
+            authority={"mode": "daemon"},
+        )
+
+    config = Config(archive_root=tmp_path, db_path=tmp_path / "index.db", render_root=tmp_path / "render", sources=[])
+    with patch("polylogue.cli.operation_kernel.dispatch", dispatch):
+        result = (
+            query_complete_session_selection(config, RootModeRequest.from_params({}))
+            if complete
+            else query_session_selection(config, RootModeRequest.from_params({}), limit=None)
+        )
+    assert result.ids == ["a", "b"]
+    assert result.outcome is not None and result.outcome.state == "degraded"
+    with pytest.raises(OperationFailedError) as caught:
+        result.require_authoritative()
+    assert caught.value.code == "selection_not_authoritative"
+    assert caught.value.data["outcome"] == result.outcome.to_dict()
+
+
+def test_selection_refuses_a_page_without_its_declared_verdict(tmp_path: Path) -> None:
+    from polylogue.cli.operation_kernel import OperationEnvelopeError
+    from polylogue.cli.session_rows import query_session_selection
+
+    config = Config(archive_root=tmp_path, db_path=tmp_path / "index.db", render_root=tmp_path / "render", sources=[])
+    page = SimpleNamespace(value={"items": [], "snapshot_epoch": "actual-frame"}, authority={})
+    with patch("polylogue.cli.operation_kernel.dispatch", return_value=page):
+        with pytest.raises(OperationEnvelopeError):
+            query_session_selection(config, RootModeRequest.from_params({}), limit=1)

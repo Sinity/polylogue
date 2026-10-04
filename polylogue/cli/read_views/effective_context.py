@@ -32,6 +32,7 @@ def run_read_effective_context(env: AppEnv, request: RootModeRequest, invocation
             env.config,
             OperationRequest("read.effective_context", {"session_id": session_id, "at_position": options.at_position}),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except OperationKernelError as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure

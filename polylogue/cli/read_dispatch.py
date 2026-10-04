@@ -44,6 +44,7 @@ def dispatch_read(
     request: OperationRequest,
     *,
     daemon_disabled: bool = False,
+    selection_epoch: str | None = None,
 ) -> tuple[dict[str, object], ServedBy]:
     """Run one declared read and return its result body plus the daemon timing.
 
@@ -54,6 +55,10 @@ def dispatch_read(
 
     from polylogue.cli.operation_kernel import OperationEnvelopeError, dispatch
 
+    if selection_epoch is not None:
+        from polylogue.cli.operation_kernel import OperationRequest
+
+        request = OperationRequest(request.operation, {**request.payload, "selection_epoch": selection_epoch})
     result = dispatch(config, request, daemon_disabled=daemon_disabled)
     if not isinstance(result.value, dict):
         raise OperationEnvelopeError(f"{request.operation} returned a non-object result")

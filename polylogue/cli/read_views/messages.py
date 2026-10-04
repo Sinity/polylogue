@@ -172,6 +172,7 @@ def _write_messages_file(
         continuation=None,
         daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
         around=around,
+        selection_epoch=request.selection_epoch,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

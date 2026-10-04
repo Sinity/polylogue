@@ -62,6 +62,7 @@ def read_message_windows(
     continuation: str | None,
     daemon_disabled: bool,
     around: str | None = None,
+    selection_epoch: str | None = None,
 ) -> Iterator[_MessageWindow]:
     """Yield the declared ``session.read`` message windows one request needs.
 
@@ -114,7 +115,9 @@ def read_message_windows(
         else:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
         try:
-            payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
+            payload, served_by = dispatch_read(
+                config, request, daemon_disabled=daemon_disabled, selection_epoch=selection_epoch
+            )
         except OperationFailedError as exc:
             # A wide initial page can be valid as rows yet exceed the bounded
             # operation envelope. Retry that same coordinate with a smaller
@@ -240,6 +243,7 @@ def run_messages(
             continuation=continuation,
             daemon_disabled=daemon_disabled,
             around=around,
+            selection_epoch=request.selection_epoch,
         ):
             if executor_identity is not None and window.served_by.identity != executor_identity:
                 raise OperationFailedError(

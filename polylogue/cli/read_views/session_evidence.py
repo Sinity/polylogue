@@ -84,6 +84,7 @@ def run_session_evidence_view(
             config,
             lower_session_read(invocation.session_id, kind=kind),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except (OperationFailedError, OperationUnavailableError) as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure
@@ -186,6 +187,7 @@ def _read_evidence_window(
                 continuation=continuation,
             ),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except (OperationFailedError, OperationUnavailableError) as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure

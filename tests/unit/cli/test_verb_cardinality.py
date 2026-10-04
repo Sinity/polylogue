@@ -27,6 +27,7 @@ from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
+from tests.infra.cli_selection import selection_for_ids, selection_for_rows
 from tests.infra.daemon_operations import cli_daemon_archive
 
 # ---------------------------------------------------------------------------
@@ -156,7 +157,7 @@ class TestReadVerbCardinality:
             SelectSessionRow(session_id=session_id, origin="claude-code-session", title=session_id, date=None)
             for session_id in session_ids
         ]
-        return patch("polylogue.cli.session_rows.query_session_rows", return_value=rows)
+        return patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows(rows))
 
     def test_single_session_view_multi_match_without_first_or_all_raises(self) -> None:
         _, child = _context_pair(query_terms=("needle",))
@@ -171,7 +172,7 @@ class TestReadVerbCardinality:
         child.obj = SimpleNamespace(config=MagicMock())
 
         with (
-            patch("polylogue.cli.session_rows.query_session_rows") as query_rows,
+            patch("polylogue.cli.session_rows.query_session_selection") as query_rows,
             patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
         ):
             self._call_read(child, view="temporal")
@@ -644,7 +645,7 @@ class TestSampleRejectedForMutatingVerbs:
         request = RootModeRequest.from_params({"sample": 5})
         assert request.query_spec().sample == 5
 
-        with patch("polylogue.cli.session_rows.query_complete_session_ids") as mock_resolve:
+        with patch("polylogue.cli.session_rows.query_complete_session_selection") as mock_resolve:
             with pytest.raises(click.UsageError, match="--sample"):
                 resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
 
@@ -659,8 +660,8 @@ class TestSampleRejectedForMutatingVerbs:
         assert request.query_spec().sample is None
 
         with patch(
-            "polylogue.cli.session_rows.query_complete_session_ids",
-            return_value=["id1"],
+            "polylogue.cli.session_rows.query_complete_session_selection",
+            return_value=selection_for_ids(["id1"]),
         ) as mock_resolve:
             result = resolve_session_ids_for_verb(cast(object, MagicMock()), request)  # type: ignore[arg-type]
 

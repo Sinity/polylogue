@@ -2679,7 +2679,7 @@ def _resolve_query_action_session_id(
     """
     if request.query_spec().has_filters():
         from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
-        from polylogue.cli.session_rows import query_session_rows
+        from polylogue.cli.session_rows import query_session_selection
         from polylogue.cli.verb_cardinality import check_cardinality
 
         spec = request.query_spec()
@@ -2689,7 +2689,9 @@ def _resolve_query_action_session_id(
             return None
 
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
-        rows = query_session_rows(env.config, request, limit=resolve_limit)
+        selection = query_session_selection(env.config, request, limit=resolve_limit)
+        selection.require_authoritative()
+        rows = selection.rows
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
@@ -2700,7 +2702,9 @@ def _resolve_query_action_session_id(
                 # chooser offers the whole selection.
                 if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
                     return list(rows)
-                return query_session_rows(env.config, request, limit=None)
+                complete = query_session_selection(env.config, request, limit=None)
+                complete.require_authoritative()
+                return list(complete.rows)
 
             return resolve_ambiguous_selection(
                 env,
@@ -2747,7 +2751,7 @@ def _resolve_query_action_session_ids(
     miss used to come back as a context image built from unrelated sessions
     and be handed to a resume/handoff as if it answered the query.
     """
-    from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.session_rows import query_session_selection
     from polylogue.cli.verb_cardinality import check_cardinality
 
     spec = request.query_spec()
@@ -2757,7 +2761,9 @@ def _resolve_query_action_session_ids(
         # Query terms that narrow nothing are not a selection at all; the
         # caller may still use the raw text as a relevance hint.
         return []
-    session_ids = query_session_ids(env.config, request, limit=1 if first_only else limit)
+    selection = query_session_selection(env.config, request, limit=1 if first_only else limit)
+    selection.require_authoritative()
+    session_ids = selection.ids
     # ``allow_all=True``: this is the multi-session route, so several
     # matches are the normal case. Zero always raises regardless.
     check_cardinality(
