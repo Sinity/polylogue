@@ -130,6 +130,21 @@ describe("claude.js native capture (real source)", () => {
     }
   });
 
+  it("leaves the provider page response available without waiting for its conversation body", async () => {
+    let release;
+    const body = new Promise(resolve => { release = resolve; });
+    const response = { headers: new Headers({ "content-type": "application/json" }),
+      clone: () => ({ text: () => body }) };
+    const { dom } = installClaude({ fetch: async () => response });
+    let returned = false;
+    const request = dom.window.fetch("https://claude.ai/api/organizations/org/chat_conversations/conversation-1")
+      .then(value => { returned = true; return value; });
+    try {
+      await vi.waitFor(() => expect(returned).toBe(true));
+      expect(await request).toBe(response);
+    } finally { release('{"chat_messages":[]}'); await request; }
+  });
+
   it("extracts native Claude turns, normalizes roles, and skips empty messages", async () => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const fetch = vi.fn(async (input) => {
