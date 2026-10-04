@@ -114,45 +114,6 @@ class CursorObservationRebase:
 
 
 @dataclass(frozen=True, slots=True)
-class LiveIngestAttempt:
-    """Durable live-ingest attempt snapshot for in-flight diagnostics."""
-
-    attempt_id: str
-    started_at: str
-    updated_at: str
-    status: str
-    phase: str
-    queued_file_count: int
-    needed_file_count: int
-    succeeded_file_count: int
-    failed_file_count: int
-    input_bytes: int
-    source_payload_read_bytes: int
-    cursor_fingerprint_read_bytes: int
-    parse_time_s: float
-    convergence_time_s: float
-    completed_at: str | None = None
-    current_source: str | None = None
-    current_path: str | None = None
-    error: str | None = None
-    rss_current_mb: float | None = None
-    rss_peak_self_mb: float | None = None
-    rss_peak_children_mb: float | None = None
-    cgroup_path: str | None = None
-    cgroup_memory_current_mb: float | None = None
-    cgroup_memory_peak_mb: float | None = None
-    cgroup_memory_swap_current_mb: float | None = None
-    cgroup_memory_anon_mb: float | None = None
-    cgroup_memory_file_mb: float | None = None
-    cgroup_memory_inactive_file_mb: float | None = None
-    worker_in_flight_count: int | None = None
-    worker_completed_count: int | None = None
-    worker_total_count: int | None = None
-    stale_cursor_write_count: int = 0
-    source_paths_json: str = "[]"
-
-
-@dataclass(frozen=True, slots=True)
 class LiveConvergenceDebt:
     """Durable post-ingest convergence failure for one derived subject."""
 
@@ -1333,119 +1294,6 @@ class CursorStore:
 
         return best_effort_cursor_write("live ingest attempt finish", write)
 
-    def recent_ingest_attempts(self, *, limit: int = 5) -> list[LiveIngestAttempt]:
-        """Return recent live-ingest attempts for status/debug surfaces."""
-        with self._connect_ops_read() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    attempt_id,
-                    started_at_ms,
-                    heartbeat_at_ms,
-                    finished_at_ms,
-                    status,
-                    phase,
-                    source_path,
-                    origin,
-                    parsed_raw_count,
-                    materialized_count,
-                    error_message,
-                    source_paths_json
-                FROM ingest_attempts
-                ORDER BY COALESCE(heartbeat_at_ms, started_at_ms) DESC, started_at_ms DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
-            attempt_ids = [str(row[0]) for row in rows]
-            events_by_attempt: dict[str, list[dict[str, object]]] = {attempt_id: [] for attempt_id in attempt_ids}
-            if attempt_ids:
-                placeholders = ",".join("?" for _attempt_id in attempt_ids)
-                event_rows = conn.execute(
-                    f"""
-                    SELECT attempt_id, payload_json
-                    FROM daemon_stage_events
-                    WHERE attempt_id IN ({placeholders})
-                    ORDER BY observed_at_ms ASC, event_id ASC
-                    """,
-                    tuple(attempt_ids),
-                ).fetchall()
-                for attempt_id, payload_json in event_rows:
-                    if attempt_id is None:
-                        continue
-                    try:
-                        payload = json.loads(str(payload_json or "{}"))
-                    except json.JSONDecodeError:
-                        payload = {}
-                    if isinstance(payload, dict):
-                        events_by_attempt.setdefault(str(attempt_id), []).append(payload)
-
-        def metric(attempt_id: str, key: str, default: object) -> object:
-            value: object = default
-            for payload in events_by_attempt.get(attempt_id, []):
-                if key in payload:
-                    value = payload[key]
-            return value
-
-        def int_metric(attempt_id: str, key: str) -> int:
-            value = metric(attempt_id, key, 0)
-            return value if isinstance(value, int) else 0
-
-        def float_metric(attempt_id: str, key: str) -> float:
-            value = metric(attempt_id, key, 0.0)
-            return float(value) if isinstance(value, int | float) else 0.0
-
-        def optional_float_metric(attempt_id: str, key: str) -> float | None:
-            value = metric(attempt_id, key, None)
-            return float(value) if isinstance(value, int | float) else None
-
-        def optional_int_metric(attempt_id: str, key: str) -> int | None:
-            value = metric(attempt_id, key, None)
-            return value if isinstance(value, int) else None
-
-        def optional_str_metric(attempt_id: str, key: str, fallback: object = None) -> str | None:
-            value = metric(attempt_id, key, fallback)
-            return value if isinstance(value, str) else None
-
-        return [
-            LiveIngestAttempt(
-                attempt_id=str(row[0]),
-                started_at=_required_iso_text(row[1]),
-                updated_at=_required_iso_text(row[2] if row[2] is not None else row[1]),
-                completed_at=iso_from_epoch_ms(row[3]) if row[3] is not None else None,
-                status=str(row[4]),
-                phase=str(row[5]),
-                queued_file_count=int_metric(str(row[0]), "queued_file_count"),
-                needed_file_count=int_metric(str(row[0]), "needed_file_count"),
-                succeeded_file_count=int(row[8] or 0),
-                failed_file_count=int_metric(str(row[0]), "failed_file_count"),
-                input_bytes=int_metric(str(row[0]), "input_bytes"),
-                source_payload_read_bytes=int_metric(str(row[0]), "source_payload_read_bytes"),
-                cursor_fingerprint_read_bytes=int_metric(str(row[0]), "cursor_fingerprint_read_bytes"),
-                parse_time_s=float_metric(str(row[0]), "parse_time_s"),
-                convergence_time_s=float_metric(str(row[0]), "convergence_time_s"),
-                current_source=row[7],
-                current_path=row[6],
-                error=row[10],
-                rss_current_mb=optional_float_metric(str(row[0]), "rss_current_mb"),
-                rss_peak_self_mb=optional_float_metric(str(row[0]), "rss_peak_self_mb"),
-                rss_peak_children_mb=optional_float_metric(str(row[0]), "rss_peak_children_mb"),
-                cgroup_path=optional_str_metric(str(row[0]), "cgroup_path"),
-                cgroup_memory_current_mb=optional_float_metric(str(row[0]), "cgroup_memory_current_mb"),
-                cgroup_memory_peak_mb=optional_float_metric(str(row[0]), "cgroup_memory_peak_mb"),
-                cgroup_memory_swap_current_mb=optional_float_metric(str(row[0]), "cgroup_memory_swap_current_mb"),
-                cgroup_memory_anon_mb=optional_float_metric(str(row[0]), "cgroup_memory_anon_mb"),
-                cgroup_memory_file_mb=optional_float_metric(str(row[0]), "cgroup_memory_file_mb"),
-                cgroup_memory_inactive_file_mb=optional_float_metric(str(row[0]), "cgroup_memory_inactive_file_mb"),
-                worker_in_flight_count=optional_int_metric(str(row[0]), "worker_in_flight_count"),
-                worker_completed_count=optional_int_metric(str(row[0]), "worker_completed_count"),
-                worker_total_count=optional_int_metric(str(row[0]), "worker_total_count"),
-                stale_cursor_write_count=int_metric(str(row[0]), "stale_cursor_write_count"),
-                source_paths_json=str(row[11] or "[]"),
-            )
-            for row in rows
-        ]
-
     def get(self, path: Path) -> int:
         record = self.get_record(path)
         return record.byte_offset if record is not None else 0
@@ -2189,5 +2037,4 @@ __all__ = [
     "CursorRecord",
     "CursorStore",
     "LiveConvergenceDebt",
-    "LiveIngestAttempt",
 ]

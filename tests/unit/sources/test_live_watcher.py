@@ -26,6 +26,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
+from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     FileIntakeAdapter,
@@ -600,7 +601,10 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
         current_source="codex",
         current_path=source,
     )
-    running = store.recent_ingest_attempts(limit=1)[0]
+    running_summary = _archive_live_ingest_attempt_summary_info(tmp_path / "ops.db")
+    assert running_summary is not None and running_summary.available
+    assert running_summary.running_count == 1
+    running = running_summary.recent[0]
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
             """
@@ -618,7 +622,10 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
     assert any(str(source) in event[2] for event in matching_events)
 
     store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
-    completed = store.recent_ingest_attempts(limit=1)[0]
+    completed_summary = _archive_live_ingest_attempt_summary_info(tmp_path / "ops.db")
+    assert completed_summary is not None and completed_summary.available
+    assert completed_summary.running_count == 0
+    completed = completed_summary.recent[0]
     assert completed.status == "completed"
     assert completed.completed_at is not None
 
@@ -883,8 +890,11 @@ def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> N
         failed_file_count=0,
     )
 
-    restarted = CursorStore(db_path)
-    attempt = restarted.recent_ingest_attempts(limit=1)[0]
+    CursorStore(db_path)
+    summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
+    assert summary is not None and summary.available
+    assert summary.running_count == 0
+    attempt = summary.recent[0]
 
     assert attempt.attempt_id == attempt_id
     assert attempt.status == "interrupted"
@@ -2100,7 +2110,9 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     )
 
     metrics = await processor.ingest_files([source_path], emit_event=False)
-    attempts = cursor.recent_ingest_attempts(limit=1)
+    summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
+    assert summary is not None and summary.available
+    attempts = summary.recent
 
     assert metrics.succeeded_file_count == 1
     assert len(attempts) == 1
