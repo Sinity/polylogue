@@ -605,7 +605,8 @@ async function restoreReceiverSettings(previous, owned) {
     const keys = ["receiverBaseUrl", "receiverAuthToken", RECEIVER_PAIRING_KEY];
     if (!previous || typeof previous !== "object" || Array.isArray(previous)
       || !owned || typeof owned.baseUrl !== "string" || typeof owned.token !== "string"
-      || !(owned.receiverId === null || typeof owned.receiverId === "string")) {
+      || !(owned.receiverId === null || typeof owned.receiverId === "string")
+      || !(owned.revision === null || (Number.isSafeInteger(owned.revision) && owned.revision >= 0))) {
       throw new Error("proof_receiver_configuration_changed");
     }
     if ((Object.hasOwn(previous, "receiverBaseUrl") && typeof previous.receiverBaseUrl !== "string")
@@ -621,8 +622,10 @@ async function restoreReceiverSettings(previous, owned) {
     const current = await runtimeChrome.storage.local.get(keys);
     const unchanged = keys.every(key => Object.hasOwn(current, key) === Object.hasOwn(previous, key)
       && JSON.stringify(current[key]) === JSON.stringify(previous[key]));
-    if (!unchanged && (current.receiverBaseUrl !== owned.baseUrl || current.receiverAuthToken !== owned.token
-      || (owned.receiverId !== null && current[RECEIVER_PAIRING_KEY]?.receiver_id !== owned.receiverId))) {
+    if (unchanged) return { ...await receiverSettings(), configurationRevision: receiverConfigurationRevision };
+    if (owned.revision !== receiverConfigurationRevision) throw new Error("proof_receiver_configuration_changed");
+    if (current.receiverBaseUrl !== owned.baseUrl || current.receiverAuthToken !== owned.token
+      || (owned.receiverId !== null && current[RECEIVER_PAIRING_KEY]?.receiver_id !== owned.receiverId)) {
       throw new Error("proof_receiver_configuration_changed");
     }
     receiverConfigurationRevision += 1;
@@ -633,7 +636,7 @@ async function restoreReceiverSettings(previous, owned) {
     }
     await runtimeChrome.storage.local.set(values);
     if (missing.length) await runtimeChrome.storage.local.remove(missing);
-    return receiverSettings();
+    return { ...await receiverSettings(), configurationRevision: receiverConfigurationRevision };
   });
 }
 
@@ -674,7 +677,7 @@ async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "", exp
       });
     }
     const settings = await receiverSettings();
-    return expectedScope ? { settings, revision: receiverConfigurationRevision } : settings;
+    return expectedScope ? { settings, revision: receiverConfigurationRevision } : { ...settings, configurationRevision: receiverConfigurationRevision };
   });
 }
 
@@ -3643,7 +3646,7 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: error?.message || "configure_receiver_failed" });
         return;
       }
-      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken) });
+      sendResponse({ ok: true, receiverBaseUrl: settings.baseUrl, authConfigured: Boolean(settings.authToken), configurationRevision: settings.configurationRevision });
       return;
     }
     if (message.type === "polylogue.pairWithCode") {

@@ -371,5 +371,6 @@ share the worker's storage mutation owner. A response from an earlier
 configuration cannot recreate its pairing or credential after configuration
 changes. The provider proof snapshots the endpoint, token, and pairing together
 and restores them through `polylogue.configureReceiver`; it waits for an
-in-flight configuration mutation before restoration and refuses to overwrite an
-independently changed configuration. Restoration does not resume automatic capture.
+in-flight configuration mutation before restoration. Its configure response
+carries the admitted configuration revision, so restoration refuses independent
+reset or configure even when endpoint and token values match. Restoration does not resume automatic capture.

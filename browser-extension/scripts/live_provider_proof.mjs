@@ -193,8 +193,8 @@ export async function configureReceiver(workerClient, receiverBaseUrl, receiverT
   return evaluateJson(workerClient, `(async () => {
     const response = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver",
       receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)}, receiverAuthToken: ${JSON.stringify(receiverToken)} });
-    if (!response?.ok) throw new Error("proof_receiver_configuration_failed");
-    return true;
+    if (!response?.ok || !Number.isSafeInteger(response.configurationRevision) || response.configurationRevision < 0) throw new Error("proof_receiver_configuration_failed");
+    return { revision: response.configurationRevision };
   })()`);
 }
 
@@ -211,8 +211,8 @@ export async function restoreReceiverConfiguration(workerClient, previous, owned
 export async function restoreProofReceiverAfterConfiguration(workerClient, previous, owned, configuration) {
   // A signal may arrive while the original mutation is still awaiting storage.
   // Settle that mutation before returning the exact original settings.
-  await configuration.catch(() => undefined);
-  return restoreReceiverConfiguration(workerClient, previous, owned);
+  const configured = await configuration.catch(() => null);
+  return restoreReceiverConfiguration(workerClient, previous, { ...owned, revision: configured?.revision ?? null });
 }
 
 async function proofWindowId(browserClient, targetId) {

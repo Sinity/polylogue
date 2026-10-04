@@ -18,7 +18,7 @@ function fixture({blockPairing=false}={}){
 }
 
 it("serializes receiver restoration against delayed status, code and cache publication", async () => {
-const owned={baseUrl:'http://127.0.0.1:41234',token:'neutral-token',receiverId:null};
+const owned={baseUrl:'http://127.0.0.1:41234',token:'neutral-token',receiverId:null,revision:0};
 const response={body:{ok:true,receiver_id:'neutral-receiver',api_schema:'polylogue-browser-capture/v1'},response:{ok:true,status:200}};
 
 // Original old health response completes after runtime-owned prior-absent restore.
@@ -115,11 +115,22 @@ for (const mutation of ['restore','configure','reset']) {
  f.context.probeReceiverStatus=async()=>{probes++;return response;};
  f.context.bootstrapReceiverCredential=async()=>{
    const configured=await f.context.configure(owned.baseUrl,'neutral-confirmed',await f.context.scope());
-   await f.context.restore({}, {...owned,token:'neutral-confirmed'});
+   await f.context.restore({}, {...owned,token:'neutral-confirmed',revision:configured.revision});
    return {ok:true,scope:configured};
  };
  assert.equal((await f.context.health()).detail,'receiver_configuration_changed');
  assert.equal(probes,0);assert.deepEqual(Object.keys(f.storage),[]);
+}
+
+// Exact values do not confer ownership after an explicit reset/configure.
+for(const mutation of ['configure','reset']) {
+ const f=fixture();const previous={receiverBaseUrl:'http://127.0.0.1:8765',receiverAuthToken:'neutral-original',polylogueReceiverPairing:{receiver_id:'neutral-original'}};
+ const admitted=await f.context.configure(owned.baseUrl,owned.token);
+ const admittedOwned={...owned,revision:admitted.configurationRevision};
+ if(mutation==='configure') await f.context.configure(owned.baseUrl,owned.token);else await f.context.reset();
+ const before=JSON.stringify(f.storage);
+ await assert.rejects(f.context.restore(previous,admittedOwned),/proof_receiver_configuration_changed/);
+ assert.equal(JSON.stringify(f.storage),before);
 }
 
 });
