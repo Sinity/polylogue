@@ -1099,3 +1099,46 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     assert bounded_ctx.receipt.cleanup_complete is True
     assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
     assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000
+
+
+@pytest.mark.parametrize("failure_type", [QueryCancelledError, ValueError])
+async def test_detached_disconnect_worker_exception_is_observed_after_physical_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception]
+) -> None:
+    import polylogue.archive.query.execution_control as ec
+
+    monkeypatch.setattr(ec, "DISCONNECT_DRAIN_TIMEOUT_S", 0.02)
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(query_text="detached", timeout_s=None)
+    controller = QueryAdmissionController()
+    started = threading.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+    def failing_work(store: ArchiveStore) -> None:
+        started.set()
+        assert release.wait(5)
+        raise failure_type("late worker failure")
+
+    task = asyncio.create_task(execute_archive_read(root, failing_work, ctx=ctx, controller=controller))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert ctx.receipt.state == "disconnected"
+        assert controller.in_flight_weight > 0
+        release.set()
+        deadline = time.monotonic() + 5
+        while controller.in_flight_weight and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert controller.in_flight_weight == 0
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not unhandled
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)

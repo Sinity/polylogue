@@ -710,8 +710,9 @@ async def execute_archive_read(
 
     Caller cancellation (``asyncio.CancelledError``, which is how MCP client
     disconnects surface) sets the shared cancellation state, interrupts the
-    exact connection, and waits for the worker to release its resources
-    before re-raising — the loop is never left with an orphaned reader.
+    exact connection, and gives the worker a bounded disconnect drain wait.
+    A worker still settling after that wait retains admission and has its
+    eventual exception observed; caller cancellation never releases its lease.
     """
     admission = controller or default_admission_controller()
     reader = InterruptibleSQLiteRead(ctx)
@@ -757,8 +758,19 @@ async def execute_archive_read(
             raise
 
     worker = asyncio.create_task(_admitted_submission())
+
+    def consume_worker_exception(completed: asyncio.Task[T]) -> None:
+        # A disconnected caller may stop waiting before the physical owner
+        # settles. Observe its eventual exception without cancelling that owner.
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(consume_worker_exception)
     try:
-        result = await asyncio.shield(worker)
+        # Unlike shield(), wait does not install a late-exception logger when
+        # the caller is cancelled. The worker retains its own admission lease.
+        await asyncio.wait({worker})
+        result = worker.result()
     except asyncio.CancelledError:
         ctx.cancel()
         reader.interrupt()
@@ -770,7 +782,10 @@ async def execute_archive_read(
             # Timeout ends the caller's drain wait, never the lease-owning
             # runner: the underlying executor operation may still be cleaning
             # up and must retain admission until it returns.
-            await asyncio.wait_for(asyncio.shield(worker), timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+            done, _ = await asyncio.wait({worker}, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+            if not done:
+                raise TimeoutError
+            worker.result()
         except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError, asyncio.CancelledError):
             pass
         except TimeoutError:
