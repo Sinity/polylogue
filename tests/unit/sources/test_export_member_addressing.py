@@ -521,6 +521,8 @@ def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_pat
         (False, 0, False),
         (None, 0, False),
         (1.5, 1, False),
+        ({"path": "é/file"}, {"path": "é/file"}, False),
+        ({"é": 1}, {"é": 1}, False),
         ([1, 2], [2, 1], False),
     ],
 )
@@ -763,3 +765,28 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     _write_member(real_zip, [_session("one")])
     assert archive_debt._source_artifact_exists(f"{real_zip}:conversations.json") is True
     assert blob_integrity._source_path_availability(f"{real_zip}:conversations.json")[0] is True
+
+
+def test_zip_member_proof_refuses_a_changed_operational_string(tmp_path: Path) -> None:
+    zip_path = tmp_path / "export.zip"
+    source_path = f"{zip_path}:conversations.json"
+    original = {**_session("neutral"), "tool_path": "é/file"}
+    changed = {**original, "tool_path": "é/file"}
+    expected = dumps_bytes(original)
+    row = {
+        **_row(source_path, payload=expected, source_index=0),
+        "coordinate_format": "zip-v2",
+        "entry_ordinal": 0,
+        "split_index": None,
+        "addressing_mode": MemberAddressingMode.WHOLE_MEMBER.value,
+        "content_identity": structural_content_identity(original),
+    }
+    _write_member(zip_path, changed)
+    unit, error = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+    assert unit is None
+    assert error == "content_identity:unmatched"
+    _write_member(zip_path, dict(reversed(list(original.items()))))
+    unit, error = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+    assert error is None
+    assert unit is not None
+    assert unit.content_identity == structural_content_identity(original)

@@ -154,7 +154,7 @@ def test_spilled_strings_and_small_windows_match_the_decoder(
     Tiny read windows and a tiny spill bound put escapes, surrogate pairs,
     combining sequences and multi-byte UTF-8 on every boundary.
 
-    Anti-vacuity: split a surrogate pair, a UTF-8 sequence or an NFC
+    Anti-vacuity: split a surrogate pair, a UTF-8 sequence or a decoded
     composition across spill windows and a case diverges from the decoder.
     """
     from polylogue.core import content_identity
@@ -238,7 +238,6 @@ def test_an_invalid_escape_is_rejected_before_the_rest_of_a_spilled_string(
     [
         (b'{"n": ' + b"1" * 64 + b"}", "number token"),
         (b'{"' + b"k" * 200 + b'": 1}', "object key"),
-        (b'["a' + "́".encode() * 40 + b'"]', "combining character sequence"),
     ],
 )
 def test_a_token_beyond_the_physical_value_limit_is_refused_by_name(
@@ -483,10 +482,9 @@ def test_a_duplicate_key_drops_a_discarded_refused_member(monkeypatch: pytest.Mo
     monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
     monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
-    marks = b'"x' + "́".encode() * 40 + b'"'
     number = b"1." + b"2" * 64
     expected = payload_content_identity(b'{"a":1}')
-    for overlong in (marks, number):
+    for overlong in (number,):
         assert payload_content_identity(b'{"a":' + overlong + b',"a":1}') == expected
         assert payload_content_identity(b'{"b":[{"a":' + overlong + b',"a":1}]}') == payload_content_identity(
             b'{"b":[{"a":1}]}'
@@ -524,8 +522,8 @@ def test_the_refusal_raised_is_the_one_that_survived(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
     monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
-    marks = b'"x' + "́".encode() * 40 + b'"'
-    document = b'{"a":' + marks + b',"a":1,"' + b"k" * 64 + b'":0}'
+    number = b"1." + b"2" * 64
+    document = b'{"a":' + number + b',"a":1,"' + b"k" * 64 + b'":0}'
     with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
         payload_content_identity(document)
     assert refusal.value.token == "object key"
@@ -554,32 +552,20 @@ def test_keys_too_long_for_a_row_are_spooled_not_held(monkeypatch: pytest.Monkey
     assert len(spooled) >= 6
 
 
-def test_values_are_measured_by_their_nfc_form(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A key or string whose decomposed spelling exceeds the limit but whose NFC
-    form fits is accepted, with the identity of its precomposed spelling.
-
-    Anti-vacuity: measure a key before normalization, or treat every
-    composition follower as an unsafe split, and these members are refused.
-    """
+def test_exact_key_bytes_obey_the_physical_limit(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
     monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
-    decomposed_key = "e\u0301" * 12
-    assert len(decomposed_key.encode()) > 32 >= len(unicodedata.normalize("NFC", decomposed_key).encode())
-    assert payload_content_identity(json.dumps({decomposed_key: 1}, ensure_ascii=False).encode()) == (
-        payload_content_identity(json.dumps({"\u00e9" * 12: 1}, ensure_ascii=False).encode())
-    )
-    followers = chr(0x113C2) * 12
-    assert len(followers.encode()) > 32 >= len(unicodedata.normalize("NFC", followers).encode())
-    payload = json.dumps([followers], ensure_ascii=False).encode()
-    assert payload_content_identity(payload) == structural_content_identity([followers])
+    decomposed = "e\u0301" * 12
+    with pytest.raises(content_identity.ContentIdentityRefusal, match="object key"):
+        payload_content_identity(json.dumps({decomposed: 1}, ensure_ascii=False).encode())
+    composed = "é" * 12
+    assert payload_content_identity(json.dumps({composed: 1}).encode()) == structural_content_identity({composed: 1})
 
 
-def test_spooled_equivalent_keys_order_by_value_digest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: order spooled keys by key alone and swapping the values of
-    two canonically equivalent spooled keys changes the identity."""
+def test_spooled_exact_keys_preserve_their_values(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
@@ -587,9 +573,14 @@ def test_spooled_equivalent_keys_order_by_value_digest(monkeypatch: pytest.Monke
     stem = "x" * 150
     composed, decomposed = stem + "é", stem + "é"
     filler = {f"k{index}": index for index in range(12)}
-    first = json.dumps({**filler, composed: "one", decomposed: "two"}, ensure_ascii=False).encode()
-    second = json.dumps({**filler, composed: "two", decomposed: "one"}, ensure_ascii=False).encode()
-    assert payload_content_identity(first) == payload_content_identity(second)
+    first = {**filler, composed: "one", decomposed: "two"}
+    second = {**filler, composed: "two", decomposed: "one"}
+    for value in (first, second):
+        assert payload_content_identity(json.dumps(value, ensure_ascii=False).encode()) == structural_content_identity(
+            value
+        )
+    assert structural_content_identity(first) != structural_content_identity(second)
+    assert structural_content_identity(dict(reversed(list(first.items())))) == structural_content_identity(first)
 
 
 def test_an_encoded_lone_surrogate_shares_the_identity_of_its_escape() -> None:
@@ -674,7 +665,7 @@ def test_a_long_integer_is_exact_or_not_json_as_the_decoder_reads_it(monkeypatch
 
 
 def test_a_long_key_is_never_held_whole(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A key decoded past the spill bound keeps only its hash and NFC scratch.
+    """A key decoded past the spill bound keeps only its hash and exact-byte scratch.
 
     Anti-vacuity: join the decoded windows into one string and the key comes
     back whole; compare long keys by anything but the decoded text and the
@@ -747,30 +738,17 @@ def test_an_encoded_surrogate_after_an_escaped_backslash_keeps_its_identity() ->
     assert payload_content_identity(encoded) == payload_content_identity(escaped) == _decoded_identity(escaped)
 
 
-def test_a_long_starter_free_run_normalizes_on_disk(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A run of combining marks past the hold bound moves to scratch buckets.
-
-    Anti-vacuity: concatenate the run in memory and ``nfc`` sees all of it at
-    once; bucket it wrongly and the identity differs from the decoder's.
-    """
+def test_long_combining_runs_preserve_exact_decoded_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.core import content_identity
 
     monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
     monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
-    monkeypatch.setattr(content_identity, "_UNSETTLED_HOLD_CHARS", 16)
-    from polylogue.core.text_identity import nfc as real_nfc
-
-    def bounded(text: str) -> str:
-        assert len(text) <= 4 * (16 + 8), "normalized an unsettled run whole"
-        return real_nfc(text)
-
-    monkeypatch.setattr("polylogue.core.content_identity.nfc", bounded)
     for value in ("a" + "́" * 300 + "̧" * 50 + "b", "̈́" * 200, "é" + "̧" * 90):
         payload = json.dumps([value], ensure_ascii=False).encode()
-        with monkeypatch.context() as unbounded:
-            unbounded.setattr("polylogue.core.content_identity.nfc", real_nfc)
-            expected = _decoded_identity(payload)
-        assert payload_content_identity(payload) == expected
+        assert payload_content_identity(payload) == _decoded_identity(payload)
+        assert structural_content_identity([value]) != structural_content_identity(
+            [unicodedata.normalize("NFC", value)]
+        )
 
 
 def test_spooled_keys_check_the_checkpoint_per_window() -> None:
