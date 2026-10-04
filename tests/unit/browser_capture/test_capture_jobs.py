@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -741,8 +741,8 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         connection.close()
 
 
-def test_concurrent_first_registry_opens_serialize_fresh_bootstrap(tmp_path: Path) -> None:
-    """Concurrent fresh openers serialize DDL and retain the current columns."""
+def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
+    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
     registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
 
     def open_and_close(registry: CaptureJobRegistry) -> None:
@@ -937,6 +937,43 @@ def _checkpoint(
     )
     assert status == 200, body
     return body
+
+
+def test_source_bearing_registry_checkpoint_remains_readable_after_reopen(tmp_path: Path) -> None:
+    """Job bookkeeping may share a carrier with unique acquired source bytes."""
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-browser-capture-v1.json"
+    original = json.loads(fixture.read_text())
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        payload = {
+            "version": 1,
+            "jobs": [],
+            "queue": [{"id": "source-only-in-registry", "envelope": original}],
+            "revisions": [],
+        }
+        saved = _checkpoint(
+            host, port, job["job_id"], adopted["lease"], adopted["job"]["revision"], 1, payload, "source-checkpoint"
+        )
+        path = capture_job_database_path(tmp_path)
+        with sqlite3.connect(path) as connection:
+            connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+        capture_jobs_module._SCHEMA_READY.clear()
+        status, read = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert read["job"]["checkpoint"] == saved["job"]["checkpoint"]
+        retained = read["job"]["checkpoint"]["payload"]["queue"][0]["envelope"]
+        assert retained == original
+        assert parse_payload(Provider.CHATGPT, retained, "source-only-in-registry") == parse_payload(
+            Provider.CHATGPT, original, "source-only-in-registry"
+        )
+        assert not list(tmp_path.rglob("*.json"))
 
 
 def test_update_receipt_requires_the_current_complete_digest(tmp_path: Path) -> None:
@@ -1365,6 +1402,35 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
         assert terminal["job"]["retention"]["state"] == "active"
+
+
+def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
+    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
+    path = capture_job_database_path(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
+        )
+        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
+    capture_jobs_module._SCHEMA_READY.clear()
+    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
+    with registry._connection() as connection:
+        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+    return int(row[0])
+
+
+def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
+    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
+    default declared, so the first assertion fails and terminal jobs never
+    become eligible for collection.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
+    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
 
 
 def _retired_job(host: str, port: int) -> str:
