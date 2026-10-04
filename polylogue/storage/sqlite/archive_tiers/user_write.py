@@ -2629,6 +2629,7 @@ def list_assertion_claims(
     schema: str | None = None,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
+    session_id: str | None = None,
     target_refs: Collection[str] | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
@@ -2658,6 +2659,11 @@ def list_assertion_claims(
     unaffected. Pass ``include_expired=True`` for audit/export reads that
     must still see expired rows.
 
+    ``session_id`` selects its exact session target and messages in its
+    canonical composed transcript, including only the inherited prefix. The
+    plan remains proportional to lineage depth; no message IDs are hydrated.
+    Incomplete lineage refuses rather than presenting a partial claim set.
+
     ``target_refs`` restricts the read to rows targeting any of the given
     refs (an empty collection selects nothing). The set travels as one JSON
     parameter expanded by ``json_each``, so its size never meets SQLite's
@@ -2685,6 +2691,27 @@ def list_assertion_claims(
     if target_ref is not None:
         where.append("target_ref = ?")
         params.append(target_ref)
+    if session_id is not None:
+        from polylogue.core.errors import DatabaseError
+        from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
+
+        plan = _composed_transcript_plan(conn, session_id)
+        if not plan.lineage_complete:
+            raise DatabaseError(
+                f"assertion session membership has incomplete lineage: {plan.lineage_truncation_reason}"
+            )
+        segments = [
+            (segment.session_id, segment.upto_position, segment.upto_variant_index) for segment in plan.segments
+        ]
+        where.append(
+            "target_ref IN (SELECT ? UNION ALL "
+            "SELECT 'message:' || m.message_id FROM json_each(?) AS segment "
+            "JOIN main.messages AS m ON m.session_id = json_extract(segment.value, '$[0]') "
+            "WHERE json_extract(segment.value, '$[1]') IS NULL "
+            "OR (m.position, m.variant_index) <= "
+            "(json_extract(segment.value, '$[1]'), json_extract(segment.value, '$[2]')))"
+        )
+        params.extend((f"session:{session_id}", json.dumps(segments)))
     if target_refs is not None:
         where.append("target_ref IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(sorted(set(target_refs))))

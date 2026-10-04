@@ -505,6 +505,14 @@ polylogue judge --target-ref session:codex-session:abc123 --review --format json
 polylogue judge --status --format json
 ```
 
+The browser conversation-intelligence panel lists active session claims together
+with active claims targeting messages in that session's composed transcript.
+Inherited claims stop at the canonical branch point; foreign message targets,
+post-branch parent messages and unreviewed candidates remain excluded. Claim
+scope metadata cannot grant membership. The existing bounded claim page is
+selected after membership and lifecycle filtering; incomplete lineage makes the
+panel projection explicitly unavailable rather than showing a partial clean set.
+
 The sole public judgment workflow is root `polylogue judge`; it writes through
 the existing lifecycle authority into the same `user.db` assertion substrate:
 

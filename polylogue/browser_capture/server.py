@@ -170,13 +170,10 @@ def mission_control_archive_facts(
                 "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
                 "provenance": list(estimate.provenance),
             }
-        # One bounded read of the session's own judged claims. Message-targeted
-        # claims use message:<message_id>, and a session's message ids are not
-        # a prefix of its session id, so they cannot be read by prefix here.
+        # Membership comes from the canonical composed transcript, not claim
+        # scope metadata or a guessed message-ID prefix. Candidates stay private.
         claims = run_coroutine_sync(
-            poly.list_assertion_claim_payloads(
-                target_ref=f"session:{indexed_session_id}", statuses=("active",), limit=5
-            )
+            poly.list_assertion_claim_payloads(session_id=indexed_session_id, statuses=("active",), limit=5)
         )
         assertions: _MissionControlAssertionsPayload = {
             "status": "available",
