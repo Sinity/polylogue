@@ -129,3 +129,5 @@ Disconnected archive reads keep admission with the original worker until physica
 Profile and latency insight readers normalize comma-separated repository and tag scopes through the same canonical CSV and session predicates as session queries. Values within one filter are alternatives; repository and tag filters intersect before ordering and pagination.
 
 Session-list projection rows bind their public names to existing renderer profiles, CLI option and execution metadata, and evidence-family contracts. Adding a name with a declared renderer updates these consumers together; removing a name retires it from their public vocabularies. Unknown renderer families and collisions with another read view refuse at contract construction.
+
+In-memory action-sequence matching streams completed all-pairs witnesses with one iterative search path. It does not cap intermediate candidates; the existential answer peeks the first completed witness from the same stream. Ordered, adjacent and elapsed-time edges retain their declared semantics.
