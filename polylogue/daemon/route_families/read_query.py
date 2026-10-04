@@ -125,10 +125,14 @@ def _handle_ref_resolve(self: Any, params: dict[str, list[str]]) -> None:
         plan = plan_ref_resolution(
             ref,
             archive_root=archive_root,
-            limit=self._get_int(params, "limit", 50),
-            offset=self._get_int(params, "offset", 0),
+            limit=int(self._get_param(params, "limit", "50")),
+            offset=int(self._get_param(params, "offset", "0")),
             continuation=self._get_param(params, "continuation"),
         )
+    except ValueError as exc:
+        self._send_error(HTTPStatus.BAD_REQUEST, "invalid_argument", str(exc))
+        return
+    try:
         if plan.payload is not None:
             payload = plan.payload
         else:
