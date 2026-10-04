@@ -141,3 +141,7 @@ have no target transaction while remaining live write-gated tools
 is not the same as not a tool; the manual lists them.
 
 MCP insight maintenance forwards an explicit session-ID selection to the sealed daemon planner. Omission selects the full scope; an empty list remains an empty explicit scope. Orchestration `get` preserves its owner’s terminal verdict and gaps in the shared object-shaped outcome envelope, while leaving the evidence fields unchanged.
+
+MCP messages-view authority measures elapsed time from the read operation
+boundary with the shared monotonic authority clock, including the transcript
+window read. Serialization preserves that authority value.
