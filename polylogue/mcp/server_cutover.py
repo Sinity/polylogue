@@ -930,6 +930,7 @@ async def _query_registry_insight(
     descriptor: Any,
     *,
     limit: int | None,
+    offset: int | None,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -958,7 +959,7 @@ async def _query_registry_insight(
     if "limit" in fields:
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
-        kwargs["offset"] = 0
+        kwargs["offset"] = offset if offset is not None else 0
     for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
         if value is not None and key in fields:
             kwargs[key] = value
@@ -981,6 +982,7 @@ async def _query_insight_projection(
     projection: str,
     *,
     limit: int | None,
+    offset: int | None,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -1008,6 +1010,7 @@ async def _query_insight_projection(
             hooks,
             descriptor,
             limit=limit,
+            offset=offset,
             origin=origin,
             tag=tag,
             repo=repo,
@@ -1390,6 +1393,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     hooks,
                     projection,
                     limit=limit,
+                    offset=offset,
                     origin=origin,
                     tag=tag,
                     repo=repo,

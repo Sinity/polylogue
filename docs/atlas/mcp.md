@@ -61,7 +61,7 @@ compares every profile identity against its fixture oracle.
 
 ## Insight projections
 
-Registry-backed projections use the insight descriptor's fetch/payload contract.
+Registry-backed projections use the insight descriptor's fetch/payload contract and forward the requested offset to descriptors that declare pagination, after their session filters and before their result window.
 `postmortem` and `pathologies` call their analysis facades and attach the shared
 terminal `outcome` at the MCP operation boundary. An empty, complete scope is
 `empty`; a truncated scope or missing profiles/digests is `degraded` even when
