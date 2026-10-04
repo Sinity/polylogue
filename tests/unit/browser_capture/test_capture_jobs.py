@@ -24,8 +24,16 @@ from polylogue.browser_capture.capture_jobs import (
     capture_job_database_path,
     capture_job_scope_namespace,
 )
+from polylogue.browser_capture.models import BrowserBackfillCheckpointRequest, BrowserCaptureEnvelope
+from polylogue.browser_capture.receiver import (
+    read_backfill_checkpoint,
+    write_backfill_checkpoint,
+    write_capture_envelope,
+)
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
+from polylogue.core.enums import Provider
+from polylogue.sources.dispatch import parse_payload
 
 TOKEN = "capture-job-test-token"
 SCOPE = "h1:" + "A" * 43
@@ -745,6 +753,33 @@ def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path
         list(pool.map(open_and_close, registries))
 
 
+def test_fresh_registry_preserves_preexisting_source_capture_and_checkpoint(tmp_path: Path) -> None:
+    """Fresh bookkeeping must neither remove nor reinterpret original source bytes."""
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-browser-capture-v1.json"
+    payload = json.loads(fixture.read_text())
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    capture = write_capture_envelope(envelope, spool_path=tmp_path)
+    checkpoint = {"version": 1, "jobs": [], "queue": [{"id": "original-source", "envelope": payload}], "revisions": []}
+    original = write_backfill_checkpoint(
+        BrowserBackfillCheckpointRequest(extension_instance_id="original-profile", checkpoint=checkpoint),
+        spool_path=tmp_path,
+    )
+    source_files = {path: path.read_bytes() for path in tmp_path.rglob("*.json")}
+    parsed = parse_payload(Provider.CHATGPT, json.loads(capture.path.read_bytes()), "original-source")
+    assert parsed and any(attachment.inline_bytes for attachment in parsed[0].attachments)
+
+    for _ in range(2):
+        # Process-local bootstrap knowledge does not survive a receiver restart.
+        capture_jobs_module._SCHEMA_READY.clear()
+        connection = CaptureJobRegistry(tmp_path, "fresh-receiver")._connect()
+        connection.close()
+        assert {path: path.read_bytes() for path in source_files} == source_files
+        assert read_backfill_checkpoint("original-profile", spool_path=tmp_path) == original
+        assert parse_payload(Provider.CHATGPT, json.loads(capture.path.read_bytes()), "original-source") == parsed
+        duplicate = write_capture_envelope(envelope, spool_path=tmp_path)
+        assert duplicate.deduplicated and duplicate.path == capture.path
+
+
 def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
     """Anti-vacuity: SQL IS NOT NULL counted refs the projection cannot timeline."""
     registry = CaptureJobRegistry(tmp_path, "receiver")
@@ -904,13 +939,52 @@ def _checkpoint(
     return body
 
 
-def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -> None:
-    """Anti-vacuity: dropping the legacy-digest branch in update() restores the 409.
+def test_source_bearing_registry_checkpoint_remains_readable_after_reopen(tmp_path: Path) -> None:
+    """Job bookkeeping may share a carrier with unique acquired source bytes."""
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-browser-capture-v1.json"
+    original = json.loads(fixture.read_text())
+    # This registry's current checkpoint wire admits exact integers. Use the
+    # fixture's existing DOM projection for this source-only carrier; the
+    # ordinary spool control above preserves its full raw payload and assets.
+    original.pop("raw_provider_payload")
+    original["session"]["attachments"] = []
+    original["provider_meta"]["capture_fidelity"] = "dom_fallback"
+    original["session"]["provider_meta"]["capture_fidelity"] = "dom_fallback"
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        payload = {
+            "version": 1,
+            "jobs": [],
+            "queue": [{"id": "source-only-in-registry", "envelope": original}],
+            "revisions": [],
+        }
+        saved = _checkpoint(
+            host, port, job["job_id"], adopted["lease"], adopted["job"]["revision"], 1, payload, "source-checkpoint"
+        )
+        path = capture_job_database_path(tmp_path)
+        with sqlite3.connect(path) as connection:
+            connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+        capture_jobs_module._SCHEMA_READY.clear()
+        status, read = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert read["job"]["checkpoint"] == saved["job"]["checkpoint"]
+        retained = read["job"]["checkpoint"]["payload"]["queue"][0]["envelope"]
+        assert retained == original
+        assert parse_payload(Provider.CHATGPT, retained, "source-only-in-registry") == parse_payload(
+            Provider.CHATGPT, original, "source-only-in-registry"
+        )
+        assert not list(tmp_path.rglob("*.json"))
 
-    The stored digest is rewritten into the shape a build before retention
-    joined it wrote, which is what a receiver spool carries across that
-    upgrade.
-    """
+
+def test_update_receipt_requires_the_current_complete_digest(tmp_path: Path) -> None:
+    """A request ID cannot certify a stored receipt for a different digest."""
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -926,23 +1000,25 @@ def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -
             "lease_id": adopted["lease"]["lease_id"],
             "generation": adopted["lease"]["generation"],
             "proof": adopted["lease"]["proof"],
-            "request_id": "pre-upgrade-retry",
+            "request_id": "current-retry",
             "expected_revision": adopted["job"]["revision"],
             "retry": retry,
         }
         status, updated = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
         assert status == 200 and updated["duplicate"] is False
 
-        legacy = canonical_digest({"retry": retry, "lease_ttl_seconds": None})
+        status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
+        assert status == 200 and replay["duplicate"] is True
+        assert replay["receipt"] == updated["receipt"]
+
+        incomplete = canonical_digest({"retry": retry, "lease_ttl_seconds": None})
         with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
             connection.execute(
                 "UPDATE capture_job_update_receipts SET request_digest=? WHERE request_id=?",
-                (legacy, "pre-upgrade-retry"),
+                (incomplete, "current-retry"),
             )
         status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
-        assert status == 200
-        assert replay["duplicate"] is True
-        assert replay["receipt"] == updated["receipt"]
+        assert status == 409 and replay["error"]["code"] == "request_id_conflict"
 
         status, conflicting = request(
             host,

@@ -845,14 +845,6 @@ class CaptureJobRegistry:
         if retry is None and ttl is None and retention is None:
             raise CaptureJobError(400, "empty_capture_job_update")
         request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl, "retention": retention})
-        # Retention joined the digest after update receipts were already
-        # durable. A retry/TTL-only request replayed against a receipt written
-        # before that recomputes a different digest, so its stored shape stays
-        # an accepted match. A retention-bearing request has no legacy shape
-        # and can only match the current digest.
-        legacy_digest = (
-            canonical_digest({"retry": retry, "lease_ttl_seconds": ttl}) if retention is None else request_digest
-        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
@@ -864,9 +856,7 @@ class CaptureJobRegistry:
                 (job_id, request_id),
             ).fetchone()
             if existing:
-                if not hmac.compare_digest(existing["request_digest"], request_digest) and not hmac.compare_digest(
-                    existing["request_digest"], legacy_digest
-                ):
+                if not hmac.compare_digest(existing["request_digest"], request_digest):
                     raise CaptureJobError(409, "request_id_conflict")
                 return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
             if body.get("expected_revision") != row["revision"]:
