@@ -2815,6 +2815,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        session_id: str | None = None,
         target_refs: Collection[str] | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
@@ -2824,7 +2825,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """List assertion-backed lifecycle claims for read-surface consumers.
 
         ``target_refs`` narrows the read to any of several targets inside the
-        storage query.
+        storage query. ``session_id`` includes exact session and composed-message
+        targets, refusing incomplete lineage rather than hiding missing evidence.
         """
 
         from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
@@ -2839,6 +2841,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     schema="user_tier",
                     kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
                     target_ref=target_ref,
+                    session_id=session_id,
                     target_refs=target_refs,
                     scope_ref=scope_ref,
                     statuses=statuses,
@@ -2861,6 +2864,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             arguments={
                 "kinds": tuple(str(kind) for kind in kinds) if kinds is not None else None,
                 "target_ref": target_ref,
+                "session_id": session_id,
                 "target_refs": tuple(sorted(target_refs)) if target_refs is not None else None,
                 "scope_ref": scope_ref,
                 "statuses": tuple(str(status) for status in statuses) if statuses is not None else None,
@@ -3110,6 +3114,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        session_id: str | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
@@ -3128,6 +3133,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         claims = await self.list_assertion_claims(
             kinds=kinds,
             target_ref=target_ref,
+            session_id=session_id,
             scope_ref=scope_ref,
             statuses=statuses,
             context_inject=context_inject,

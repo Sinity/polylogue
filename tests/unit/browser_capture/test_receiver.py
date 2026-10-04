@@ -820,9 +820,9 @@ def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_rea
             *,
             statuses: tuple[str, ...],
             limit: int,
-            target_ref: str | None = None,
+            session_id: str | None = None,
         ) -> list[object]:
-            calls.append((str(target_ref), statuses))
+            calls.append((str(session_id), statuses))
             return []
 
     monkeypatch.setattr(polylogue, "Polylogue", FakePolylogue)
@@ -830,7 +830,7 @@ def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_rea
 
     assert result is not None
     assert calls == [
-        ("session:chatgpt:conversation", ("active",)),
+        ("chatgpt:conversation", ("active",)),
     ]
 
 
@@ -1444,10 +1444,28 @@ def test_selected_message_candidate_persists_through_the_daemon_actuator(
     written; stop forwarding ``evidence_refs`` and the row loses the capture
     locator.
     """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.daemon_operations import running_daemon_operations
 
     archive_root = tmp_path / "archive"
     message_ref = "chatgpt-export:conv-123:n:turn-1"
+    spool = tmp_path / "spool"
+    write_capture_envelope(BrowserCaptureEnvelope.model_validate(_payload()), spool_path=spool)
+    with write_lease("test.capture-intelligence"), ArchiveStore(archive_root) as archive:
+        archive.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="conv-123",
+                messages=[ParsedMessage(provider_message_id="turn-1", role=Role.USER, text="selected message")],
+            ),
+            payload=b"synthetic capture evidence",
+            source_path=str(spool / "chatgpt" / "conv-123.json"),
+            acquired_at_ms=0,
+        )
     with running_daemon_operations(archive_root) as stack:
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
         monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_a, **_k: None)
@@ -1476,10 +1494,47 @@ def test_selected_message_candidate_persists_through_the_daemon_actuator(
             )
             body = json.loads(response.read())
         assert response.status == HTTPStatus.ACCEPTED, body
+        with _running_receiver(spool, archive_root=stack.archive_root) as (host, port):
+
+            def panel() -> dict[str, object]:
+                response = _request(
+                    host,
+                    port,
+                    "GET",
+                    "/v1/mission-control?provider=chatgpt&provider_session_id=conv-123",
+                    origin=_EXTENSION_ORIGIN,
+                )
+                assert response.status == HTTPStatus.OK
+                return cast(dict[str, object], json.loads(response.read()))
+
+            before = panel()
+            assert before["assertions"] == {"status": "available", "items": []}, before
+            with sqlite3.connect(stack.archive_root / "user.db") as conn:
+                candidate_id = conn.execute(
+                    "SELECT assertion_id FROM assertions WHERE status = 'candidate'"
+                ).fetchone()[0]
+            judgment = stack.client.operation_to_completion(
+                "mutation.facade.judge_assertion_candidate",
+                {
+                    "candidate_ref": f"assertion:{candidate_id}",
+                    "decision": "accept",
+                    "reason": "synthetic verified selection",
+                },
+                archive_root=str(stack.archive_root),
+            )
+            assert judgment is not None and judgment["outcome"] == "completed"
+            after = panel()
+            assert after["status"] == "available"
+            claims = cast(dict[str, object], after["assertions"])
+            assert claims["status"] == "available"
+            items = cast(list[dict[str, object]], claims["items"])
+            assert len(items) == 1
+            assert items[0]["target_ref"] == f"message:{message_ref}"
+            assert items[0]["status"] == "active"
         with sqlite3.connect(stack.archive_root / "user.db") as conn:
             rows = conn.execute(
                 "SELECT target_ref, scope_ref, body_text, evidence_refs_json FROM assertions "
-                "WHERE key = 'terminal-note'"
+                "WHERE key = 'terminal-note' AND status = 'accepted'"
             ).fetchall()
     assert [row[:3] for row in rows] == [
         (f"message:{message_ref}", "session:chatgpt-export:conv-123", "remember this turn")
