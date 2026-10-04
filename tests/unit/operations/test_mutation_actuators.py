@@ -246,21 +246,16 @@ class TestSessionDeleteActuator:
         """The real delete actuator reaches the gateway after index mutation.
 
         Anti-vacuity: bypassing ``ArchiveStore.delete_sessions``' gateway
-        commit leaves this cache/deferred-effect observation empty even though
+        commit leaves this cache-invalidation observation empty even though
         the session row was deleted.
         """
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         session_id = _seed_archive_session(archive_root, native_id="delete-effects")
         invalidated: list[bool] = []
-        deferred: list[tuple[str, bool]] = []
 
         monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
         monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: invalidated.append(True))
-        monkeypatch.setattr(
-            "polylogue.archive.write_effects.DEFERRED_EFFECT_QUEUE.enqueue",
-            lambda effect, ctx: deferred.append((effect.name, ctx.conn.in_transaction)),
-        )
 
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             actuator = SessionDeleteActuator()
@@ -274,9 +269,6 @@ class TestSessionDeleteActuator:
 
         assert receipt.affected_count == 1
         assert invalidated == [True]
-        # F614: the invalidation is part of the admitted writer transaction, so
-        # there is no independent deferred writer left to race the coordinator.
-        assert deferred == []
 
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
