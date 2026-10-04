@@ -52,6 +52,9 @@ def run_read_compact(env: AppEnv, request: RootModeRequest, invocation: ReadView
         json.dumps(pack.model_dump(mode="json"), indent=2) + "\n" if fmt == "json" else render_compaction_markdown(pack)
     )
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path)
+    from polylogue.cli.render.outcome import finish_supplied_outcome
+
+    finish_supplied_outcome(pack.outcome)
 
 
 __all__ = ["run_read_compact"]

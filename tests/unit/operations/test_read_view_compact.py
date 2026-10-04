@@ -82,3 +82,33 @@ def test_compact_keeps_a_large_permitted_projection(monkeypatch: Any) -> None:
     )
     result = read_view_compact.execute_compact_read({"params": {}}, archive=Mock())
     assert result["payload"] == {"large": value}
+
+
+def test_pinned_compaction_route_preserves_collapsed_evidence_and_token_accounting(tmp_path: Path) -> None:
+    from polylogue.surfaces.compaction import estimate_tokens
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    builder = SessionBuilder(root / "index.db", "compact-ladder").provider("codex")
+    text = "decision " * 1000
+    for index in range(20):
+        builder.add_message(f"message-{index}", role="assistant", text=text, material_origin="assistant_authored")
+    builder.save()
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        session_id = archive.list_summaries(limit=1)[0].session_id
+        result = execute_read_operation(
+            "read.compact",
+            {"session_id": session_id, "params": {}, "projection": {"max_tokens": 2500}},
+            archive=archive,
+            serving_identity="test",
+        )
+    validate_operation_result("read.compact", result)
+    pack = CorpusCompactionPack.model_validate(cast(dict[str, Any], result["payload"]))
+    assert len(pack.items) == 1
+    assert pack.items[0].occurrence_count == 20
+    assert len(pack.items[0].refs) == 20
+    assert pack.manifest.drop_counts["budget_collapsed"] == 19
+    assert pack.manifest.included_tokens_by_session[session_id] + pack.manifest.dropped_tokens_by_session[
+        session_id
+    ] == (20 * estimate_tokens(text))
+    assert pack.outcome.state == "degraded" and pack.token_estimate <= 2500
