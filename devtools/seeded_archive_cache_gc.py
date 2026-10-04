@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import signal
 import sys
 from collections import Counter
 from pathlib import Path
@@ -54,6 +55,11 @@ def _render_report(
     print("dispositions:", file=stdout)
     for disposition, count in sorted(dispositions.items()):
         print(f"  {disposition}: {count}", file=stdout)
+    print(f"complete: {report.complete}", file=stdout)
+    if report.next_cursor is not None:
+        print(f"next cursor: {report.next_cursor}", file=stdout)
+    if report.interrupted:
+        print("interrupted: restart this page to resume retired deletion", file=stdout)
     print(f"receipt: {receipt}", file=stdout)
 
 
@@ -89,6 +95,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         action="store_true",
         help="Actually delete eligible aged artifacts. Without this flag, preview only.",
     )
+    parser.add_argument(
+        "--page-size", type=int, default=100, help="Artifact decisions in this page; continuation is explicit."
+    )
+    parser.add_argument("--after", default=None, help="Continue after the previous report's next_cursor.")
     parser.add_argument("--json", action="store_true", help="Emit the complete report as JSON.")
     args = parser.parse_args(argv)
     output: TextIO = stdout if stdout is not None else sys.stdout
@@ -109,6 +119,13 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             print(f"refused: {exc}", file=output)
         return 1
 
+    interrupted_signal: int | None = None
+
+    def cancel(_signum: int, _frame: object) -> None:
+        nonlocal interrupted_signal
+        interrupted_signal = _signum
+
+    previous = {signum: signal.signal(signum, cancel) for signum in (signal.SIGINT, signal.SIGTERM)}
     try:
         inventory = current_seeded_archive_reachability()
         validate_seeded_archive_reachability(inventory)
@@ -119,6 +136,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
             dry_run=not args.apply,
             protected_worktrees=args.protected_worktree,
             receipt_path=receipt,
+            cancelled=lambda: interrupted_signal is not None,
+            page_size=args.page_size,
+            after=args.after,
         )
     except (OSError, RuntimeError, ValueError) as exc:
         if args.json:
@@ -129,6 +149,9 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         else:
             print(f"refused: {exc}", file=output)
         return 1
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
 
     if args.json:
         print(json.dumps(_report_payload(report, inventory=inventory), indent=2, sort_keys=True), file=output)
@@ -136,7 +159,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         _render_report(report, inventory=inventory, receipt=receipt, stdout=output)
 
     failed = any(entry.disposition is ArtifactGcDisposition.DELETION_FAILED for entry in report.entries)
-    return 1 if failed else 0
+    return 128 + (interrupted_signal or signal.SIGINT) if report.interrupted else 1 if failed else 0
 
 
 if __name__ == "__main__":

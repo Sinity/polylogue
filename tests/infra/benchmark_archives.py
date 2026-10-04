@@ -14,6 +14,7 @@ from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     build_seeded_archive,
     clone_seeded_archive,
+    seeded_archive_cache_lease,
 )
 from tests.infra.workload_declarations import (
     BenchmarkWorkloadTier,
@@ -38,8 +39,9 @@ def seed_benchmark_archive(
     seed: int = 42,
 ) -> dict[str, int]:
     """Clone one private writable benchmark tier and report its measured shape."""
-    artifact = _measured_benchmark_artifact(BenchmarkWorkloadTier(tier), seed=seed)
-    clone_seeded_archive(artifact, db_path.parent)
+    with seeded_archive_cache_lease():
+        artifact = _measured_benchmark_artifact(BenchmarkWorkloadTier(tier), seed=seed)
+        clone_seeded_archive(artifact, db_path.parent)
     resources = artifact.manifest.resources
     return {
         "sessions": resources.row_counts["sessions"],

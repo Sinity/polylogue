@@ -148,11 +148,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Preview or apply age-gated GC for the shared seeded-archive fixture cache.",
         "devtools.seeded_archive_cache_gc",
         json_flag=True,
-        flags=(("--apply", "Apply the previewed collection instead of only reporting it."),),
+        flags=(
+            ("--apply", "Apply the previewed collection instead of only reporting it."),
+            ("--page-size", "Requested artifact decisions per page (default: 100)."),
+            ("--after", "Continue after the previous report next_cursor."),
+        ),
         use_when=(
             "Maintain the reusable NVMe seeded-artifact cache from the generated default, named-workload, and "
             "benchmark reachability inventory. Preview is the default; pass --apply explicitly after reviewing "
-            "the bounded receipt."
+            "the page receipt. Continue with --after when next_cursor is present; cancellation leaves retired deletion resumable."
         ),
         examples=("devtools cache gc --json", "devtools cache gc --apply --json"),
     ),

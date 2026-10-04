@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -15,15 +15,17 @@ from tests.infra.workload_artifacts import (
     acquire_query_only_seeded_archive,
     build_seeded_archive,
     clone_seeded_archive,
+    seeded_archive_cache_lease,
     seeded_archive_key,
 )
 from tests.infra.workload_declarations import named_corpus_specs
 
 
 @pytest.fixture(scope="session")
-def seeded_archive() -> SeededArchiveArtifact:
+def seeded_archive() -> Iterator[SeededArchiveArtifact]:
     """Shared immutable named schema-coverage archive for read-only consumers."""
-    return schema_coverage_archive()
+    with seeded_archive_cache_lease():
+        yield schema_coverage_archive()
 
 
 @pytest.fixture(scope="session")
@@ -33,7 +35,7 @@ def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArch
 
 
 @pytest.fixture(scope="session")
-def named_seeded_artifact() -> Callable[[str], SeededArchiveArtifact]:
+def named_seeded_artifact() -> Iterator[Callable[[str], SeededArchiveArtifact]]:
     """Lazily resolve each named artifact once per pytest worker.
 
     The artifact cache already owns publication and cross-process reuse.  This
@@ -49,7 +51,8 @@ def named_seeded_artifact() -> Callable[[str], SeededArchiveArtifact]:
             artifacts[name] = artifact
         return artifact
 
-    return resolve
+    with seeded_archive_cache_lease():
+        yield resolve
 
 
 @pytest.fixture
