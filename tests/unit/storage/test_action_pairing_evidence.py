@@ -269,3 +269,53 @@ def test_append_reconciliation_does_not_pair_empty_tool_ids(tmp_path: Path, tool
         action = archive.query_actions(source.predicate)[0]
         assert action.result_state == ("no_result" if tool_id == "" else "outcome_success")
         assert (action.tool_result_block_id is None) == (tool_id == "")
+
+
+def test_episode_context_preserves_composed_message_boundaries_and_result_anchor(tmp_path: Path) -> None:
+    from polylogue.analysis.tool_episodes import ToolEpisodeQuery
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    def prose(native_id: str, role: Role, texts: list[str]) -> ParsedMessage:
+        return ParsedMessage(
+            provider_message_id=native_id,
+            role=role,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text) for text in texts],
+        )
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="context-parent",
+        messages=[prose("p0", Role.USER, ["first\nsecond", "third"]), prose("p1", Role.ASSISTANT, ["parent reply"])],
+    )
+    child = action_stream("context-child", [("use", "use", "tool", None), ("result", "result", "tool", False)])
+    child.parent_session_provider_id = "context-parent"
+    child.branch_type = BranchType.FORK
+    child.messages = [
+        prose("c0", Role.USER, ["first\nsecond", "third"]),
+        prose("c1", Role.ASSISTANT, ["parent reply"]),
+        child.messages[0],
+        prose("during", Role.ASSISTANT, ["while the tool ran"]),
+        child.messages[1],
+        prose("after", Role.USER, ["x" * 2000, "next\nline"]),
+        prose("last", Role.ASSISTANT, ["last"]),
+    ]
+    with ArchiveStore(tmp_path / "archive") as archive:
+        parent_id = write_index_session(archive, parent)
+        child_id = write_index_session(archive, child)
+        assert (
+            archive._conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 5
+        )
+        edge = archive._conn.execute(
+            "SELECT inheritance, resolved_dst_session_id FROM session_links WHERE src_session_id = ?", (child_id,)
+        ).fetchone()
+        assert tuple(edge) == ("prefix-sharing", parent_id)
+        episode = archive.list_tool_episode_insights(ToolEpisodeQuery(session_id=child_id))[0]
+        assert episode.context_before == ("user: first\nsecond\nthird", "assistant: parent reply")
+        assert episode.context_after == ("user: " + "x" * 2000 + "\nnext\nline", "assistant: last")
+        assert episode.next_action == "x" * 2000 + "\nnext\nline"
+        assert episode.result_output == "result"
+        assert episode.result_state == "outcome_success"
+        assert not archive._conn.in_transaction

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC, datetime
 
 from polylogue.analysis.archive import ArchiveCoverageInsight
@@ -65,6 +66,12 @@ class ArchiveReadInsights:
         return [insight]
 
     def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
+        if not self._conn.in_transaction:
+            self._conn.execute("BEGIN DEFERRED")
+            try:
+                return self.list_tool_episode_insights(query)
+            finally:
+                self._conn.execute("ROLLBACK")
         request = query or ToolEpisodeQuery()
         where = ["1=1"]
         params: list[object] = []
@@ -107,42 +114,7 @@ class ArchiveReadInsights:
         rows = self._conn.execute(
             f"""
             {_ACTION_FOLLOWUP_RELATION_SQL}
-            SELECT a.*, s.origin, tu.tool_input, m.position, m.variant_index,
-                   -- The LIMIT must bind the rows fed INTO GROUP_CONCAT. A bare
-                   -- aggregate with a trailing LIMIT bounds only its own single
-                   -- output row, so the aggregate would consume every preceding
-                   -- or following message in the session.
-                   (SELECT GROUP_CONCAT(context_line, char(10)) FROM (
-                       SELECT COALESCE(pm.role || ': ', '') || COALESCE(
-                                  (SELECT GROUP_CONCAT(pb.text, char(10))
-                                   FROM blocks pb
-                                   WHERE pb.message_id = pm.message_id
-                                     AND pb.block_type = 'text'),
-                                  ''
-                              ) AS context_line
-                      FROM messages pm WHERE pm.session_id=m.session_id AND
-                       (pm.position<m.position OR (pm.position=m.position AND pm.variant_index<m.variant_index))
-                     ORDER BY pm.position DESC, pm.variant_index DESC LIMIT 3)) context_before,
-                   (SELECT GROUP_CONCAT(context_line, char(10)) FROM (
-                       SELECT COALESCE(nm.role || ': ', '') || COALESCE(
-                                  (SELECT GROUP_CONCAT(nb.text, char(10))
-                                   FROM blocks nb
-                                   WHERE nb.message_id = nm.message_id
-                                     AND nb.block_type = 'text'),
-                                  ''
-                              ) AS context_line
-                      FROM messages nm WHERE nm.session_id=m.session_id AND
-                       (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
-                     ORDER BY nm.position, nm.variant_index LIMIT 3)) context_after,
-                   (SELECT (
-                              SELECT GROUP_CONCAT(nb.text, char(10))
-                              FROM blocks nb
-                              WHERE nb.message_id = nm.message_id
-                                AND nb.block_type = 'text'
-                          )
-                      FROM messages nm WHERE nm.session_id=m.session_id AND
-                       (nm.position>m.position OR (nm.position=m.position AND nm.variant_index>m.variant_index))
-                     ORDER BY nm.position, nm.variant_index LIMIT 1) next_action
+            SELECT a.*, s.origin, tu.tool_input
               FROM action_rows a JOIN sessions s ON s.session_id=a.session_id
               JOIN messages m ON m.message_id=a.message_id JOIN blocks tu ON tu.block_id=a.tool_use_block_id
              WHERE {" AND ".join(where)}
@@ -153,6 +125,7 @@ class ArchiveReadInsights:
         result: list[ToolEpisodeInsight] = []
         for row in rows:
             state = str(row["result_state"])
+            before, after, next_action = self._episode_context(row)
             result.append(
                 ToolEpisodeInsight(
                     episode_id=f"episode:{row['tool_use_block_id']}",
@@ -169,11 +142,9 @@ class ArchiveReadInsights:
                     exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
                     result_state=state,
                     outcome_unknown_reason=row["outcome_unknown_reason"],
-                    context_before=tuple(reversed(str(row["context_before"]).split("\n")))
-                    if row["context_before"]
-                    else (),
-                    context_after=tuple(str(row["context_after"]).split("\n")) if row["context_after"] else (),
-                    next_action=str(row["next_action"])[:1000] if row["next_action"] else None,
+                    context_before=before,
+                    context_after=after,
+                    next_action=next_action,
                     followup_class=str(row["followup_class"]) if row["followup_class"] else None,
                     caveat=(
                         "outcome unknown: no paired structural result"
@@ -187,6 +158,66 @@ class ArchiveReadInsights:
                 )
             )
         return result
+
+    def _episode_context(self, row: sqlite3.Row) -> tuple[tuple[str, ...], tuple[str, ...], str | None]:
+        from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan, locate_composed_message
+
+        session_id = str(row["session_id"])
+        start = locate_composed_message(self._conn, session_id, str(row["message_id"]))
+        if start is None:
+            raise ValueError("episode tool use is absent from its composed transcript")
+        end = start
+        if row["tool_result_block_id"] is not None:
+            with closing(
+                self._conn.execute("SELECT message_id FROM blocks WHERE block_id = ?", (row["tool_result_block_id"],))
+            ) as cursor:
+                result = cursor.fetchone()
+            if result is None:
+                raise ValueError("episode paired result is absent")
+            located = locate_composed_message(self._conn, session_id, str(result[0]))
+            if located is None:
+                raise ValueError("episode paired result is absent from its composed transcript")
+            end = located
+        plan = _composed_transcript_plan(self._conn, session_id)
+
+        def window(offset: int, limit: int) -> tuple[tuple[str, str], ...]:
+            # Use the canonical composition's segment cuts and counts; read only
+            # this context window's ordered prose, never the whole transcript.
+            result: list[tuple[str, str]] = []
+            skip = offset
+            for segment in plan.segments:
+                if skip >= segment.message_count:
+                    skip -= segment.message_count
+                    continue
+                count = min(limit - len(result), segment.message_count - skip)
+                bound = ""
+                parameters: tuple[object, ...] = (segment.session_id,)
+                if segment.upto_position is not None and segment.upto_variant_index is not None:
+                    bound = " AND (m.position, m.variant_index) <= (?, ?)"
+                    parameters += (segment.upto_position, segment.upto_variant_index)
+                with closing(
+                    self._conn.execute(
+                        f"""SELECT m.role, COALESCE((SELECT GROUP_CONCAT(text, char(10)) FROM (
+                        SELECT b.text FROM blocks b WHERE b.message_id = m.message_id
+                        AND b.block_type = 'text' ORDER BY b.position)), '') AS prose
+                        FROM messages m WHERE m.session_id = ?{bound}
+                        ORDER BY m.position, m.variant_index LIMIT ? OFFSET ?""",
+                        (*parameters, count, skip),
+                    )
+                ) as cursor:
+                    result.extend((str(message[0]), str(message[1])) for message in cursor)
+                skip = 0
+                if len(result) == limit:
+                    break
+            return tuple(result)
+
+        before = window(max(0, start - 3), min(start, 3)) if start else ()
+        after = window(end + 1, 3)
+        return (
+            tuple(f"{role}: {text}" for role, text in before),
+            tuple(f"{role}: {text}" for role, text in after),
+            after[0][1] if after and after[0][1] else None,
+        )
 
     def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
         """Report normalized executed-command shapes from the actions view."""
