@@ -5540,12 +5540,13 @@ def test_parent_replacement_preserves_already_inherited_attachments(
 
 def test_inherited_stream_hydrates_only_message_owned_attachments_in_one_snapshot(tmp_path: Path) -> None:
     from collections.abc import AsyncIterator
-    from contextlib import asynccontextmanager
+    from contextlib import aclosing, asynccontextmanager, closing
 
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
     db = tmp_path / "index.db"
     conn = _connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
     parent = _codex_session("parent", ["m0", "m1", "m2"]).model_copy(
         update={
             "attachments": [
@@ -5582,24 +5583,23 @@ def test_inherited_stream_hydrates_only_message_owned_attachments_in_one_snapsho
                 yield reader
 
         queries = SQLiteQueryStore(connection_factory=connection)
-        stream = queries.iter_messages(child_id, chunk_size=2)
-        first = await anext(stream)
-        assert first.provider_message_id == "m0"
-        assert held[-1].in_transaction
-        writer = _connect(db)
-        writer.execute("UPDATE attachment_refs SET caption = 'changed'")
-        writer.commit()
-        writer.close()
-        rest = [record async for record in stream]
-        assert [record.provider_message_id for record in rest] == ["m1", "x2"]
-        assert [(a.session_id, a.display_name, a.caption) for a in rest[0].attachments] == [
-            (parent_id, "shared.txt", "original")
-        ]
-        assert not first.attachments
-        assert [(a.session_id, a.display_name, a.caption) for a in rest[1].attachments] == [
-            (child_id, "tail.txt", "original tail")
-        ]
-        assert all(a.display_name != "outside.txt" for record in rest for a in record.attachments)
+        async with aclosing(queries.iter_messages(child_id, chunk_size=2)) as stream:
+            first = await anext(stream)
+            assert first.provider_message_id == "m0"
+            assert held[-1].in_transaction
+            with closing(_connect(db)) as writer:
+                writer.execute("UPDATE attachment_refs SET caption = 'changed'")
+                writer.commit()
+            rest = [record async for record in stream]
+            assert [record.provider_message_id for record in rest] == ["m1", "x2"]
+            assert [(a.session_id, a.display_name, a.caption) for a in rest[0].attachments] == [
+                (parent_id, "shared.txt", "original")
+            ]
+            assert not first.attachments
+            assert [(a.session_id, a.display_name, a.caption) for a in rest[1].attachments] == [
+                (child_id, "tail.txt", "original tail")
+            ]
+            assert all(a.display_name != "outside.txt" for record in rest for a in record.attachments)
         eager = await queries.get_messages(child_id)
         page, total, completeness = await queries.get_messages_paginated(child_id, limit=3)
         grouped = await queries.get_messages_batch([child_id])
