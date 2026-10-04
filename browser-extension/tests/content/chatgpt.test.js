@@ -502,6 +502,37 @@ describe("chatgpt.js asset descriptor identification (through a real capture)", 
   });
 });
 
+describe("ChatGPT continuous generation observation", () => {
+  it("samples generation controls while transcript mutations never reach the trailing debounce", async () => {
+    vi.useFakeTimers();
+    const hints = [];
+    const { dom } = installChatgpt({ runtimeMessage: async message => {
+      if (message.type === "polylogue.captureFreshnessHint") hints.push(message);
+      return { ok: true };
+    } });
+    let now = 100000;
+    dom.window.Date.now = () => now;
+    const article = dom.window.document.createElement("article");
+    article.setAttribute("data-turn", "assistant"); article.setAttribute("data-turn-id", "turn-1");
+    const stop = dom.window.document.createElement("button"); stop.setAttribute("data-testid", "stop-button");
+    const text = dom.window.document.createElement("span"); article.append(stop, text);
+    dom.window.document.body.append(article);
+    try {
+      for (let tick = 0; tick < 50; tick++) {
+        text.textContent = `Neutral streamed fragment ${tick}`;
+        await Promise.resolve();
+        now += 100;
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(hints.flatMap(hint => hint.generation_observations || []).map(observation => observation.state)).toContain("started");
+      stop.remove(); await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(hints.flatMap(hint => hint.generation_observations || []).map(observation => observation.state)).toContain("completed");
+      expect(hints.every(hint => hint.provider_session_id === "conversation-1")).toBe(true);
+    } finally { dom.window.close(); vi.useRealTimers(); }
+  });
+});
+
 describe("chatgpt.js capture-owned native reads do not re-enter the freshness queue", () => {
   // polylogue-6nzro: this is the actual feedback-loop cut. The bridge tags its
   // own conversation read `source: "polylogue_native_fetch"` before
@@ -533,7 +564,7 @@ describe("chatgpt.js capture-owned native reads do not re-enter the freshness qu
   }
 
   // The content script debounces a freshness hint for 750ms before sending it.
-  const afterHintDebounce = () => new Promise((resolve) => setTimeout(resolve, 1200));
+  const afterHintDebounce = () => new Promise((resolve) => globalThis.setTimeout(resolve, 1200));
 
   it("schedules no freshness hint for a capture-initiated bridge read", async () => {
     const { hints, runtimeMessage } = collectHints();
@@ -608,7 +639,7 @@ describe("chatgpt.js capture-initiated native fetch does not observe itself", ()
     expect(result).toMatchObject({ ok: true });
 
     // Past the content script's 750ms freshness-hint debounce.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 1200));
 
     expect(hints).toEqual([]);
   });

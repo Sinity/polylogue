@@ -1165,6 +1165,7 @@
     lastDomFreshnessSignature = domFreshnessSignature();
     observeGenerationLifecycle("initial_scan");
     const freshnessObserver = new MutationObserver(() => {
+      observeGenerationLifecycle("dom_mutation");
       if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
       domFreshnessScanTimer = setTimeout(() => {
         domFreshnessScanTimer = null;

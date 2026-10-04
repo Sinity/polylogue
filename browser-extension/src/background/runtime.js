@@ -2548,6 +2548,11 @@ async function runCaptureFreshnessSweep() {
   if (!(await automaticCaptureEnabled())) {
     return { skipped: true, reason: "automatic_capture_paused" };
   }
+  try {
+    await requirePairedTrustedReceiver();
+  } catch (error) {
+    return { skipped: true, reason: "receiver_not_paired", error: String(error?.message || error) };
+  }
   const now = Date.now();
   let queue = await storedCaptureFreshnessQueue();
   if (queue.sweep_not_before_ms > now) return { skipped: true, reason: "sweep_backoff" };
@@ -2629,7 +2634,10 @@ async function captureSupportedTabs(reason) {
     await Promise.allSettled(tabs.map((tab) => captureTab(tab, reason)));
     return;
   }
-  await Promise.allSettled(tabs.map((tab) => refreshActiveTabArchiveState(tab, reason)));
+  await Promise.allSettled(tabs.map(async (tab) => {
+    if (injectionPlanForUrl(tab?.url || tab?.pendingUrl || "").length) await ensureCaptureScripts(tab);
+    await refreshActiveTabArchiveState(tab, reason);
+  }));
 }
 
 function bytesToBase64(bytes) {
