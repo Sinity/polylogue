@@ -2148,6 +2148,9 @@ def _grok_spec() -> OriginSpec:
         ),
         display_description="Grok account-data exports (lab: xAI)",
         topology_capabilities=_no_topology_capabilities(Origin.GROK_EXPORT),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
 
 

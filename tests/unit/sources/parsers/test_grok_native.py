@@ -151,13 +151,25 @@ def test_native_asset_metadata_only_and_malformed_records_are_visible(bundle: di
     session.unit_accounting.assert_conserved()
 
 
-def test_native_result_unsupported_outcome_is_not_reported_as_absence(bundle: dict[str, Any]) -> None:
+def test_native_result_unsupported_outcome_is_not_reported_as_absence(
+    bundle: dict[str, Any], workspace_env: dict[str, Path]
+) -> None:
     bundle["responses"]["responses"] = [
         {"responseId": "tool", "sender": "assistant", "toolResponses": [{"isError": "future-status"}]}
     ]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].blocks[0].is_error is None
     assert session.messages[0].blocks[0].outcome_unknown_reason == "unsupported_construct"
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        _, stored_id = archive.write_raw_and_parsed(
+            session,
+            payload=json.dumps(bundle).encode(),
+            source_path="/example/grok-native.json",
+            acquired_at_ms=1735689600000,
+        )
+        hydrated = archive.read_session(stored_id)
+        assert hydrated.messages[0].blocks[0].tool_outcome == "unknown"
+        assert hydrated.messages[0].blocks[0].tool_result_outcome_unknown_reason == "unsupported_construct"
 
 
 def test_native_missing_message_id_does_not_pair_tools_by_ordinal(bundle: dict[str, Any]) -> None:
@@ -177,8 +189,6 @@ def test_native_human_sender_authorship_survives_persisted_hydration(
     response = bundle["responses"]["responses"][0]
     response["sender"] = sender
     response["message"] = "# AGENTS.md instructions for a sample project\nPlease explain this document."
-    bundle["responses"]["responses"] = [response]
-    bundle["response_nodes"] = {"responseNodes": [], "inflightResponses": []}
     session = grok.parse_native_bundle(bundle, "human-context")[0]
     assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
     assert session.messages[0].message_type is MessageType.CONTEXT

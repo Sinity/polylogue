@@ -142,3 +142,7 @@ entry. Intake, batch byte accounting and dispatcher events expose the partial;
 the attempt carries `batch:partial_admission` and its event is degraded. No-session
 and settled corrupt observations remain excluded. The literal raw retains the
 unfinished tail so a later completed observation can advance normally.
+
+Grok native tool results declare `not_reported` when outcome evidence is absent
+and `unsupported_construct` when a supplied outcome has an unsupported shape.
+Both reasons remain typed unknown outcomes through storage and readback.
