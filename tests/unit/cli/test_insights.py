@@ -19,7 +19,7 @@ from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
 )
-from polylogue.analysis.registry import get_insight_type, insight_items_payload
+from polylogue.analysis.registry import INSIGHT_REGISTRY, get_insight_type, insight_items_payload
 from polylogue.cli.click_app import cli
 from polylogue.cli.commands.insights import _make_callback
 from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
@@ -68,6 +68,7 @@ def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.
     [
         (["analyze", "insights", "profiles"], "insights.list"),
         (["ops", "insights", "status"], "insights.readiness"),
+        (["ops", "insights", "audit"], "insights.rigor"),
     ],
 )
 def test_registered_insight_read_refuses_without_daemon(
@@ -719,7 +720,8 @@ def test_insights_audit_json(cli_workspace: CliWorkspace) -> None:
     assert result.exit_code == 0, _exception_message(result)
     payload = extract_json_result(result.output)
     entries = {item["insight_name"]: item for item in json_object_list(payload["entries"])}
-    assert "session_profiles" in entries
+    assert set(entries) == set(INSIGHT_REGISTRY)
+    assert json_object(payload["outcome"])["state"] == "ok"
     profiles = entries["session_profiles"]
     assert profiles["has_evidence_payload"] is True
     assert profiles["has_inference_payload"] is True

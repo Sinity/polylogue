@@ -184,3 +184,83 @@ def test_readiness_report_preserves_named_gaps_after_materialization(fields: dic
     assert result.outcome.reason == reason
     assert result.report.converged is True
     assert result.report.insights == (entry,)
+
+
+def test_resident_rigor_samples_every_registered_product_on_original_reader(tmp_path: Path) -> None:
+    from polylogue.operations.insight_contracts import InsightRigorResult
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        envelope = stack.client.operation("insights.rigor", {"query": {"sample_limit": 1}})
+        assert envelope is not None and envelope["outcome"] == "completed"
+        result = InsightRigorResult.model_validate(envelope["result"])
+        assert {entry.insight_name for entry in result.report.entries} == set(INSIGHT_REGISTRY)
+        assert all(entry.error is None for entry in result.report.entries)
+        assert result.outcome.state == "ok"
+        assert envelope["archive"]["archive_identity"]
+        assert envelope["schema_versions"]["index"]
+
+
+def test_rigor_wire_preserves_canonical_schema_and_refuses_invalid_targets() -> None:
+    from polylogue.operations.daemon_protocol import InsightRigorWireRequest, InsightRigorWireResult
+    from polylogue.operations.insight_contracts import InsightRigorRequest, InsightRigorResult
+
+    assert InsightRigorWireRequest.model_json_schema() == InsightRigorRequest.model_json_schema()
+    assert InsightRigorWireResult.model_json_schema() == InsightRigorResult.model_json_schema()
+    for query in ({"unknown": 1}, {"insights": ["unknown"]}, {"sample_limit": -1}, {"sample_limit": True}):
+        with pytest.raises((ValueError, InsightQueryError)):
+            InsightRigorWireRequest.model_validate({"query": query})
+
+
+def test_rigor_read_failure_is_named_degraded_even_without_sample_rows() -> None:
+    from polylogue.analysis.audit import InsightRigorAuditEntry, InsightRigorAuditReport
+    from polylogue.operations.insight_reads import execute_insight_rigor
+
+    class OriginalReader:
+        def audit_insight_rigor(self, query: object, *, checkpoint: object) -> InsightRigorAuditReport:
+            return InsightRigorAuditReport(
+                sample_limit=1,
+                entries=(InsightRigorAuditEntry(insight_name="threads", display_name="Threads", error="unavailable"),),
+            )
+
+    result = execute_insight_rigor({"query": {}}, archive=cast(ArchiveStore, OriginalReader()), checkpoint=lambda: None)
+    assert result["outcome"] == {
+        "state": "degraded",
+        "reason": "insight_audit_read_failed",
+        "detail": {"gaps": ["insight_audit_read_failed"]},
+    }
+
+
+def test_rigor_cancellation_escapes_the_per_product_error_report() -> None:
+    from polylogue.analysis.audit import InsightRigorAuditQuery, build_insight_rigor_audit_report
+
+    class CancelledError(RuntimeError):
+        pass
+
+    cancelled = False
+
+    def read(name: str, limit: int) -> list[object]:
+        nonlocal cancelled
+        cancelled = True
+        raise CancelledError()
+
+    def checkpoint() -> None:
+        if cancelled:
+            raise CancelledError()
+
+    with pytest.raises(CancelledError):
+        build_insight_rigor_audit_report(read, InsightRigorAuditQuery(insights=("threads",)), checkpoint=checkpoint)
+
+
+def test_rigor_strict_result_refuses_boolean_sample_count() -> None:
+    from polylogue.analysis.audit import InsightRigorAuditEntry, InsightRigorAuditReport
+    from polylogue.operations.daemon_protocol import OperationResultContractError, validate_operation_result
+    from polylogue.surfaces.outcome import decide_outcome
+
+    report = InsightRigorAuditReport(
+        sample_limit=1, entries=(InsightRigorAuditEntry(insight_name="threads", display_name="Threads"),)
+    ).model_dump(mode="json")
+    valid = {"report": report, "outcome": decide_outcome(matched=1).to_dict()}
+    validate_operation_result("insights.rigor", valid)
+    report["entries"][0]["sample_size"] = True
+    with pytest.raises(OperationResultContractError):
+        validate_operation_result("insights.rigor", valid)

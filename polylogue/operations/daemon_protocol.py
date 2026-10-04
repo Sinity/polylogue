@@ -187,6 +187,47 @@ class InsightReadinessWireResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(InsightReadinessResult.__pydantic_core_schema__))
 
 
+class InsightRigorWireRequest(_OperationPayload):
+    query: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_selected_rigor(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightRigorRequest
+
+        InsightRigorRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightRigorRequest
+
+        return handler.resolve_ref_schema(handler(InsightRigorRequest.__pydantic_core_schema__))
+
+
+class InsightRigorWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_rigor_report(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        _validate_json_result_model(InsightRigorResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        return handler.resolve_ref_schema(handler(InsightRigorResult.__pydantic_core_schema__))
+
+
 class StatusRequest(_OperationPayload):
     include_archive_readiness: bool = False
 
@@ -1682,6 +1723,17 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="InsightReadinessWireResult",
         request_model=InsightReadinessWireRequest,
         result_model=InsightReadinessWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.rigor",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.rigor.request/v1",
+        result_contract="insights.rigor.result/v1",
+        request_type="InsightRigorWireRequest",
+        result_type="InsightRigorWireResult",
+        request_model=InsightRigorWireRequest,
+        result_model=InsightRigorWireResult,
     ),
     DaemonOperationSpec(
         "cli.query",

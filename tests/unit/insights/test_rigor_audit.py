@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import replace
 
 import pytest
@@ -338,33 +337,13 @@ def test_audit_one_profile_records_folded_enrichment_confidence() -> None:
 
 
 class _FakeOperations:
-    """Minimal duck-typed operations for the audit runner.
+    """Declared sample callback used by the original pinned report owner."""
 
-    The runner calls ``fetch_insights_async(insight_type, operations, limit=N)``,
-    which calls ``operations.<operations_method_name>(query)``. We map each
-    method to a synthetic row list.
-    """
+    def __init__(self, profiles: list[object], tags: list[object]) -> None:
+        self._payload = {"session_profiles": profiles, "session_tag_rollups": tags, "threads": []}
 
-    def __init__(
-        self,
-        profiles: list[object],
-        tags: list[object],
-    ) -> None:
-        self._payload = {
-            "list_session_profile_insights": profiles,
-            "list_session_tag_rollup_insights": tags,
-            "list_thread_insights": [],
-        }
-
-    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
-        rows = self._payload.get(name)
-        if rows is None:
-            raise AttributeError(name)
-
-        async def _call(_query: object) -> list[object]:
-            return list(rows)
-
-        return _call
+    def __call__(self, name: str, limit: int) -> list[object]:
+        return list(self._payload.get(name, []))[:limit]
 
 
 def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
@@ -375,7 +354,7 @@ def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
         ],
         tags=[_tag_rollup()],
     )
-    report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery()))
+    report = build_insight_rigor_audit_report(operations, InsightRigorAuditQuery())
     by_name = {entry.insight_name: entry for entry in report.entries}
     profiles = by_name["session_profiles"]
     assert profiles.sample_size == 2
@@ -391,11 +370,9 @@ def test_build_insight_rigor_audit_report_aggregates_across_products() -> None:
 
 def test_audit_runner_respects_insight_filter() -> None:
     operations = _FakeOperations(profiles=[_profile("c1")], tags=[])
-    report = asyncio.run(
-        build_insight_rigor_audit_report(
-            operations,
-            InsightRigorAuditQuery(insights=("session_profiles",)),
-        )
+    report = build_insight_rigor_audit_report(
+        operations,
+        InsightRigorAuditQuery(insights=("session_profiles",)),
     )
     names = [entry.insight_name for entry in report.entries]
     assert names == ["session_profiles"]
@@ -417,13 +394,8 @@ def test_each_contract_declares_at_least_one_version_field(contract) -> None:  #
 
 
 class _BrokenOperations:
-    """Operations that raise on every list call — exercises error capture."""
-
-    def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
-        async def _call(_query: object) -> list[object]:
-            raise RuntimeError(f"simulated failure in {name}")
-
-        return _call
+    def __call__(self, name: str, limit: int) -> list[object]:
+        raise RuntimeError(f"simulated failure in {name}")
 
 
 def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
@@ -436,9 +408,7 @@ def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
 
     operations = _FakeOperations(profiles=[_profile("c1")], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
-    report = asyncio.run(
-        build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
-    )
+    report = build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
     [entry] = report.entries
     assert entry.insight_name == "session_profiles"
     assert entry.coverage_status == "uncovered"
@@ -452,9 +422,7 @@ def test_build_report_marks_exempt_products_distinctly_from_uncovered(monkeypatc
     operations = _FakeOperations(profiles=[], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
     monkeypatch.setattr(audit_mod, "rigor_exemption_reason", lambda name: "test-only exemption justification")
-    report = asyncio.run(
-        build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
-    )
+    report = build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(insights=("session_profiles",)))
     [entry] = report.entries
     assert entry.coverage_status == "exempt"
     assert entry.notes == ("test-only exemption justification",)
@@ -465,7 +433,7 @@ def test_build_report_covers_all_11_registered_insights_by_default() -> None:
     each either genuinely audited (covered, has a contract) or a stub
     (uncovered/exempt) -- none are silently skipped."""
     operations = _FakeOperations(profiles=[], tags=[])
-    report = asyncio.run(build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(sample_limit=1)))
+    report = build_insight_rigor_audit_report(operations, InsightRigorAuditQuery(sample_limit=1))
     names = {entry.insight_name for entry in report.entries}
     assert names == set(INSIGHT_REGISTRY.keys())
     for entry in report.entries:
@@ -476,11 +444,9 @@ def test_build_report_covers_all_11_registered_insights_by_default() -> None:
 
 def test_build_report_records_per_product_error_without_aborting() -> None:
     operations = _BrokenOperations()
-    report = asyncio.run(
-        build_insight_rigor_audit_report(
-            operations,
-            InsightRigorAuditQuery(insights=("session_profiles", "threads")),
-        )
+    report = build_insight_rigor_audit_report(
+        operations,
+        InsightRigorAuditQuery(insights=("session_profiles", "threads")),
     )
     by_name = {entry.insight_name: entry for entry in report.entries}
     assert set(by_name) == {"session_profiles", "threads"}

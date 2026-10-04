@@ -24,6 +24,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
+from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, normalize_insight_readiness_name
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
@@ -219,4 +220,13 @@ class InsightReadinessRequest(_InsightPage):
 
 class InsightReadinessResult(_InsightPage):
     report: InsightReadinessReport
+    outcome: OutcomeEnvelope
+
+
+class InsightRigorRequest(_InsightPage):
+    query: InsightRigorAuditQuery
+
+
+class InsightRigorResult(_InsightPage):
+    report: InsightRigorAuditReport
     outcome: OutcomeEnvelope

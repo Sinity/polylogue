@@ -206,4 +206,4 @@ enriched and filtered before paging. Missing daemon or unavailable insight
 authority refuses instead of opening a local archive. `ops insights status` also calls the resident `insights.readiness` route on
 the same pinned reader, preserving the canonical selected coverage and convergence
 verdict. Its named pending-convergence outcome remains visible with zero rows.
-Export, health and rigor commands retain their separate existing routes.
+The `ops insights audit` command also uses resident `insights.rigor`: every registered product is sampled on that same pinned reader, including explicit uncovered or exempt entries. Per-product read failure remains a named degraded outcome. Export and health commands retain their separate existing routes.
