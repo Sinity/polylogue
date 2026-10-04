@@ -137,3 +137,5 @@ Python transcript anchors resolve and read their bounded page on the same contro
 Warm daemon query results refresh relative-time display fields from the retained timestamps through the canonical row projection. Cached selection rows, ranking, continuation and snapshot authority remain unchanged.
 
 Action rows and tool episodes retain the canonical `outcome_unknown_reason`. A paired result with an unknown verdict remains distinct from a missing result or an ambiguous association; episode caveats describe those separate evidence states. Append outcome reconciliation excludes empty tool IDs, matching the canonical association owner.
+
+Tool-episode context reads the preceding and following three messages from the canonical composed transcript on the same read snapshot as the selected episode. Post-context starts after the paired result when present. Ordered prose blocks retain message boundaries and multiline text; `next_action` preserves the complete first post-result message text.
