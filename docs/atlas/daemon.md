@@ -151,3 +151,11 @@ well as `completed`; failed and interrupted attempts remain separate statuses
 and do not enter that duration/rate population. Prometheus attempt counts expose
 every declared operation-run status. The pinned workload projection applies the
 same completion population without reopening its supplied reader.
+
+The workload probe qualifies thread and latency surfaces by row coverage and
+readability. Thread views must be readable and their session-profile inputs
+complete. Latency coverage uses the canonical quiet-window missing-row and
+orphan-row checks, together with profile-input coverage. Read failures leave
+the derived readiness unchecked; a readable empty eligible scope is ready.
+Planner row estimates are display evidence only. These checks do not certify
+value freshness or replace the materializer's partition inspection.
