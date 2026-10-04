@@ -1,7 +1,7 @@
 {
   "kind": "polylogue.derived-identity-closure-baseline",
   "note": "Modules feeding the derived schema identity. Growth is a blocking finding in `devtools gate schema-closure`; shrinking this list is always allowed. Regenerate with `devtools gate schema-closure --update` and explain the growth in the PR.",
-  "count": 572,
+  "count": 575,
   "members": [
     "polylogue/analysis/affordance_usage.py",
     "polylogue/analysis/archive.py",
@@ -9,8 +9,10 @@
     "polylogue/analysis/audit.py",
     "polylogue/analysis/command_shapes.py",
     "polylogue/analysis/confidence.py",
+    "polylogue/analysis/cost_enrichment.py",
     "polylogue/analysis/fallback.py",
     "polylogue/analysis/feedback.py",
+    "polylogue/analysis/insight_reads.py",
     "polylogue/analysis/judgment/comparative.py",
     "polylogue/analysis/judgment/controls.py",
     "polylogue/analysis/judgment/types.py",
@@ -22,6 +24,7 @@
     "polylogue/analysis/rigor.py",
     "polylogue/analysis/run_projection.py",
     "polylogue/analysis/session_label.py",
+    "polylogue/analysis/tag_rollups.py",
     "polylogue/analysis/temporal_source.py",
     "polylogue/analysis/tool_episodes.py",
     "polylogue/analysis/tool_usage.py",
