@@ -185,22 +185,34 @@ async function waitForExtensionWorker(extensionId, timeoutMs) {
   throw new Error(`the extension just loaded (${extensionId}) has no service worker in shared Chrome`);
 }
 
-async function receiverConfiguration(workerClient) {
-  return evaluateJson(workerClient, "chrome.storage.local.get(['receiverBaseUrl', 'receiverAuthToken'])");
+export async function receiverConfiguration(workerClient) {
+  return evaluateJson(workerClient, "chrome.storage.local.get(['receiverBaseUrl', 'receiverAuthToken', 'polylogueReceiverPairing'])");
 }
 
-async function configureReceiver(workerClient, receiverBaseUrl, receiverToken) {
-  return evaluateJson(workerClient, `(async () => { await chrome.storage.local.set({ receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)}, receiverAuthToken: ${JSON.stringify(receiverToken)} }); return true; })()`);
+export async function configureReceiver(workerClient, receiverBaseUrl, receiverToken) {
+  return evaluateJson(workerClient, `(async () => {
+    const response = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver",
+      receiverBaseUrl: ${JSON.stringify(receiverBaseUrl)}, receiverAuthToken: ${JSON.stringify(receiverToken)} });
+    if (!response?.ok) throw new Error("proof_receiver_configuration_failed");
+    return true;
+  })()`);
 }
 
-async function restoreReceiverConfiguration(workerClient, previous) {
-  const values = {};
-  const missing = [];
-  for (const key of ["receiverBaseUrl", "receiverAuthToken"]) {
-    if (typeof previous?.[key] === "string") values[key] = previous[key];
-    else missing.push(key);
-  }
-  await evaluateJson(workerClient, `(async () => { await chrome.storage.local.set(${JSON.stringify(values)}); ${missing.length ? `await chrome.storage.local.remove(${JSON.stringify(missing)});` : ""} return true; })()`);
+export async function restoreReceiverConfiguration(workerClient, previous, owned) {
+  return evaluateJson(workerClient, `(async () => {
+    const response = await chrome.runtime.sendMessage({ type: "polylogue.configureReceiver", restore: {
+      previous: ${JSON.stringify(previous)}, owned: ${JSON.stringify(owned)}
+    } });
+    if (!response?.ok) throw new Error("proof_receiver_configuration_changed");
+    return true;
+  })()`);
+}
+
+export async function restoreProofReceiverAfterConfiguration(workerClient, previous, owned, configuration) {
+  // A signal may arrive while the original mutation is still awaiting storage.
+  // Settle that mutation before returning the exact original settings.
+  await configuration.catch(() => undefined);
+  return restoreReceiverConfiguration(workerClient, previous, owned);
 }
 
 async function proofWindowId(browserClient, targetId) {
@@ -316,6 +328,7 @@ async function runLiveProviderProof() {
   const manifest = JSON.parse(readFileSync(path.join(extensionRoot, "manifest.json"), "utf8"));
   let workerClient;
   let previousReceiverConfiguration;
+  let primaryFailure;
   try {
     await runChromeControl(["status"], Math.min(_CONTROL_TIMEOUT_MS, remaining("shared Chrome status")));
     await runChromeControl(["load-extension", "--path", extensionRoot], Math.min(_CONTROL_TIMEOUT_MS, remaining("extension load")));
@@ -325,8 +338,10 @@ async function runLiveProviderProof() {
     previousReceiverConfiguration = await receiverConfiguration(workerClient);
     const restoreClient = workerClient;
     const saved = previousReceiverConfiguration;
-    pendingReceiverRestore = () => restoreReceiverConfiguration(restoreClient, saved);
-    await configureReceiver(workerClient, receiverBaseUrl.replace(/\/+$/, ""), receiverToken);
+    const owned = { baseUrl: receiverBaseUrl.replace(/\/+$/, ""), token: receiverToken, receiverId: null };
+    const configuration = configureReceiver(workerClient, owned.baseUrl, owned.token);
+    pendingReceiverRestore = () => restoreProofReceiverAfterConfiguration(restoreClient, saved, owned, configuration);
+    await configuration;
     const proofTargets = [];
     for (const provider of selected) {
       const targetId = await openAgentWindow(provider.url, Math.min(_CONTROL_TIMEOUT_MS, remaining(`open ${provider.host}`)), (id) => createdTargetIds.push(id));
@@ -335,8 +350,16 @@ async function runLiveProviderProof() {
     if (interactiveWaitMs > 0) await sleep(Math.min(interactiveWaitMs, remaining("interactive wait")));
     const summary = Object.fromEntries(await Promise.all(proofTargets.map(async ({ provider, windowId }) => [provider.host, providerSummary(provider, await captureProvider(workerClient, provider, windowId, remaining("provider capture")))])));
     return { ok: Object.values(summary).every((item) => item.ok === true), providers: summary, privacy_posture: "shared-Chrome output redacts URLs and session ids and omits transcript text" };
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
-    if (workerClient && previousReceiverConfiguration) await restoreReceiverConfiguration(workerClient, previousReceiverConfiguration).catch(() => undefined);
+    let restorationFailure;
+    try {
+      if (pendingReceiverRestore) await pendingReceiverRestore();
+    } catch (error) {
+      restorationFailure = error;
+    }
     pendingReceiverRestore = null;
     try {
       if (activeBrowserClient) await closeProofTargets(activeBrowserClient, createdTargetIds);
@@ -345,6 +368,10 @@ async function runLiveProviderProof() {
       if (activeBrowserClient) activeBrowserClient.close();
       activeBrowserClient = null;
       createdTargetIds = [];
+    }
+    if (restorationFailure) {
+      if (primaryFailure) throw new AggregateError([primaryFailure, restorationFailure], "proof_receiver_cleanup_failed");
+      throw restorationFailure;
     }
   }
 }

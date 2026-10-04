@@ -572,7 +572,7 @@ async function receiverSettings() {
 async function loopbackOriginIsGranted(baseUrl) {
   let origin;
   try {
-    origin = `${new URL(baseUrl).origin}/*`;
+    origin = `${new globalThis.URL(baseUrl).origin}/*`;
   } catch {
     return false;
   }
@@ -584,50 +584,110 @@ async function loopbackOriginIsGranted(baseUrl) {
   }
 }
 
-async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "") {
-  trustedReceiverHealthCache = null;
-  const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
-  if (normalizedBaseUrl !== DEFAULT_RECEIVER && !(await loopbackOriginIsGranted(normalizedBaseUrl))) {
-    const error = new Error("receiver_origin_not_permitted");
-    error.origin = normalizedBaseUrl;
-    throw error;
-  }
-  await runtimeChrome.storage.local.set({
-    receiverAuthToken: String(receiverAuthToken || ""),
-    receiverBaseUrl: normalizedBaseUrl,
+// All settings and pairing writes share this owner; slow status probes run
+// outside it and may publish only while their captured configuration remains.
+let receiverConfigurationRevision = 0;
+async function receiverScopeIsCurrent(scope) {
+  if (scope.revision !== receiverConfigurationRevision) return false;
+  const current = await receiverSettings();
+  return scope.revision === receiverConfigurationRevision
+    && current.baseUrl === scope.settings.baseUrl && current.authToken === scope.settings.authToken;
+}
+async function receiverHealthScope() {
+  return serializeStorageMutation(async () => ({
+    settings: await receiverSettings(),
+    pairing: await storedReceiverPairing(),
+    revision: receiverConfigurationRevision,
+  }));
+}
+async function restoreReceiverSettings(previous, owned) {
+  return serializeStorageMutation(async () => {
+    const keys = ["receiverBaseUrl", "receiverAuthToken", RECEIVER_PAIRING_KEY];
+    if (!previous || typeof previous !== "object" || Array.isArray(previous)
+      || !owned || typeof owned.baseUrl !== "string" || typeof owned.token !== "string"
+      || !(owned.receiverId === null || typeof owned.receiverId === "string")) {
+      throw new Error("proof_receiver_configuration_changed");
+    }
+    if ((Object.hasOwn(previous, "receiverBaseUrl") && typeof previous.receiverBaseUrl !== "string")
+      || (Object.hasOwn(previous, "receiverAuthToken") && typeof previous.receiverAuthToken !== "string")
+      || (Object.hasOwn(previous, RECEIVER_PAIRING_KEY) && previous[RECEIVER_PAIRING_KEY] !== null
+        && (typeof previous[RECEIVER_PAIRING_KEY] !== "object" || Array.isArray(previous[RECEIVER_PAIRING_KEY])))) {
+      throw new Error("proof_receiver_configuration_changed");
+    }
+    if (previous.receiverBaseUrl && previous.receiverBaseUrl !== DEFAULT_RECEIVER
+      && !(await loopbackOriginIsGranted(previous.receiverBaseUrl))) {
+      throw new Error("receiver_origin_not_permitted");
+    }
+    const current = await runtimeChrome.storage.local.get(keys);
+    const unchanged = keys.every(key => Object.hasOwn(current, key) === Object.hasOwn(previous, key)
+      && JSON.stringify(current[key]) === JSON.stringify(previous[key]));
+    if (!unchanged && (current.receiverBaseUrl !== owned.baseUrl || current.receiverAuthToken !== owned.token
+      || (owned.receiverId !== null && current[RECEIVER_PAIRING_KEY]?.receiver_id !== owned.receiverId))) {
+      throw new Error("proof_receiver_configuration_changed");
+    }
+    receiverConfigurationRevision += 1;
+    trustedReceiverHealthCache = null;
+    const values = {}; const missing = [];
+    for (const key of keys) {
+      if (Object.hasOwn(previous, key)) values[key] = previous[key]; else missing.push(key);
+    }
+    await runtimeChrome.storage.local.set(values);
+    if (missing.length) await runtimeChrome.storage.local.remove(missing);
+    return receiverSettings();
   });
-  // An operator who explicitly types a non-canonical endpoint into settings
-  // is declaring a deliberate development pairing, not drifting there by
-  // accident. Record that intent on the pairing itself so a later stale
-  // probe reports loudly instead of silently self-healing back to the
-  // canonical endpoint out from under an intentional dev-loop session
-  // (polylogue-jlme.5). Pointing settings back at the canonical endpoint is
-  // an equally explicit act and clears the flag.
-  const prior = await storedReceiverPairing();
-  const isDevOverride = normalizedBaseUrl !== DEFAULT_RECEIVER;
-  if (prior && Boolean(prior.dev_override) !== isDevOverride) {
-    await persistReceiverPairing({ ...prior, dev_override: isDevOverride });
-  } else if (!prior && isDevOverride) {
-    await persistReceiverPairing({
-      state: "legacy",
-      endpoint: normalizedBaseUrl,
-      dev_override: true,
-      last_seen_at: null,
-      checked_at: new Date().toISOString(),
-      last_error: null,
-    });
-  }
-  return receiverSettings();
 }
 
-async function bootstrapReceiverCredential(settings, expectedReceiverId = null) {
+async function saveReceiverSettings(receiverBaseUrl, receiverAuthToken = "", expectedScope = null) {
+  return serializeStorageMutation(async () => {
+    if (expectedScope && !await receiverScopeIsCurrent(expectedScope)) return null;
+    trustedReceiverHealthCache = null;
+    const normalizedBaseUrl = String(receiverBaseUrl || DEFAULT_RECEIVER).replace(/\/+$/, "") || DEFAULT_RECEIVER;
+    if (normalizedBaseUrl !== DEFAULT_RECEIVER && !(await loopbackOriginIsGranted(normalizedBaseUrl))) {
+      const error = new Error("receiver_origin_not_permitted");
+      error.origin = normalizedBaseUrl;
+      throw error;
+    }
+    receiverConfigurationRevision += 1;
+    await runtimeChrome.storage.local.set({
+      receiverAuthToken: String(receiverAuthToken || ""),
+      receiverBaseUrl: normalizedBaseUrl,
+    });
+    // An operator who explicitly types a non-canonical endpoint into settings
+    // is declaring a deliberate development pairing, not drifting there by
+    // accident. Record that intent on the pairing itself so a later stale
+    // probe reports loudly instead of silently self-healing back to the
+    // canonical endpoint out from under an intentional dev-loop session
+    // (polylogue-jlme.5). Pointing settings back at the canonical endpoint is
+    // an equally explicit act and clears the flag.
+    const prior = await storedReceiverPairing();
+    const isDevOverride = normalizedBaseUrl !== DEFAULT_RECEIVER;
+    if (prior && Boolean(prior.dev_override) !== isDevOverride) {
+      await persistReceiverPairing({ ...prior, dev_override: isDevOverride });
+    } else if (!prior && isDevOverride) {
+      await persistReceiverPairing({
+        state: "legacy",
+        endpoint: normalizedBaseUrl,
+        dev_override: true,
+        last_seen_at: null,
+        checked_at: new Date().toISOString(),
+        last_error: null,
+      });
+    }
+    const settings = await receiverSettings();
+    return expectedScope ? { settings, revision: receiverConfigurationRevision } : settings;
+  });
+}
+
+async function bootstrapReceiverCredential(settings, expectedReceiverId, scope) {
+  if (!await receiverScopeIsCurrent(scope)) return { ok: false, error: "receiver_configuration_changed" };
   if (!runtimeChrome.runtime?.sendNativeMessage) return { ok: false, error: "native_messaging_unavailable" };
   try {
     const result = await runtimeChrome.runtime.sendNativeMessage(NATIVE_BOOTSTRAP_HOST, { endpoint: settings.baseUrl, receiver_id: expectedReceiverId, extension_id: runtimeChrome.runtime.id });
     if (!result?.ok || !result.auth_token || !result.receiver_id || !result.api_schema) return { ok: false, error: result?.error || "native_bootstrap_rejected" };
     if (expectedReceiverId && result.receiver_id !== expectedReceiverId) return { ok: false, error: "receiver_pairing_mismatch" };
-    await saveReceiverSettings(settings.baseUrl, result.auth_token);
-    return result;
+    const configured = await saveReceiverSettings(settings.baseUrl, result.auth_token, scope);
+    if (!configured) return { ok: false, error: "receiver_configuration_changed" };
+    return { ...result, scope: configured };
   } catch (error) {
     return { ok: false, error: String(error?.message || error) };
   }
@@ -644,98 +704,107 @@ async function persistReceiverPairing(pairing) {
   return pairing;
 }
 
-async function markReceiverPairingUnavailable(detail) {
-  trustedReceiverHealthCache = null;
-  const pairing = await storedReceiverPairing();
-  if (!pairing) return null;
-  // A deliberately dev-overridden pairing going stale is not ordinary
-  // "receiver asleep" (calm, expected, self-heals) -- it is the operator's
-  // chosen endpoint disappearing, and canonical failover is intentionally
-  // suppressed for it (see checkReceiverHealth). Give it a distinct, loud
-  // state so the popup does not present it as routine.
-  return persistReceiverPairing({
-    ...pairing,
-    state: pairing.dev_override ? "dev_override_stale" : "offline",
-    last_error: String(detail || "receiver_unavailable"),
-    checked_at: new Date().toISOString(),
+async function markReceiverPairingUnavailable(detail, scope) {
+  return serializeStorageMutation(async () => {
+    if (!await receiverScopeIsCurrent(scope)) return null;
+    trustedReceiverHealthCache = null;
+    const pairing = await storedReceiverPairing();
+    if (!pairing) return null;
+    // A deliberately dev-overridden pairing going stale is not ordinary
+    // "receiver asleep" (calm, expected, self-heals) -- it is the operator's
+    // chosen endpoint disappearing, and canonical failover is intentionally
+    // suppressed for it (see checkReceiverHealth). Give it a distinct, loud
+    // state so the popup does not present it as routine.
+    return persistReceiverPairing({
+      ...pairing,
+      state: pairing.dev_override ? "dev_override_stale" : "offline",
+      last_error: String(detail || "receiver_unavailable"),
+      checked_at: new Date().toISOString(),
+    });
   });
 }
 
-async function observeReceiverIdentity(status, endpoint) {
-  const now = new Date().toISOString();
-  const prior = await storedReceiverPairing();
-  const receiverId = typeof status?.receiver_id === "string" ? status.receiver_id : null;
-  const apiSchema = typeof status?.api_schema === "string" ? status.api_schema : null;
+async function observeReceiverIdentity(status, endpoint, scope) {
+  return serializeStorageMutation(async () => {
+    if (!await receiverScopeIsCurrent(scope)) return null;
+    const now = new Date().toISOString();
+    const prior = await storedReceiverPairing();
+    const receiverId = typeof status?.receiver_id === "string" ? status.receiver_id : null;
+    const apiSchema = typeof status?.api_schema === "string" ? status.api_schema : null;
 
-  if (!receiverId || !apiSchema) {
-    if (prior?.receiver_id) {
+    if (!receiverId || !apiSchema) {
+      if (prior?.receiver_id) {
+        trustedReceiverHealthCache = null;
+        return persistReceiverPairing({
+          ...prior,
+          state: "mismatch",
+          observed_endpoint: endpoint,
+          observed_receiver_id: receiverId,
+          observed_api_schema: apiSchema || "legacy",
+          checked_at: now,
+          last_error: "receiver_pairing_metadata_missing",
+        });
+      }
+      return persistReceiverPairing({
+        state: "legacy",
+        endpoint,
+        dev_override: Boolean(prior?.dev_override),
+        last_seen_at: now,
+        checked_at: now,
+        last_error: null,
+      });
+    }
+
+    if (apiSchema !== RECEIVER_API_SCHEMA) {
+      trustedReceiverHealthCache = null;
+      return persistReceiverPairing({
+        ...(prior || {}),
+        state: "mismatch",
+        endpoint: prior?.endpoint || endpoint,
+        observed_endpoint: endpoint,
+        observed_receiver_id: receiverId,
+        observed_api_schema: apiSchema,
+        checked_at: now,
+        last_error: "receiver_api_schema_mismatch",
+      });
+    }
+
+    if (prior?.receiver_id && prior.receiver_id !== receiverId) {
       trustedReceiverHealthCache = null;
       return persistReceiverPairing({
         ...prior,
         state: "mismatch",
         observed_endpoint: endpoint,
         observed_receiver_id: receiverId,
-        observed_api_schema: apiSchema || "legacy",
+        observed_api_schema: apiSchema,
         checked_at: now,
-        last_error: "receiver_pairing_metadata_missing",
+        last_error: "receiver_identity_mismatch",
       });
     }
+
     return persistReceiverPairing({
-      state: "legacy",
+      receiver_id: receiverId,
+      api_schema: apiSchema,
       endpoint,
       dev_override: Boolean(prior?.dev_override),
+      paired_at: prior?.paired_at || now,
       last_seen_at: now,
       checked_at: now,
+      state: "online",
       last_error: null,
     });
-  }
-
-  if (apiSchema !== RECEIVER_API_SCHEMA) {
-    trustedReceiverHealthCache = null;
-    return persistReceiverPairing({
-      ...(prior || {}),
-      state: "mismatch",
-      endpoint: prior?.endpoint || endpoint,
-      observed_endpoint: endpoint,
-      observed_receiver_id: receiverId,
-      observed_api_schema: apiSchema,
-      checked_at: now,
-      last_error: "receiver_api_schema_mismatch",
-    });
-  }
-
-  if (prior?.receiver_id && prior.receiver_id !== receiverId) {
-    trustedReceiverHealthCache = null;
-    return persistReceiverPairing({
-      ...prior,
-      state: "mismatch",
-      observed_endpoint: endpoint,
-      observed_receiver_id: receiverId,
-      observed_api_schema: apiSchema,
-      checked_at: now,
-      last_error: "receiver_identity_mismatch",
-    });
-  }
-
-  return persistReceiverPairing({
-    receiver_id: receiverId,
-    api_schema: apiSchema,
-    endpoint,
-    dev_override: Boolean(prior?.dev_override),
-    paired_at: prior?.paired_at || now,
-    last_seen_at: now,
-    checked_at: now,
-    state: "online",
-    last_error: null,
   });
 }
 
 async function clearReceiverPairing() {
-  trustedReceiverHealthCache = null;
-  await runtimeChrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
-  // Test doubles and older browser shims may not expose remove(). Setting null
-  // is equivalent for all readers and keeps reset bounded to this one key.
-  if (!runtimeChrome.storage.local.remove) await runtimeChrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
+  return serializeStorageMutation(async () => {
+    receiverConfigurationRevision += 1;
+    trustedReceiverHealthCache = null;
+    await runtimeChrome.storage.local.remove?.(RECEIVER_PAIRING_KEY);
+    // Test doubles and older browser shims may not expose remove(). Setting null
+    // is equivalent for all readers and keeps reset bounded to this one key.
+    if (!runtimeChrome.storage.local.remove) await runtimeChrome.storage.local.set({ [RECEIVER_PAIRING_KEY]: null });
+  });
 }
 
 function hostnameForUrl(url) {
@@ -1165,27 +1234,35 @@ async function redeemPairingCode(baseUrl, code) {
 async function pairWithCode(code) {
   const trimmed = String(code || "").trim();
   if (!trimmed) return { ok: false, error: "pairing_code_required" };
-  const settings = await receiverSettings();
+  const scope = await receiverHealthScope();
+  const settings = scope.settings;
   const result = await redeemPairingCode(settings.baseUrl, trimmed);
   if (!result.ok) return result;
-  await saveReceiverSettings(settings.baseUrl, result.authToken);
+  const configured = await saveReceiverSettings(settings.baseUrl, result.authToken, scope);
+  if (!configured) return { ok: false, error: "receiver_configuration_changed" };
   // A code exchange is an explicit, just-completed pairing act -- confirm
   // it against the receiver immediately rather than waiting for the next
   // scheduled health check, but do not let a stale non-canonical endpoint
   // silently fail over (same posture as an explicit settings save).
-  const health = await checkReceiverHealth({ allowCanonicalRecovery: false });
-  return { ok: true, health, pairing: health.pairing || (await storedReceiverPairing()) };
+  const health = await checkReceiverHealth({ allowCanonicalRecovery: false, expectedScope: configured });
+  return serializeStorageMutation(async () => {
+    if (!await receiverScopeIsCurrent(configured)) return { ok: false, error: "receiver_configuration_changed" };
+    return { ok: true, health, pairing: health.pairing || (await storedReceiverPairing()) };
+  });
 }
 
-async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredentialRefresh = true } = {}) {
-  const settings = await receiverSettings();
-  const pairingBefore = await storedReceiverPairing();
+async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredentialRefresh = true, expectedScope = null } = {}) {
+  let scope = await receiverHealthScope();
+  if (expectedScope && !await receiverScopeIsCurrent(expectedScope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: scope.settings.baseUrl, pairing: null };
+  const settings = scope.settings;
+  const pairingBefore = scope.pairing;
 
   // A fresh extension profile has no authority to probe an authenticated
   // receiver. Keep that unpaired state local: repeatedly sending an empty
   // request only creates receiver-side auth noise and cannot establish trust.
   if (!settings.authToken) {
-    const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
+    if (!allowCredentialRefresh) return { ok: true, status: "unauthorized", detail: "receiver_auth_missing", endpoint: settings.baseUrl, pairing: pairingBefore };
+    const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null, scope);
     // The credential was just fetched; another native launch cannot improve it.
     if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: false });
     // The native host found nothing answering at the endpoint (a stopped
@@ -1201,6 +1278,7 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
   // run with an explicit token other than the persisted one): report it rather
   // than re-bootstrapping forever, one native-host launch per round.
   async function classifyProbe(endpoint, probe, recoveredFrom = null, allowCredentialRefresh = true) {
+    if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
     const body = probe.body;
     if (!body || typeof body !== "object") {
       return {
@@ -1214,18 +1292,20 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
     }
     if (body.error === "unauthorized" || probe.response?.status === 401) {
       if (allowCredentialRefresh) {
-        const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
+        const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null, scope);
         if (refreshed.ok) {
+          scope = refreshed.scope;
           return classifyProbe(settings.baseUrl, await probeReceiverStatus(settings.baseUrl, refreshed.auth_token), null, false);
         }
       }
+      if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
       const pairing = pairingBefore
-        ? await persistReceiverPairing({
+        ? await serializeStorageMutation(async () => await receiverScopeIsCurrent(scope) ? persistReceiverPairing({
           ...pairingBefore,
           state: "unauthorized",
           checked_at: new Date().toISOString(),
           last_error: "unauthorized",
-        })
+        }) : null)
         : null;
       return {
         ok: true,
@@ -1237,7 +1317,8 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
       };
     }
     if (body.ok === true && probe.response?.ok !== false) {
-      const pairing = await observeReceiverIdentity(body, endpoint);
+      const pairing = await observeReceiverIdentity(body, endpoint, scope);
+      if (!pairing || !await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
       if (pairing?.state === "mismatch") {
         return {
           ok: true,
@@ -1259,16 +1340,20 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
         receiver_request_id: probe.receiverRequestId || null,
         pairing,
       };
-      if (pairing?.receiver_id && pairing.state === "online") {
-        trustedReceiverHealthCache = {
-          checkedAt: Date.now(),
-          endpoint,
-          receiverId: pairing.receiver_id,
-          apiSchema: pairing.api_schema,
-          health: result,
-        };
-      }
-      return result;
+      const published = await serializeStorageMutation(async () => {
+        if (!await receiverScopeIsCurrent(scope)) return false;
+        if (pairing?.receiver_id && pairing.state === "online") {
+          trustedReceiverHealthCache = {
+            checkedAt: Date.now(),
+            endpoint,
+            receiverId: pairing.receiver_id,
+            apiSchema: pairing.api_schema,
+            health: result,
+          };
+        }
+        return true;
+      });
+      return published ? result : { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint, pairing: null };
     }
     return {
       ok: true,
@@ -1290,6 +1375,8 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
   } catch (error) {
     primaryFailure = String(error.message || error);
   }
+
+  if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
 
   if (
     allowCanonicalRecovery
@@ -1313,8 +1400,14 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
         && body.receiver_id === pairingBefore.receiver_id
         && body.api_schema === RECEIVER_API_SCHEMA
       ) {
-        await runtimeChrome.storage.local.set({ receiverBaseUrl: DEFAULT_RECEIVER });
-        return classifyProbe(DEFAULT_RECEIVER, canonical, settings.baseUrl);
+        const recovered = await serializeStorageMutation(async () => {
+          if (!await receiverScopeIsCurrent(scope)) return null;
+          receiverConfigurationRevision += 1;
+          trustedReceiverHealthCache = null;
+          await runtimeChrome.storage.local.set({ receiverBaseUrl: DEFAULT_RECEIVER });
+          return { settings: await receiverSettings(), revision: receiverConfigurationRevision };
+        });
+        if (recovered) { scope = recovered; return classifyProbe(DEFAULT_RECEIVER, canonical, settings.baseUrl); }
       }
     } catch {
       // Recovery is intentionally bounded to one canonical endpoint. The
@@ -1322,7 +1415,8 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
     }
   }
 
-  const pairing = await markReceiverPairingUnavailable(primaryFailure);
+  const pairing = await markReceiverPairingUnavailable(primaryFailure, scope);
+  if (!await receiverScopeIsCurrent(scope)) return { ok: false, status: "error", detail: "receiver_configuration_changed", endpoint: settings.baseUrl, pairing: null };
   return {
     ok: false,
     status: pairing?.state === "dev_override_stale" ? "dev_override_stale" : "unreachable",
@@ -3538,7 +3632,13 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.type === "polylogue.configureReceiver") {
       let settings;
       try {
-        settings = await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
+        const restoring = Object.hasOwn(message, "restore");
+        if (restoring && (!message.restore || typeof message.restore !== "object" || Array.isArray(message.restore))) {
+          throw new Error("proof_receiver_configuration_changed");
+        }
+        settings = restoring
+          ? await restoreReceiverSettings(message.restore.previous, message.restore.owned)
+          : await saveReceiverSettings(message.receiverBaseUrl || DEFAULT_RECEIVER, message.receiverAuthToken || "");
       } catch (error) {
         sendResponse({ ok: false, error: error?.message || "configure_receiver_failed" });
         return;
