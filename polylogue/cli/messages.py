@@ -96,7 +96,19 @@ def read_message_windows(
             else window_ceiling
         )
         if token is not None:
-            request = lower_session_read(session_id, kind="messages", continuation=token)
+            resumed_limit: int | None = None
+            if remaining is not None:
+                from polylogue.operations.session_contracts import SessionRead
+                from polylogue.operations.transcript_window import frame_request
+
+                # Only recover the bound window size. The selected executor
+                # still validates the token against its live archive snapshot.
+                try:
+                    _, frame = frame_request(SessionRead(ref=session_id, continuation=token))
+                except _continuation_refusal_types() as exc:
+                    raise OperationFailedError(exc.code, str(exc)) from exc
+                resumed_limit = min(window_limit, frame.page_size)
+            request = lower_session_read(session_id, kind="messages", limit=resumed_limit, continuation=token)
         elif anchor is not None:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
         else:
@@ -148,20 +160,18 @@ def read_message_windows(
 #: The declared refusals that mean "this continuation does not name this
 #: window".  Named from the exception classes that own them so the CLI cannot
 #: drift from the token every other surface reports (polylogue-ijbwq).
-def _continuation_refusal_codes() -> frozenset[str]:
+def _continuation_refusal_types() -> tuple[type[Any], ...]:
     from polylogue.archive.query.transaction import (
         QueryContinuationExpiredError,
         QueryContinuationInvalidError,
         QueryContinuationStaleError,
     )
 
-    return frozenset(
-        {
-            QueryContinuationStaleError.code,
-            QueryContinuationInvalidError.code,
-            QueryContinuationExpiredError.code,
-        }
-    )
+    return (QueryContinuationExpiredError, QueryContinuationInvalidError, QueryContinuationStaleError)
+
+
+def _continuation_refusal_codes() -> frozenset[str]:
+    return frozenset(error.code for error in _continuation_refusal_types())
 
 
 def message_read_failure(env: AppEnv, exc: OperationKernelError, *, session_id: str) -> None:

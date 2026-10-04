@@ -986,3 +986,24 @@ def test_absent_daemon_operation_does_not_load_version_or_storage(_short_uds_run
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("timeout_ms", [1, 2000, 30000])
+def test_receipt_wait_binds_the_exchange_to_its_actual_wait_budget(
+    timeout_ms: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    captured: list[tuple[object, object, object]] = []
+
+    def request(_method: str, _path: str, body: dict[str, object], **kwargs: object) -> None:
+        payload = body["payload"]
+        assert isinstance(payload, dict)
+        captured.append((payload["timeout_ms"], body["deadline_ms"], kwargs["timeout_s"]))
+        return None
+
+    monkeypatch.setattr(client, "_request_json_response", request)
+    assert client.await_operation("original-request", archive_root=str(tmp_path), timeout_ms=timeout_ms) is None
+    assert captured == [(timeout_ms, timeout_ms, timeout_ms / 1000 + 1.0)]
+    assert client.timeout_s == 0.1

@@ -106,3 +106,5 @@ keeps the mode degraded. Status and workload telemetry read only current ops
 tables; unavailable counts never stand in for exact zero.
 
 Normal client read and mutation requests bind the installed client version and canonical Index schema version before their single operation POST. The client resolves those expectations after the existing peer-checked socket connects, so an absent daemon does not load the storage or version graph. Explicit caller preconditions remain unchanged. Status discovery and the original operation status, await, cancel and result controls remain available without inferred version preconditions, so a client can inspect an incompatible daemon or recover already accepted work. Session-delete preview cancellation remains a version-bound mutation.
+
+Receipt waits bind the control request execution deadline to its actual `timeout_ms` wait budget. The transport retains its existing response allowance, so the forced final receipt read after an exhausted completion budget does not inherit the normal 30-second control deadline. Accepted mutation identity, cancellation and durable outcome reconciliation remain unchanged.

@@ -1011,3 +1011,114 @@ def test_write_messages_file_records_and_exits_on_an_empty_page(tmp_path: Path, 
 
     assert exited.value.code == OUTCOME_EXIT_CODES["empty"]
     assert json.loads(out.read_text(encoding="utf-8"))["outcome"]["state"] == "empty"
+
+
+@pytest.mark.parametrize("initial_page_size", [None, 50, 200, 2000])
+def test_message_continuation_narrows_to_the_remaining_delivery(initial_page_size: int | None) -> None:
+    from polylogue.cli.operation_kernel import OperationRequest
+    from tests.infra.session_read_tokens import message_window_token
+
+    seen: list[int] = []
+    config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
+    delivered = 0
+    initial = (
+        None
+        if initial_page_size is None
+        else message_window_token("session:neutral", page_size=initial_page_size, offset=0)
+    )
+
+    def dispatch(_config: Config, request: OperationRequest, **_kwargs: object) -> tuple[dict[str, object], ServedBy]:
+        nonlocal delivered
+        size = request.payload["limit"]
+        assert isinstance(size, int)
+        seen.append(size)
+        rows = [{"id": f"message-{i}"} for i in range(delivered, delivered + size)]
+        start = delivered
+        delivered += size
+        return {
+            "messages": rows,
+            "session": {},
+            "total": 400,
+            "offset": start,
+            "next_offset": delivered,
+            "continuation": message_window_token("session:neutral", page_size=size, offset=delivered),
+            "lineage_complete": True,
+        }, ServedBy("daemon", None)
+
+    with patch("polylogue.cli.messages.dispatch_read", side_effect=dispatch):
+        windows = list(
+            read_message_windows(
+                config,
+                "session:neutral",
+                limit=250,
+                offset=0,
+                full=False,
+                continuation=initial,
+                daemon_disabled=False,
+            )
+        )
+    assert seen == ([50] * 5 if initial_page_size == 50 else [200, 50])
+    assert sum(len(window.rows) for window in windows) == 250
+    assert windows[-1].continuation is not None
+    assert windows[-1].next_offset == 250
+
+
+def test_message_continuation_preserves_typed_invalid_refusal() -> None:
+    config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
+    with patch("polylogue.cli.messages.dispatch_read") as dispatch:
+        with pytest.raises(OperationFailedError) as error:
+            list(
+                read_message_windows(
+                    config,
+                    "session:neutral",
+                    limit=20,
+                    offset=0,
+                    full=False,
+                    continuation="invalid-token",
+                    daemon_disabled=False,
+                )
+            )
+    assert error.value.code == "invalid_continuation"
+    dispatch.assert_not_called()
+
+
+def test_full_message_continuation_preserves_its_minted_window() -> None:
+    payload = {"messages": [{"id": "neutral"}], "session": {}, "total": 1, "offset": 0}
+    config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
+    with patch("polylogue.cli.messages.dispatch_read", return_value=(payload, ServedBy("daemon", None))) as dispatch:
+        windows = list(
+            read_message_windows(
+                config,
+                "session:neutral",
+                limit=250,
+                offset=0,
+                full=True,
+                continuation="opaque-small-page",
+                daemon_disabled=False,
+            )
+        )
+    assert "limit" not in dispatch.call_args.args[1].payload
+    assert [row["id"] for row in windows[0].rows] == ["neutral"]
+
+
+def test_message_continuation_keeps_resident_snapshot_refusal() -> None:
+    from tests.infra.session_read_tokens import message_window_token
+
+    token = message_window_token("session:neutral", page_size=50, offset=0)
+    config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
+    refused = OperationFailedError("query_continuation_stale", "snapshot moved")
+    with patch("polylogue.cli.messages.dispatch_read", side_effect=refused) as dispatch:
+        with pytest.raises(OperationFailedError) as error:
+            list(
+                read_message_windows(
+                    config,
+                    "session:neutral",
+                    limit=20,
+                    offset=0,
+                    full=False,
+                    continuation=token,
+                    daemon_disabled=False,
+                )
+            )
+    assert error.value is refused
+    assert dispatch.call_args.args[1].payload["limit"] == 20
