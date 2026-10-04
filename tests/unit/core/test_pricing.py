@@ -398,11 +398,25 @@ def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() ->
 
 
 def test_exact_routed_catalog_key_precedes_bare_alias() -> None:
-    from polylogue.archive.semantic.pricing import PRICING
+    from polylogue.archive.semantic.pricing import (
+        PRICING,
+        CostUsagePayload,
+        _estimate_from_usage,
+        _exact_estimate,
+        pricing_catalog_source,
+    )
 
     routed = "deepinfra/openai/gpt-oss-120b"
     assert routed in PRICING
+    assert _normalize_model(routed) == routed
     assert estimate_cost(1_000_000, 1_000_000, routed) == pytest.approx(0.5)
+    usage = CostUsagePayload(input_tokens=1_000_000, output_tokens=1_000_000)
+    estimate = _estimate_from_usage(origin="codex", model_name=routed, usage=usage, provenance=())
+    reported = _exact_estimate(origin="codex", model_name=routed, usage=usage, total_usd=2.0)
+    assert estimate.total_usd == pytest.approx(0.5)
+    assert reported.total_usd == pytest.approx(2.0)
+    assert reported.basis.catalog_priced_usd == pytest.approx(0.5)
+    assert pricing_catalog_source(routed) == PRICING[routed].source_name
 
 
 def test_aistudio_drive_resource_path_model_prices_like_bare_form() -> None:
@@ -700,18 +714,23 @@ def test_canonical_model_family_does_not_leak_pricing_catalog_routing_tag() -> N
 
     routed_model = "vertex_ai/claude-fable-5"
     assert PRICING[routed_model].source_name == "vertex_ai-anthropic_models"
-    assert pricing_catalog_source(routed_model) == pricing_catalog_source("claude-fable-5")
+    assert pricing_catalog_source(routed_model) == PRICING[routed_model].source_name
     assert canonical_model_family(routed_model) == "anthropic"
 
 
-def test_semantic_model_vendor_is_independent_of_final_segment_price_lookup() -> None:
-    """A routed model keeps its semantic vendor even when pricing ignores the route."""
-    from polylogue.archive.semantic.pricing import canonical_model_family, pricing_catalog_source, semantic_model_vendor
+def test_semantic_model_vendor_is_independent_of_routed_catalog_lookup() -> None:
+    """A routed catalog provenance tag never becomes the semantic model vendor."""
+    from polylogue.archive.semantic.pricing import (
+        PRICING,
+        canonical_model_family,
+        pricing_catalog_source,
+        semantic_model_vendor,
+    )
 
     routed_model = "vertex_ai/claude-fable-5"
     assert semantic_model_vendor(routed_model) == "anthropic"
     assert canonical_model_family(routed_model) == "anthropic"
-    assert pricing_catalog_source(routed_model) == pricing_catalog_source("claude-fable-5")
+    assert pricing_catalog_source(routed_model) == PRICING[routed_model].source_name
 
 
 def test_resolve_model_identity_keeps_axes_distinct_across_fixtures() -> None:
