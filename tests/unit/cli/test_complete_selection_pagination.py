@@ -234,7 +234,7 @@ def test_mutating_selection_refuses_incomplete_or_failed_walks(pages: list[objec
         if isinstance(page, Exception):
             raise page
         assert isinstance(page, dict)
-        return SimpleNamespace(value=page, authority={}, envelope=None)
+        return SimpleNamespace(value={**page, "snapshot_epoch": "fixture-selected-frame"}, authority={}, envelope=None)
 
     parent = click.Context(click.Command("query"))
     parent.params = {"query_term": (TOKEN,)}
@@ -353,3 +353,58 @@ def test_selection_refuses_user_tag_swap_with_unchanged_total(
     after = dict(component.split("=", 1) for component in second_relations.split(","))
     assert before.pop("assertions") != after.pop("assertions")
     assert before == after
+
+
+@pytest.mark.parametrize("view", ["messages", "hooks", "dialogue", "raw"])
+def test_explicit_session_read_preserves_its_text_selection(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    """An explicit identity narrows a predicate rather than bypassing it."""
+    from click.testing import CliRunner
+
+    from polylogue.cli import cli
+    from polylogue.cli.verb_cardinality import EmptyCardinalityError
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        sid = pinned.archive.list_summaries(limit=1)[0].session_id
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--id",
+                sid,
+                "find",
+                "absent-membership-token",
+                "then",
+                "read",
+                "--view",
+                view,
+                "--format",
+                "json",
+            ],
+        )
+    assert result.exit_code == 2, result.output
+    assert result.exception is not None
+    assert isinstance(result.exception.__context__, EmptyCardinalityError)
+
+
+def test_explicit_session_root_boolean_query_preserves_its_predicate(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.cli import cli
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        sid = pinned.archive.list_summaries(limit=1)[0].session_id
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        result = CliRunner().invoke(
+            cli, ["--plain", "--id", sid, "find", 'sessions where ~"absent-membership-token"', "--format", "json"]
+        )
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.output)["items"] == []

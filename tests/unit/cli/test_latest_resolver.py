@@ -1,7 +1,7 @@
 """Regression coverage for the shared latest-resolver helper (#1626, #1642).
 
 Verifies the resolution rules apply uniformly:
-explicit conv_id wins, then ``--latest`` / any narrowing filter, then
+an identity-only conv_id resolves directly, then narrowing filters, then
 ``None``. The single-session surfaces (``read --view messages``/``raw``/
 ``neighbors``, ``export``, ``analyze turns``) all route through
 this helper, so a single test here pins the contract for all of them.
@@ -56,10 +56,13 @@ def _refuse_chooser(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(select_module, "_choose_with_fzf", _explode)
 
 
-def test_explicit_conv_id_wins_over_filters() -> None:
-    """An explicit conv_id short-circuits — no query runs."""
+def test_explicit_conv_id_preserves_identity_with_latest_ordering(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Latest ordering does not widen an identity-only selection."""
+    limits: list[int] = []
+    _stub_ids(monkeypatch, ["claude-code:explicit"], limits)
     result = resolve_session_id_from_root_params({"conv_id": "claude-code:explicit", "latest": True})
     assert result == "claude-code:explicit"
+    assert limits == [1]
 
 
 def test_no_filters_returns_none() -> None:
@@ -150,6 +153,7 @@ def _stub_hit_pages(monkeypatch: pytest.MonkeyPatch, hits: Sequence[str]) -> lis
         requested.append((offset, limit))
         page = hits[offset : offset + limit]
         return {
+            "snapshot_epoch": "fixture-selected-frame",
             "hits": [{"session": {"id": ref, "origin": "codex-session", "title": ref}} for ref in page],
             "total": len(set(hits)),
             "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
@@ -288,3 +292,26 @@ def test_latest_reports_typed_daemon_refusal(monkeypatch: pytest.MonkeyPatch) ->
     assert exc_info.value.code == "daemon_required"
     assert exc_info.value.operation == "cli.query"
     assert "polylogued run" in exc_info.value.format_message()
+
+
+@pytest.mark.parametrize(
+    "predicate", [{"tag": "reviewed"}, {"repo": "project"}, {"query": ('sessions where ~"needle"',)}]
+)
+def test_explicit_id_and_predicate_resolve_the_canonical_selection(
+    monkeypatch: pytest.MonkeyPatch, predicate: dict[str, object]
+) -> None:
+    from polylogue.cli.root_request import RootModeRequest
+
+    seen: list[RootModeRequest] = []
+
+    def rows(config: object, request: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
+        seen.append(request)
+        return []
+
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", rows)
+    assert resolve_session_id_from_root_params({"conv_id": "codex:one", **predicate}) is None
+    assert len(seen) == 1
+    spec = seen[0].query_spec()
+    assert spec.session_id == "codex:one"
+    assert not spec.is_exact_session_ref()
+    assert spec.has_filters()

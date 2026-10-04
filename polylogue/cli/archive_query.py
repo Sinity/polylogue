@@ -820,7 +820,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     # scoped search (``--id X <terms>``) is still a page, inside that session.
     transcript_ref: str | None = None
     certain_ref = False
-    if session_scope_id is not None and not searching:
+    if session_scope_id is not None and compiled_spec.is_exact_session_ref():
         transcript_ref, certain_ref = session_scope_id, True
     elif session_scope_id is None and query and not similar_text and _single_query_token_looks_like_ref(query):
         transcript_ref = query
