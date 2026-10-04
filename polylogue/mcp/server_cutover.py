@@ -1845,17 +1845,27 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 from polylogue.archive.query.capability_catalog import capability_detail_page
                 from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 
+                poly = hooks.get_polylogue()
                 counts = None
+                readiness = None
                 gaps: tuple[str, ...] = ()
                 try:
-                    counts = await hooks.get_polylogue().storage_counts()
+                    counts = await poly.storage_counts()
                 except (ArchiveTierUnavailableError, SchemaRefusalError):
                     gaps = ("archive_counts_unavailable",)
+                if counts is not None:
+                    try:
+                        readiness = await poly.query_capability_readiness()
+                    except (ArchiveTierUnavailableError, SchemaRefusalError):
+                        gaps = ("query_readiness_unavailable",)
+                    else:
+                        gaps = tuple(cast(list[str], readiness.get("caveats", [])))
                 page = capability_detail_page(
                     search=search,
                     offset=offset,
                     limit=limit,
                     stats=counts,
+                    readiness=readiness,
                 )
                 return hooks.json_payload(
                     MCPRootPayload(
@@ -1870,7 +1880,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             # its own facade route and would not fit a
                             # capability page's response budget.
                             "read_view_profile_ids": [
-                                profile["view_id"] for profile in await hooks.get_polylogue().list_read_view_profiles()
+                                profile["view_id"] for profile in await poly.list_read_view_profiles()
                             ],
                         }
                     )

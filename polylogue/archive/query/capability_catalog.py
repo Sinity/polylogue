@@ -17,8 +17,8 @@ from polylogue.sources.origin_specs import origin_specs
 MAX_CAPABILITY_PAGE = 25
 
 
-def _snapshot_id(stats: Mapping[str, object] | None) -> str:
-    payload = json.dumps(dict(stats or {}), sort_keys=True, default=str).encode()
+def _snapshot_id(stats: Mapping[str, object] | None, readiness: Mapping[str, object] | None) -> str:
+    payload = json.dumps({"counts": stats, "readiness": readiness}, sort_keys=True, default=str).encode()
     return "archive:" + sha256(payload).hexdigest()[:16]
 
 
@@ -36,21 +36,15 @@ def _declaration_rows() -> tuple[dict[str, object], ...]:
 
 def _stat_int(stats: Mapping[str, object], key: str) -> int | None:
     value = stats.get(key)
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _observed_count(name: str, kind: str, stats: Mapping[str, object] | None) -> int | None:
-    if not stats:
+    if stats is None:
         return None
-    if kind == "unit":
-        return {
-            "message": _stat_int(stats, "total_messages"),
-            "action": None,
-            "block": _stat_int(stats, "total_messages"),
-        }.get(name)
-    if name in {"query_terms", "contains_terms", "exclude_text_terms"}:
-        return _stat_int(stats, "total_messages") if name == "query_terms" else None
-    return _stat_int(stats, "total_sessions")
+    # Session totals cannot witness a field's values, and message totals do
+    # not witness blocks/actions. Only the matching canonical unit is measured.
+    return _stat_int(stats, "total_messages") if kind == "unit" and name == "message" else None
 
 
 def _status(*, supported: bool, observed: int | None, stale: bool = False) -> str:
@@ -88,7 +82,7 @@ def capability_detail_page(
                 for key in ("declaration_id", "name", "meaning", "binding", "operators", "fields", "examples")
             ).lower()
         )
-    snapshot = _snapshot_id(stats)
+    snapshot = _snapshot_id(stats, readiness)
     origins = [
         {
             "origin": spec.origin.value,
@@ -97,19 +91,26 @@ def capability_detail_page(
             "authority": "OriginSpec",
         }
         for spec in origin_specs()
+        if spec.public_filter
     ]
+    readiness_state = str((readiness or {}).get("state", "unknown"))
+    stale = readiness_state in {"stale", "rebuilding", "blocked", "degraded", "poisoned"}
+    freshness = "unknown"
+    if stats is not None:
+        freshness = "stale_or_degraded" if stale else "request-current" if readiness_state == "ready" else "unknown"
     page: list[dict[str, object]] = []
     for row in rows[offset : offset + limit]:
         item = dict(row)
         observed = _observed_count(str(item["name"]), str(item["kind"]), stats)
         item["observed_count"] = observed
-        item["status"] = _status(supported=True, observed=observed)
+        item["status"] = _status(
+            supported=True, observed=observed if freshness != "unknown" else None, stale=stale and stats is not None
+        )
         item["evidence"] = {
-            "authority": ["query declaration", "OriginSpec", "archive stats"],
+            "authority": ["query declaration", "archive counts"],
             "archive_snapshot": snapshot,
-            "freshness": "request-current" if stats is not None else "unknown",
-            "readiness": dict(readiness or {}),
-            "origins": origins,
+            "freshness": freshness,
+            "readiness_state": readiness_state,
         }
         item["next_narrowing"] = (
             "Search by declaration name or page with offset; use explain(subject='query') for a concrete plan."
@@ -125,8 +126,13 @@ def capability_detail_page(
         "next_offset": next_offset if next_offset < len(rows) else None,
         "snapshot": {
             "id": snapshot,
-            "authority": "archive stats",
-            "freshness": "request-current" if stats is not None else "unknown",
+            "authority": "archive counts and query readiness",
+            "freshness": freshness,
+        },
+        "evidence": {
+            "authority": ["OriginSpec", "query binding", "convergence debt"],
+            "origins": origins,
+            "readiness": dict(readiness or {}),
         },
         "paging": "Repeat explain(subject='capability', search=..., offset=next_offset) until next_offset is null.",
     }

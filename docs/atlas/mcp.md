@@ -59,6 +59,21 @@ remain available with unknown counts and freshness. The shared outcome is
 measured zero counts. Cancellation and other read errors retain their normal
 operation error behavior.
 
+Capability pages carry public `OriginSpec` evidence once in page-level
+`evidence.origins`; individual declarations reference the shared snapshot.
+Origins whose declaration excludes public filtering are omitted. Session
+counts do not prove field values, and message counts do not prove blocks or
+actions: only matching canonical observations are reported, with unknown for
+unmeasured declarations.
+
+Freshness uses the injected archive's standing FTS query binding and
+aggregate-only convergence debt projection. This measured scope certifies
+query binding and debt evidence, not whole-archive materializer readiness.
+An unavailable binding stays unknown without an exact inspection fallback;
+outstanding debt produces `stale_or_degraded` item/page evidence and the
+shared degraded outcome. A measured current binding with no debt permits
+`request-current`. The count reducer remains unchanged.
+
 ## Read-view discovery
 
 `explain(subject="capability")` returns `read_view_profile_ids`: the `view_id`
