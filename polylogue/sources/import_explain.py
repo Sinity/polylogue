@@ -6,7 +6,7 @@ import json
 import os
 import sqlite3
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
@@ -56,6 +56,7 @@ def explain_import_path(
     *,
     source_name: str = "unknown",
     limit: int = 100,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> ImportExplainPayload:
     """Return a bounded import explanation for a file or directory.
 
@@ -64,6 +65,7 @@ def explain_import_path(
     without staging daemon work or writing raw blobs.
     """
 
+    checkpoint()
     resolved = path.expanduser().resolve()
     entries: list[ImportExplainEntryPayload] = []
     skipped: list[ImportSkippedRowPayload] = []
@@ -74,6 +76,7 @@ def explain_import_path(
         return _envelope(resolved, entries=entries, skipped=skipped, caveats=caveats)
 
     for candidate in _candidate_paths(resolved, source_name=source_name):
+        checkpoint()
         if len(entries) >= limit:
             caveats.append(f"entry limit {limit} reached; remaining files omitted")
             break

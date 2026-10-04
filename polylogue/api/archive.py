@@ -1582,56 +1582,6 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
         return None
 
 
-def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
-    """Compose the bounded Hermes integration health rollup (polylogue-fs1.15).
-
-    Resolves the Hermes runtime root from the configured source list (the
-    same discovery ``resolve_runtime_config`` performs -- a "hermes" source
-    only appears there when its root exists on this host) and falls back to
-    the conventional ``~/.hermes`` path so a not-yet-discovered root still
-    renders an explicit "disabled" verdict rather than raising. All
-    composition is read-only; see
-    :mod:`polylogue.analysis.hermes_integration_health` for the primitives
-    this reuses.
-    """
-    from polylogue.analysis.hermes_integration_health import build_hermes_integration_health
-    from polylogue.daemon.convergence_debt_alert import source_family_for_subject, watchsource_name_to_family
-    from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
-    from polylogue.paths import hermes_sessions_path
-
-    hermes_root = next(
-        (source.path for source in config.sources if source.name == "hermes" and source.path is not None),
-        None,
-    )
-    if hermes_root is None:
-        hermes_root = hermes_sessions_path()
-
-    archive_root = _active_archive_root(config)
-    # ``polylogue.analysis`` may not import ``polylogue.daemon`` directly
-    # (docs/plans/layering.yaml); this surface-adapter layer owns the
-    # daemon-touching convergence-debt bucketing and passes plain counts in.
-    hermes_family = watchsource_name_to_family("hermes")
-    debt = convergence_debt_summary_info(archive_root / "source.db")
-    family_summary = next((item for item in debt.family_summaries if item.family == hermes_family), None)
-    convergence_debt_failed_count = family_summary.failed_count if family_summary is not None else 0
-    convergence_debt_deferred_count = family_summary.deferred_count if family_summary is not None else 0
-    convergence_debt_retry_due_count = sum(
-        1
-        for item in debt.recent
-        if item.retry_due and source_family_for_subject(item.subject_type, item.subject_id) == hermes_family
-    )
-
-    return build_hermes_integration_health(
-        archive_root,
-        hermes_root=hermes_root,
-        convergence_debt_available=debt.available,
-        convergence_debt_error=debt.error,
-        convergence_debt_failed_count=convergence_debt_failed_count,
-        convergence_debt_deferred_count=convergence_debt_deferred_count,
-        convergence_debt_retry_due_count=convergence_debt_retry_due_count,
-    )
-
-
 @contextmanager
 def _readable_required_tier(config: Config, tier: ArchiveTier) -> Iterator[sqlite3.Connection]:
     from polylogue.operations.user_overlay_reads import readable_required_tier
@@ -3108,7 +3058,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         paths.
         """
 
-        return _archive_hermes_integration_health(self.config)
+        from polylogue.operations.hermes_health import configured_hermes_health
+
+        return configured_hermes_health(self.config)
 
     async def list_assertion_claim_payloads(
         self,

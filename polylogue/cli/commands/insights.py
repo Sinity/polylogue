@@ -343,9 +343,15 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
     disabled/unavailable/degraded/healthy verdict rather than a silent zero.
     """
     env: AppEnv = ctx.obj
-    health = run_coroutine_sync(env.polylogue.hermes_integration_health())
+    from polylogue.operations.hermes_health import decode_hermes_health_result
+
+    result_payload, _served_by = dispatch_read(
+        env.config, OperationRequest(operation="insights.hermes_health", payload={})
+    )
+    result = decode_hermes_health_result(result_payload)
+    health = result.report
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(health.to_dict())
+        emit_success({**health.to_dict(), "outcome": result.outcome.to_dict()})
         return
     _render_hermes_health_plain(health)
 

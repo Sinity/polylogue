@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -113,6 +114,7 @@ class DaemonReadDependencies:
     raise_if_aborted: Callable[[], None] = never_aborted
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
+    hermes_root: Path | None = None
 
     @property
     def vector_provider(self) -> VectorProvider | None:

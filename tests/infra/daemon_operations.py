@@ -182,6 +182,8 @@ def running_daemon_operations(
         session_maintenance = compose_session_profile_callback(
             archive_root, compute_adapter=kernel, write_bridge=bridge, now=time
         ).maintenance
+    if read_dependencies is None:
+        read_dependencies = DaemonReadDependencies(hermes_root=archive_root.parent / "hermes")
     runtime = DaemonOperationRuntime(
         archive_root,
         write_bridge=bridge,

@@ -69,6 +69,7 @@ def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.
         (["analyze", "insights", "profiles"], "insights.list"),
         (["ops", "insights", "status"], "insights.readiness"),
         (["ops", "insights", "audit"], "insights.rigor"),
+        (["ops", "insights", "hermes-health"], "insights.hermes_health"),
     ],
 )
 def test_registered_insight_read_refuses_without_daemon(
@@ -695,6 +696,7 @@ def test_insights_hermes_health_json_reports_disabled_without_a_hermes_root(
     assert payload["verdict"] == "disabled"
     assert payload["sources"] == []
     assert payload["parser_failures"] == []
+    assert json_object(payload["outcome"])["state"] == "ok"
 
 
 def test_insights_hermes_health_plain_reports_disabled_without_a_hermes_root(
