@@ -286,3 +286,70 @@ def test_the_mutating_verb_route_resolves_through_the_complete_walk() -> None:
     source = inspect.getsource(verb_cardinality.resolve_session_ids_for_verb)
     assert "query_complete_session_ids" in source
     assert "query_session_ids(" not in source
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_selection_refuses_user_tag_swap_with_unchanged_total(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, complete: bool
+) -> None:
+    """Two independently correct pages cannot authorize one mixed tag population."""
+    import polylogue.cli.session_rows as session_rows
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        ids = [row.session_id for row in pinned.archive.iter_summaries()]
+    monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
+    original = session_rows._query_page_with_authority
+    pages: list[dict[str, object]] = []
+    with cli_daemon_archive(seeded_root, monkeypatch) as stack:
+
+        def tag(session_ids: list[str], *, remove: bool = False) -> None:
+            result = stack.client.operation_to_completion(
+                "mutation.session.tag",
+                {"session_ids": session_ids, "remove_tags" if remove else "tags": ["bound-membership"]},
+                archive_root=str(seeded_root),
+            )
+            assert result is not None and result["outcome"] == "completed"
+            assert result["result"]["effect"] == "committed"
+
+        tag(ids[:-1])
+
+        def changed_page(
+            config: Config,
+            request: RootModeRequest,
+            *,
+            limit: int,
+            offset: int,
+            daemon_disabled: bool,
+        ) -> tuple[dict[str, object], str]:
+            payload, authority = original(config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled)
+            assert isinstance(payload, dict)
+            pages.append(payload)
+            if len(pages) == 1:
+                items = payload["items"]
+                assert isinstance(items, list)
+                tag([items[0]["id"]], remove=True)
+                tag([ids[-1]])
+            return payload, authority
+
+        monkeypatch.setattr(session_rows, "_query_page_with_authority", changed_page)
+        request = RootModeRequest.from_params({"tag": "bound-membership"})
+        with pytest.raises(OperationFailedError) as refusal:
+            if complete:
+                session_rows.query_complete_session_ids(_config(seeded_root), request)
+            else:
+                session_rows.query_session_rows(_config(seeded_root), request, limit=SEEDED_SESSIONS)
+    assert refusal.value.code == "query_continuation_stale"
+    assert len(pages) == 2
+    assert pages[0]["total"] == pages[1]["total"] == SEEDED_SESSIONS - 1
+    first_epoch, second_epoch = (str(page["snapshot_epoch"]) for page in pages)
+    assert first_epoch != second_epoch
+    # No Index generation changed. The durable User assertion trigger alone
+    # changes the selected population and therefore its continuation authority.
+    first_generation, first_relations = first_epoch.rsplit(":", 1)
+    second_generation, second_relations = second_epoch.rsplit(":", 1)
+    assert first_generation == second_generation
+    before = dict(component.split("=", 1) for component in first_relations.split(","))
+    after = dict(component.split("=", 1) for component in second_relations.split(","))
+    assert before.pop("assertions") != after.pop("assertions")
+    assert before == after

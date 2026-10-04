@@ -93,10 +93,16 @@ def query_session_rows(
     """
 
     rows: list[SelectSessionRow] = []
+    snapshot_epoch: str | None = None
     seen: set[str] = set()
     page_size = COMPLETE_SELECTION_PAGE if limit is None else min(limit, COMPLETE_SELECTION_PAGE)
     while limit is None or len(rows) < limit:
         payload = _query_page(config, request, limit=page_size, offset=offset, daemon_disabled=daemon_disabled)
+        if payload is None:
+            if snapshot_epoch is not None:
+                _incomplete_selection("session disappeared while resolving the selection")
+            return rows
+        snapshot_epoch = _selection_frame(snapshot_epoch, payload)
         page = _session_rows(payload)
         for item in page:
             row = select_row_from_operation_row(item)
@@ -137,6 +143,7 @@ def query_complete_session_ids(
     """
 
     ids: list[str] = []
+    snapshot_epoch: str | None = None
     seen: set[str] = set()
     offset = 0
     expected_total: int | None = None
@@ -145,6 +152,11 @@ def query_complete_session_ids(
         payload = _query_page(
             config, request, limit=COMPLETE_SELECTION_PAGE, offset=offset, daemon_disabled=daemon_disabled
         )
+        if payload is None:
+            if snapshot_epoch is not None:
+                _incomplete_selection("session disappeared while resolving the selection")
+            return ids
+        snapshot_epoch = _selection_frame(snapshot_epoch, payload)
         rows = _session_rows(payload)
         # Ranked hits are block-grain, so a session may recur across hits; a
         # session-grain list page repeating an id is a broken continuation.
@@ -194,6 +206,22 @@ def query_complete_session_ids(
         offset = next_offset
 
 
+def _selection_frame(previous: str | None, payload: Mapping[str, object]) -> str:
+    """A stable total cannot prove that successive pages selected the same rows."""
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationFailedError
+
+    current = payload.get("snapshot_epoch")
+    if not isinstance(current, str) or not current:
+        raise OperationEnvelopeError("cli.query omitted its pinned snapshot epoch")
+    if previous is not None and current != previous:
+        raise OperationFailedError(
+            "query_continuation_stale",
+            "cli.query changed its pinned selection frame; restart the selection",
+            {"issued_epoch": previous, "current_epoch": current},
+        )
+    return current
+
+
 def _incomplete_selection(detail: str) -> NoReturn:
     """Fail closed before a mutating verb can apply a partial selection."""
 
@@ -221,7 +249,10 @@ def query_session_rows_with_authority(
     payload, authority = _query_page_with_authority(
         config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled
     )
-    return [select_row_from_operation_row(row) for row in _session_rows(payload)], authority
+    if payload is not None:
+        _selection_frame(None, payload)
+    rows = [] if payload is None else [select_row_from_operation_row(row) for row in _session_rows(payload)]
+    return rows, authority
 
 
 def _query_page(
@@ -231,7 +262,7 @@ def _query_page(
     limit: int,
     offset: int,
     daemon_disabled: bool,
-) -> Mapping[str, object]:
+) -> Mapping[str, object] | None:
     payload, _authority = _query_page_with_authority(
         config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled
     )
@@ -245,7 +276,7 @@ def _query_page_with_authority(
     limit: int,
     offset: int,
     daemon_disabled: bool,
-) -> tuple[Mapping[str, object], str]:
+) -> tuple[Mapping[str, object] | None, str]:
     from polylogue.cli.lowering import lower_cli_query
     from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationKernelError, dispatch
 
@@ -259,7 +290,7 @@ def _query_page_with_authority(
         # *read* of that session it is one; for a selection it is zero rows.
         if "session not found" not in str(getattr(exc, "detail", None) or exc).lower():
             raise
-        return {"items": [], "total": 0, "next_offset": None}, "unknown"
+        return None, "unknown"
     if not isinstance(result.value, dict):
         raise OperationEnvelopeError("cli.query returned a non-object result")
     authority = str(result.authority.get("server_identity") or result.authority.get("mode") or "unknown")

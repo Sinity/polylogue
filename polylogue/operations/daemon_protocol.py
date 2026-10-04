@@ -948,6 +948,9 @@ class QueryResult(_OperationResult):
         if not isinstance(value, dict):
             raise ValueError("query result must be an object")
         payload = dict(value)
+        epoch = payload.get("snapshot_epoch")
+        if not isinstance(epoch, str) or not epoch:
+            raise ValueError("session query result requires its pinned snapshot epoch")
         # The ``with <units>`` projection is a sibling of the canonical list
         # envelope, not a field of it: the envelope forbids extras and lives
         # inside the derived-schema closure, which a CLI projection must not

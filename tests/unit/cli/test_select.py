@@ -246,7 +246,7 @@ def test_select_reads_rows_from_one_declared_query_operation(tmp_path: Path) -> 
     def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
         captured["operation"] = operation_request.operation
         captured["payload"] = operation_request.payload
-        return SimpleNamespace(value=dict(page), authority={}, envelope=None)
+        return SimpleNamespace(value={**page, "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
 
     row = {"id": "conv-7", "origin": "claude-code-session", "title": "Seven", "message_count": 3}
 
@@ -384,7 +384,9 @@ def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
     def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
         offset = cast("dict[str, object]", operation_request.payload["params"])["offset"]
         seen.append(cast("int", offset))
-        return SimpleNamespace(value=pages[len(seen) - 1], authority={}, envelope=None)
+        return SimpleNamespace(
+            value={**pages[len(seen) - 1], "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None
+        )
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
         assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
@@ -421,7 +423,7 @@ def test_ranked_selection_rows_are_distinct_sessions(tmp_path: Path) -> None:
             "total": 3,
             "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
         }
-        return SimpleNamespace(value=value, authority={}, envelope=None)
+        return SimpleNamespace(value={**value, "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
         assert [row.session_id for row in query_session_rows(config, RootModeRequest.from_params({}), limit=2)] == [
@@ -462,7 +464,7 @@ def test_complete_ranked_selection_admits_repeated_hits(tmp_path: Path) -> None:
     pages: list[dict[str, object]] = []
 
     def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
-        return SimpleNamespace(value=pages.pop(0), authority={}, envelope=None)
+        return SimpleNamespace(value={**pages.pop(0), "snapshot_epoch": "fixture-frame"}, authority={}, envelope=None)
 
     with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
         pages.extend(ranked)

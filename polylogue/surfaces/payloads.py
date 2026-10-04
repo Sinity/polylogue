@@ -1663,6 +1663,8 @@ class SessionListResponse(SurfacePayloadModel):
     All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.
     """
 
+    snapshot_epoch: str | None = Field(default=None, min_length=1)
+    """Opaque pinned selection frame; absent on genuinely unbound surfaces."""
     items: tuple[SessionListRowPayload, ...]
     total: int
     limit: int
@@ -1740,6 +1742,8 @@ class SearchEnvelope(SurfacePayloadModel):
       produced no hits but filters were applied.
     """
 
+    snapshot_epoch: str | None = Field(default=None, min_length=1)
+    """Opaque pinned selection frame; absent on genuinely unbound surfaces."""
     hits: tuple[SessionSearchHitPayload, ...]
     total: int | None
     limit: int

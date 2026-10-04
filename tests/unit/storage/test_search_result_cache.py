@@ -278,3 +278,87 @@ def test_warm_query_refreshes_relative_time_without_reexecuting_selection(
     assert second["outcome"] == first["outcome"]
     assert second["next_offset"] == first["next_offset"]
     assert row["relative_time"] == "just now"
+
+
+def test_ranked_query_cache_preserves_the_actual_pinned_selection_frame(tmp_path: Path, monkeypatch: Any) -> None:
+    """A real fresh query and its cache hit carry the same authoritative frame."""
+    bootstrap_archive_root(tmp_path)
+    cache.invalidate_search_cache()
+    original = daemon_reads._query_payload
+    executions: list[int] = []
+
+    def query(*args: Any, **kwargs: Any) -> dict[str, object]:
+        executions.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", query)
+    with open_operation_read(tmp_path) as pinned:
+        values = [
+            execute_read_operation(
+                "cli.query",
+                {"params": {"query": "needle", "limit": 5}},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+            for _ in range(2)
+        ]
+    from polylogue.surfaces.payloads import SearchEnvelope
+
+    assert executions == [1]
+    assert values[0]["snapshot_epoch"] == values[1]["snapshot_epoch"]
+    assert SearchEnvelope.model_validate(values[0]).snapshot_epoch
+    assert SearchEnvelope.model_validate(values[1]).snapshot_epoch
+    import json
+
+    import jsonschema
+    from pydantic import ValidationError
+
+    from polylogue.operations.daemon_protocol import QueryResult
+
+    schema = json.loads((Path(__file__).parents[3] / "docs/schemas/cli-output/search-envelope.schema.json").read_text())
+    for value in values:
+        jsonschema.validate(value, schema)
+        QueryResult.model_validate(value)
+    with pytest.raises(ValidationError):
+        QueryResult.model_validate({key: value for key, value in values[0].items() if key != "snapshot_epoch"})
+
+
+def test_ranked_query_declines_missing_or_stale_cached_frames(tmp_path: Path, monkeypatch: Any) -> None:
+    """Neither absent authority nor an old epoch can reach cached decoration."""
+    import pytest
+
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationFailedError
+    from polylogue.cli.session_rows import _selection_frame
+
+    bootstrap_archive_root(tmp_path)
+    cache.invalidate_search_cache()
+    params = {"query": "needle", "limit": 5}
+    with open_operation_read(tmp_path) as pinned:
+        assert pinned.read_view is not None
+        current = execute_read_operation(
+            "cli.query",
+            {"params": params},
+            archive=pinned.archive,
+            serving_identity="daemon",
+            read_view=pinned.read_view,
+        )
+        epoch = current["snapshot_epoch"]
+        assert isinstance(epoch, str)
+        for bad_epoch in (None, epoch + ":stale-generation"):
+            poisoned = {**current, "snapshot_epoch": bad_epoch, "query": "poisoned-cache"}
+            cache.put_cached_result("cli.query", params, poisoned, view=pinned.read_view)
+            value = execute_read_operation(
+                "cli.query",
+                {"params": params},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+            assert value["query"] == "needle"
+            assert value["snapshot_epoch"] == epoch
+        with pytest.raises(OperationEnvelopeError):
+            _selection_frame(None, {"snapshot_epoch": None})
+        with pytest.raises(OperationFailedError) as refusal:
+            _selection_frame(epoch, {"snapshot_epoch": epoch + ":stale-generation"})
+        assert refusal.value.code == "query_continuation_stale"

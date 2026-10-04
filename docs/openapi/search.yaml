@@ -3970,6 +3970,13 @@ components:
         \ top-level so it is not\n  confused with per-hit reader actions in ``hit.match.actions``.\n- ``diagnostics``: optional\
         \ zero-result explanation when the query\n  produced no hits but filters were applied."
       properties:
+        snapshot_epoch:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Snapshot Epoch
         hits:
           items:
             $ref: '#/components/schemas/SessionSearchHitPayload'
@@ -4297,6 +4304,13 @@ components:
 
         All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.'
       properties:
+        snapshot_epoch:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Snapshot Epoch
         items:
           items:
             $ref: '#/components/schemas/SessionListEnvelope'

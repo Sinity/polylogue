@@ -169,6 +169,11 @@ def execute_read_operation(
     """
 
     dependencies = dependencies or DaemonReadDependencies()
+    snapshot_epoch: str | None = None
+    if name == "cli.query":
+        from polylogue.archive.query.transaction import archive_snapshot_epoch
+
+        snapshot_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
     # A grammar completion is a pure protocol read and deliberately accepts the
@@ -196,7 +201,8 @@ def execute_read_operation(
         from polylogue.storage.search.cache import get_cached_result
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)
-        if cached is not None:
+        frame_matches = name != "cli.query" or (cached is not None and cached.get("snapshot_epoch") == snapshot_epoch)
+        if cached is not None and frame_matches:
             if name == "cli.query":
                 _refresh_query_relative_times(cached)
             return cached
@@ -204,6 +210,7 @@ def execute_read_operation(
     if name == "cli.query":
         params = _params(payload)
         result = _query_payload(params, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
+        result["snapshot_epoch"] = snapshot_epoch
     elif name == "query.aggregate":
         result = _aggregate_payload(payload, archive=archive)
     elif name == "session.read":
