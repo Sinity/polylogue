@@ -197,3 +197,23 @@ receipt also restores missing evidence after successful detail pruning. Both
 append lanes serialize run identity checks with publication, so concurrent
 finish and recovery produce one row per run in each lane. Recovery scans identities once per
 lane for a batch and makes every appended row durable before advancing.
+
+
+`devtools cache gc` returns one requested artifact page (`--page-size`, default
+100) with `complete` and `next_cursor`; pass `--after <next_cursor>` to continue.
+Deleting an earlier page does not shift the next page. Each page rechecks the
+current declared reachability and existing cache, key and artifact leases.
+Session archive fixtures hold the original shared cache lease from acquisition
+through finalization; benchmark cloning holds it from acquisition through copy.
+
+Applied GC atomically retires eligible trees into the existing private staging
+namespace before unlinking any contents. Receipts are durably replaced before
+deletion and after each artifact decision. An interrupted page reports
+`interrupted`, incomplete deletion-byte evidence and no continuation: restart
+the page to resume retired trees. Partial retired trees are disposable staging,
+not corrupt published artifacts. Traversal and hashing observe cancellation
+between streamed nodes and chunks; GC does not impose node or tree-depth caps.
+
+The declared GC operation has no execution deadline (`timeout_seconds = 0`).
+It remains owned by AgentCTL and stops through operator cancellation, preserving
+the resumable retired tree and interruption receipt.

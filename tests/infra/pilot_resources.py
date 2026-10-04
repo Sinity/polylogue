@@ -82,11 +82,13 @@ def pilot_parsed_sessions(pilot_provider_packages: tuple[ProviderSourcePackage, 
 
 
 @pytest.fixture(scope="session")
-def pilot_artifact() -> SeededArchiveArtifact:
+def pilot_artifact() -> Iterator[SeededArchiveArtifact]:
     """Acquire the shared multi-provider artifact once per pytest worker."""
     from tests.infra.integration_profile import build_integration_archive
+    from tests.infra.workload_artifacts import seeded_archive_cache_lease
 
-    return build_integration_archive()
+    with seeded_archive_cache_lease():
+        yield build_integration_archive()
 
 
 @pytest.fixture(scope="session")
@@ -133,11 +135,10 @@ def pilot_daemon_operations(
 
     archive_root = tmp_path / "pilot-daemon-archive"
 
-    def seed(root: Path) -> None:
-        clone = clone_seeded_archive(pilot_artifact, root)
-        clone.close()
+    clone = clone_seeded_archive(pilot_artifact, archive_root)
+    clone.close()
 
-    with running_daemon_operations(archive_root, seed_archive=seed) as stack:
+    with running_daemon_operations(archive_root) as stack:
         yield stack
 
 
