@@ -1,7 +1,8 @@
 """The root query's tag/metadata writes are the daemon's, never the CLI's.
 
 The daemon is the sole writer. ``--add-tag``/``--set`` lower to the declared
-``mutation.session.tag``/``mutation.session.metadata`` operations; with no
+one declared
+``mutation.session.mark`` operation; with no
 daemon answering, the command refuses and leaves ``user.db`` untouched.
 
 Anti-vacuity for every test here: restoring a CLI-side writable ``ArchiveStore``
@@ -22,6 +23,7 @@ import pytest
 from click.testing import CliRunner, Result
 
 from polylogue.cli.click_app import cli
+from polylogue.config import Config
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.storage_records import SessionBuilder
@@ -68,9 +70,11 @@ def _tagged_sessions(archive_root: Path, tag: str) -> list[object]:
 
 
 def _user_tier_digest(archive_root: Path) -> str:
-    """Digest ``user.db`` and its journal: any local write changes it."""
+    """Digest durable User pages and WAL frames, excluding reader-lock metadata."""
     digest = hashlib.sha256()
     for path in sorted(archive_root.glob("user.db*")):
+        if path.name.endswith("-shm") or path.name.endswith("-wal") and path.stat().st_size == 0:
+            continue
         digest.update(path.name.encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -79,8 +83,8 @@ def _user_tier_digest(archive_root: Path) -> str:
 @pytest.mark.parametrize(
     ("args", "operation"),
     [
-        (("--add-tag", "triage"), "mutation.session.tag"),
-        (("--set", "lane", "triage"), "mutation.session.metadata"),
+        (("--add-tag", "triage"), "mutation.session.mark"),
+        (("--set", "lane", "triage"), "mutation.session.mark"),
     ],
 )
 def test_matched_page_mutation_refuses_without_a_daemon(
@@ -94,7 +98,13 @@ def test_matched_page_mutation_refuses_without_a_daemon(
     assert result.exit_code != 0, result.output
     refusal = str(result.output) + str(result.exception)
     assert refusal.strip()
-    assert "cli.query" in refusal
+    from polylogue.cli.shared.helper_support import DaemonRequiredError
+
+    assert result.exception is not None
+    error = result.exception.__context__
+    assert isinstance(error, DaemonRequiredError), repr(error)
+    assert error.code == "daemon_required"
+    assert error.operation == "mutation.session.mark"
     assert _user_tier_digest(tagged_archive) == before
 
 
@@ -108,14 +118,20 @@ def test_combined_tag_and_metadata_refuses_without_a_daemon(tagged_archive: Path
     assert _user_tier_digest(tagged_archive) == before
     refusal = str(result.output) + str(result.exception)
     assert refusal.strip()
-    assert "cli.query" in refusal
+    from polylogue.cli.shared.helper_support import DaemonRequiredError
+
+    assert result.exception is not None
+    error = result.exception.__context__
+    assert isinstance(error, DaemonRequiredError), repr(error)
+    assert error.code == "daemon_required"
+    assert error.operation == "mutation.session.mark"
 
 
 @pytest.mark.parametrize(
     ("args", "operation", "expected_payload_key", "expected_values"),
     [
-        (("--add-tag", "triage"), "mutation.session.tag", "tags", ["triage"]),
-        (("--set", "lane", "triage"), "mutation.session.metadata", "pairs", [["lane", "triage"]]),
+        (("--add-tag", "triage"), "mutation.session.mark", "tags", ["triage"]),
+        (("--set", "lane", "triage"), "mutation.session.mark", "pairs", [["lane", "triage"]]),
     ],
 )
 def test_matched_page_mutation_lowers_to_its_declared_operation(
@@ -127,11 +143,14 @@ def test_matched_page_mutation_lowers_to_its_declared_operation(
     expected_values: list[object],
 ) -> None:
     """The matched selection and its values reach the daemon as one operation."""
+    from polylogue.cli import archive_query
+
+    submit = archive_query._submit_mutation_operation
     issued: list[tuple[str, dict[str, object]]] = []
 
-    def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
+    def _served(_config: Config, name: str, payload: dict[str, object]) -> dict[str, object]:
         issued.append((name, payload))
-        return {"status": "ok", "affected_count": 3}
+        return submit(_config, name, payload)
 
     with (
         cli_daemon_archive(tagged_archive, monkeypatch),
@@ -142,13 +161,11 @@ def test_matched_page_mutation_lowers_to_its_declared_operation(
     assert result.exit_code == 0, result.output
     assert [name for name, _payload in issued] == [operation]
     payload = issued[0][1]
-    selection = payload["session_ids"]
-    assert isinstance(selection, list)
-    assert sorted(str(item) for item in selection) == [
-        "claude-ai-export:ext-conv-0",
-        "claude-ai-export:ext-conv-1",
-        "claude-ai-export:ext-conv-2",
-    ]
+    assert "session_ids" not in payload
+    selection = payload["selection"]
+    assert isinstance(selection, dict) and selection["mode"] == "page"
+    params = selection["params"]
+    assert isinstance(params, dict) and params["query"] == [_ORIGIN_FILTER]
     assert payload[expected_payload_key] == expected_values
     assert json.loads(result.output)["affected_count"] == 3
 
@@ -156,12 +173,17 @@ def test_matched_page_mutation_lowers_to_its_declared_operation(
 def test_combined_mutation_reports_both_halves_from_the_daemon(
     tagged_archive: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two operations, one combined receipt: metadata first, then tags."""
+    """One resident intent and durable result carry both changes."""
+    from polylogue.cli import archive_query
+
+    submit = archive_query._submit_mutation_operation
     issued: list[str] = []
 
-    def _served(_config: object, name: str, _payload: dict[str, object]) -> dict[str, object]:
+    def _served(_config: Config, name: str, _payload: dict[str, object]) -> dict[str, object]:
         issued.append(name)
-        return {"status": "ok", "affected_count": 3}
+        assert _payload["tags"] == ["triage"]
+        assert _payload["pairs"] == [["lane", "x"]]
+        return submit(_config, name, _payload)
 
     with (
         cli_daemon_archive(tagged_archive, monkeypatch),
@@ -170,7 +192,7 @@ def test_combined_mutation_reports_both_halves_from_the_daemon(
         result = CliRunner().invoke(cli, ["--add-tag", "triage", "--set", "lane", "x", "find", _ORIGIN_FILTER])
 
     assert result.exit_code == 0, result.output
-    assert issued == ["mutation.session.metadata", "mutation.session.tag"]
+    assert issued == ["mutation.session.mark"]
     payload = json.loads(result.output)
     assert payload["operation"] == "mutate"
     assert payload["tag_count"] == 3
@@ -181,11 +203,14 @@ def test_single_session_tag_route_uses_the_same_operation(
     tagged_archive: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Tagging one resolved session lowers to the matched-page operation."""
+    from polylogue.cli import archive_query
+
+    submit = archive_query._submit_mutation_operation
     issued: list[tuple[str, dict[str, object]]] = []
 
-    def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
+    def _served(_config: Config, name: str, payload: dict[str, object]) -> dict[str, object]:
         issued.append((name, payload))
-        return {"status": "ok", "affected_count": 1}
+        return submit(_config, name, payload)
 
     with (
         cli_daemon_archive(tagged_archive, monkeypatch),
@@ -194,12 +219,14 @@ def test_single_session_tag_route_uses_the_same_operation(
         result = CliRunner().invoke(cli, ["--add-tag", "triage", "find", "id:claude-ai-export:ext-conv-1"])
 
     assert result.exit_code == 0, result.output
-    assert issued == [
-        (
-            "mutation.session.tag",
-            {"session_ids": ["claude-ai-export:ext-conv-1"], "tags": ["triage"]},
-        )
-    ]
+    assert len(issued) == 1 and issued[0][0] == "mutation.session.mark"
+    payload = issued[0][1]
+    assert "session_ids" not in payload
+    selection = payload["selection"]
+    assert isinstance(selection, dict) and selection["mode"] == "page"
+    params = selection["params"]
+    assert isinstance(params, dict) and params["query"] == ["id:claude-ai-export:ext-conv-1"]
+    assert payload["tags"] == ["triage"]
 
 
 @pytest.mark.parametrize(
@@ -209,26 +236,26 @@ def test_single_session_tag_route_uses_the_same_operation(
 def test_zero_match_mutation_is_a_no_op_not_a_refusal(
     tagged_archive: Path, monkeypatch: pytest.MonkeyPatch, args: tuple[str, ...]
 ) -> None:
-    """A selection that matched nothing sends no mutation and reports zero changes.
+    """The resident owner proves an empty page and reports no durable changes."""
+    from polylogue.cli import archive_query
 
-    Anti-vacuity: submitting the empty selection issues an operation whose
-    ``session_ids`` the daemon rejects (``min_length=1``), so the command
-    fails as a mutation refusal instead of exiting 0.
-    """
+    submit = archive_query._submit_mutation_operation
     issued: list[str] = []
 
-    def _served(_config: object, name: str, _payload: dict[str, object]) -> dict[str, object]:
+    def _served(_config: Config, name: str, _payload: dict[str, object]) -> dict[str, object]:
         issued.append(name)
-        return {"status": "ok", "affected_count": 0}
+        return submit(_config, name, _payload)
 
     with (
         cli_daemon_archive(tagged_archive, monkeypatch),
         patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
     ):
+        before = _user_tier_digest(tagged_archive)
         result = CliRunner().invoke(cli, [*args, "find", "origin:chatgpt-export"])
+        assert _user_tier_digest(tagged_archive) == before
 
     assert result.exit_code == 0, (result.output, repr(result.exception))
-    assert issued == []
+    assert issued == ["mutation.session.mark"]
     payload = json.loads(result.output)
     assert payload["status"] == "ok"
     assert all(payload.get(key) in (None, 0) for key in ("affected_count", "tag_count", "applied_count"))

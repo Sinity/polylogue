@@ -1191,42 +1191,51 @@ class AuditRepository:
         return tuple(parts)
 
     def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
-        """Reconstruct a preview response from ordered normalized authority rows."""
-        parts = self.machine_parts(binding)
-        sample: list[str] = []
-        count = 0
-        expiries: list[int] = []
-        refs = [str(part["preview_ref"]) for part in parts]
+        """Describe a sealed preview from bounded durable facts, not a ref list."""
+        from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
+        record = self.machine_request(binding)
+        if record is None or record["artifact_kind"] != "preview-batch":
+            raise ValueError("machine preview selection is not sealed")
+        args = (binding.archive_identity, binding.request_id)
         with self._connection() as conn:
-            for ref in refs:
-                row = conn.execute(
-                    "SELECT expires_at_ms FROM operation_previews WHERE preview_id = ?", (ref,)
-                ).fetchone()
-                if row is None:
-                    raise ValueError("machine preview authority is missing")
-                expiries.append(int(row[0]))
-                count += int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM operation_preview_targets WHERE preview_id = ?", (ref,)
-                    ).fetchone()[0]
+            facts = conn.execute(
+                "SELECT COUNT(*), MIN(v.expires_at_ms) FROM machine_request_parts p "
+                "JOIN operation_previews v ON v.preview_id = p.preview_ref "
+                "WHERE p.archive_identity = ? AND p.request_id = ?",
+                args,
+            ).fetchone()
+            count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM machine_request_parts p JOIN operation_preview_targets t "
+                    "ON t.preview_id = p.preview_ref WHERE p.archive_identity = ? AND p.request_id = ?",
+                    args,
+                ).fetchone()[0]
+            )
+            sample = [
+                str(row[0]).removeprefix("session:")
+                for row in conn.execute(
+                    "SELECT t.target_ref FROM machine_request_parts p JOIN operation_preview_targets t "
+                    "ON t.preview_id = p.preview_ref WHERE p.archive_identity = ? AND p.request_id = ? "
+                    "ORDER BY p.ordinal, t.ordinal LIMIT ?",
+                    (*args, DELETE_PREVIEW_SAMPLE_IDS),
                 )
-                if len(sample) < DELETE_PREVIEW_SAMPLE_IDS:
-                    sample.extend(
-                        str(row[0]).removeprefix("session:")
-                        for row in conn.execute(
-                            "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? "
-                            "ORDER BY ordinal LIMIT ?",
-                            (ref, DELETE_PREVIEW_SAMPLE_IDS - len(sample)),
-                        )
-                    )
+            ]
+            first = conn.execute(
+                "SELECT preview_ref FROM machine_request_parts WHERE archive_identity = ? AND request_id = ? "
+                "ORDER BY ordinal LIMIT 1",
+                args,
+            ).fetchone()
+        if facts[0] != record["part_count"] or first is None:
+            raise ValueError("machine preview authority is incomplete")
         return {
             "status": "prepared",
             "operation": "delete",
-            "preview_ref": refs[0],
-            "preview_refs": refs,
+            "reference": AcceptedOperationReference.from_record(record).to_dict(),
+            **({"preview_ref": str(first[0])} if facts[0] == 1 else {}),
             "session_ids_sample": sample,
             "session_count": count,
-            "expires_at_ms": min(expiries),
+            "expires_at_ms": int(facts[1]),
         }
 
     @classmethod
@@ -3684,6 +3693,75 @@ class AuditRepository:
                 json.dumps(dict(detail), sort_keys=True, separators=(",", ":")),
             ),
         )
+
+    def iter_machine_parts(self, binding: MachineRequestBinding) -> Iterator[dict[str, object]]:
+        """Read durable parts in bounded pages without holding a reader over writes."""
+        if self.machine_request(binding) is None:
+            return
+        after = -1
+        while True:
+            with self._connection() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM machine_request_parts WHERE archive_identity = ? AND request_id = ? "
+                    "AND ordinal > ? ORDER BY ordinal LIMIT ?",
+                    (binding.archive_identity, binding.request_id, after, MACHINE_PAGE_PARTS),
+                ).fetchall()
+            if not rows:
+                return
+            for row in rows:
+                after = int(row["ordinal"])
+                yield dict(row)
+
+    def machine_delete_preview_origin(self, binding: MachineRequestBinding) -> str | None:
+        """Recover the exact source preview phase from durable shared preview refs."""
+        with self._connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT origin.request_id FROM machine_request_parts current "
+                "JOIN machine_request_parts source ON source.preview_ref = current.preview_ref "
+                "JOIN machine_requests origin ON origin.request_id = source.request_id AND origin.archive_identity = source.archive_identity "
+                "WHERE current.archive_identity = ? AND current.request_id = ? "
+                "AND origin.operation_name = 'mutation.session.delete.preview' AND origin.artifact_kind = 'preview-batch' LIMIT 2",
+                (binding.archive_identity, binding.request_id),
+            ).fetchall()
+        if len(rows) != 1:
+            return None
+        return str(rows[0][0])
+
+    def machine_user_change_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
+        """Count selected sessions and changed families from durable plan/run facts."""
+        population = """WITH selected(session_id) AS (
+            SELECT substr(t.target_ref, 9) FROM machine_request_parts p
+            JOIN operation_preview_targets t ON t.preview_id = p.preview_ref
+            WHERE p.archive_identity = ? AND p.request_id = ? AND t.target_ref LIKE 'session:%'
+            UNION
+            SELECT json_extract(v.plan_json, '$.context.owner_session_id') FROM machine_request_parts p
+            JOIN operation_previews v ON v.preview_id = p.preview_ref
+            WHERE p.archive_identity = ? AND p.request_id = ?
+              AND json_extract(v.plan_json, '$.context.owner_session_id') IS NOT NULL
+        ) """
+        args = (binding.archive_identity, binding.request_id) * 2
+        with self._connection() as conn:
+            count = int(conn.execute(population + "SELECT COUNT(*) FROM selected", args).fetchone()[0])
+            sample = [
+                str(row[0])
+                for row in conn.execute(
+                    population + "SELECT session_id FROM selected ORDER BY session_id LIMIT 5", args
+                )
+            ]
+            changed = dict(
+                conn.execute(
+                    "SELECT r.operation_name, SUM(r.affected_count) FROM machine_request_parts p "
+                    "JOIN operation_runs r ON r.operation_id = p.operation_id "
+                    "WHERE p.archive_identity = ? AND p.request_id = ? GROUP BY r.operation_name",
+                    (binding.archive_identity, binding.request_id),
+                )
+            )
+        return {
+            "session_count": count,
+            "session_ids_sample": sample,
+            "tag_count": int(changed.get("mutate-bulk-tag-sessions", 0)),
+            "applied_count": int(changed.get("mutate-bulk-set-metadata", 0)),
+        }
 
 
 __all__ = ["AuditRepository", "AuditTargetState", "plan_from_stored_payload", "token_sha256"]

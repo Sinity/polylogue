@@ -75,7 +75,7 @@ class SessionDeleteActuator(ConvergentReplay):
 
     Real production mutation: ``ArchiveStore.delete_sessions`` -- the single
     low-level primitive CLI ``delete`` and MCP ``write(operation=
-    'delete_session')`` both already reach, via ``_emit_delete`` and
+    'delete_session')`` both reach, via the resident selection executor and
     ``PolylogueArchiveMixin.delete_session_safe`` respectively. This actuator
     does not change that primitive; it makes the *authorization path* to it
     shared instead of independently reimplemented per surface.

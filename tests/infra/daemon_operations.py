@@ -18,6 +18,7 @@ import traceback
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -33,6 +34,14 @@ from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+if TYPE_CHECKING:
+    from polylogue.operations.mutation_transaction import (
+        MutationAuthorization,
+        MutationPreview,
+        MutationPrincipal,
+        MutationReceipt,
+    )
 
 
 class _CoordinatorLoop:
@@ -301,3 +310,96 @@ def daemon_serving_archive(archive_root: Path, *, session_derivation: bool = Fal
         ) as stack,
     ):
         yield stack
+
+
+def accepted_operation_reference(
+    operation: str, *, request_id: str, artifact_kind: str, part_count: int = 1
+) -> dict[str, object]:
+    """Build a neutral declared wire reference for surface transport doubles."""
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
+    return AcceptedOperationReference(
+        archive_identity="synthetic-archive",
+        request_id=request_id,
+        principal_ref="synthetic-actor",
+        fingerprint="0" * 64,
+        operation_name=operation,
+        artifact_kind=artifact_kind,
+        artifact_ref=f"synthetic:{artifact_kind}",
+        accepted_at_ms=1,
+        part_count=part_count,
+        accepted_deadline_unix_ms=None,
+    ).to_dict()
+
+
+def prepare_bound_delete(
+    stack: DaemonOperationStack, session_ids: tuple[str, ...]
+) -> tuple[MutationPreview, MutationAuthorization, MutationPrincipal]:
+    """Borrow the original UDS-authenticated plan and authorization for actuator faults."""
+    from unittest.mock import patch
+
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    original_call = stack.runtime.call
+    authenticated: list[MutationPrincipal] = []
+
+    def capture(request: DaemonOperationRequest, principal: MutationPrincipal, **kwargs: Any) -> Any:
+        if request.operation == "mutation.session.delete.authorize":
+            authenticated.append(principal)
+        return original_call(request, principal, **kwargs)
+
+    preview_envelope = stack.client.operation_to_completion(
+        "mutation.session.delete.preview", {"session_ids": list(session_ids)}, archive_root=str(stack.archive_root)
+    )
+    assert preview_envelope is not None and preview_envelope["outcome"] == "completed", preview_envelope
+    preview = preview_envelope["result"]
+    with patch.object(stack.runtime, "call", side_effect=capture):
+        authorization_envelope = stack.client.operation_to_completion(
+            "mutation.session.delete.authorize",
+            {"preview_ref": preview["preview_ref"]},
+            archive_root=str(stack.archive_root),
+        )
+    assert authorization_envelope is not None and authorization_envelope["outcome"] == "completed", (
+        authorization_envelope
+    )
+    result = authorization_envelope["result"]
+    assert len(authenticated) == 1
+    principal = authenticated[0]
+
+    def load() -> tuple[MutationPreview, MutationAuthorization, MutationPrincipal]:
+        audit = AuditRepository(stack.archive_root / "audit.db")
+        bound_preview, authorization = audit.authorization_for_principal(result["authorization_ref"], principal)
+        return bound_preview, authorization, principal
+
+    return stack.write_bridge.run_sync("test.delete.original-authority", load)
+
+
+def execute_bound_delete(
+    stack: DaemonOperationStack,
+    preview: MutationPreview,
+    authorization: MutationAuthorization,
+    principal: MutationPrincipal,
+) -> MutationReceipt:
+    """Execute the original bound actuator under the actual daemon writer creator."""
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs
+    from polylogue.operations.mutation_transaction import OperationExecutor
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    def execute() -> MutationReceipt:
+        audit = AuditRepository(
+            stack.archive_root / "audit.db", attempt_owner_id=AuditRepository.current_process_attempt_owner()
+        )
+        actuator = SessionDeleteActuator()
+        session_ids = tuple(target.ref.removeprefix("session:") for target in preview.plan.targets)
+        with ArchiveStore.open_existing(stack.archive_root, read_only=False) as archive:
+            return OperationExecutor(audit=audit, archive_root=stack.archive_root).execute_bound(
+                runtime_operation_binding(actuator),
+                preview,
+                authorization,
+                SessionDeleteArgs(archive=archive, session_ids=session_ids),
+            )
+
+    return stack.write_bridge.run_sync("test.delete.bound-actuator", execute)

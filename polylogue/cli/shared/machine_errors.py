@@ -244,6 +244,7 @@ def error_mutation_partially_applied(
     completed_chunks: int,
     affected_count: int,
     not_attempted: tuple[int, ...],
+    not_attempted_count: int | None,
     stop_reason: str | None,
 ) -> MachineError:
     """Build the machine envelope for a batched write that applied in part."""
@@ -252,6 +253,7 @@ def error_mutation_partially_applied(
         "completed_chunks": completed_chunks,
         "affected_count": affected_count,
         "not_attempted": list(not_attempted),
+        "not_attempted_count": not_attempted_count,
     }
     if stop_reason is not None:
         details["stop_reason"] = stop_reason

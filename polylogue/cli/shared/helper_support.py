@@ -83,12 +83,14 @@ class MutationPartiallyAppliedRefusal(click.ClickException):
         completed_chunks: int,
         affected_count: int,
         not_attempted: tuple[int, ...],
+        not_attempted_count: int | None,
         stop_reason: str | None,
     ) -> None:
         self.operation = operation
         self.completed_chunks = completed_chunks
         self.affected_count = affected_count
         self.not_attempted = not_attempted
+        self.not_attempted_count = not_attempted_count
         self.stop_reason = stop_reason
         super().__init__(detail)
 
@@ -117,14 +119,18 @@ def partially_applied_refusal(exc: Exception, operation: str) -> MutationPartial
         if isinstance(raw_not_attempted, list)
         else ()
     )
+    raw_count = data.get("not_attempted_count")
+    not_attempted_count = raw_count if type(raw_count) is int and raw_count >= len(not_attempted) else None
+    count_text = str(not_attempted_count) if not_attempted_count is not None else "unknown"
     stop_reason = data.get("stop_reason")
     return MutationPartiallyAppliedRefusal(
         f"{operation} partially applied ({exc.code}): {completed_chunks} part(s) committed, "
-        f"{affected_count} row(s) affected; {len(not_attempted)} part(s) not attempted",
+        f"{affected_count} row(s) affected; {count_text} part(s) not attempted",
         operation=operation,
         completed_chunks=completed_chunks,
         affected_count=affected_count,
         not_attempted=not_attempted,
+        not_attempted_count=not_attempted_count,
         stop_reason=str(stop_reason) if stop_reason is not None else None,
     )
 
@@ -165,6 +171,22 @@ def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
     if partial is not None:
         return partial
     if isinstance(exc, OperationFailedError):
+        if exc.code == "selection_empty":
+            from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+            return EmptyCardinalityError(str(exc.detail))
+        if exc.code == "selection_ambiguous":
+            from polylogue.cli.contextual_errors import NextAction
+            from polylogue.cli.verb_cardinality import AmbiguousCardinalityError
+
+            sample = exc.data.get("session_ids_sample")
+            candidates = tuple(value for value in sample if isinstance(value, str)) if isinstance(sample, list) else ()
+            return AmbiguousCardinalityError(
+                str(exc.detail),
+                candidates=candidates,
+                bounded=True,
+                next_actions=(NextAction("Act on every match", "polylogue find <QUERY> then mark/delete --all"),),
+            )
         return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
     return click.ClickException(f"{operation} failed: {exc}")
 

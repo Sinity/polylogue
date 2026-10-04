@@ -2495,7 +2495,7 @@ async def test_delete_session_refuses_an_unowned_foreign_or_inactive_preview(
         cancelled = await archive.prepare_delete_session(target)
         assert cancelled.preview_ref is not None
         await submit_facade_operation(
-            archive.config, "mutation.session.delete.cancel", {"preview_refs": [cancelled.preview_ref]}
+            archive.config, "mutation.session.delete.cancel", {"preview_ref": cancelled.preview_ref}
         )
         with pytest.raises(DaemonOperationRejectedError) as stale:
             await archive.delete_session_safe(target, preview_ref=cancelled.preview_ref)

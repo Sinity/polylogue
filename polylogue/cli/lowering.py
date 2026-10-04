@@ -321,3 +321,46 @@ def lower_query_units(
         if params.get(source_key):
             query_params[dest_key] = "1"
     return OperationRequest("query.units", {"params": query_params})
+
+
+def lower_mutation_selection(
+    request: RootModeRequest,
+    *,
+    mode: str,
+    limit: int | None = None,
+    offset: int | None = None,
+) -> dict[str, object]:
+    """Keep query membership and the command's cardinality intent together."""
+    params, terms = lower_query_params({**_selection_params(request), "query": request.query_terms})
+    params["query"] = list(terms)
+    if mode == "page":
+        if limit is not None:
+            params["limit"] = limit
+        if offset is not None:
+            params["offset"] = offset
+    return {"params": params, "mode": mode}
+
+
+def lower_user_change(
+    request: RootModeRequest,
+    *,
+    mode: str,
+    limit: int | None = None,
+    offset: int | None = None,
+    tags: Sequence[str] = (),
+    remove_tags: Sequence[str] = (),
+    add_marks: Sequence[str] = (),
+    remove_marks: Sequence[str] = (),
+    pairs: Sequence[tuple[str, str]] = (),
+    note_text: str | None = None,
+) -> dict[str, object]:
+    """Lower one complete User intent onto the resident canonical selection."""
+    return {
+        "selection": lower_mutation_selection(request, mode=mode, limit=limit, offset=offset),
+        "tags": list(tags),
+        "remove_tags": list(remove_tags),
+        "add_marks": list(add_marks),
+        "remove_marks": list(remove_marks),
+        "pairs": [list(pair) for pair in pairs],
+        "note_text": note_text,
+    }

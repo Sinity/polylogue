@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ntpath import basename
@@ -130,3 +131,13 @@ def search_row(hit: object, *, message_count: int | None = None) -> tuple[Sessio
 
 
 __all__ = ["TITLE_BUDGET", "SNIPPET_BUDGET", "SessionRowProjection", "relative_time", "session_row", "search_row"]
+
+
+def query_session_row(row: Mapping[str, object], *, ranked: bool) -> Mapping[str, object]:
+    """Project the canonical session grain from a list row or a ranked hit."""
+    if not ranked:
+        return row
+    session = row.get("session")
+    if not isinstance(session, Mapping):
+        raise ValueError("canonical ranked hit returned no session object")
+    return session

@@ -795,14 +795,14 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
         assert preview is not None
         authorization = first.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-authorize",
         )
         assert authorization is not None
         lost = first.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-execute",
         )
@@ -831,7 +831,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
             connection.commit()
         recovered = restarted.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="indeterminate-execute",
         )
@@ -897,14 +897,14 @@ def test_crash_recovery_replays_a_delete_on_exactly_the_recorded_id_not_a_prefix
             assert preview["result"]["session_count"] == 1
             authorization = first.client.operation_to_completion(
                 "mutation.session.delete.authorize",
-                {"preview_refs": preview["result"]["preview_refs"]},
+                {"preview_request_id": preview["result"]["reference"]["request_id"]},
                 archive_root=str(root),
                 request_id="prefix-authorize",
             )
             assert authorization is not None
             lost = first.client.operation_to_completion(
                 "mutation.session.delete.execute",
-                {"authorization_refs": authorization["result"]["authorization_refs"]},
+                {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
                 archive_root=str(root),
                 request_id="prefix-execute",
             )
@@ -955,14 +955,14 @@ def test_delete_preview_count_equals_the_applied_count_and_spares_prefix_sibling
         prepared_count = preview["result"]["session_count"]
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="counted-authorize",
         )
         assert authorization is not None
         executed = stack.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id="counted-execute",
         )
@@ -1016,14 +1016,14 @@ def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_
         assert preview is not None
         authorization = first.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
         )
         assert authorization is not None
         crash["armed"] = True
         stranded = first.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id=request_id,
         )
@@ -1035,7 +1035,7 @@ def test_restart_resumes_an_accepted_request_whose_daemon_died_before_its_first_
     with running_daemon_operations(root) as restarted:
         resumed = restarted.client.operation_to_completion(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(root),
             request_id=request_id,
         )
@@ -1079,7 +1079,7 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
     monkeypatch.setattr(SessionDeleteActuator, "apply", blocked_apply)
     request_id = "disconnect-after-acceptance"
     accepted_reference: dict[str, object]
-    authorization_refs: list[str]
+    authorization_request_id: str
     with running_daemon_operations(root, seed_archive=seed) as stack:
         preview = stack.client.operation_to_completion(
             "mutation.session.delete.preview",
@@ -1089,17 +1089,17 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
         assert preview is not None
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview["result"]["preview_refs"]},
+            {"preview_request_id": preview["result"]["reference"]["request_id"]},
             archive_root=str(root),
         )
         assert authorization is not None
-        authorization_refs = list(authorization["result"]["authorization_refs"])
+        authorization_request_id = str(authorization["result"]["reference"]["request_id"])
 
         from polylogue.operations.daemon_protocol import DaemonOperationRequest
 
         request = DaemonOperationRequest(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization_refs},
+            {"authorization_request_id": authorization_request_id},
             archive_root=str(root),
             request_id=request_id,
             deadline_ms=10_000,
@@ -1295,7 +1295,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
         preview_result = preview["result"]
         authorization = stack.client.operation_to_completion(
             "mutation.session.delete.authorize",
-            {"preview_refs": preview_result["preview_refs"]},
+            {"preview_request_id": preview_result["reference"]["request_id"]},
             archive_root=str(stack.archive_root),
         )
         assert authorization is not None
@@ -1306,7 +1306,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
             client = DaemonClient(stack.socket_path, timeout_s=5)
             response = client.operation(
                 "mutation.session.delete.execute",
-                {"authorization_refs": authorization["result"]["authorization_refs"]},
+                {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
                 archive_root=str(stack.archive_root),
                 request_id=execute_request_id,
             )
@@ -1460,7 +1460,7 @@ def test_cancelled_long_delete_retains_writer_until_blocked_apply_releases(
     with running_daemon_operations(tmp_path / "archive") as restarted:
         replay = restarted.client.operation(
             "mutation.session.delete.execute",
-            {"authorization_refs": authorization["result"]["authorization_refs"]},
+            {"authorization_request_id": authorization["result"]["reference"]["request_id"]},
             archive_root=str(restarted.archive_root),
             request_id=execute_request_id,
         )

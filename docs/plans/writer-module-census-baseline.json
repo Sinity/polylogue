@@ -90,6 +90,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/operations/daemon_mutations.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/facade_writers.py",
     "tiers": [
       "index"

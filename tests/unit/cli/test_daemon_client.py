@@ -289,7 +289,7 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
         DaemonClient(socket_path, timeout_s=0.01).operation(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}
         )
 
 
@@ -324,7 +324,7 @@ def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
     monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", InterruptedConnection)
 
     with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
-        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_ref": "ref-1"})
 
 
 def test_initial_post_interrupt_signals_the_same_request_without_claiming_no_effect(
@@ -344,7 +344,7 @@ def test_initial_post_interrupt_signals_the_same_request_without_claiming_no_eff
     monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
     with pytest.raises(DaemonMutationIndeterminateError):
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert cancelled == ["interrupt-request"]
 
@@ -362,9 +362,7 @@ def test_write_deadline_does_not_mutate_a_shared_clients_read_timeout(
         return None
 
     monkeypatch.setattr(client, "_request_json_response", request)
-    assert (
-        client.operation("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, deadline_ms=1500) is None
-    )
+    assert client.operation("mutation.session.delete.execute", {"authorization_ref": "ref-1"}, deadline_ms=1500) is None
     assert captured == [(0.25, 2.5)]
     assert client.timeout_s == 0.25
 
@@ -391,7 +389,7 @@ def test_await_interrupt_cancels_the_original_request_not_the_control_exchange(
     monkeypatch.setattr(client, "cancel", lambda request_id, **kwargs: cancelled.append(request_id))
     with pytest.raises(DaemonMutationIndeterminateError) as raised:
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert cancelled == ["accepted-mutation"]
     assert raised.value.request_id == "accepted-mutation"
@@ -420,7 +418,7 @@ def test_await_disconnect_reports_the_accepted_mutation_id(monkeypatch: pytest.M
     monkeypatch.setattr(client, "await_operation", disconnected)
     with pytest.raises(DaemonMutationIndeterminateError) as raised:
         client.operation_to_completion(
-            "mutation.session.delete.execute", {"authorization_refs": ["ref-1"]}, archive_root=str(tmp_path)
+            "mutation.session.delete.execute", {"authorization_ref": "ref-1"}, archive_root=str(tmp_path)
         )
     assert raised.value.request_id == "accepted-mutation"
 
@@ -688,7 +686,7 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
     assert result["result"]["result"] == {"done": 1, "pending": 0, "failed": 0}
 
 
-_MUTATION: tuple[str, dict[str, object]] = ("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+_MUTATION: tuple[str, dict[str, object]] = ("mutation.session.delete.execute", {"authorization_ref": "ref-1"})
 
 
 def _captured_operation_envelope(tmp_path: Path, operation: str, request_id: str) -> tuple[dict[str, object], str]:

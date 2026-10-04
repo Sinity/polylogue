@@ -4429,6 +4429,8 @@ class MutationResultPayload(SurfacePayloadModel):
     applied_count: int | None = None
     operation: MutationOperation | None = None
     """Closed mutation discriminator for surfaces that expose operation names."""
+    session_ids_sample: tuple[str, ...] | None = None
+    reference: dict[str, object] | None = None
     session_ids: tuple[str, ...] | None = None
     """Session ids enumerated by a CLI bulk operation (e.g. the delete dry-run
     preview lists the sessions that *would* be deleted). ``None`` for
