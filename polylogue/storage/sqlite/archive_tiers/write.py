@@ -7185,7 +7185,9 @@ def _write_attachment_row(
         ON CONFLICT(attachment_id) DO UPDATE SET
             display_name = COALESCE(excluded.display_name, attachments.display_name),
             media_type = COALESCE(excluded.media_type, attachments.media_type),
-            byte_count = excluded.byte_count,
+            byte_count = CASE
+                WHEN excluded.blob_hash IS NULL AND attachments.blob_hash IS NOT NULL
+                THEN attachments.byte_count ELSE excluded.byte_count END,
             blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
             acquisition_status =
                 CASE WHEN excluded.acquisition_status = 'acquired'
