@@ -72,6 +72,18 @@
           "title": "Origin",
           "type": "string"
         },
+        "outcome_unknown_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Outcome Unknown Reason"
+        },
         "output_text": {
           "anyOf": [
             {

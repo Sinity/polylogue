@@ -1838,6 +1838,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     is_error: int | None = None
     exit_code: int | None = None
     result_state: ActionResultState
+    outcome_unknown_reason: str | None = None
     followup_class: str | None = None
     followup_message_ref: str | None = None
 

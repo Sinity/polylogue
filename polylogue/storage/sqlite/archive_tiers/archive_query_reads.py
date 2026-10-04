@@ -151,6 +151,7 @@ class ArchiveActionQueryRow:
     #: Full character length of ``output_text`` when the read returned only
     #: its leading prefix (``text_prefix_chars``); ``None`` when it is whole.
     output_text_chars: int | None = None
+    outcome_unknown_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +227,7 @@ def _archive_action_query_row(row: sqlite3.Row, *, with_text_length: bool = Fals
         is_error=is_error,
         exit_code=exit_code,
         result_state=ActionResultState(str(row["result_state"])),
+        outcome_unknown_reason=row["outcome_unknown_reason"],
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
         output_text_chars=(
@@ -1125,6 +1127,7 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("is_error", "a.is_error"),
     ("exit_code", "a.exit_code"),
     ("result_state", "a.result_state"),
+    ("outcome_unknown_reason", "a.outcome_unknown_reason"),
     ("followup_class", "a.followup_class"),
     ("followup_message_ref", "a.followup_message_ref"),
 )
@@ -4201,6 +4204,7 @@ def query_session_action_occurrences(
             a.is_error,
             a.exit_code,
             a.result_state,
+            a.outcome_unknown_reason,
             NULL AS followup_class,
             NULL AS followup_message_ref
         FROM {action_relation_name} a
