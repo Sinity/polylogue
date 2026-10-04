@@ -1827,22 +1827,28 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if subject == "capability":
                 from polylogue.archive.query.capability_catalog import capability_detail_page
+                from polylogue.core.errors import ArchiveTierUnavailableError, SchemaRefusalError
 
-                stats = await hooks.get_polylogue().stats()
+                counts = None
+                gaps: tuple[str, ...] = ()
+                try:
+                    counts = await hooks.get_polylogue().storage_counts()
+                except (ArchiveTierUnavailableError, SchemaRefusalError):
+                    gaps = ("archive_counts_unavailable",)
                 page = capability_detail_page(
                     search=search,
                     offset=offset,
                     limit=limit,
-                    stats={
-                        "total_sessions": stats.session_count,
-                        "total_messages": stats.message_count,
-                    },
+                    stats=counts,
                 )
                 return hooks.json_payload(
                     MCPRootPayload(
                         root={
                             "subject": subject,
                             **page,
+                            "outcome": decide_outcome(
+                                matched=len(cast(list[object], page["items"])), degraded=gaps
+                            ).to_dict(),
                             "read_views": list(mcp_read_view_names()),
                             # Identities only: the full profile metadata has
                             # its own facade route and would not fit a

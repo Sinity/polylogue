@@ -7703,8 +7703,8 @@ class ArchiveStore:
             return self._stats_by_for_selection(group_by, selected_where, params)
         raise ValueError(f"aggregate mode is not declared: {mode!r}")
 
-    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
-        """Reduce a supplied SQL session relation without reconstructing membership."""
+    def _counts_for_selection(self, where: str, params: list[object]) -> dict[str, int]:
+        """Reduce session counters without hydrating content or computing breakdowns."""
         row = self._conn.execute(
             f"""
             SELECT COUNT(*) AS total_sessions,
@@ -7714,6 +7714,18 @@ class ArchiveStore:
             """,
             params,
         ).fetchone()
+        return {
+            "total_sessions": int(row["total_sessions"]),
+            "total_messages": int(row["total_messages"]),
+        }
+
+    def counts(self) -> dict[str, int]:
+        """Return archive counts from the canonical session counters."""
+        return self._counts_for_selection("", [])
+
+    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
+        """Reduce a supplied SQL session relation without reconstructing membership."""
+        counts = self._counts_for_selection(where, params)
         provider_rows = self._conn.execute(
             f"""
             SELECT s.origin, COUNT(*) AS count
@@ -7794,8 +7806,8 @@ class ArchiveStore:
                 """
             ).fetchall()
         return ArchiveStats(
-            total_sessions=int(row["total_sessions"] or 0) if row is not None else 0,
-            total_messages=int(row["total_messages"] or 0) if row is not None else 0,
+            total_sessions=counts["total_sessions"],
+            total_messages=counts["total_messages"],
             total_attachments=int(attachment_row["total_attachments"] or 0) if attachment_row is not None else 0,
             origins={str(provider_row["origin"]): int(provider_row["count"] or 0) for provider_row in provider_rows},
             role_counts={
