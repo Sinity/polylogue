@@ -318,17 +318,15 @@ class DiscoveryPhase(Enum):
 class DomainCursor:
     """Where one domain's enumeration stopped, and how to resume it.
 
-    ``page_cursor`` is the opaque value that *produced* the current page and
-    ``offset`` is how many of that page's keys were consumed, so resuming
-    re-requests one page and skips into it. Carrying the produced page's own
-    cursor instead of a per-key cursor keeps the adapter contract at "give me
-    the next page", which a keyset scan can serve without a stable per-key
-    address.
+    ``pending_keys`` retains only the unconsumed suffix of one bounded page.
+    ``page_cursor`` requests the page after that suffix. Publication may remove
+    keys from discovery, so resumption never applies an offset to a new query.
+    Pending keys are inspected again; this disposable custody is not authority.
     """
 
     phase: DiscoveryPhase = DiscoveryPhase.REQUIRED
     page_cursor: str | None = None
-    offset: int = 0
+    pending_keys: tuple[str, ...] = ()
 
     @property
     def swept(self) -> bool:
@@ -687,6 +685,11 @@ class _Pass:
     # ── discovery ──────────────────────────────────────────────────
 
     def fetch(self, adapter: DerivationAdapter, position: DomainCursor, limit: int) -> KeyPage:
+        if position.pending_keys:
+            keys = position.pending_keys[:limit]
+            self.pages += 1
+            self.discovered += len(keys)
+            return KeyPage(keys, position.page_cursor)
         if position.phase is DiscoveryPhase.REQUIRED:
             raw = adapter.required_page(self.frame, cursor=position.page_cursor, limit=limit)
         else:
@@ -708,11 +711,14 @@ class _Pass:
     @staticmethod
     def advance(position: DomainCursor, page: KeyPage) -> DomainCursor:
         """Move past a fully consumed page: next page, next phase, or done."""
+        remainder = position.pending_keys[len(page.keys) :]
+        if remainder:
+            return DomainCursor(position.phase, position.page_cursor, remainder)
         if page.next_cursor is not None:
-            return DomainCursor(position.phase, page.next_cursor, 0)
+            return DomainCursor(position.phase, page.next_cursor)
         if position.phase is DiscoveryPhase.REQUIRED:
-            return DomainCursor(DiscoveryPhase.EXCESS, None, 0)
-        return DomainCursor(DiscoveryPhase.DONE, None, 0)
+            return DomainCursor(DiscoveryPhase.EXCESS)
+        return DomainCursor(DiscoveryPhase.DONE)
 
     # ── publication barrier ────────────────────────────────────────
 
@@ -1127,7 +1133,7 @@ class _Pass:
                 self.unreadable_domains.add(domain)
                 break
 
-            keys = page.keys[position.offset :]
+            keys = page.keys
             if not keys:
                 position = self.advance(position, page)
                 continue
@@ -1234,7 +1240,11 @@ class _Pass:
             ):
                 self.cursor_unsettled_domains.add(domain)
             if stopped_at is not None:
-                return DomainCursor(position.phase, position.page_cursor, position.offset + stopped_at)
+                return DomainCursor(
+                    position.phase,
+                    page.next_cursor,
+                    (*keys[stopped_at:], *position.pending_keys[len(page.keys) :]),
+                )
             position = self.advance(position, page)
 
         return position
