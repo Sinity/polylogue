@@ -121,3 +121,5 @@ Message-branch predicates retain the default top-level session scope; only expli
 The CLI message walk narrows every continuation request to the remaining requested delivery, through the canonical session-read window contract. It preserves the returned continuation and next offset; it does not trim a wider page after advancing its cursor. Full exports continue using their bounded window size.
 
 Session-list envelopes from both full sessions and summaries use the canonical row projection for repository and working-directory display names. Full repository URLs and working-directory paths remain in their declared domain fields; explicit presentation overrides remain supported.
+
+Query-unit capability rows include their executable field names from the canonical unit metadata. Capability search covers these fields and existing operator and lowering bindings, so structural fields can be discovered without first guessing a unit.

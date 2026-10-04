@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from polylogue.archive.query.fields import QUERY_FIELD_DESCRIPTORS, QueryFieldDescriptor
-from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptors
+from polylogue.archive.query.metadata import QueryUnitDescriptor, query_unit_descriptors, query_unit_field_names
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -227,6 +227,7 @@ def _unit_payload(descriptor: QueryUnitDescriptor, *, stable_order: int) -> dict
         },
         "operators": ["where", "exists"] if descriptor.exists_supported else ["where"],
         "value_type": "record",
+        "fields": list(query_unit_field_names(descriptor.unit)),
         "cardinality": "many",
         "cost": {
             "shape": "indexed" if descriptor.lowerer_kind == "sql" else "post_filter",
