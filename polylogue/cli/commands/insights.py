@@ -20,7 +20,6 @@ from polylogue.analysis.audit import (
     DEFAULT_AUDIT_SAMPLE_LIMIT,
     InsightRigorAuditQuery,
     InsightRigorAuditReport,
-    build_insight_rigor_audit_report,
 )
 from polylogue.analysis.export_bundles import (
     InsightExportBundleError,
@@ -597,12 +596,18 @@ def insights_audit_command(
     env: AppEnv = ctx.obj
     try:
         query = InsightRigorAuditQuery(insights=insights, sample_limit=sample_limit)
-        report = run_coroutine_sync(build_insight_rigor_audit_report(env.polylogue, query))
-    except ArchiveInsightUnavailableError as exc:
+        from polylogue.operations.insight_contracts import InsightRigorResult
+
+        result_payload, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.rigor", {"query": query.model_dump(mode="json")})
+        )
+        result = InsightRigorResult.model_validate(result_payload)
+        report = result.report
+    except (ArchiveInsightUnavailableError, ValueError, InsightQueryError) as exc:
         fail("insights audit", str(exc))
     wants_json = output_format == "json" or ctx.find_root().params.get("output_format") == "json"
     if wants_json:
-        emit_success(report.model_dump(mode="json"))
+        emit_success({**report.model_dump(mode="json"), "outcome": result.outcome.to_dict()})
         return
     _render_audit_plain(report)
 

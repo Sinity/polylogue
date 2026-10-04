@@ -62,7 +62,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsight,
 )
 from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, build_insight_rigor_audit_report
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.confidence import ConfidenceBand
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
@@ -79,7 +79,6 @@ from polylogue.analysis.readiness import (
     known_insight_readiness_names,
     normalize_insight_readiness_name,
 )
-from polylogue.analysis.rigor import list_rigor_contracts
 from polylogue.analysis.session_label import session_structural_label_for_session
 from polylogue.analysis.temporal_source import time_confidence_for_source
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
@@ -6082,26 +6081,18 @@ class ArchiveStore:
             insights=entries,
         )
 
-    def audit_insight_rigor(self, query: InsightRigorAuditQuery | None = None) -> InsightRigorAuditReport:
-        """Audit insight rigor over read models."""
-        request = query or InsightRigorAuditQuery()
-        targeted = set(request.insights) if request.insights else None
-        entries = []
-        for contract in list_rigor_contracts():
-            if targeted is not None and contract.insight_name not in targeted:
-                continue
-            rows = self._rigor_audit_rows(contract.insight_name, limit=max(request.sample_limit, 0))
-            entries.append(_audit_one(rows, contract))
-        return InsightRigorAuditReport(sample_limit=request.sample_limit, entries=tuple(entries))
+    def audit_insight_rigor(
+        self, query: InsightRigorAuditQuery | None = None, *, checkpoint: Callable[[], None] | None = None
+    ) -> InsightRigorAuditReport:
+        """Sample every registered product on this original pinned reader."""
+        from polylogue.analysis.insight_reads import read_insight_page
+        from polylogue.analysis.registry import build_insight_query, get_insight_type
 
-    def _rigor_audit_rows(self, insight_name: str, *, limit: int) -> list[object]:
-        if insight_name == "session_profiles":
-            return list(self.list_session_profile_insights(limit=limit))
-        if insight_name == "threads":
-            return list(self.list_thread_insights(limit=limit))
-        if insight_name == "session_tag_rollups":
-            return list(self.list_session_tag_rollup_insights(limit=limit))
-        return []
+        def fetch_rows(name: str, limit: int) -> Sequence[object]:
+            request = build_insight_query(get_insight_type(name), limit=limit)
+            return read_insight_page(self, request)
+
+        return build_insight_rigor_audit_report(fetch_rows, query, checkpoint=checkpoint)
 
     def _archive_session_origin_coverage(
         self, *, origin: str | None, since_ms: int | None, until_ms: int | None
