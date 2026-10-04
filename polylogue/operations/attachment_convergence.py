@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO
 
+from polylogue.core.identity_law import attachment_acquisition_coordinate
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
@@ -217,22 +218,8 @@ def _permanent_failure(exc: BaseException) -> bool:
 
 
 def _acquisition_coordinate(row: sqlite3.Row) -> str:
-    """Name the attachment whose bytes a durable source ref carries.
-
-    ``blob_refs`` is keyed on ``(blob_hash, ref_type, ref_id)``; the raw
-    session id alone therefore does not distinguish two attachments of the
-    same raw, and ``source_url`` is ``None`` for every Drive-hosted document
-    (``sources/parsers/drive_support_attachments.py`` never sets it).  Writing
-    one raw-wide coordinate made every multi-attachment raw ambiguous on the
-    way back: after a derived-tier rebuild the survival probe refused, both
-    rows fell through to the provider, and a deleted file turned retained
-    bytes into a terminal ``unavailable`` row.  The provider file id is the
-    stable per-attachment name available at both ends of that round trip.
-    """
-    source_url = row["source_url"]
-    if isinstance(source_url, str) and source_url:
-        return source_url
-    return f"attachment:{row['provider_file_id']}"
+    """Keep the provider coordinate distinct even when payload bytes agree."""
+    return attachment_acquisition_coordinate(row["provider_file_id"], str(row["attachment_id"]))
 
 
 def _surviving_blob_ref(

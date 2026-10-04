@@ -50,7 +50,8 @@ def initialize_runtime_source_fixture(path: Path) -> None:
         initialize_archive_database(path, ArchiveTier.SOURCE)
         return
     with closing(sqlite3.connect(path)) as source:
-        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None)
+        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None, target_version=2)
+        migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=None, allow_pristine_source_baseline=True)
 
 
 def bootstrap_baseline_archive(root: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -429,7 +429,9 @@ def initialize_runtime_tier_probe(
     if tier in DURABLE_MIGRATION_TIERS:
         from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
 
-        migrate_archive_tier(conn, tier, backup_manifest=None)
+        if tier is ArchiveTier.SOURCE:
+            migrate_archive_tier(conn, tier, backup_manifest=None, target_version=2)
+        migrate_archive_tier(conn, tier, backup_manifest=None, allow_pristine_source_baseline=True)
 
 
 def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
@@ -893,7 +895,22 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                     claim = next(
                         (claim for claim in durable_migration_claims(tier) if claim.target_version == current + 1), None
                     )
-                    if claim is None or claim.requires_backup:
+                    pristine_source_step = tier is ArchiveTier.SOURCE and current == 2 and target == 3
+                    if pristine_source_step:
+                        from polylogue.storage.sqlite.migration_runner import (
+                            MigrationError,
+                            _require_pristine_source_attachment_baseline,
+                        )
+
+                        # Fresh construction can resume after slot002 released
+                        # and its bootstrap marker retired. Prove the actual
+                        # pristine Source instead of trusting a first-pass flag.
+                        with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
+                            try:
+                                _require_pristine_source_attachment_baseline(probe, tier)
+                            except MigrationError:
+                                pristine_source_step = False
+                    if claim is None or (claim.requires_backup and not pristine_source_step):
                         from polylogue.core.errors import SchemaSkew
 
                         raise SchemaSkew(
@@ -908,6 +925,7 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                         backup_manifest=None,
                         daemon_stopped_evidence_ref="proof:bootstrap-before-runtime-open",
                         single_writer_evidence_ref="proof:bootstrap-owned-archive",
+                        allow_pristine_source_baseline=pristine_source_step,
                         release_archive_ownership=lambda: None,
                     )
                     with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:

@@ -1323,6 +1323,7 @@ def _authorize_read_operation(
             "schema_version",
             "synchronous",
             "table_info",
+            "table_list",
             "table_xinfo",
             "temp_store",
             "trusted_schema",

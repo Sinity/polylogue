@@ -1485,7 +1485,7 @@ def _insert_blob_ref(conn: sqlite3.Connection, ref: ArchiveSourceBlobRef) -> Non
             """
             INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(blob_hash, ref_type, ref_id) DO NOTHING
+            ON CONFLICT DO NOTHING
             """,
             (ref.blob_hash, ref.raw_id, ref_type, ref.source_path, ref.size_bytes, ref.acquired_at_ms),
         )

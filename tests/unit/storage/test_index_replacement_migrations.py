@@ -73,11 +73,11 @@ def test_source002_rehearses_on_connection_local_schema_replica(tmp_path: Path) 
         proof = migration_runner.rehearse_durable_migration_chain(
             conn,
             ArchiveTier.SOURCE,
-            target_version=2,
+            target_version=3,
             evidence_ref="proof:source002-memory-rehearsal",
         )
         assert proof.matches
-        assert tuple(step.version for step in proof.steps) == (2,)
+        assert tuple(step.version for step in proof.steps) == (2, 3)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
     finally:
         conn.close()
@@ -96,7 +96,7 @@ def test_runtime_probe_installs_numbered_source_effect_without_train_release(
     )
     with closing(sqlite3.connect(":memory:")) as conn:
         initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         partitions = conn.execute(
             "SELECT sql FROM sqlite_schema WHERE name IN "
             "('idx_raw_artifacts_source_identity', 'idx_raw_artifacts_failure_identity')"
@@ -122,7 +122,7 @@ def test_runtime_probe_refuses_populated_or_undeclared_file_connections(tmp_path
             initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE)
         assert conn.execute("SELECT name FROM sqlite_schema").fetchall() == []
         initialize_runtime_tier_probe(conn, ArchiveTier.SOURCE, probe_path=path)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_canonical_birth_marker_stays_baseline_after_source_train_and_reopen(tmp_path: Path) -> None:
@@ -138,7 +138,7 @@ def test_canonical_birth_marker_stays_baseline_after_source_train_and_reopen(tmp
     original = marker_path.read_bytes()
     assert set(json.loads(original)["tier_versions"].values()) == {1}
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     invalidate_active_archive_bootstrap(tmp_path)
     initialize_active_archive_root(tmp_path)
     assert marker_path.read_bytes() == original
@@ -156,7 +156,7 @@ def test_standalone_runtime_source_constructor_refuses_before_creating_baseline(
         with pytest.raises(SchemaSkew) as refusal:
             open_tier(path, ArchiveTier.SOURCE)
         assert refusal.value.found == 0
-        assert refusal.value.expected == 2
+        assert refusal.value.expected == 3
         assert not path.exists()
     conn, _raw_ids = source_baseline(path)
     try:
@@ -180,11 +180,14 @@ def test_source002_preserves_each_windowless_raw_refusal_after_restart(tmp_path:
         with pytest.raises(sqlite3.IntegrityError):
             upsert_raw_artifact(conn, raw_ids[1], missing_coordinates_artifact(raw_ids[1]))
         literal_rows = tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id"))
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=2)
         assert result.applied_versions == (2,)
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == literal_rows
         upsert_raw_artifact(conn, raw_ids[1], missing_coordinates_artifact(raw_ids[1]))
-        assert migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None).applied_versions == ()
+        assert (
+            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=2).applied_versions
+            == ()
+        )
     finally:
         conn.close()
     with closing(sqlite3.connect(path)) as restarted:
@@ -237,7 +240,7 @@ def test_schema_rehearsal_refuses_a_false_index_effect_before_live_mutation(
             migration_runner.rehearse_durable_migration_chain(
                 conn,
                 ArchiveTier.SOURCE,
-                target_version=2,
+                target_version=3,
                 evidence_ref="proof:false-index-claim",
             )
         assert tuple(tuple(row) for row in conn.execute("SELECT name, sql FROM sqlite_schema ORDER BY name")) == before
@@ -333,7 +336,7 @@ def test_failure_between_index_drop_and_create_preserves_old_source(
 
         monkeypatch.setattr(migration_runner, "_execute_migration_sql", interrupted)
         with pytest.raises(failure):
-            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+            migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=2)
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
         assert {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")} == set(raw_ids)
         assert (
@@ -404,7 +407,7 @@ def test_fresh_constructor_records_baseline_before_declared_source002_and_restar
     monkeypatch.setattr(durable_change_train, "execute_durable_change_train", execute)
     initialize_active_archive_root(tmp_path)
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
     initialize_active_archive_root(tmp_path)
 
 
@@ -412,6 +415,7 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite import durable_change_train
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -429,20 +433,23 @@ def test_source002_constructor_preserves_populated_baseline_on_restart(
     finally:
         conn.close()
     monkeypatch.setattr(durable_change_train, "execute_durable_change_train", execute)
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
 
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert tuple(tuple(row) for row in conn.execute("SELECT * FROM raw_sessions ORDER BY raw_id")) == rows
         assert {row[0] for row in conn.execute("SELECT raw_id FROM raw_sessions")} == set(raw_ids)
         upsert_raw_artifact(conn, raw_ids[0], missing_coordinates_artifact(raw_ids[0]))
         upsert_raw_artifact(conn, raw_ids[1], missing_coordinates_artifact(raw_ids[1]))
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
 
 
 def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     bootstrap_baseline_archive(tmp_path, monkeypatch)
@@ -468,7 +475,8 @@ def test_populated_baseline_train_cancellation_rolls_back_and_restarts(
         assert migration_runner._durable_literal_rows_digest(conn) == before
         assert conn.execute("SELECT 1 FROM sqlite_schema WHERE name='idx_raw_artifacts_source_identity'").fetchone()
     monkeypatch.setattr(migration_runner, "_execute_migration_sql", execute)
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
         assert migration_runner._durable_literal_rows_digest(conn) == before
@@ -566,6 +574,7 @@ def test_proven_source_train_recovery_rejects_changed_nul_suffix(
 ) -> None:
     import json
 
+    from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite import durable_change_train
     from polylogue.storage.sqlite.archive_tiers.bootstrap import (
         initialize_active_archive_root,
@@ -580,7 +589,8 @@ def test_proven_source_train_recovery_rejects_changed_nul_suffix(
         conn.commit()
     finally:
         conn.close()
-    initialize_active_archive_root(tmp_path)
+    with pytest.raises(SchemaSkew):
+        initialize_active_archive_root(tmp_path)
     manifest = tmp_path / ".maintenance-state/durable-change-trains/source-002.json"
     train = durable_change_train.load_durable_change_train_manifest(manifest)
     assert train.proof is not None
@@ -647,7 +657,7 @@ def test_literal_row_proof_streams_large_cells_and_primary_keys_inside_write_tra
             _retained, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
-        assert peak < size // 4
+        assert peak < size // 4, (peak, size)
         # The original row is still uncommitted. A different connection or a
         # stale on-disk snapshot cannot prove its last literal byte.
         target_type = "TEXT" if storage_class == "text" else "BLOB"
@@ -726,7 +736,7 @@ def test_schema_rehearsal_reuses_only_bound_pure_inputs_across_physical_archives
                 migration_runner.rehearse_durable_migration_chain(
                     conn,
                     ArchiveTier.SOURCE,
-                    target_version=2,
+                    target_version=3,
                     evidence_ref=f"proof:archive-{number}",
                 )
             )
@@ -764,14 +774,20 @@ def test_source002_retains_large_marker_payloads_with_incremental_row_evidence(t
         del accepted, pending
         conn.commit()
         before = migration_runner._durable_literal_rows_digest(conn)
+        # Measure row evidence application separately from schema-chain preparation.
+        proof = migration_runner.rehearse_durable_migration_chain(
+            conn, ArchiveTier.SOURCE, target_version=3, evidence_ref="proof:large-marker-application"
+        )
         tracemalloc.start()
         try:
-            result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
+            result = migrate_archive_tier(
+                conn, ArchiveTier.SOURCE, backup_manifest=None, target_version=2, schema_replay_proof=proof
+            )
             _retained, peak = tracemalloc.get_traced_memory()
         finally:
             tracemalloc.stop()
         assert result.applied_versions == (2,)
-        assert peak < size // 4
+        assert peak < size // 4, (peak, size)
         assert migration_runner._durable_literal_rows_digest(conn) == before
     finally:
         conn.close()
@@ -796,9 +812,9 @@ def test_source_rehearsal_configuration_ignores_caller_result_factories(
         conn.text_factory = bytes if text_as_bytes else str
         assert migration_runner.durable_preparation_fingerprint(conn, ArchiveTier.SOURCE) == expected
         proof = migration_runner.rehearse_durable_migration_chain(
-            conn, ArchiveTier.SOURCE, target_version=2, evidence_ref="proof:configured-source"
+            conn, ArchiveTier.SOURCE, target_version=3, evidence_ref="proof:configured-source"
         )
-        assert proof.target_version == 2
+        assert proof.target_version == 3
         assert conn.row_factory is (sqlite3.Row if rows_as_mapping else None)
         assert conn.text_factory is (bytes if text_as_bytes else str)
     finally:

@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # changes advance the relevant tier through a numbered migration.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 ARCHIVE_BASELINE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = dict.fromkeys(ArchiveTier, 1)
-SOURCE_TIER_VERSION = 2
+SOURCE_TIER_VERSION = 3
 USER_TIER_VERSION = 1
 AUDIT_TIER_VERSION = 1
 
@@ -42,7 +42,14 @@ ARCHIVE_BASELINE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {
 def _source_runtime_ddl() -> str:
     """Current Source schema is its immutable baseline plus numbered steps."""
     directory = resources.files("polylogue.storage.sqlite.migrations.source")
-    return SOURCE_DDL + "\n" + directory.joinpath("002_raw_artifact_failure_identity.sql").read_text(encoding="utf-8")
+    return (
+        SOURCE_DDL
+        + "\n"
+        + "\n".join(
+            directory.joinpath(name).read_text(encoding="utf-8")
+            for name in ("002_raw_artifact_failure_identity.sql", "003_attachment_coordinate_identity.sql")
+        )
+    )
 
 
 ARCHIVE_DDL_BY_TIER: Mapping[ArchiveTier, str] = {

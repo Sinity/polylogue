@@ -124,6 +124,7 @@ from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     UnsupportedInsightFilterError,
 )
+from polylogue.core.identity_law import attachment_acquisition_coordinate
 from polylogue.core.json import require_json_value
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
@@ -1832,7 +1833,9 @@ class ArchiveStore:
                 ArchiveSourceBlobRef(
                     blob_hash=blob_hash,
                     ref_type="attachment",
-                    source_path=source_path,
+                    source_path=attachment_acquisition_coordinate(
+                        attachment.provider_file_id, attachment.provider_attachment_id
+                    ),
                     size_bytes=size,
                     acquired_at_ms=acquired_at_ms,
                     publication_receipt_id=self._blob_publisher.receipt_id(hash_hex),

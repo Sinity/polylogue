@@ -44,6 +44,25 @@ collations, order, uniqueness and complementary literal predicates in both
 rehearsal and live execution; exact row values, primary keys, foreign keys
 and integrity must survive the owned transaction. Other non-additive changes
 still require verified backup authority (`storage/sqlite/migration_runner.py`).
+### Attachment coordinate migration
+
+Source slot 003 replaces `blob_refs` identity while copying every retained value
+and its original rowid. Attachment references include their provider coordinate
+in the unique key, so identical bytes under two file IDs retain two references.
+Other reference kinds keep their raw or hook owner key. Raw attribution still
+owns liveness and retirement; coordinate identity never encodes a different raw.
+Deferred, inline and prepared attachment acquisition use the same provider file
+coordinate (or the provider attachment ID when no file ID exists).
+
+Populated Source tiers require the existing authenticated, scratch-verified
+backup and numbered daemon train before slot 003 applies. This code change does
+not migrate a live archive. Fresh owned bootstrap and isolated runtime probes
+may instead prove the exact pristine Source v2 schema and literal rows using
+existing evidence owners, including every Source table and canonical seed row.
+The runner rechecks that source-specific authority under its apply lock; an
+empty blob ledger alone is insufficient. No backup receipt is claimed for this
+mode. Coordinates already erased by the predecessor cannot be reconstructed.
+
 Writable canonical bootstrap admits installed trains before runtime version
 validation. Read-only and acquisition-only opens refuse a baseline Source
 tier without applying migrations. A crash after baseline publication resumes

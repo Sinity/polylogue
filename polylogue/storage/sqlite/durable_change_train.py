@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
@@ -705,6 +706,10 @@ def _runtime_consumer_results(
                 elif reference.endswith(":initialize_archive_tier"):
                     with sqlite_connection(":memory:") as probe:
                         value(probe, train.tier)
+                elif reference.endswith(":write_source_blob_refs"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("attachment reference writer requires Source")
+                    detail = _probe_attachment_coordinate_writer(cast(Callable[..., object], value))
                 elif reference.endswith(":write_source_hook_event"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -882,6 +887,37 @@ def _runtime_consumer_results(
                 )
             )
     return tuple(results)
+
+
+def _probe_attachment_coordinate_writer(writer: Callable[..., object]) -> str:
+    """Prove equal bytes keep distinct provider coordinates and raw ownership."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+
+    with sqlite_connection(":memory:") as probe:
+        initialize_runtime_tier_probe(probe, ArchiveTier.SOURCE)
+        blob_hash = hashlib.sha256(b"attachment-coordinate-probe").digest()
+        writer(
+            probe,
+            "attachment-coordinate-raw",
+            tuple(
+                ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    ref_type="attachment",
+                    source_path=f"attachment:{file_id}",
+                    size_bytes=27,
+                    acquired_at_ms=1,
+                )
+                for file_id in ("file-a", "file-b")
+            ),
+        )
+        rows = probe.execute("SELECT ref_id, source_path, blob_hash FROM blob_refs ORDER BY source_path").fetchall()
+        if rows != [
+            ("attachment-coordinate-raw", "attachment:file-a", blob_hash),
+            ("attachment-coordinate-raw", "attachment:file-b", blob_hash),
+        ]:
+            raise DurableChangeTrainError("attachment writer collapsed equal-content coordinates")
+    return "retained two equal-content attachment coordinates under their original raw owner"
 
 
 def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
@@ -2228,6 +2264,7 @@ def execute_durable_change_train(
     runtime_consumer_results: Sequence[DurableRuntimeConsumerResult] | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
+    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrainExecution:
     """Execute every persisted train state while the caller holds archive ownership.
 
@@ -2400,6 +2437,7 @@ def execute_durable_change_train(
                 train,
                 backup_manifest=backup_manifest,
                 evidence_ref=f"proof:maintenance-backup:{train.train_id}",
+                allow_pristine_source_baseline=allow_pristine_source_baseline,
             )
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
