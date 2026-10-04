@@ -756,7 +756,6 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
     taking the archive-wide writer-exclusion lock a status probe must never
     contend for.
     """
-    from polylogue.storage.blob_liveness import LivenessState
     from polylogue.storage.blob_publication import inspect_blob_publication_receipts
 
     root = archive_root()
@@ -775,14 +774,12 @@ def _blob_publication_reservation_info() -> BlobPublicationReservationStatus:
         )
     inspections = inspect_blob_publication_receipts(source_db, root / "blob", index_db_path=index_db_path())
     now = datetime.now(UTC)
-    unresolved = [
-        item for item in inspections if item.liveness.state is LivenessState.UNREFERENCED and item.blob_present
-    ]
-    retained_referenced = sum(1 for item in inspections if item.liveness.state is LivenessState.LIVE)
+    unresolved = [item for item in inspections if item.liveness.state.value == "unreferenced" and item.blob_present]
+    retained_referenced = sum(1 for item in inspections if item.liveness.state.value == "live")
     retained_missing = sum(
-        1 for item in inspections if item.liveness.state is LivenessState.UNREFERENCED and not item.blob_present
+        1 for item in inspections if item.liveness.state.value == "unreferenced" and not item.blob_present
     )
-    blocked = [item for item in inspections if item.liveness.state is LivenessState.BLOCKED]
+    blocked = [item for item in inspections if item.liveness.state.value == "blocked"]
     oldest_unresolved_age_s = (
         max((now - datetime.fromtimestamp(item.reserved_at_ms / 1000.0, UTC)).total_seconds() for item in unresolved)
         if unresolved
