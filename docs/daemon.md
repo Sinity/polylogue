@@ -59,6 +59,8 @@ an import, keyed on the original path.
 
 ## Configuration Flags
 
+For a caller-owned temporary daemon, `--api-port 0 --port 0 --listener-info-path <unique-path>` lets the kernel choose distinct ports while the daemon retains both sockets. The JSON contains `pid` and `listeners.api` / `listeners.browser_capture` host/port objects, with null for disabled listeners. Verify the child process identity and keep service readiness checks separate from socket binding. The destination must be outside the archive root and must not already exist; atomic publication also refuses a competing creator. The file is published with mode 0600 only after every enabled TCP listener binds. It contains no authentication tokens.
+
 By default `polylogued run` enables every component (watch, browser capture, HTTP API). Pass the corresponding `--no-*` flag to disable any one.
 
 | Flag | Default | Description |
@@ -90,7 +92,8 @@ local process can then read/post to the receiver).
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--api-host` | `127.0.0.1` | API server host |
-| `--api-port` | `8766` | API server port |
+| `--api-port` | `8766` | API server port; zero assigns an available port |
+| `--listener-info-path` | none | Atomically write private JSON with child PID and actual bound API/capture addresses |
 | `--browser-port` | disabled | Start the separate browser host on this port, for example `8767`; requires the API |
 | `--api-auth-token` (`daemon.api.auth_token` / `api_auth_token`) | auto | API bearer token; auto-minted/loaded from a 0600 file if not given |
 | `--api-allow-no-auth` (`daemon.api.allow_no_auth` / `api_allow_no_auth`) | off | Explicit opt-out: serve the API with no bearer token at all |
