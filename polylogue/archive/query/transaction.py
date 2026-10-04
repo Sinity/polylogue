@@ -555,13 +555,14 @@ class QueryTransaction:
         self._prepare(archive)
         return work(archive)
 
-    async def run(self, work: Callable[[ArchiveStore], T]) -> T:
+    async def run(self, work: Callable[[ArchiveStore], T], *, index_path: Path | None = None) -> T:
         return await execute_archive_read(
             self.archive_root,
             lambda archive: self._run_work(archive, work),
             ctx=self.context,
             controller=self.controller,
             read_timeout=self.read_timeout,
+            index_path=index_path,
         )
 
     def run_sync(self, work: Callable[[ArchiveStore], T]) -> T:

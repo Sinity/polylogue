@@ -201,6 +201,7 @@ def _content_block_record(
     tool_id: str | None = None,
     tool_input: str | None = None,
     media_type: str | None = None,
+    signature: str | None = None,
     metadata: str | None = None,
     semantic_type: str | None = None,
     tool_result_is_error: int | None = None,
@@ -221,6 +222,8 @@ def _content_block_record(
         tool_id=tool_id,
         tool_input=tool_input,
         metadata=merged_metadata,
+        media_type=media_type,
+        signature=signature,
         semantic_type=None if semantic_type is None else SemanticBlockType.from_string(semantic_type),
         tool_result_is_error=tool_result_is_error,
         tool_result_exit_code=tool_result_exit_code,
@@ -248,6 +251,7 @@ def _content_block_from_mapping(
         tool_id=_optional_str(block.get("tool_id")) or _optional_str(block.get("id")),
         tool_input=_json_string_or_none(raw_tool_input, context="content block tool input"),
         media_type=_optional_str(block.get("media_type")),
+        signature=_optional_str(block.get("signature")),
         metadata=_json_string_or_none(raw_metadata, context="content block metadata"),
         semantic_type=_optional_str(block.get("semantic_type")),
         tool_result_is_error=_optional_int(block.get("tool_result_is_error", block.get("is_error"))),
@@ -455,6 +459,8 @@ def _record_to_parsed_session(
                     tool_id=block.tool_id,
                     tool_input=_maybe_json_object(block.tool_input),
                     metadata=_maybe_json_object(block.metadata),
+                    media_type=block.media_type,
+                    signature=block.signature,
                     is_error=is_error,
                     exit_code=exit_code,
                     tool_outcome=block.tool_outcome,
@@ -1207,3 +1213,51 @@ def seed_insight_scope_archive(root: Path) -> None:
                 ON CONFLICT(session_id) DO UPDATE SET stuck_tool_count = 1""",
                 (session_id,),
             )
+
+
+def seed_topology_chain(db_path: Path, count: int) -> tuple[str, ...]:
+    """Acquire a neutral connected chain for exhaustive topology reads."""
+    ids = []
+    for index in range(count):
+        builder = SessionBuilder(db_path, f"chain-{index}").provider("claude-code")
+        if index:
+            builder.parent_session(f"ext-chain-{index - 1}").branch_type("continuation")
+        builder.add_message(text=f"message {index}").save()
+        ids.append(builder.native_session_id())
+    return tuple(ids)
+
+
+def seed_anchor_session(db_path: Path, *, insert_prefix: bool = False) -> str:
+    """Keep native message identities stable while a prefix changes their ordinals."""
+    builder = SessionBuilder(db_path, "anchored").provider("claude-code")
+    if insert_prefix:
+        builder.add_message(message_id="inserted", text="new prefix")
+    for index in range(4):
+        builder.add_message(
+            message_id=f"anchor-{index}",
+            text=f"original {index}",
+            blocks=[
+                {
+                    "type": "thinking",
+                    "text": "neutral thought",
+                    "media_type": "text/plain",
+                    "signature": "neutral-signature",
+                }
+            ]
+            if index == 0
+            else [],
+        )
+    builder.save()
+    return builder.native_session_id()
+
+
+def seed_topology_star(db_path: Path, count: int) -> tuple[str, ...]:
+    """Acquire siblings exceeding the ordinary topology edge window."""
+    ids = []
+    for index in range(count):
+        builder = SessionBuilder(db_path, f"star-{index}").provider("claude-code")
+        if index:
+            builder.parent_session("ext-star-0").branch_type("continuation")
+        builder.add_message(text=f"sibling {index}").save()
+        ids.append(builder.native_session_id())
+    return tuple(ids)

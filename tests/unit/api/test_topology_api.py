@@ -18,6 +18,7 @@ import pytest
 
 from polylogue.analysis.topology import LogicalSession, SessionRef, SessionTopology
 from polylogue.api import Polylogue
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -266,7 +267,7 @@ async def test_topology_read_pins_parent_replacement_to_one_snapshot(
     replaced = False
 
     async def reparent_after_inbound_read(
-        conn: aiosqlite.Connection, session_id: str, *, limit: int
+        conn: aiosqlite.Connection, session_id: str, *, limit: int | None
     ) -> list[dict[str, object]]:
         nonlocal replaced
         rows = await original(conn, session_id, limit=limit)
@@ -347,3 +348,45 @@ async def test_topology_snapshot_releases_only_its_own_transaction(
         assert conn.in_transaction is borrowed_transaction
         if borrowed_transaction:
             await conn.rollback()
+
+
+@pytest.mark.asyncio
+async def test_exhaustive_helpers_cover_a_chain_beyond_the_default_page(
+    workspace_env: dict[str, Path], frozen_clock: FrozenClock
+) -> None:
+    from tests.infra.storage_records import seed_topology_chain
+
+    db_path = db_setup(workspace_env)
+    ids = seed_topology_chain(db_path, 205)
+    async with Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path) as api:
+        page = await api.get_session_topology(ids[-1])
+        ancestors = await api.get_ancestors(ids[-1])
+        descendants = await api.get_descendants(ids[0])
+        thread = await api.get_thread(ids[-1])
+        logical = await api.get_logical_session(ids[-1])
+        siblings = await api.get_siblings(ids[-1])
+
+    assert page is not None and not page.nodes_complete and page.continuation is not None
+    assert len(page.nodes) == 200
+    assert [str(ref.session_id) for ref in ancestors] == list(ids[:-1])
+    assert [str(ref.session_id) for ref in descendants] == list(ids[1:])
+    assert [str(ref.session_id) for ref in thread] == list(ids)
+    assert logical is not None and [str(ref.session_id) for ref in logical.thread] == list(ids)
+    assert siblings == []
+
+
+@pytest.mark.asyncio
+async def test_exhaustive_siblings_cover_the_complete_edge_relation(
+    workspace_env: dict[str, Path], frozen_clock: FrozenClock
+) -> None:
+    from tests.infra.storage_records import seed_topology_star
+
+    db_path = db_setup(workspace_env)
+    ids = seed_topology_star(db_path, 503)
+    async with Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path) as api:
+        siblings = await api.get_siblings(ids[-1])
+        graph = await api.get_session_topology(ids[0], node_limit=None, edge_limit=None)
+
+    assert graph is not None and graph.nodes_complete and graph.edges_complete and graph.continuation is None
+    assert len(graph.nodes) == 503 and len(graph.edges) == 502
+    assert {str(ref.session_id) for ref in siblings} == set(ids[1:-1])
