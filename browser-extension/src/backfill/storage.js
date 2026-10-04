@@ -96,6 +96,12 @@ export class IndexedDbBackfillStore {
           const database = request.result;
           if (!database.objectStoreNames.contains("jobs")) database.createObjectStore("jobs", { keyPath: "id" });
           if (!database.objectStoreNames.contains("revisions")) database.createObjectStore("revisions", { keyPath: "id" });
+          if (!database.objectStoreNames.contains("capture_retry_metadata")) {
+            const retries = database.createObjectStore("capture_retry_metadata", { keyPath: "queue_order", autoIncrement: true });
+            retries.createIndex("id", "id", { unique: true });
+            database.createObjectStore("capture_retry_bodies", { keyPath: "id" });
+            database.createObjectStore("capture_retry_state");
+          }
           if (!database.objectStoreNames.contains("queue")) {
             const queue = database.createObjectStore("queue", { keyPath: "id" });
             queue.createIndex("job_state_next", ["job_id", "state", "next_eligible_at_ms"], { unique: false });
@@ -107,6 +113,90 @@ export class IndexedDbBackfillStore {
       });
     }
     return this.databasePromise;
+  }
+
+  async importCaptureRetries(entries) {
+    const db = await this.database();
+    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies", "capture_retry_state"], "readwrite");
+    const settled = transactionDone(tx);
+    settled.catch(() => undefined);
+    try {
+      const state = tx.objectStore("capture_retry_state");
+      if (!await requestResult(state.get("local_storage_transferred"))) {
+        const records = tx.objectStore("capture_retry_metadata");
+        for (const { metadata, envelope } of entries) {
+          const existing = await requestResult(records.index("id").get(metadata.id));
+          if (existing) continue;
+          records.put(metadata);
+          tx.objectStore("capture_retry_bodies").put({ id: metadata.id, envelope });
+        }
+        // Cache publication may fail. This same transaction prevents a stale
+        // old cache from resurrecting an already delivered body on restart.
+        state.put(true, "local_storage_transferred");
+      }
+      await settled;
+    } catch (error) {
+      try { tx.abort(); } catch { /* Already physically settled. */ }
+      await settled.catch(() => undefined);
+      throw error;
+    }
+  }
+
+  // Separate stores keep queue/status reads independent of retained capture
+  // size. One transaction admits both the original body and its retry owner.
+  async putCaptureRetry(metadata, envelope) {
+    const db = await this.database();
+    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
+    const settled = transactionDone(tx);
+    settled.catch(() => undefined);
+    try {
+      const records = tx.objectStore("capture_retry_metadata");
+      const existing = await requestResult(records.index("id").get(metadata.id));
+      const entry = { ...metadata, ...(existing ? { queue_order: existing.queue_order } : {}) };
+      records.put(entry);
+      tx.objectStore("capture_retry_bodies").put({ id: metadata.id, envelope });
+      await settled;
+    } catch (error) {
+      try { tx.abort(); } catch { /* Already physically settled. */ }
+      await settled.catch(() => undefined);
+      throw error;
+    }
+  }
+
+  async listCaptureRetries() {
+    const db = await this.database();
+    return requestResult(db.transaction("capture_retry_metadata", "readonly").objectStore("capture_retry_metadata").getAll());
+  }
+
+  async getCaptureRetryEnvelope(id) {
+    const db = await this.database();
+    const record = await requestResult(db.transaction("capture_retry_bodies", "readonly").objectStore("capture_retry_bodies").get(id));
+    if (!record?.envelope) throw new Error("capture_retry_body_missing");
+    return record.envelope;
+  }
+
+  async replaceCaptureRetryMetadata(entries) {
+    const db = await this.database();
+    const tx = db.transaction(["capture_retry_metadata", "capture_retry_bodies"], "readwrite");
+    const settled = transactionDone(tx);
+    settled.catch(() => undefined);
+    try {
+      const records = tx.objectStore("capture_retry_metadata");
+      const retained = new Set(entries.map((entry) => entry.id));
+      const existing = await requestResult(records.getAll());
+      for (const entry of existing) {
+        if (!retained.has(entry.id)) {
+          records.delete(entry.queue_order);
+          tx.objectStore("capture_retry_bodies").delete(entry.id);
+        }
+      }
+      for (const entry of entries) records.put(entry);
+      await settled;
+    } catch (error) {
+      try { tx.abort(); } catch { /* Already physically settled. */ }
+      await settled.catch(() => undefined);
+      throw error;
+    }
   }
 
   async getJob(id) {

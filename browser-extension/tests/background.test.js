@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { IDBFactory } from "fake-indexeddb";
+import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
+import { IndexedDbBackfillStore } from "../src/backfill/storage.js";
 
 let messageListener;
 let installedListener;
@@ -2862,6 +2863,14 @@ describe("background receiver diagnostics", () => {
   });
 });
 
+async function makeCaptureRetriesDue() {
+  const store = new IndexedDbBackfillStore();
+  const entries = await store.listCaptureRetries();
+  await store.replaceCaptureRetryMetadata(entries.map((entry) => ({
+    ...entry, next_attempt_at: new Date(Date.now() - 1000).toISOString(),
+  })));
+}
+
 describe("capture retry queue", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
@@ -2915,7 +2924,7 @@ describe("capture retry queue", () => {
 
     expect(response).toEqual({ ok: false, queued: true, error: "Failed to fetch", receiver_request_id: null });
     expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
-    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-9");
+    expect(stored.polylogueCaptureQueue.entries[0].provider_session_id).toBe("conv-9");
     expect(stored.polylogueCaptureQueue.entries[0].attempts).toBe(0);
     expect(stored.polylogueConversationTimeline["chatgpt:conv-9"][0]).toMatchObject({
       event: "held_with_reason",
@@ -2930,7 +2939,7 @@ describe("capture retry queue", () => {
 
     // Force the queued entry's backoff window to be due, then simulate the
     // retry alarm firing (real Chrome would deliver this on its own timer).
-    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await makeCaptureRetriesDue();
     expect(alarmListener).toBeTypeOf("function");
     alarmListener({ name: "polylogueCaptureRetry" });
 
@@ -2960,32 +2969,62 @@ describe("capture retry queue", () => {
 
     await Promise.all([capture("conv-concurrent-a"), capture("conv-concurrent-b")]);
 
-    expect(stored.polylogueCaptureQueue.entries.map((entry) => entry.envelope.session.provider_session_id)).toEqual([
+    expect(stored.polylogueCaptureQueue.entries.map((entry) => entry.provider_session_id)).toEqual([
       "conv-concurrent-a",
       "conv-concurrent-b",
     ]);
   });
 
-  it("reports an oversized retry capture as dropped instead of queued", async () => {
-    globalThis.fetch = vi.fn(async () => {
-      throw new TypeError("Failed to fetch");
+  it("retains and delivers a retry body beyond the former 40 MiB queue budget", async () => {
+    const envelope = { session: { provider: "chatgpt", provider_session_id: "conv-oversized",
+      turns: [{ text: "x".repeat(43_000_000) }] } };
+    globalThis.fetch = vi.fn(async () => { throw new TypeError("Failed to fetch"); });
+    const response = await sendRuntimeMessage({ type: "polylogue.capture", envelope });
+    expect(response.queued).toBe(true);
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope).toBeUndefined();
+    const store = new IndexedDbBackfillStore();
+    expect((await store.getCaptureRetryEnvelope(stored.polylogueCaptureQueue.entries[0].id)).session).toEqual(envelope.session);
+    await makeCaptureRetriesDue();
+    globalThis.fetch = vi.fn(async (_url, options) => {
+      expect(JSON.parse(options.body).session).toEqual(envelope.session);
+      return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "conv-oversized" });
     });
-    const response = await sendRuntimeMessage({
-      type: "polylogue.capture",
-      envelope: {
-        session: { provider: "chatgpt", provider_session_id: "conv-oversized", turns: [{ text: "x".repeat(43_000_000) }] },
-      },
-    });
+    expect(await sendRuntimeMessage({ type: "polylogue.retryCaptureQueue" })).toMatchObject({ drained: 1, remaining: 0 });
+    expect(await store.listCaptureRetries()).toEqual([]);
+  });
 
-    expect(response.queued).toBe(false);
-    expect(stored.polylogueCaptureQueue.entries).toHaveLength(0);
-    expect(stored.polylogueConversationTimeline["chatgpt:conv-oversized"][0].detail).toBe("capture_queue_entry_over_budget");
-    expect(stored.polylogueCaptureLog[0]).toMatchObject({
-      reason: "capture_queue_entry_over_budget",
-      provider: "chatgpt",
-      provider_session_id: "conv-oversized",
+  it("reports storage admission failure without dropping an earlier retry", async () => {
+    globalThis.fetch = vi.fn(async () => { throw new TypeError("offline"); });
+    const capture = (id) => sendRuntimeMessage({ type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: id, turns: [] } } });
+    await capture("kept");
+    const originalPut = IDBObjectStore.prototype.put;
+    const failing = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (...args) {
+      if (this.name === "capture_retry_bodies") throw new globalThis.DOMException("storage exhausted", "QuotaExceededError");
+      return originalPut.apply(this, args);
     });
-    expect(stored.polylogueCaptureLog[0].byte_size).toBeGreaterThan(40 * 1024 * 1024);
+    expect(await capture("unretained")).toMatchObject({ ok: false, queued: false });
+    failing.mockRestore();
+    expect((await new IndexedDbBackfillStore().listCaptureRetries()).map((entry) => entry.provider_session_id)).toEqual(["kept"]);
+    expect(stored.polylogueConversationTimeline["chatgpt:unretained"][0]).toMatchObject({ detail: "capture_retry_storage_failed" });
+  });
+
+  it("keeps admitted bodies when the derived status cache fails", async () => {
+    globalThis.fetch = vi.fn(async () => { throw new TypeError("offline"); });
+    await vi.waitFor(() => expect(stored.polylogueCaptureQueue).toBeDefined());
+    const original = globalThis.chrome.storage.local.set;
+    globalThis.chrome.storage.local.set = vi.fn(async (patch) => {
+      if (patch.polylogueCaptureQueue) throw new globalThis.DOMException("cache exhausted", "QuotaExceededError");
+      return original(patch);
+    });
+    const response = await sendRuntimeMessage({ type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "kept-without-cache", turns: [] } } });
+    expect(response).toMatchObject({ ok: false, queued: true });
+    expect(await sendRuntimeMessage({ type: "polylogue.getCaptureQueue" })).toMatchObject({
+      entries: [{ provider_session_id: "kept-without-cache" }],
+    });
+    expect(globalThis.chrome.alarms.create).toHaveBeenCalledWith("polylogueCaptureRetry", expect.any(Object));
   });
 
   it("drops a retry after a later non-retryable receiver rejection", async () => {
@@ -2999,7 +3038,7 @@ describe("capture retry queue", () => {
       type: "polylogue.capture",
       envelope: { session: { provider: "chatgpt", provider_session_id: "conv-retry-rejected", turns: [] } },
     });
-    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await makeCaptureRetriesDue();
 
     alarmListener({ name: "polylogueCaptureRetry" });
 
@@ -3020,11 +3059,11 @@ describe("capture retry queue", () => {
     });
 
     expect(response).toEqual({ ok: false, error: "invalid_envelope", receiver_request_id: "receiver-request-1" });
-    expect(stored.polylogueCaptureQueue).toBeUndefined();
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(0);
     expect(globalThis.chrome.alarms.create.mock.calls.some(([name]) => name === "polylogueCaptureRetry")).toBe(false);
   });
 
-  it("retries a 503 receiver response but bounds the queue at 20 entries with a drop counter", async () => {
+  it("retains every 503 retry beyond the former 20-entry queue cap", async () => {
     globalThis.fetch = vi.fn(async () => responseJson({ error: "unavailable" }, { ok: false, status: 503 }));
 
     for (let i = 0; i < 22; i += 1) {
@@ -3034,10 +3073,10 @@ describe("capture retry queue", () => {
       });
     }
 
-    expect(stored.polylogueCaptureQueue.entries).toHaveLength(20);
-    expect(stored.polylogueCaptureQueue.dropped_count).toBe(2);
-    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-2");
-    expect(stored.polylogueCaptureQueue.entries.at(-1).envelope.session.provider_session_id).toBe("conv-21");
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(22);
+    expect(stored.polylogueCaptureQueue.dropped_count).toBe(0);
+    expect(stored.polylogueCaptureQueue.entries[0].provider_session_id).toBe("conv-0");
+    expect(stored.polylogueCaptureQueue.entries.at(-1).provider_session_id).toBe("conv-21");
   });
 
   it("queues a capture whose stalled upload the receiver cancelled with 408", async () => {
@@ -3049,7 +3088,7 @@ describe("capture retry queue", () => {
     });
 
     expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
-    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-stalled");
+    expect(stored.polylogueCaptureQueue.entries[0].provider_session_id).toBe("conv-stalled");
   });
 
   it("summarizes the retry queue for the popup without leaking full envelope internals", async () => {
@@ -3088,7 +3127,7 @@ describe("capture retry queue", () => {
 
     // Make the queued entry due, then drive a second capture that succeeds —
     // its success should trigger a queue drain as a side effect.
-    stored.polylogueCaptureQueue.entries[0].next_attempt_at = new Date(Date.now() - 1000).toISOString();
+    await makeCaptureRetriesDue();
     await sendRuntimeMessage({
       type: "polylogue.capture",
       envelope: { session: { provider: "chatgpt", provider_session_id: "conv-8" } },
@@ -4003,7 +4042,7 @@ describe("receiver health probe", () => {
   });
 
   it("resets only the pairing key and preserves pending work", async () => {
-    const queue = { entries: [{ id: "queued-capture" }], dropped_count: 0 };
+    const queue = { entries: [{ id: "queued-capture", envelope: { session: { provider: "chatgpt", provider_session_id: "pending", turns: [] } } }], dropped_count: 0 };
     await loadBackground({
       polylogueCaptureQueue: queue,
       polylogueReceiverPairing: {
@@ -4021,7 +4060,9 @@ describe("receiver health probe", () => {
     const response = await sendRuntimeMessage({ type: "polylogue.receiverPairing.reset" });
 
     expect(response.pairing).toMatchObject({ state: "online", receiver_id: "rx-new" });
-    expect(stored.polylogueCaptureQueue).toEqual(queue);
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0]).toMatchObject({ id: "queued-capture", provider_session_id: "pending" });
+    expect((await new IndexedDbBackfillStore().getCaptureRetryEnvelope("queued-capture"))).toEqual(queue.entries[0].envelope);
   });
 
   it("keeps a missing receiver token local without probing the receiver", async () => {
