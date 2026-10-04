@@ -33,6 +33,8 @@ The maximal target is deliberately stronger:
 
 This direction supersedes a metadata-only bridge as the ultimate architecture. It does not imply that the implementation or rebuild proof already exists.
 
+Status reads preserve an unrecognized configured mode as explicit unavailable evidence with code `sinex_mode_unrecognized`. They do not read the publication ledger or report zero lag for that mode. MCP Sinex/archive status and the daemon collector share this payload owner; publication and convergence still reject unrecognized modes through the typed mode parser. The daemonless pinned status route continues to report mode as not observed when runtime mode was not supplied.
+
 ## Division of responsibility
 
 | Concern | Polylogue | Sinex |

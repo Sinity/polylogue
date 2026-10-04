@@ -2160,16 +2160,13 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
 
 def _sinex_publication_status_info() -> dict[str, object]:
     """Read durable Sinex publication state without requiring a transport."""
-    from polylogue.config import active_archive_root, load_polylogue_config, resolve_runtime_config
-    from polylogue.sinex.models import PublicationMode
-    from polylogue.sinex.service import publication_status
+    from polylogue.config import active_archive_root, resolve_runtime_config
+    from polylogue.sinex.service import publication_status_payload
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    config = load_polylogue_config()
-    mode = PublicationMode.from_string(config.sinex_mode)
     runtime_config = resolve_runtime_config().as_config()
     source_db = ArchiveLocation.resolve(active_archive_root(runtime_config)).configured_tier("source").configured_path
-    return publication_status(source_db, mode).as_dict()
+    return publication_status_payload(source_db, runtime_config.sinex_mode)
 
 
 def _quick_check_observation() -> QuickCheckObservation:
@@ -3415,7 +3412,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
         # An absent payload is an uncollected probe, not a configured-off
         # publication with zero lag (polylogue-20d.17.4).
         mode = publication.get("mode") or "unavailable"
-        if not publication or mode == "unavailable":
+        if not publication or mode == "unavailable" or publication.get("state") == "unavailable":
             reason = publication.get("reason") or "sinex publication status was not collected"
             lines.append(f"Sinex publication: unavailable — {reason}")
         else:

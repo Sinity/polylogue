@@ -4098,3 +4098,23 @@ def test_status_file_progress_uses_raw_receipt_not_session_or_old_stage_counts(
     assert summary.recent[0].succeeded_file_count == parsed_files
     assert summary.recent[0].files_per_second == parsed_files / 2
     assert summary.recent[0].needed_file_count == summary.recent[0].queued_file_count == 2
+
+
+def test_daemon_publication_status_preserves_invalid_config_diagnostic(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.core.json import json_document
+    from polylogue.daemon.status import _sinex_publication_status_info
+
+    monkeypatch.setenv("POLYLOGUE_SINEX_MODE", "bogus")
+    payload = _sinex_publication_status_info()
+    assert payload["mode"] == "bogus"
+    assert payload["state"] == "unavailable"
+    assert payload["code"] == "sinex_mode_unrecognized"
+    assert "active_lag" not in payload
+    lines = format_daemon_status_lines(json_document({"sinex_publication": payload}))
+    publication_lines = [line for line in lines if line.startswith("Sinex publication:")]
+    assert len(publication_lines) == 1
+    assert "unavailable" in publication_lines[0]
+    assert " lag" not in publication_lines[0]

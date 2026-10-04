@@ -567,7 +567,15 @@ def publication_status_payload(source_db_path: Path, mode: PublicationMode | str
     unavailable. The source-tier ledger is the authority for backlog and lag;
     this helper therefore performs only a bounded read of source.db.
     """
-    resolved_mode = PublicationMode.from_string(mode)
+    try:
+        resolved_mode = PublicationMode.from_string(mode)
+    except ValueError:
+        return {
+            "mode": str(mode),
+            "state": "unavailable",
+            "code": "sinex_mode_unrecognized",
+            "reason": "Configured Sinex mode is not recognized; use off, mirror, or primary.",
+        }
     if resolved_mode is PublicationMode.OFF:
         return PublicationStatus(mode=resolved_mode).as_dict()
     if not source_db_path.exists():
@@ -578,23 +586,15 @@ def publication_status_payload(source_db_path: Path, mode: PublicationMode | str
         }
     try:
         # The status query is independent of transport configuration. Reuse
-        # the service implementation so CLI, daemon, and MCP expose one
+        # the canonical ledger reader so daemon and MCP expose one
         # vocabulary and one calculation.
-        service = PublicationService(source_db_path, resolved_mode, transport=_StatusTransport())
-        return service.status().as_dict()
+        return publication_status(source_db_path, resolved_mode).as_dict()
     except (OSError, sqlite3.Error) as exc:
         return {
             "mode": resolved_mode.value,
             "state": "unavailable",
             "reason": f"source.db status unavailable: {type(exc).__name__}",
         }
-
-
-class _StatusTransport:
-    """Constructor-only transport for read-only status projection."""
-
-    async def publish_revision(self, **_: object) -> PublicationReceipt:
-        raise RuntimeError("status projection must not publish")
 
 
 __all__ = [
