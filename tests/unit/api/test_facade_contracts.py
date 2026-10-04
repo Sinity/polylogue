@@ -5686,7 +5686,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
 
     from polylogue.analysis.archive import ThreadInsightQuery
     from polylogue.analysis.audit import InsightRigorAuditQuery
-    from polylogue.analysis.export_bundles import InsightExportBundleRequest
+    from polylogue.analysis.export_bundle_contracts import InsightExportBundleRequest
     from polylogue.analysis.readiness import InsightReadinessQuery
     from polylogue.archive.message.roles import Role
     from polylogue.archive.session.branch_type import BranchType

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import heapq
 import itertools
-from collections.abc import Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -78,53 +80,39 @@ def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsigh
     return list(itertools.islice(matching, start, stop))
 
 
-def _tag_rollup_page(archive: ArchiveStore, request: SessionTagRollupQuery) -> list[SessionTagRollupInsight]:
+def _iter_tag_rollups(
+    archive: ArchiveStore, request: SessionTagRollupQuery
+) -> Generator[SessionTagRollupInsight, None, None]:
     since_ms = _archive_query_date_ms("since", request.since)
     until_ms = _archive_query_date_ms("until", request.until)
-    materialized = archive.list_session_tag_rollup_insights(
-        origin=request.origin, query=request.query, since_ms=since_ms, until_ms=until_ms, limit=None, offset=0
+    origin_rollups = sorted(
+        synthesize_origin_tag_rollups(
+            archive,
+            origin=request.origin,
+            query=request.query,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            materialized_at=datetime.now(UTC).isoformat(),
+        ),
+        key=lambda row: (-row.session_count, row.tag),
     )
-    origin_rollups = synthesize_origin_tag_rollups(
-        archive,
-        origin=request.origin,
-        query=request.query,
-        since_ms=since_ms,
-        until_ms=until_ms,
-        materialized_at=datetime.now(UTC).isoformat(),
-    )
-    rollups = sorted([*materialized, *origin_rollups], key=lambda rollup: (-rollup.session_count, rollup.tag))
-    if request.offset:
-        rollups = rollups[request.offset :]
-    if request.limit is not None:
-        rollups = rollups[: max(int(request.limit), 0)]
-    return rollups
+    with closing(
+        archive.iter_session_tag_rollup_insights(
+            origin=request.origin, query=request.query, since_ms=since_ms, until_ms=until_ms, limit=None, offset=0
+        )
+    ) as materialized:
+        # Stable merge keeps materialized rows before equal synthesized rows, as the original sort did.
+        merged = heapq.merge(materialized, origin_rollups, key=lambda row: (-row.session_count, row.tag))
+        stop = None if request.limit is None else request.offset + max(int(request.limit), 0)
+        yield from itertools.islice(merged, request.offset, stop)
 
 
 def read_insight_page(archive: ArchiveStore, request: ArchiveInsightModel) -> list[ArchiveInsightModel]:
     """Use the canonical query filters and enrichment before its page cut."""
-    if isinstance(request, SessionTagRollupQuery):
-        return list(_tag_rollup_page(archive, request))
-    if isinstance(request, ThreadInsightQuery):
-        return list(
-            archive.list_thread_insights(
-                query=request.query,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            )
-        )
-    if isinstance(request, ArchiveCoverageInsightQuery):
-        return list(
-            archive.list_archive_coverage_insights(
-                group_by=request.group_by,
-                origin=request.origin,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            )
-        )
+    if isinstance(
+        request, (SessionTagRollupQuery, ThreadInsightQuery, ArchiveCoverageInsightQuery, SessionProfileInsightQuery)
+    ):
+        return list(iter_insight_rows(archive, request, checkpoint=archive.check_operation_read))
     if isinstance(request, ToolUsageInsightQuery):
         return list(archive.list_tool_usage_insights(request))
     if isinstance(request, ToolEpisodeQuery):
@@ -165,9 +153,53 @@ def read_insight_page(archive: ArchiveStore, request: ArchiveInsightModel) -> li
                 offset=request.offset,
             )
         )
+    raise TypeError(f"insight query is not declared: {type(request).__name__}")
+
+
+def iter_insight_rows(
+    archive: ArchiveStore, request: ArchiveInsightModel, *, checkpoint: Callable[[], None] = lambda: None
+) -> Generator[ArchiveInsightModel, None, None]:
+    """One forward traversal of the exportable insight relation on the original reader."""
+    checkpoint()
+    row: ArchiveInsightModel
+    if isinstance(request, SessionTagRollupQuery):
+        with closing(_iter_tag_rollups(archive, request)) as tag_rows:
+            for row in tag_rows:
+                checkpoint()
+                yield row
+        return
+    if isinstance(request, ThreadInsightQuery):
+        with closing(
+            archive.iter_thread_insights(
+                query=request.query,
+                since_ms=_archive_query_date_ms("since", request.since),
+                until_ms=_archive_query_date_ms("until", request.until),
+                limit=request.limit,
+                offset=request.offset,
+            )
+        ) as thread_rows:
+            for row in thread_rows:
+                checkpoint()
+                yield row
+        return
+
+    if isinstance(request, ArchiveCoverageInsightQuery):
+        coverage_rows = archive.list_archive_coverage_insights(
+            group_by=request.group_by,
+            origin=request.origin,
+            since_ms=_archive_query_date_ms("since", request.since),
+            until_ms=_archive_query_date_ms("until", request.until),
+            limit=request.limit,
+            offset=request.offset,
+        )
+
+        for row in coverage_rows:
+            checkpoint()
+            yield row
+        return
     if isinstance(request, SessionProfileInsightQuery):
-        return list(
-            archive.list_session_profile_insights(
+        with closing(
+            archive.iter_session_profile_insights(
                 origin=request.origin,
                 workflow_shape=request.workflow_shape,
                 terminal_state=request.terminal_state,
@@ -187,5 +219,10 @@ def read_insight_page(archive: ArchiveStore, request: ArchiveInsightModel) -> li
                 max_wallclock_seconds=request.max_wallclock_seconds,
                 sort=request.sort,
             )
-        )
-    raise TypeError(f"insight query is not declared: {type(request).__name__}")
+        ) as profile_rows:
+            for row in profile_rows:
+                checkpoint()
+                yield row
+        return
+
+    raise TypeError(f"insight export query is not declared: {type(request).__name__}")

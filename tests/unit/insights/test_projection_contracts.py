@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
-from polylogue.analysis.export_bundles import INSIGHT_EXPORT_BUNDLE_VERSION
+from polylogue.analysis.export_bundle_contracts import INSIGHT_EXPORT_BUNDLE_VERSION
 from polylogue.analysis.projection_contracts import (
     PROJECTION_CONTRACTS,
     ProjectionCostClass,

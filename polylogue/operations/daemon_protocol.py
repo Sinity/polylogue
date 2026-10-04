@@ -259,6 +259,47 @@ class HermesHealthWireResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(HermesHealthResult.__pydantic_core_schema__))
 
 
+class InsightExportWireRequest(_OperationPayload):
+    request: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_request(cls, value: object) -> object:
+        from polylogue.operations.insight_export_contracts import InsightExportRequest
+
+        _validate_json_result_model(InsightExportRequest, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_export_contracts import InsightExportRequest
+
+        return handler.resolve_ref_schema(handler(InsightExportRequest.__pydantic_core_schema__))
+
+
+class InsightExportWireResult(_OperationPayload):
+    bundle: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_bundle(cls, value: object) -> object:
+        from polylogue.operations.insight_export_contracts import InsightExportResult
+
+        _validate_json_result_model(InsightExportResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_export_contracts import InsightExportResult
+
+        return handler.resolve_ref_schema(handler(InsightExportResult.__pydantic_core_schema__))
+
+
 class FablePacketWireRequest(_OperationPayload):
     seed: str
     requested_size: int = Field(ge=0)
@@ -1802,6 +1843,15 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="InsightRigorWireResult",
         request_model=InsightRigorWireRequest,
         result_model=InsightRigorWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.export_bundle",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.export_bundle.request/v1",
+        result_contract="insights.export_bundle.result/v1",
+        request_model=InsightExportWireRequest,
+        result_model=InsightExportWireResult,
     ),
     DaemonOperationSpec(
         "insights.fable_packet",

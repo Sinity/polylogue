@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import shutil
 import uuid
-from collections.abc import Sequence
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Generator, Sequence
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING
 
 from polylogue.analysis.archive import (
     ArchiveCoverageInsight,
@@ -17,15 +19,22 @@ from polylogue.analysis.archive import (
     ThreadInsight,
 )
 from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
-from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
-from polylogue.analysis.registry import INSIGHT_REGISTRY, InsightQueryError, InsightType, fetch_insights_async
-from polylogue.config import Config
-from polylogue.core.errors import PolylogueError
+from polylogue.analysis.export_bundle_contracts import (
+    InsightExportBundleError,
+    InsightExportBundleManifest,
+    InsightExportBundleRequest,
+    InsightExportBundleResult,
+    InsightExportFileSummary,
+)
+from polylogue.analysis.insight_reads import iter_insight_rows
+from polylogue.analysis.readiness import InsightReadinessQuery
+from polylogue.analysis.registry import INSIGHT_REGISTRY, InsightQueryError, InsightType
 from polylogue.core.json import JSONDocument, dumps, require_json_document
-from polylogue.version import VERSION_INFO
+from polylogue.surfaces.outcome import decide_outcome
 
-InsightExportFormat = Literal["jsonl"]
-INSIGHT_EXPORT_BUNDLE_VERSION = 2
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
     "threads",
@@ -46,60 +55,6 @@ _INSIGHT_ALIASES = {
         if name in DEFAULT_EXPORT_INSIGHTS
     },
 }
-
-
-class InsightExportBundleError(PolylogueError):
-    """Raised when an insight export bundle cannot be written."""
-
-
-class InsightExportBundleRequest(ArchiveInsightModel):
-    output_path: Path
-    insights: tuple[str, ...] = ()
-    origin: str | None = None
-    since: str | None = None
-    until: str | None = None
-    output_format: InsightExportFormat = "jsonl"
-    overwrite: bool = False
-    include_readme: bool = True
-
-
-class InsightExportFileSummary(ArchiveInsightModel):
-    insight_name: str
-    file: str
-    schema_file: str
-    row_count: int = 0
-    withheld_reason: str | None = None
-    warnings: tuple[str, ...] = ()
-    errors: tuple[str, ...] = ()
-
-
-class InsightExportBundleManifest(ArchiveInsightModel):
-    bundle_version: int = INSIGHT_EXPORT_BUNDLE_VERSION
-    insight_contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    generated_at: str
-    polylogue_version: str
-    git_revision: str | None = None
-    git_dirty: bool = False
-    archive_root: str
-    database_path: str
-    output_format: InsightExportFormat = "jsonl"
-    query: dict[str, str | tuple[str, ...] | None]
-    insights: tuple[InsightExportFileSummary, ...] = ()
-    warnings: tuple[str, ...] = ()
-
-
-class InsightExportBundleResult(ArchiveInsightModel):
-    output_path: Path
-    manifest_path: Path
-    coverage_path: Path
-    manifest: InsightExportBundleManifest
-
-
-class InsightExportOperations(Protocol):
-    async def get_insight_readiness_report(
-        self,
-        query: InsightReadinessQuery | None = None,
-    ) -> InsightReadinessReport: ...
 
 
 def normalize_export_insight_name(value: str) -> str:
@@ -169,9 +124,17 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(dumps(payload) + "\n", encoding="utf-8")
 
 
-def _write_insight_jsonl(path: Path, items: Sequence[ArchiveInsightModel]) -> None:
-    lines = [item.model_dump_json(exclude_none=True) for item in items]
-    path.write_text(("\n".join(lines) + "\n") if lines else "", encoding="utf-8")
+def _write_insight_jsonl(
+    path: Path, items: Generator[ArchiveInsightModel, None, None], checkpoint: Callable[[], None]
+) -> int:
+    count = 0
+    with closing(items), path.open("w", encoding="utf-8") as stream:
+        for item in items:
+            checkpoint()
+            stream.write(item.model_dump_json(exclude_none=True))
+            stream.write("\n")
+            count += 1
+    return count
 
 
 def _write_readme(path: Path, manifest: InsightExportBundleManifest) -> None:
@@ -218,33 +181,47 @@ def _withheld_reason(entry: object | None) -> str | None:
 
 def _prepare_target(request: InsightExportBundleRequest) -> Path:
     target = request.output_path
-    if target.exists() and not request.overwrite:
+    if (target.exists() or target.is_symlink()) and not request.overwrite:
         raise InsightExportBundleError(f"Export target already exists: {target}")
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp_target = target.parent / f".{target.name}.tmp-{uuid.uuid4().hex}"
-    tmp_target.mkdir(parents=False)
-    (tmp_target / "insights").mkdir()
-    (tmp_target / "schemas").mkdir()
+    tmp_target.mkdir(parents=False, mode=0o700)
+    try:
+        (tmp_target / "insights").mkdir()
+        (tmp_target / "schemas").mkdir()
+    except BaseException as primary:
+        try:
+            if tmp_target.exists():
+                shutil.rmtree(tmp_target)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "Insight export failed and staging cleanup failed", [primary, cleanup_error]
+            ) from None
+        raise
     return tmp_target
 
 
 def _publish_target(tmp_target: Path, request: InsightExportBundleRequest) -> None:
     target = request.output_path
-    if target.exists():
-        if target.is_dir():
+    if target.exists() or target.is_symlink():
+        if not request.overwrite:
+            raise InsightExportBundleError(f"Export target already exists: {target}")
+        if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         else:
             target.unlink()
     tmp_target.replace(target)
 
 
-async def export_insight_bundle(
-    operations: InsightExportOperations,
-    config: Config,
+def export_insight_bundle(
+    archive: ArchiveStore,
     request: InsightExportBundleRequest,
+    *,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> InsightExportBundleResult:
     selected_insights = _selected_insight_names(request.insights)
-    readiness = await operations.get_insight_readiness_report(
+    checkpoint()
+    readiness = archive.insight_readiness_report(
         InsightReadinessQuery(
             insights=selected_insights,
             origin=request.origin,
@@ -254,6 +231,14 @@ async def export_insight_bundle(
     )
     readiness_by_name = {entry.insight_name: entry for entry in readiness.insights}
     tmp_target = _prepare_target(request)
+    gaps: list[str] = [] if readiness.converged else ["insight_convergence_pending"]
+    for entry in readiness.insights:
+        if entry.diverged:
+            gaps.append("insight_output_diverged")
+        if entry.incomplete:
+            gaps.append("insight_output_incomplete")
+        if entry.degraded_count or entry.schema_contract_issues:
+            gaps.append("insight_evidence_degraded")
     summaries: list[InsightExportFileSummary] = []
     bundle_warnings: list[str] = []
     try:
@@ -263,7 +248,8 @@ async def export_insight_bundle(
             schema_file = _schema_path(insight_name)
             kwargs, warnings = _query_kwargs(insight_type, request)
             errors: list[str] = []
-            items: list[ArchiveInsightModel] = []
+            checkpoint()
+            row_count = 0
             readiness_entry = readiness_by_name.get(insight_name)
             withheld_reason = _withheld_reason(readiness_entry)
             if withheld_reason is not None:
@@ -274,17 +260,25 @@ async def export_insight_bundle(
                 errors.append(f"{withheld_reason}; rows withheld from export")
             else:
                 try:
-                    items = await fetch_insights_async(insight_type, operations, **kwargs)
+                    assert insight_type.query_model is not None
+                    query = insight_type.query_model(**kwargs)
+                    row_count = _write_insight_jsonl(
+                        tmp_target / insight_file, iter_insight_rows(archive, query, checkpoint=checkpoint), checkpoint
+                    )
                 except (ArchiveInsightUnavailableError, InsightQueryError) as exc:
                     errors.append(str(exc))
-            _write_insight_jsonl(tmp_target / insight_file, items)
+                    gaps.append("insight_export_read_failed")
+            if errors:
+                # A producer failure withholds the entire product, including any staged prefix.
+                (tmp_target / insight_file).write_text("", encoding="utf-8")
+                row_count = 0
             _write_json(tmp_target / schema_file, _json_schema_document(insight_name))
             summaries.append(
                 InsightExportFileSummary(
                     insight_name=insight_name,
                     file=insight_file,
                     schema_file=schema_file,
-                    row_count=len(items),
+                    row_count=row_count,
                     withheld_reason=withheld_reason,
                     warnings=warnings,
                     errors=tuple(errors),
@@ -293,13 +287,15 @@ async def export_insight_bundle(
             bundle_warnings.extend(f"{insight_name}: {warning}" for warning in warnings)
             bundle_warnings.extend(f"{insight_name}: {error}" for error in errors)
 
+        from polylogue.version import VERSION_INFO
+
         manifest = InsightExportBundleManifest(
             generated_at=datetime.now(timezone.utc).isoformat(),
             polylogue_version=VERSION_INFO.full,
             git_revision=VERSION_INFO.commit,
             git_dirty=VERSION_INFO.dirty,
-            archive_root=str(config.archive_root),
-            database_path=str(config.db_path),
+            archive_root=str(archive.archive_root),
+            database_path=str(archive.index_db_path),
             output_format=request.output_format,
             query={
                 "insights": selected_insights,
@@ -314,9 +310,16 @@ async def export_insight_bundle(
         _write_json(tmp_target / "coverage.json", readiness.model_dump(mode="json"))
         if request.include_readme:
             _write_readme(tmp_target / "README.md", manifest)
+        checkpoint()
         _publish_target(tmp_target, request)
-    except Exception:
-        shutil.rmtree(tmp_target, ignore_errors=True)
+    except BaseException as primary:
+        try:
+            if tmp_target.exists():
+                shutil.rmtree(tmp_target)
+        except BaseException as cleanup_error:
+            raise BaseExceptionGroup(
+                "Insight export failed and staging cleanup failed", [primary, cleanup_error]
+            ) from None
         raise
 
     return InsightExportBundleResult(
@@ -324,18 +327,8 @@ async def export_insight_bundle(
         manifest_path=request.output_path / "manifest.json",
         coverage_path=request.output_path / "coverage.json",
         manifest=manifest,
+        outcome=decide_outcome(matched=sum(entry.row_count for entry in summaries), degraded=gaps),
     )
 
 
-__all__ = [
-    "DEFAULT_EXPORT_INSIGHTS",
-    "INSIGHT_EXPORT_BUNDLE_VERSION",
-    "InsightExportBundleError",
-    "InsightExportBundleManifest",
-    "InsightExportBundleRequest",
-    "InsightExportBundleResult",
-    "InsightExportFileSummary",
-    "InsightExportFormat",
-    "export_insight_bundle",
-    "normalize_export_insight_name",
-]
+__all__ = ["DEFAULT_EXPORT_INSIGHTS", "export_insight_bundle", "normalize_export_insight_name"]

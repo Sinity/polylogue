@@ -167,6 +167,14 @@ class _ExtraOperationRow:
 
 _EXTRA_OPERATION_ROWS: Final[tuple[_ExtraOperationRow, ...]] = (
     _ExtraOperationRow(
+        "insights.export_bundle",
+        "Write a versioned bundle from the pinned insight relation.",
+        f"{FACADE_SYMBOL}.export_insight_bundle",
+        SurfaceBinding("cli", target="ops insights export"),
+        SurfaceBinding("mcp", absence_reason="filesystem bundle publication has no dedicated MCP tool"),
+        kernel_owner="polylogue/operations/insight_export.py",
+    ),
+    _ExtraOperationRow(
         "insights.fable_packet",
         "Compile a private descriptive delegation packet or name unsupported evidence.",
         f"{FACADE_SYMBOL}.regenerate_private_fable_packet",
@@ -317,7 +325,6 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
         "insight-projection",
         "descriptor-driven insight registry (polylogue/analysis/registry.py) owns cross-surface parity for these",
         (
-            "export_insight_bundle",
             "find_stuck_session_latency_profile_insights",
             "get_session_insight_status",
             "get_session_latency_profile_insight",

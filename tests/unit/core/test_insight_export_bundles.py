@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.analysis.export_bundles import InsightExportBundleError, InsightExportBundleRequest
+from polylogue.analysis.export_bundle_contracts import InsightExportBundleError, InsightExportBundleRequest
 from polylogue.api import Polylogue
 from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
@@ -98,7 +98,7 @@ async def test_insight_export_bundle_writes_bounded_insights(cli_workspace: dict
 
     assert result.output_path == target
     manifest = _json_file(target / "manifest.json")
-    assert manifest["bundle_version"] == 1
+    assert manifest["bundle_version"] == 2
     assert manifest["query"] == {
         "insights": ["session_profiles", "threads"],
         "origin": "codex-session",
