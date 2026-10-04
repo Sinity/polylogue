@@ -18,7 +18,6 @@ from polylogue.analysis.archive import (
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
-from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
 from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.api.archive_reads import ArchiveReadCapability
@@ -104,7 +103,7 @@ from polylogue.surfaces.temporal_evidence import (
 
 if TYPE_CHECKING:
     from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport
-    from polylogue.analysis.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.analysis.export_bundle_contracts import InsightExportBundleRequest, InsightExportBundleResult
     from polylogue.analysis.fable_packet_contracts import FableDelegationPacket
     from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
     from polylogue.analysis.judgment.types import ComparativeJudgment
@@ -2096,73 +2095,6 @@ def _archive_search_hit_to_payload(
             score=None,
         ),
     )
-
-
-class _ArchiveInsightExportOperations:
-    """Async operations adapter for registry-backed archive insight exports."""
-
-    def __init__(self, archive: Any) -> None:
-        self._archive = archive
-
-    async def get_insight_readiness_report(self, query: object | None = None) -> InsightReadinessReport:
-        from polylogue.analysis.readiness import InsightReadinessQuery
-
-        request = query if isinstance(query, InsightReadinessQuery) else None
-        return cast("InsightReadinessReport", self._archive.insight_readiness_report(request))
-
-    async def list_session_profile_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_profile_insights(
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                workflow_shape=getattr(query, "workflow_shape", None),
-                terminal_state=getattr(query, "terminal_state", None),
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                first_message_since=getattr(query, "first_message_since", None),
-                first_message_until=getattr(query, "first_message_until", None),
-                session_date_since=getattr(query, "session_date_since", None),
-                session_date_until=getattr(query, "session_date_until", None),
-                tier=str(getattr(query, "tier", "merged")),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_thread_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_thread_insights(
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_session_tag_rollup_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_session_tag_rollup_insights(
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                query=getattr(query, "query", None),
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
-
-    async def list_archive_coverage_insights(self, query: object) -> list[ArchiveInsightModel]:
-        return list(
-            self._archive.list_archive_coverage_insights(
-                group_by=str(getattr(query, "group_by", "origin")),
-                origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
-                since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
-                until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
-                limit=getattr(query, "limit", None),
-                offset=int(getattr(query, "offset", 0)),
-            )
-        )
 
 
 class _ArchiveNeighborRuntime:
@@ -5296,17 +5228,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         request: InsightExportBundleRequest,
     ) -> InsightExportBundleResult:
         """Write a versioned archive-insight export bundle."""
-        import asyncio
-
         from polylogue.analysis.export_bundles import export_insight_bundle
 
         return await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.export_bundle",
             arguments={"request": request},
-            work=lambda archive: asyncio.run(
-                export_insight_bundle(_ArchiveInsightExportOperations(archive), self.config, request)
-            ),
+            work=lambda archive: export_insight_bundle(archive, request, checkpoint=archive.check_operation_read),
             page_size=1,
             projection="insight-export",
             workload_class="scan",

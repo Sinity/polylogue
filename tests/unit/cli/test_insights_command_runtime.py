@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-from polylogue.analysis.export_bundles import (
+from polylogue.analysis.export_bundle_contracts import (
     InsightExportBundleError,
     InsightExportBundleManifest,
     InsightExportBundleResult,
@@ -25,6 +24,7 @@ from polylogue.analysis.readiness import (
 )
 from polylogue.analysis.registry import CliOption, InsightQueryError, InsightType, get_insight_type
 from polylogue.cli.commands import insights as insights_module
+from polylogue.surfaces.outcome import decide_outcome
 
 
 def _root_context(
@@ -113,6 +113,7 @@ def _status_report() -> InsightReadinessReport:
 
 def _export_result(tmp_path: Path) -> InsightExportBundleResult:
     return InsightExportBundleResult(
+        outcome=decide_outcome(matched=7),
         output_path=tmp_path / "bundle",
         manifest_path=tmp_path / "bundle" / "manifest.json",
         coverage_path=tmp_path / "bundle" / "coverage.json",
@@ -290,11 +291,13 @@ def test_insights_status_command_reports_invalid_insight_names() -> None:
 def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    async def export_bundle(request: object) -> InsightExportBundleResult:
-        captured["request"] = request
-        return _export_result(tmp_path)
+    def export_bundle(config: object, operation: object) -> tuple[dict[str, object], str]:
+        from polylogue.operations.insight_export_contracts import decode_insight_export_request
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=export_bundle))
+        captured["request"] = decode_insight_export_request(operation.payload).request
+        return {"bundle": _export_result(tmp_path).model_dump(mode="json"), "outcome": {"state": "ok"}}, "daemon"
+
+    env = SimpleNamespace(config=SimpleNamespace())
     raw_callback = _command_callback(insights_module.insights_export_command)
 
     with pytest.raises(SystemExit, match="insights export: unsupported export format: csv"):
@@ -310,7 +313,7 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
             overwrite=False,
         )
 
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=export_bundle):
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
                 _export_context(env, output_format="json", origin="codex-session"),
@@ -333,12 +336,11 @@ def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Pat
     assert request.overwrite is True
     emit_success.assert_called_once()
 
-    async def broken_export(request: object) -> InsightExportBundleResult:
-        del request
+    def broken_export(config: object, request: object) -> object:
         raise InsightExportBundleError("cannot write bundle")
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(export_insight_bundle=broken_export))
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    env = SimpleNamespace(config=SimpleNamespace())
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=broken_export):
         with pytest.raises(SystemExit, match="insights export: cannot write bundle"):
             raw_callback(
                 _export_context(env),

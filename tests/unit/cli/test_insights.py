@@ -67,6 +67,7 @@ def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.
     [
         (["analyze", "insights", "profiles"], "insights.list"),
         (["ops", "insights", "status"], "insights.readiness"),
+        (["ops", "insights", "export", "--out", "neutral-bundle"], "insights.export_bundle"),
         (["ops", "insights", "audit"], "insights.rigor"),
         (["ops", "insights", "hermes-health"], "insights.hermes_health"),
         (["ops", "insights", "fable-packet", "--seed", "neutral", "--requested-size", "1"], "insights.fable_packet"),

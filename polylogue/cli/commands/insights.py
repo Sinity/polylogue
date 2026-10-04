@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
 
 import click
 
@@ -19,7 +18,7 @@ from polylogue.analysis.audit import (
     InsightRigorAuditQuery,
     InsightRigorAuditReport,
 )
-from polylogue.analysis.export_bundles import (
+from polylogue.analysis.export_bundle_contracts import (
     InsightExportBundleError,
     InsightExportBundleRequest,
     InsightExportBundleResult,
@@ -38,7 +37,6 @@ from polylogue.analysis.registry import (
     build_insight_query,
     render_insight_items,
 )
-from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.operation_kernel import OperationRequest
 from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.helper_support import fail
@@ -438,7 +436,7 @@ def insights_export_command(
             }
         )
         request = InsightExportBundleRequest(
-            output_path=output_path,
+            output_path=output_path.absolute(),
             insights=insights,
             origin=filters["origin"] if isinstance(filters["origin"], str) else None,
             since=filters["since"] if isinstance(filters["since"], str) else None,
@@ -446,11 +444,17 @@ def insights_export_command(
             output_format=export_format,
             overwrite=overwrite,
         )
-        result = run_coroutine_sync(env.polylogue.export_insight_bundle(request))
+        from polylogue.operations.insight_export_contracts import decode_insight_export_result
+
+        payload, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.export_bundle", {"request": request.model_dump(mode="json")})
+        )
+        selected = decode_insight_export_result(payload)
+        result = selected.bundle
     except (InsightCommandInputError, InsightExportBundleError) as exc:
         fail("insights export", str(exc))
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(cast(dict[str, object], result.model_dump(mode="json")))
+        emit_success({**result.model_dump(mode="json"), "outcome": selected.outcome.to_dict()})
         return
     _render_export_plain(result)
 
