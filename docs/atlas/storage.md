@@ -204,3 +204,16 @@ for Hermes delivery correlation, and the ops injection ledger refuse with
 never create missing tiers. Named-source freshness reads current cursor progress
 only from ops `ingest_cursor`; a missing offset remains unknown, and successful
 empty canonical state cannot inherit progress from a retired index table.
+
+## Embedding contract transitions
+
+Acquisition checks all retained producer contracts in the active Embeddings
+membership before a provider call; publication checks again under the same
+generation's writer lock. Declared compatible recipes retain their actual
+producer identities. Incompatible output contracts raise
+`EmbeddingContractTransitionRequiredError` before purchasing or writing a
+window. Unknown producer provenance refuses independently. A separately
+produced candidate can be validated and explicitly promoted through
+`EmbeddingGenerationStore.replace`; this admission does not automatically
+build or switch generations (`storage/embeddings/generations.py`;
+`storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).

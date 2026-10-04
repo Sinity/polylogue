@@ -244,7 +244,7 @@ def test_restart_retains_published_producer_proof_without_recipe_registry(tmp_pa
 
 def test_unproven_purchased_provenance_refuses_repurchase(tmp_path: Path) -> None:
     """Unknown exact producer metadata cannot become a paid computation miss."""
-    from polylogue.storage.embeddings.materialization import EmbeddingProvenanceError
+    from polylogue.storage.embeddings.identity import EmbeddingProvenanceError
     from polylogue.storage.sqlite.write_lease import write_lease
 
     root = tmp_path / "archive"
@@ -580,3 +580,63 @@ def test_derivation_releases_actual_read_handles_before_provider_and_on_every_ex
                 adapter.compute(frame, keys[0])
     probe.assert_settled()
     assert provider.calls == ([(_TEXT,)] if mode == "computed" else [])
+
+
+@pytest.mark.parametrize("dimension", [512, 1024])
+def test_incompatible_contract_refuses_before_provider_and_preserves_outputs(tmp_path: Path, dimension: int) -> None:
+    """Admission must reject the whole tier before its first incompatible window."""
+    from polylogue.storage.embeddings.generations import EmbeddingContractTransitionRequiredError
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.embedding_compatibility import output_rows
+
+    root = tmp_path / "archive"
+    sid, ids = _session(root)
+    assert embed_archive_session_sync(root / "index.db", _Documents("voyage-4"), sid).status == "embedded"
+    before = output_rows(root)
+    pointer = (root / "embeddings.db").readlink()
+    selected = _Documents("voyage-3")
+    selected.dimension = dimension
+    outcome = embed_archive_session_sync(root / "index.db", selected, sid)
+    assert outcome.status == "error"
+    assert selected.calls == []
+    assert output_rows(root) == before
+    assert (root / "embeddings.db").readlink() == pointer
+    adapter = EmbeddingDerivationAdapter(root / "index.db", selected)
+    frame = SimpleNamespace(
+        source_revision=f"index-generation:{root / 'index.db'}",
+        scope=None,
+        recipe_version=lambda domain: adapter.recipe_version,
+    )
+    with write_lease("test.incompatible-generation-reservation", archive_root=root):
+        with pytest.raises(EmbeddingContractTransitionRequiredError):
+            adapter.compute(frame, f"message:{ids[0]}")
+    assert selected.calls == []
+    assert output_rows(root) == before
+
+
+def test_incompatible_contract_uses_validated_replacement_and_retains_paid_predecessor(tmp_path: Path) -> None:
+    """The explicit lifecycle switches only after independently producing a valid candidate."""
+    from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.embedding_compatibility import output_rows
+
+    root = tmp_path / "archive"
+    sid, _ = _session(root)
+    assert embed_archive_session_sync(root / "index.db", _Documents("voyage-4"), sid).status == "embedded"
+    original = (root / "embeddings.db").resolve()
+    paid_before = original.read_bytes()
+    candidate_root = root / "candidate"
+    candidate_sid, _ = _session(candidate_root)
+    producer = _Documents("voyage-3")
+    assert embed_archive_session_sync(candidate_root / "index.db", producer, candidate_sid).status == "embedded"
+    candidate = (candidate_root / "embeddings.db").resolve()
+    expected = output_rows(candidate_root)
+    with write_lease("test.validated-embedding-replacement", archive_root=root):
+        EmbeddingGenerationStore(root).replace(candidate)
+    assert (root / "embeddings.db").resolve() != original
+    assert original.read_bytes() == paid_before
+    assert output_rows(root) == expected
+    selected = _Documents("voyage-3")
+    assert embed_archive_session_sync(root / "index.db", selected, sid).status == "embedded"
+    assert selected.calls == []
+    assert original.read_bytes() == paid_before
