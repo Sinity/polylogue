@@ -5,13 +5,15 @@ from __future__ import annotations
 import json as _json
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from typing import TYPE_CHECKING, NamedTuple
 
+from polylogue.archive.actions.actions import Action, build_actions
 from polylogue.archive.actions.parsing import tool_result_block_outcome
 from polylogue.archive.semantic.facts import build_session_semantic_facts
+from polylogue.archive.semantic.support import message_tool_calls
 from polylogue.archive.semantic.timing import (
     compute_engaged_duration_ms,
     compute_session_timing,
@@ -22,7 +24,7 @@ from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 from polylogue.core.enums import Origin, StopReason
 
 if TYPE_CHECKING:
-    from polylogue.archive.models import Session
+    from polylogue.archive.models import Message, Session
     from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostBreakdown, SessionCostSummary
     from polylogue.archive.semantic.facts import SessionSemanticFacts
 
@@ -304,7 +306,7 @@ TERMINAL_STATE_METHODS = frozenset(
 
 
 def _terminal_state(
-    session: Session, analysis: SessionAnalysis
+    session: Session, actions: Iterable[Action]
 ) -> tuple[str, float, dict[str, int | float | str | None], str]:
     """Classify how a session's tool/turn activity ended.
 
@@ -335,7 +337,7 @@ def _terminal_state(
     latest_error_action_id: str | None = None
     latest_error_action_evidence_class: str | None = None
     final_action_outcome_is_error = False
-    for action in analysis.facts.actions:
+    for action in actions:
         result = tool_results.get(action.tool_id) if action.tool_id else None
         outcome = result.outcome if result is not None else None
         if outcome == "failed":
@@ -388,10 +390,10 @@ def _terminal_state(
             "pending_tool_events",
         )
 
-    meaningful = [
-        message for message in analysis.facts.message_facts if message.text.strip() and not message.is_protocol_artifact
-    ]
-    last = meaningful[-1] if meaningful else None
+    last: Message | None = None
+    for message in session.messages:
+        if (message.text or "").strip() and not message.is_protocol_artifact:
+            last = message
     if last is None:
         if latest_error_action_id is not None:
             return (
@@ -412,7 +414,7 @@ def _terminal_state(
         return (
             "question_left",
             0.72,
-            {"message_id": last.message_id, "evidence_class": "raw_evidence"},
+            {"message_id": str(last.id), "evidence_class": "raw_evidence"},
             "last_message_role",
         )
     if last.is_assistant:
@@ -449,14 +451,14 @@ def _terminal_state(
             return (
                 "refused",
                 0.85,
-                {"message_id": last.message_id, "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
+                {"message_id": str(last.id), "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
                 "stop_reason",
             )
         if last.stop_reason == StopReason.MAX_TOKENS.value:
             return (
                 "truncated",
                 0.85,
-                {"message_id": last.message_id, "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
+                {"message_id": str(last.id), "stop_reason": last.stop_reason, "evidence_class": "raw_evidence"},
                 "stop_reason",
             )
         # The prose _ERROR_MARKERS scan and its clean_finish complement were
@@ -466,8 +468,30 @@ def _terminal_state(
         # been recovered), and without a structural terminal signal the
         # honest state is unknown -- never clean_finish, never a keyword
         # guess.
-        return "unknown", 0.2, {"message_id": last.message_id, "evidence_class": "raw_evidence"}, "no_signal"
-    return "unknown", 0.2, {"message_id": last.message_id}, "no_signal"
+        return "unknown", 0.2, {"message_id": str(last.id), "evidence_class": "raw_evidence"}, "no_signal"
+    return "unknown", 0.2, {"message_id": str(last.id)}, "no_signal"
+
+
+def build_session_terminal_state(
+    session: Session,
+    *,
+    facts: SessionSemanticFacts | None = None,
+) -> tuple[str, float, dict[str, int | float | str | None], str]:
+    """Read structural terminal evidence without unrelated profile analysis.
+
+    Profile construction reuses its existing canonical actions. Hydrated rows
+    derive those same actions lazily, retaining only one message's calls.
+    """
+    actions = (
+        facts.actions
+        if facts is not None
+        else (
+            action
+            for message in session.messages
+            for action in build_actions(message, message_tool_calls(message) if message.is_tool_use else ())
+        )
+    )
+    return _terminal_state(session, actions)
 
 
 def build_session_analysis(
@@ -574,9 +598,11 @@ def build_session_profile(
     )
     add_timing("profile.workflow_shape", t0)
     t0 = time.perf_counter()
-    terminal_state, terminal_state_confidence, terminal_state_evidence, terminal_state_method = _terminal_state(
-        session,
-        session_analysis,
+    terminal_state, terminal_state_confidence, terminal_state_evidence, terminal_state_method = (
+        build_session_terminal_state(
+            session,
+            facts=session_analysis.facts,
+        )
     )
     add_timing("profile.terminal_state", t0)
     t0 = time.perf_counter()

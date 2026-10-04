@@ -1124,13 +1124,12 @@ def _bounded_session_terminal_state_sync(
     was given (typically "unknown"/"no_signal"), the same honest behavior as
     before for sessions with no structural evidence.
     """
-    from polylogue.archive.session.runtime import _terminal_state
+    from polylogue.archive.session.session_profile import build_session_terminal_state
 
     session, budget = _tail_session_sync(conn, session_id, row)
     if not session.messages:
         return _UNKNOWN_BOUNDED_TERMINAL_STATE
-    analysis = build_session_analysis(session)
-    state, confidence, evidence, method = _terminal_state(session, analysis)
+    state, confidence, evidence, method = build_session_terminal_state(session)
     return state, confidence, {**evidence, **budget.as_evidence()}, method
 
 
@@ -1140,13 +1139,12 @@ async def _bounded_session_terminal_state_async(
     row: sqlite3.Row,
 ) -> _TerminalStateResult:
     """Async twin of `_bounded_session_terminal_state_sync` -- see its docstring."""
-    from polylogue.archive.session.runtime import _terminal_state
+    from polylogue.archive.session.session_profile import build_session_terminal_state
 
     session, budget = await _tail_session_async(conn, session_id, row)
     if not session.messages:
         return _UNKNOWN_BOUNDED_TERMINAL_STATE
-    analysis = build_session_analysis(session)
-    state, confidence, evidence, method = _terminal_state(session, analysis)
+    state, confidence, evidence, method = build_session_terminal_state(session)
     return state, confidence, {**evidence, **budget.as_evidence()}, method
 
 

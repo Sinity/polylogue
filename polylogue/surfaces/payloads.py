@@ -1171,10 +1171,10 @@ def message_topology_from_domain(message: Message) -> dict[str, object]:
 
 
 def _session_terminal_state(session: Session) -> str:
-    """Read terminal state from the canonical derived session profile."""
-    from polylogue.archive.session.session_profile import build_session_profile
+    """Read terminal state from the narrow canonical structural classifier."""
+    from polylogue.archive.session.session_profile import build_session_terminal_state
 
-    return build_session_profile(session).terminal_state
+    return build_session_terminal_state(session)[0]
 
 
 def message_render_envelope_from_domain(
