@@ -105,6 +105,24 @@ afterEach(() => {
 });
 
 describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
+  it.each([
+    [[{ content: "reasoning text", summary: "short summary" }], "reasoning text"],
+    [[{ summary: "summary only" }, { content: "next thought" }], "summary only\nnext thought"],
+  ])("preserves thoughts-only content through exact capture %#", async (thoughts, text) => {
+    const payload = {
+      id: "conversation-1", mapping: {
+        reasoning: { parent: null, message: { id: "reasoning-1", author: { role: "assistant" }, content: { content_type: "thoughts", thoughts } } },
+      },
+    };
+    const fetch = vi.fn(async () => jsonResponse(payload));
+    const { sendRuntimeMessage } = installChatgpt({ fetch });
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "backfill_exact_capture", providerSessionId: "conversation-1", nativePayload: payload, deferReceiver: true });
+    expect(result).toMatchObject({ ok: true, deferred: true, envelope: { session: { provider_session_id: "conversation-1", turns: [{ provider_turn_id: "reasoning-1", role: "assistant", text, blocks: [{ type: "thinking", text, metadata: { content_type: "thoughts" } }] }] } } });
+    expect(result.envelope.session.turns).toHaveLength(1);
+    expect(result.envelope.raw_provider_payload).toEqual(payload);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("reads a temporary capture identity from the original document without another provider fetch", async () => {
     const url = "https://chatgpt.com/?temporary-chat=true";
     const fetch = vi.fn(async () => jsonResponse({ id: "temp-1", is_temporary: true, mapping: {} }));

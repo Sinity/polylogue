@@ -384,15 +384,7 @@ async function backfillCoordinator() {
             "backfill_exact_capture",
             { deferReceiver: true, nativePayload },
           );
-          if (captured.envelope?.session?.turns?.length) return captured.envelope;
-          // The exact-capture path's own content-script normalizer doesn't
-          // (yet) read every content_type the bridge now preserves (e.g.
-          // `thoughts` reasoning nodes) -- rather than let that permanently
-          // no_turns-skip (and endlessly retry) a conversation the adapter
-          // path can already capture in full fidelity, fall back to it. The
-          // exact-capture DOM/live-generation enrichment is only lost for
-          // conversations it would have found nothing for anyway.
-          return adapters.chatgpt.normalizeCapture(response, item, attribution);
+          return captured.envelope;
         },
         alarms: runtimeChrome.alarms,
         instanceId,

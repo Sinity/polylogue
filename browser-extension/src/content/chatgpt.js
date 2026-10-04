@@ -279,6 +279,14 @@
     }
     if (typeof content?.text === "string" && content.text) return content.text;
     if (typeof content?.result === "string" && content.result) return content.result;
+    if (Array.isArray(content?.thoughts)) {
+      const thoughts = content.thoughts.flatMap((thought) => {
+        if (typeof thought?.content === "string" && thought.content) return [thought.content];
+        if (typeof thought?.summary === "string" && thought.summary) return [thought.summary];
+        return [];
+      });
+      if (thoughts.length) return thoughts.join("\n");
+    }
     return "";
   }
 
