@@ -836,3 +836,43 @@ async def test_dropping_one_summary_disposition_breaks_the_production_route(
     cli_summaries = exact_read_summaries(config, RootModeRequest.from_params({"conv_id": _CHILD_NATIVE_ID}))
     assert cli_summaries is not None
     assert _topology_facts(cli_summaries[0]) != expected
+
+
+@pytest.mark.asyncio
+async def test_prose_classification_survives_stored_and_bounded_reads(workspace_env: dict[str, Path]) -> None:
+    from polylogue.api import Polylogue
+    from polylogue.archive.message.types import MessageType
+
+    db_path = db_setup(workspace_env)
+    session_id = write_session_sync(
+        db_path,
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="prose-classification",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="ordinary-assistant",
+                    role=Role.ASSISTANT,
+                    text="Ordinary prose",
+                    blocks=[
+                        ParsedContentBlock(type=BlockType.THINKING, text="<environment_context>"),
+                        ParsedContentBlock(type=BlockType.TEXT, text="Ordinary prose"),
+                    ],
+                )
+            ],
+        ),
+    )
+    seeded = _Seeded(workspace_env["archive_root"], session_id)
+    rows, composed = _canonical_messages(seeded)
+    assert MessageType.normalize(rows[0].message_type) is MessageType.MESSAGE
+    with ArchiveStore(seeded.archive_root, initialize=False, read_only=True) as archive:
+        bounded_rows = archive.query_session_messages((session_id,), limit=1, offset=0)
+    bounded = [hydration.archive_message_query_row_to_domain(row) for row in bounded_rows]
+    api = Polylogue(archive_root=seeded.archive_root, db_path=db_path)
+    session = await api.get_session(session_id)
+    assert session is not None
+    for message in [*composed, *bounded, *session.messages.to_list()]:
+        assert message.message_type is MessageType.MESSAGE
+        assert message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+        assert message.text == "<environment_context>\n\nOrdinary prose"
+    assert len(composed) == len(bounded) == len(session.messages.to_list()) == 1

@@ -272,3 +272,36 @@ def test_assistant_role_with_tool_use_type_is_assistant_authored() -> None:
         )
         is MaterialOrigin.ASSISTANT_AUTHORED
     )
+
+
+@pytest.mark.parametrize(
+    ("blocks", "text", "expected"),
+    [
+        (
+            [{"type": "thinking", "text": "<environment_context>"}, {"type": "text", "text": "Ordinary prose"}],
+            "<environment_context>\n\nOrdinary prose",
+            MessageType.MESSAGE,
+        ),
+        ([{"type": "thinking", "text": "<environment_context>"}], "<environment_context>", MessageType.MESSAGE),
+        ([{"type": "text", "text": "<environment_context>"}], "<environment_context>", MessageType.CONTEXT),
+        (
+            [{"type": "tool_use", "text": "<environment_context>"}, {"type": "text", "text": "Ordinary prose"}],
+            "<environment_context>",
+            MessageType.TOOL_USE,
+        ),
+        ([{"type": "tool_result", "text": "<environment_context>"}], "<environment_context>", MessageType.TOOL_RESULT),
+        ([], "<environment_context>", MessageType.CONTEXT),
+    ],
+)
+def test_domain_message_classifies_prose_and_preserves_display(
+    blocks: list[dict[str, object]], text: str, expected: MessageType
+) -> None:
+    from polylogue.archive.message.models import Message
+
+    message = Message(id="prose-control", role=Role.ASSISTANT, text=text, blocks=blocks)
+    assert message.message_type is expected
+    assert message.text == text
+    if expected is MessageType.MESSAGE:
+        assert message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    elif expected is MessageType.CONTEXT:
+        assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT
