@@ -13,11 +13,11 @@ from polylogue.operations.daemon_protocol import (
     validate_operation_result,
 )
 from polylogue.operations.daemon_reads import DaemonReadDependencies
-from polylogue.operations.hermes_health import (
+from polylogue.operations.hermes_health import execute_hermes_health
+from polylogue.operations.hermes_health_contracts import (
     HermesHealthRequest,
     HermesHealthResult,
     decode_hermes_health_result,
-    execute_hermes_health,
 )
 from tests.infra.daemon_operations import running_daemon_operations
 
@@ -77,6 +77,7 @@ def test_health_wire_preserves_canonical_closed_schema_and_strict_scalars(tmp_pa
     assert decode_hermes_health_result(result).report.sources == ()
     report = result["report"]
     assert isinstance(report, dict)
+    assert decode_hermes_health_result(result).report.to_dict() == report
     for changed in ({"enabled": 0}, {"convergence_debt_failed_count": True}, {"undeclared": "value"}):
         with pytest.raises(OperationResultContractError):
             validate_operation_result("insights.hermes_health", {**result, "report": {**report, **changed}})
@@ -113,7 +114,7 @@ def test_cancelled_session_sample_physically_closes_original_readers(
 
 
 def test_python_health_composer_preserves_split_archive_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
     from polylogue.config import Config
     from polylogue.operations import hermes_health
 

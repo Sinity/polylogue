@@ -343,7 +343,7 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
     disabled/unavailable/degraded/healthy verdict rather than a silent zero.
     """
     env: AppEnv = ctx.obj
-    from polylogue.operations.hermes_health import decode_hermes_health_result
+    from polylogue.operations.hermes_health_contracts import decode_hermes_health_result
 
     result_payload, _served_by = dispatch_read(
         env.config, OperationRequest(operation="insights.hermes_health", payload={})
@@ -357,7 +357,7 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
 
 
 def _render_hermes_health_plain(health: object) -> None:
-    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
 
     assert isinstance(health, HermesIntegrationHealth)
     click.echo(f"Hermes integration: {health.verdict} (enabled={health.enabled})")

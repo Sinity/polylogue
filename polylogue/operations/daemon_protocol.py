@@ -233,7 +233,7 @@ class HermesHealthWireRequest(_OperationPayload):
     def __get_pydantic_json_schema__(
         cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        from polylogue.operations.hermes_health import HermesHealthRequest
+        from polylogue.operations.hermes_health_contracts import HermesHealthRequest
 
         return handler.resolve_ref_schema(handler(HermesHealthRequest.__pydantic_core_schema__))
 
@@ -245,7 +245,7 @@ class HermesHealthWireResult(_OperationPayload):
     @model_validator(mode="before")
     @classmethod
     def validate_health(cls, value: object) -> object:
-        from polylogue.operations.hermes_health import HermesHealthResult
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
 
         _validate_json_result_model(HermesHealthResult, value)
         return value
@@ -254,7 +254,7 @@ class HermesHealthWireResult(_OperationPayload):
     def __get_pydantic_json_schema__(
         cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
     ) -> JsonSchemaValue:
-        from polylogue.operations.hermes_health import HermesHealthResult
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
 
         return handler.resolve_ref_schema(handler(HermesHealthResult.__pydantic_core_schema__))
 

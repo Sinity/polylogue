@@ -6,23 +6,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import BaseModel, ConfigDict
-
-from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth, build_hermes_integration_health
-from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
+from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
+from polylogue.analysis.hermes_integration_health import build_hermes_integration_health
+from polylogue.operations.hermes_health_contracts import HermesHealthResult
+from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-
-
-class HermesHealthRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-
-
-class HermesHealthResult(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
-    report: HermesIntegrationHealth
-    outcome: OutcomeEnvelope
 
 
 def read_hermes_health(
@@ -70,12 +60,3 @@ def execute_hermes_health(
     checkpoint()
     gaps = (f"hermes_health_{report.verdict}",) if report.verdict in {"degraded", "unavailable"} else ()
     return HermesHealthResult(report=report, outcome=decide_outcome(matched=1, degraded=gaps)).model_dump(mode="json")
-
-
-def decode_hermes_health_result(value: object) -> HermesHealthResult:
-    """Hydrate the same strict JSON forms admitted by the resident protocol."""
-    from typing import cast
-
-    from polylogue.operations.daemon_protocol import _json_result_validator
-
-    return cast(HermesHealthResult, _json_result_validator(HermesHealthResult).validate_python(value))
