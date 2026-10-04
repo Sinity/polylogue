@@ -719,22 +719,44 @@ describe("background receiver diagnostics", () => {
     expect(stored.polylogueState).toMatchObject({ online: true, error: "no_turns" });
   });
 
-  it("reconciles existing conversation tabs on extension update without recapturing", async () => {
+  it("refuses unpaired freshness inventory before any provider operation", async () => {
+    stored.polylogueReceiverPairing = null;
+    let release;
+    const get = globalThis.chrome.storage.local.get.getMockImplementation();
+    globalThis.chrome.storage.local.get.mockImplementation((defaults) => {
+      if (Object.hasOwn(defaults, "polylogueReceiverPairing")) return new Promise(resolve => { release = () => resolve({ polylogueReceiverPairing: null }); });
+      return get(defaults);
+    });
+    alarmListener({ name: "polylogueCaptureFreshnessSweep" });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    release();
+    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(fetchCalls.filter(call => String(call.url).startsWith("https://"))).toEqual([]);
+  });
+
+  it.each(["archived", "spooled_only"])("installs freshness observers in existing %s tabs without recapturing", async (state) => {
     expect(installedListener).toBeTypeOf("function");
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-installed", title: "ChatGPT" }];
     globalThis.fetch = vi.fn(async () => responseJson({
       provider: "chatgpt",
       provider_session_id: "conv-installed",
-      state: "spooled_only",
+      state,
       captured: true,
     }));
 
     installedListener();
 
     await vi.waitFor(() => expect(stored.polylogueSessionLedger["chatgpt:conv-installed"]?.archive_state)
-      .toMatchObject({ state: "spooled_only" }));
+      .toMatchObject({ state }));
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 }, files: ["src/content/chatgpt_bridge.js"], world: "MAIN",
+    });
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 }, files: expect.arrayContaining(["src/common.js", "src/content/chatgpt.js"]),
+    });
   });
 
   it("routes backfill inventory through an existing provider page without creating a tab", async () => {
@@ -2280,7 +2302,7 @@ describe("background receiver diagnostics", () => {
     await vi.waitFor(() => expect(stored.polylogueState?.online).toBe(false));
 
     expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalledWith(expect.objectContaining({ target: { tabId: 42 }, files: expect.arrayContaining(["src/common.js", "src/content/chatgpt.js"]) }));
   });
 
   it("recaptures an archived Claude conversation until that provider has freshness convergence", async () => {
