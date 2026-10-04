@@ -188,3 +188,12 @@ or malformed memo recomputes the result; there is no checkout-local memo route.
 
 Keep new repo-local outputs in `.cache/` or `.local/` instead of adding new
 top-level output roots.
+
+Terminal verification publication resumes on the next verifier or `devtools why`
+read if interruption separates the run receipt, history append, and durable
+evidence append. Recovery preserves the original verdict and canonical receipt;
+it does not rerun verification or grant new authority. The history's canonical
+receipt also restores missing evidence after successful detail pruning. Both
+append lanes serialize run identity checks with publication, so concurrent
+finish and recovery produce one row per run in each lane. Recovery scans identities once per
+lane for a batch and makes every appended row durable before advancing.
