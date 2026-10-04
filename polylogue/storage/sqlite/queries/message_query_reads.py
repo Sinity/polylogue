@@ -810,7 +810,7 @@ async def iter_messages(
                 f"WHERE {where}{after} ORDER BY {_TRANSCRIPT_ORDER} LIMIT ?",
                 (*bound_params, *cursor_params, fetch_limit),
             ) as cursor:
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
                 decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
             for row in rows:
                 yield decode(row)

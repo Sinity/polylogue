@@ -72,7 +72,7 @@ async def _message_snapshot(conn: aiosqlite.Connection) -> AsyncIterator[None]:
 
 
 async def _hydrate_message_rows(conn: aiosqlite.Connection, messages: list[MessageRecord]) -> None:
-    ids = [message.message_id for message in messages]
+    ids: list[str] = [message.message_id for message in messages]
     blocks = await attachments_q.get_blocks(conn, ids)
     attachments = await attachments_q.get_message_attachments(conn, ids)
     for message in messages:

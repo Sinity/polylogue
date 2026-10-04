@@ -65,6 +65,7 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
             assert len(message.attachments) == 1
             attachment = message.attachments[0]
             assert attachment.mime_type == "text/plain"
+            assert attachment.name is not None
             assert attachment.name.startswith("neutral-")
             assert attachment.caption is not None
             assert attachment.availability is not None
@@ -91,7 +92,10 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
         page, total, completeness = await api.repository.get_messages_paginated(session_id, limit=2)
         check(page)
         assert total == 105 and completeness.complete
-        assert context[0]["attachments"][0]["mime_type"] == "text/plain"
+        context_attachments = context[0]["attachments"]
+        assert isinstance(context_attachments, list)
+        assert isinstance(context_attachments[0], dict)
+        assert context_attachments[0]["mime_type"] == "text/plain"
 
         batches: list[int] = []
         attachment_batches: list[int] = []
