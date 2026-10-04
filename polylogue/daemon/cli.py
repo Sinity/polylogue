@@ -28,6 +28,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
+from polylogue.core.durable_fs import atomic_create
 from polylogue.core.json import JSONDocument, dumps, json_document
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
@@ -1971,6 +1972,7 @@ async def run_daemon_services(
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
     cold_build_index: bool = False,
+    listener_info_path: Path | None = None,
 ) -> None:
     """Run the daemon while excluding every offline index rebuild.
 
@@ -2024,6 +2026,7 @@ async def run_daemon_services(
             startup_message=startup_message,
             service_profile=service_profile,
             cold_build_index=cold_build_index,
+            listener_info_path=listener_info_path,
         )
 
 
@@ -2082,6 +2085,7 @@ async def _run_daemon_services_under_active_writer_lease(
     startup_message: str | None = None,
     service_profile: ServiceProfile = PRODUCTION_PROFILE,
     cold_build_index: bool = False,
+    listener_info_path: Path | None = None,
 ) -> None:
     """Run configured daemon components until interrupted.
 
@@ -2110,9 +2114,15 @@ async def _run_daemon_services_under_active_writer_lease(
     # healthy writer before its first ArchiveStore happens to open.
     assert_writable_archive_identity(configured_root=archive_root_path, active_root=archive_root_path)
 
+    if listener_info_path is not None:
+        listener_info_path = listener_info_path.expanduser().resolve()
+        if listener_info_path.is_relative_to(archive_root_path.resolve()):
+            raise click.UsageError("--listener-info-path must be outside the archive root")
+
     if (
         enable_api
         and enable_browser_capture
+        and api_port != 0
         and api_port == browser_capture_port
         and bind_hosts_overlap(api_host, browser_capture_host)
     ):
@@ -2301,6 +2311,9 @@ async def _run_daemon_services_under_active_writer_lease(
     # acquisition) may still start: acquisition only ever writes source.db,
     # so a derived-only mismatch (index.db/embeddings.db) must not stop it.
     schema_blocked = schema_alert.severity == HealthSeverity.CRITICAL
+    if listener_info_path is not None and enable_api and schema_blocked:
+        archive_owner.release()
+        raise click.UsageError("--listener-info-path requires every enabled listener to bind")
     watcher_blocked = enable_watch and schema_blocked
     # Unconditional (not gated on ``enable_watch``): operation recovery below
     # touches audit.db on every startup regardless of whether the watcher is
@@ -2627,7 +2640,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     component="browser_capture",
                     payload={
                         "host": browser_capture_host,
-                        "port": browser_capture_port,
+                        "port": int(server.server_address[1]) if browser_capture_port == 0 else browser_capture_port,
                         "spool_path": str(browser_capture_spool_root()),
                         "auth_enabled": resolved_browser_capture_auth_token is not None,
                     },
@@ -2728,10 +2741,29 @@ async def _run_daemon_services_under_active_writer_lease(
                     component="api",
                     payload={
                         "host": api_host,
-                        "port": api_port,
+                        "port": int(api_server.server_address[1]) if api_port == 0 else api_port,
                         "auth_enabled": resolved_api_auth_token is not None,
                     },
                 )
+
+        if listener_info_path is not None:
+            if (enable_api and api_server is None) or (enable_browser_capture and server is None):
+                raise click.UsageError("--listener-info-path requires every enabled listener to bind")
+            # Publish only after every enabled TCP listener owns its socket.
+            # This is bind readback, not archive or service readiness.
+            listeners = {
+                "api": {"host": str(api_server.server_address[0]), "port": int(api_server.server_address[1])}
+                if api_server is not None
+                else None,
+                "browser_capture": {"host": str(server.server_address[0]), "port": int(server.server_address[1])}
+                if server is not None
+                else None,
+            }
+            atomic_create(
+                listener_info_path,
+                (dumps({"pid": os.getpid(), "listeners": listeners}) + "\n").encode(),
+                mode=0o600,
+            )
 
         if api_server is None and not schema_blocked:
             # The ingest owner does not depend on the HTTP surface: accepted
@@ -4068,6 +4100,12 @@ def health_command(
         "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
     ),
 )
+@click.option(
+    "--listener-info-path",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Atomically write actual bound API and capture addresses as private JSON after listener startup.",
+)
 @click.pass_context
 def run_command(
     ctx: click.Context,
@@ -4087,6 +4125,7 @@ def run_command(
     browser_port: int | None,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
+    listener_info_path: Path | None,
 ) -> None:
     """Run configured daemon components.
 
@@ -4178,6 +4217,7 @@ def run_command(
                 api_auth_token=api_auth_token,
                 api_allow_no_auth=api_allow_no_auth,
                 cold_build_index=cold_build_index,
+                listener_info_path=listener_info_path,
             )
         )
     except KeyboardInterrupt:

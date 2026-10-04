@@ -6,6 +6,7 @@ import socket
 import subprocess
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -41,12 +42,12 @@ def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AGENTCTL_JOB_ID", "polylogue-dev_loop_proof-8e3c63a7")
 
 
-def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
+def test_run_proof_reads_owned_bound_ports_and_product_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fixed_service_context(monkeypatch)
-    monkeypatch.setattr(dev_loop_service, "_free_loopback_ports", lambda count: [48801, 48865][:count])
+    monkeypatch.setattr(dev_loop_service, "_await_listener_ports", lambda **_kwargs: (48801, 48865))
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "operator-config"))
     (tmp_path / "scratch").mkdir()
@@ -86,13 +87,13 @@ def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
             "api_converged": True,
         },
     }
-    assert started["api_port"] == 48801
-    assert started["capture_port"] == 48865
+    assert isinstance(started["listener_info_path"], Path)
+    assert started["listener_info_path"].parent == tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts"
     assert initialized == [tmp_path / "scratch" / "polylogue-dev-loop-proof" / "archive"]
     environment = started["environment"]
     assert isinstance(environment, dict)
-    assert environment["POLYLOGUE_API_PORT"] == "48801"
-    assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "48865"
+    assert environment["POLYLOGUE_API_PORT"] == "0"
+    assert environment["POLYLOGUE_BROWSER_CAPTURE_PORT"] == "0"
     assert environment["XDG_CONFIG_HOME"] == str(
         tmp_path / "scratch" / "polylogue-dev-loop-proof" / "artifacts" / "home" / ".config"
     )
@@ -113,14 +114,16 @@ def test_started_daemon_uses_fixed_proof_tokens(tmp_path: Path, monkeypatch: pyt
         repo_root=tmp_path,
         environment={},
         artifact_root=artifact_root,
-        api_port=48801,
-        capture_port=48865,
+        listener_info_path=artifact_root / "listeners.json",
     )
 
     command = launched["command"]
     assert isinstance(command, list)
     token_index = command.index("--browser-capture-auth-token")
     assert command[token_index + 1] == dev_loop_service._RECEIVER_TOKEN
+    assert command[command.index("--api-port") + 1] == "0"
+    assert command[command.index("--port") + 1] == "0"
+    assert command[command.index("--listener-info-path") + 1] == str(artifact_root / "listeners.json")
     api_token_index = command.index("--api-auth-token")
     assert command[api_token_index + 1] == dev_loop_service._API_TOKEN
 
@@ -139,9 +142,7 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv("HERMES_HOME", str(host / ".hermes"))
     artifact_root = tmp_path / "artifacts"
 
-    environment = dev_loop_service._proof_environment(
-        archive_root=tmp_path / "archive", artifact_root=artifact_root, api_port=48801, capture_port=48865
-    )
+    environment = dev_loop_service._proof_environment(archive_root=tmp_path / "archive", artifact_root=artifact_root)
 
     home = Path(environment["HOME"])
     assert home.is_dir() and home.is_relative_to(artifact_root)
@@ -214,6 +215,7 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
     monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", lambda _root: None)
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
     monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **_kwargs: object())
+    monkeypatch.setattr(dev_loop_service, "_await_listener_ports", lambda **_kwargs: (48801, 48865))
     monkeypatch.setattr(dev_loop_service, "terminate_process_group", lambda _process: None)
     monkeypatch.setattr(dev_loop_service, "_await_api", lambda **_kwargs: None)
     monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
@@ -233,15 +235,6 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
 
     with pytest.raises(RuntimeError, match="entries were malformed: claude-ai"):
         dev_loop_service.run_proof()
-
-
-def test_free_loopback_ports_are_distinct_and_bindable() -> None:
-    ports = dev_loop_service._free_loopback_ports(2)
-
-    assert len(set(ports)) == 2
-    for port in ports:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-            listener.bind(("127.0.0.1", port))
 
 
 @pytest.mark.parametrize(
@@ -558,7 +551,9 @@ def test_api_readiness_uses_the_unauthenticated_liveness_contract(monkeypatch: p
         live,
     )
 
-    dev_loop_service._await_api(base_url="http://127.0.0.1:48801", timeout_s=0.1)
+    dev_loop_service._await_api(
+        base_url="http://127.0.0.1:48801", timeout_s=0.1, daemon=cast(Any, SimpleNamespace(poll=lambda: None))
+    )
 
     assert observed == ["http://127.0.0.1:48801/healthz/live"]
 
@@ -571,3 +566,81 @@ def test_main_emits_one_bounded_json_error(monkeypatch: pytest.MonkeyPatch, caps
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert len(payload["error"]["message"]) == 512
+
+
+@pytest.mark.uses_real_clock("real daemon child startup and owned socket waits")
+def test_proof_daemon_owns_ephemeral_ports_through_product_convergence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A competing binder cannot take either actual listener before proof readiness."""
+    _fixed_service_context(monkeypatch)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    monkeypatch.setattr(dev_loop_service, "_run_shared_chrome_control", lambda **_kwargs: None)
+    original = dev_loop_service._await_listener_ports
+    observed: list[tuple[int, int]] = []
+
+    def read_owned(**kwargs: Any) -> tuple[int, int]:
+        ports = original(**kwargs)
+        assert kwargs["listener_info_path"].stat().st_mode & 0o777 == 0o600
+        for port in ports:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as competitor:
+                with pytest.raises(OSError) as refused:
+                    competitor.bind(("127.0.0.1", port))
+                import errno
+
+                assert refused.value.errno == errno.EADDRINUSE
+        observed.append(ports)
+        return ports
+
+    monkeypatch.setattr(dev_loop_service, "_await_listener_ports", read_owned)
+    result = dev_loop_service.run_proof(readiness_timeout_s=45)
+    assert result["ok"] is True and len(observed) == 1
+    api, capture = observed[0]
+    assert 0 < api != capture > 0
+    assert result["ports"] == {"api": api, "browser_capture": capture}
+    assert result["provider_capture"] == {
+        "providers": ["chatgpt", "claude-ai"],
+        "archive_converged": True,
+        "api_converged": True,
+    }
+
+
+@pytest.mark.parametrize("failure", ["exited", "stale", "malformed"])
+def test_listener_readback_refuses_dead_or_other_child_without_readiness_wait(tmp_path: Path, failure: str) -> None:
+    path = tmp_path / "listeners.json"
+    payload: dict[str, Any] = {
+        "pid": 1234,
+        "listeners": {
+            "api": {"host": "127.0.0.1", "port": 48801},
+            "browser_capture": {"host": "127.0.0.1", "port": 48865},
+        },
+    }
+    if failure == "stale":
+        payload["pid"] = 9999
+    elif failure == "malformed":
+        payload["listeners"]["api"]["port"] = 0
+    path.write_text(json.dumps(payload))
+    child = cast(Any, SimpleNamespace(pid=1234, poll=lambda: 1 if failure == "exited" else None))
+    with pytest.raises(RuntimeError):
+        dev_loop_service._await_listener_ports(daemon=child, listener_info_path=path, timeout_s=45)
+
+
+def test_listener_readback_failure_still_terminates_proof_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_service_context(monkeypatch)
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", lambda _root: None)
+    monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
+    child = object()
+    monkeypatch.setattr(dev_loop_service, "_start_daemon", lambda **_kwargs: child)
+    stopped: list[object] = []
+    monkeypatch.setattr(dev_loop_service, "terminate_process_group", stopped.append)
+
+    def refused(**_kwargs: object) -> tuple[int, int]:
+        raise RuntimeError("listener readback refused")
+
+    monkeypatch.setattr(dev_loop_service, "_await_listener_ports", refused)
+    with pytest.raises(RuntimeError, match="listener readback refused"):
+        dev_loop_service.run_proof()
+    assert stopped == [child]
