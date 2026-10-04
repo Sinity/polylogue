@@ -249,10 +249,11 @@ async function restoreBackfillCheckpointFromReceiver(store, instanceId) {
 
 async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
   const settings = await receiverSettings();
-  if (!settings.authToken) return { checkpoint: null, successfulProviders: [] };
+  if (!settings.authToken) return { checkpoint: null, successfulProviders: [], unavailableProviders: providers };
   const client = new CaptureJobClient({ baseUrl: settings.baseUrl, token: settings.authToken, cache: runtimeChrome.storage.local });
   const recovered = [];
   const successfulProviders = [];
+  const unavailableProviders = [];
   for (const provider of providers) {
     try {
       const accountHandle = await providerAccountHandle(provider);
@@ -263,6 +264,7 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
       })));
       if (adopted.length) successfulProviders.push(provider);
     } catch (error) {
+      unavailableProviders.push(provider);
       await appendDebugLog({
         stage: "capture_job_recovery_unavailable",
         provider,
@@ -270,7 +272,7 @@ async function loadBackfillCheckpointFromCaptureJobs(instanceId, providers) {
       });
     }
   }
-  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders };
+  return { checkpoint: mergeCaptureJobRecoveryCheckpoints(recovered), successfulProviders, unavailableProviders };
 }
 
 function mergeCaptureJobRecoveryCheckpoints(jobs) {
@@ -310,7 +312,8 @@ function mergeCaptureJobRecoveryCheckpoints(jobs) {
 }
 
 async function backfillCoordinator() {
-  if (!backfillCoordinatorPromise) {
+  const initializing = !backfillCoordinatorPromise;
+  if (initializing) {
     const candidate = (async () => {
       const store = new IndexedDbBackfillStore();
       const instanceId = await extensionInstanceId();
@@ -334,7 +337,7 @@ async function backfillCoordinator() {
         await restoreBackfillCheckpointFromReceiver(store, instanceId);
       }
       const adapters = providerAdapters(providerPageFetch, { requirePageContext: true });
-      return new BackfillCoordinator({
+      const coordinator = new BackfillCoordinator({
         store,
         adapters,
         receiver: (envelope, serialized) => postJson(
@@ -395,13 +398,36 @@ async function backfillCoordinator() {
         instanceId,
         receiverContractEpoch: BACKFILL_WORKER_EPOCH,
       });
+      coordinator.unavailableRecoveryProviders = recovery.unavailableProviders;
+      coordinator.recoveryInstanceId = instanceId;
+      return coordinator;
     })();
     backfillCoordinatorPromise = candidate;
     void candidate.catch(() => {
       if (backfillCoordinatorPromise === candidate) backfillCoordinatorPromise = null;
     });
   }
-  return backfillCoordinatorPromise;
+  const coordinator = await backfillCoordinatorPromise;
+  if (!initializing && coordinator.unavailableRecoveryProviders.length) {
+    const tabs = await runtimeChrome.tabs.query({});
+    const providers = coordinator.unavailableRecoveryProviders.filter(
+      (provider) => tabs.some((tab) => archiveProviderForUrl(tab.url || tab.pendingUrl || "") === provider),
+    );
+    if (providers.length && !coordinator.recoveryPromise) {
+      coordinator.recoveryPromise = (async () => {
+        const recovery = await loadBackfillCheckpointFromCaptureJobs(coordinator.recoveryInstanceId, providers);
+        if (recovery.successfulProviders.length) {
+          await coordinator.store.reconcileRecoveryCheckpoint(recovery.checkpoint, recovery.successfulProviders);
+        }
+        coordinator.unavailableRecoveryProviders = [
+          ...coordinator.unavailableRecoveryProviders.filter((provider) => !providers.includes(provider)),
+          ...recovery.unavailableProviders,
+        ];
+      })().finally(() => { coordinator.recoveryPromise = null; });
+    }
+    if (coordinator.recoveryPromise) await coordinator.recoveryPromise;
+  }
+  return coordinator;
 }
 
 async function startBackfill(request) {

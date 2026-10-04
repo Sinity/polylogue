@@ -1563,6 +1563,72 @@ describe("background receiver diagnostics", () => {
     expect(restoreCall).toBeDefined();
   });
 
+  it.each(["missing_tab", "receiver_refusal"])("retries cached recovery after %s and joins concurrent observers", async (failure) => {
+    const existingTabs = tabs;
+    if (failure === "missing_tab") tabs = [];
+    const accountHandle = "neutral-recovery-account";
+    const checkpoint = { version: 1, jobs: [{
+      id: "recovered-local-job", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z",
+      status: "complete", inventory_cursor: "done", inventory_complete: true,
+      policy: { leaseMs: 180000, maxDailyRequests: 10 }, execution_generation: 0,
+      learned_cadence_ms: 40000, daily_requests: 1, last_ack: null,
+    }], queue: [], revisions: [] };
+    let providerWorkCalls = 0;
+    globalThis.chrome.scripting.executeScript = vi.fn(async (details) => {
+      if (details.args?.[0]?.operation === "identity") return [{ result: { ok: true, response: { accountHandle } } }];
+      providerWorkCalls += 1;
+      throw new Error("unexpected_provider_work");
+    });
+    let discoveryCalls = 0;
+    let releaseDiscovery;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      fetchCalls.push({ url, options });
+      const path = new URL(url).pathname;
+      if (path === "/v1/backfill-checkpoint") return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
+      if (path === "/v1/capture-jobs/discover") {
+        const body = JSON.parse(options.body);
+        // Intent-specific checkpoint publication is a separate existing call;
+        // suspend only the original account-wide recovery discovery.
+        if (body.intent_key) return captureJobFixtureResponse(url, options);
+        if (body.provider !== "chatgpt") return responseJson({ jobs: [] });
+        discoveryCalls += 1;
+        if (failure === "receiver_refusal" && discoveryCalls === 1) return responseJson({ error: "unavailable" }, { ok: false, status: 503 });
+        await new Promise(resolve => { releaseDiscovery = resolve; });
+        return responseJson({ jobs: [{
+          job_id: "receiver-recovered-job", provider: "chatgpt", account_scope: body.account_scope,
+          intent_key: "recovered-intent", revision: 4, lease_generation: 1,
+          updated_at: "2026-07-16T10:00:00Z", checkpoint: { payload: checkpoint },
+        }] });
+      }
+      if (path === "/v1/capture-jobs/receiver-recovered-job/adopt") return responseJson({
+        job: { job_id: "receiver-recovered-job", provider: "chatgpt", intent_key: "recovered-intent",
+          revision: 5, lease_generation: 2, checkpoint: { payload: checkpoint } },
+        lease: { lease_id: "recovery-lease", generation: 2, proof: "recovery-proof" },
+      });
+      return captureJobFixtureResponse(url, options) || responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
+    });
+    expect(await sendRuntimeMessage({ type: "polylogue.backfill.status" })).toMatchObject({ ok: true, jobs: [] });
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 0 : 1);
+    tabs = existingTabs;
+    const first = sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    await vi.waitFor(() => expect(releaseDiscovery).toBeTypeOf("function"));
+    const second = sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    await new Promise(resolve => globalThis.setTimeout(resolve, 0));
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
+    releaseDiscovery();
+    for (const status of await Promise.all([first, second])) {
+      expect(status).toMatchObject({ ok: true, jobs: [expect.objectContaining({
+        id: "recovered-local-job", status: "complete", inventory_cursor: "done",
+      })] });
+    }
+    await sendRuntimeMessage({ type: "polylogue.backfill.status" });
+    expect(discoveryCalls).toBe(failure === "missing_tab" ? 1 : 2);
+    expect(providerWorkCalls).toBe(0);
+    const scopedCalls = fetchCalls.filter(call => new URL(call.url).pathname === "/v1/capture-jobs/discover");
+    expect(scopedCalls.every(call => !call.options.body.includes(accountHandle))).toBe(true);
+    expect(JSON.parse(scopedCalls.at(-1).options.body).account_scope).toMatch(/^h1:/);
+  });
+
   it("rehydrates a new browser profile from exact-scope CaptureJobs", async () => {
     const accountHandle = "stable-account-after-profile-loss";
     const remoteCheckpoint = {
