@@ -119,3 +119,5 @@ preserve this contract; MCP supplies its smaller delivery budget to the owner.
 Message-branch predicates retain the default top-level session scope; only explicit session lineage selectors or root choices change that scope. Row `fields`/`select` projections cannot be combined with `count` or `agg` terminals in either order. Boundary errors offer equivalent names accepted at the requested boundary, and DSL discovery uses the actual grammar metadata rather than internal plan attributes.
 
 The CLI message walk narrows every continuation request to the remaining requested delivery, through the canonical session-read window contract. It preserves the returned continuation and next offset; it does not trim a wider page after advancing its cursor. Full exports continue using their bounded window size.
+
+Session-list envelopes from both full sessions and summaries use the canonical row projection for repository and working-directory display names. Full repository URLs and working-directory paths remain in their declared domain fields; explicit presentation overrides remain supported.
