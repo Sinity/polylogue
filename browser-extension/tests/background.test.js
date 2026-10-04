@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
 
@@ -44,9 +45,17 @@ function installChromeMock(storagePatch = {}) {
   globalThis.chrome = {
     // The worker captures this per-instance seam. A stale instance must not
     // forward a request into the next test's fetch stub.
-    __polylogueNetwork: (...args) => {
-      if (!live()) return Promise.reject(new Error("stale_background_network"));
-      return globalThis.fetch(...args);
+    __polylogueNetwork: async (...args) => {
+      if (!live()) throw new Error("stale_background_network");
+      const response = await globalThis.fetch(...args);
+      if (response.ok && String(args[0]).endsWith("/v1/browser-captures") && args[1]?.method === "POST") {
+        // Synthetic successful receivers use the current wire receipt. Explicit
+        // malformed fields override these defaults in refusal controls.
+        const body = await response.json();
+        const hash = createHash("sha256").update(args[1].body).digest("hex");
+        response.json = async () => ({ outcome: "accepted", content_hash: hash, submitted_content_hash: hash, ...body });
+      }
+      return response;
     },
     action: {
       setBadgeBackgroundColor: vi.fn(async () => undefined),
@@ -181,7 +190,7 @@ function installChromeMock(storagePatch = {}) {
     const captureJobResponse = captureJobFixtureResponse(url, options);
     if (captureJobResponse) return captureJobResponse;
     if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
     }
     return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
   });
@@ -270,6 +279,41 @@ describe("background receiver diagnostics", () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
     await loadBackground();
+  });
+
+  it.each(["foreign_submission", "missing_outcome"])("refuses %s in the original foreground receipt boundary", async (fault) => {
+    globalThis.fetch = vi.fn(async () => responseJson(
+      fault === "foreign_submission" ? { submitted_content_hash: "foreign" } : { outcome: null },
+    ));
+    const response = await sendRuntimeMessage({ type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-refused", turns: [] } },
+    });
+    expect(response.ok).toBe(false);
+    expect(response.error).toMatch(/^receiver_contract_incompatible:/);
+    expect(stored.polylogueState?.captured).not.toBe(true);
+    expect(stored.polylogueSessionLedger["chatgpt:conv-refused"].last_error).toMatch(/^receiver_contract_incompatible:/);
+  });
+
+  it("retires a superseded capture without certifying incoming turn counts", async () => {
+    stored.polylogueSessionLedger = { "chatgpt:conv-stale": { turn_count: 7, attachment_count: 2 } };
+    globalThis.fetch = vi.fn(async () => responseJson({
+      ok: true, outcome: "superseded", provider: "chatgpt", provider_session_id: "conv-stale",
+      artifact_ref: "chatgpt/conv-stale.json", content_hash: "resident-hash",
+      accepted_identities: [],
+    }));
+    const response = await sendRuntimeMessage({ type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-stale",
+        turns: [{ provider_turn_id: "incoming-turn", role: "user", text: "Neutral" }] } },
+    });
+    expect(response).toMatchObject({ ok: true, outcome: "superseded", captured: false });
+    expect(stored.polylogueSessionLedger["chatgpt:conv-stale"]).toMatchObject({
+      turn_count: 7, attachment_count: 2, last_error: "receiver_superseded",
+    });
+    expect(stored.polylogueConversationTimeline["chatgpt:conv-stale"][0]).toMatchObject({
+      event: "held_with_reason", detail: "receiver_superseded",
+    });
+    expect(stored.polylogueState.captured).toBe(false);
+    expect(stored.polylogueCaptureQueue?.entries || []).toHaveLength(0);
   });
 
   it("sends a request id to the receiver and stores the echoed id", async () => {
@@ -699,7 +743,7 @@ describe("background receiver diagnostics", () => {
       const captureJobResponse = captureJobFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
       }
       return responseJson({ error: "unexpected_service_worker_provider_fetch" }, { ok: false, status: 500 });
     });
@@ -736,7 +780,7 @@ describe("background receiver diagnostics", () => {
       const captureJobResponse = captureJobFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -763,7 +807,7 @@ describe("background receiver diagnostics", () => {
   it("coalesces equivalent concurrent backfill requests", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -782,7 +826,7 @@ describe("background receiver diagnostics", () => {
   it("coalesces equivalent requests despite object insertion order", async () => {
     globalThis.fetch = vi.fn(async (url) => {
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -845,7 +889,7 @@ describe("background receiver diagnostics", () => {
   it("bounds receiver capability preflight with the provider request timeout", async () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
-      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] }, { requestId: "capability-1" });
+      return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] }, { requestId: "capability-1" });
     });
     await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
     const capabilityCall = fetchCalls.find((call) => String(call.url).includes("/v1/browser-captures/capabilities"));
@@ -900,7 +944,7 @@ describe("background receiver diagnostics", () => {
       const captureJobResponse = captureJobFixtureResponse(url, options);
       if (captureJobResponse) return captureJobResponse;
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (String(url).includes("/v1/backfill-checkpoint")) {
         return responseJson(
@@ -970,7 +1014,7 @@ describe("background receiver diagnostics", () => {
         });
       }
       if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (path === "/v1/backfill-checkpoint") {
         return responseJson({ stored_at: "2026-01-01T00:00:00Z" }, { status: 202 });
@@ -1048,7 +1092,7 @@ describe("background receiver diagnostics", () => {
         });
       }
       if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (path === "/v1/backfill-checkpoint") return responseJson({ stored_at: "now" }, { status: 202 });
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
@@ -1133,13 +1177,13 @@ describe("background receiver diagnostics", () => {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
       }
       if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (path === "/v1/backfill-checkpoint") return responseJson({ stored_at: "now" }, { status: 202 });
       if (path === "/v1/browser-captures") {
         const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(options.body));
         const contentHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "chunked-conversation", state: "complete", artifact_ref: "chatgpt/chunked-conversation.json", content_hash: contentHash });
+        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "chunked-conversation", state: "complete", artifact_ref: "chatgpt/chunked-conversation.json", outcome: "accepted", submitted_content_hash: contentHash, content_hash: contentHash });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -1265,13 +1309,13 @@ describe("background receiver diagnostics", () => {
         return responseJson({ ok: true, receiver_id: pairing.receiver_id, api_schema: pairing.api_schema });
       }
       if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (path === "/v1/backfill-checkpoint") return responseJson({ stored_at: "now" }, { status: 202 });
       if (path === "/v1/browser-captures") {
         const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(options.body));
         const contentHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "thoughts-only-conversation", state: "complete", artifact_ref: "chatgpt/thoughts-only-conversation.json", content_hash: contentHash });
+        return responseJson({ ok: true, provider: "chatgpt", provider_session_id: "thoughts-only-conversation", state: "complete", artifact_ref: "chatgpt/thoughts-only-conversation.json", outcome: "accepted", submitted_content_hash: contentHash, content_hash: contentHash });
       }
       return responseJson({ error: "unexpected_receiver_request" }, { ok: false, status: 500 });
     });
@@ -1340,7 +1384,7 @@ describe("background receiver diagnostics", () => {
     globalThis.fetch = vi.fn(async (url, options = {}) => {
       fetchCalls.push({ url, options });
       if (String(url).endsWith("/v1/browser-captures/capabilities")) {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (String(url).includes("/v1/backfill-checkpoint")) {
         throw new Error("synthetic_receiver_unreachable");
@@ -1649,7 +1693,7 @@ describe("background receiver diagnostics", () => {
         return responseJson({ error: "checkpoint_not_found" }, { ok: false, status: 404 });
       }
       if (path === "/v1/browser-captures/capabilities") {
-        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash"] });
+        return responseJson({ durable_ack_fields: ["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"] });
       }
       if (path === "/v1/capture-jobs/discover") {
         const provider = body.provider;

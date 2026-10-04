@@ -3,7 +3,7 @@ export const BACKFILL_DB_NAME = "polylogue-browser-backfill";
 export const BACKFILL_DB_VERSION = 2;
 export const BACKFILL_RECOVERY_CHECKPOINT_VERSION = 1;
 export const PROVIDER_REQUEST_TIMEOUT_MS = 60000;
-export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id", "content_hash"]);
+export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"]);
 
 export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   maxQueueSize: 10000,
@@ -18,7 +18,7 @@ export const DEFAULT_BACKFILL_POLICY = Object.freeze({
   breakerThreshold: 2,
 });
 
-export const TERMINAL_QUEUE_STATES = new Set(["complete", "unchanged", "no_turns", "auth_required", "bridge_oversize", "failed", "cancelled"]);
+export const TERMINAL_QUEUE_STATES = new Set(["complete", "unchanged", "superseded", "no_turns", "auth_required", "bridge_oversize", "failed", "cancelled"]);
 
 export function backfillAlarmName(jobId) {
   return `${BACKFILL_ALARM}:${jobId}`;
@@ -33,8 +33,11 @@ export function receiverAckContractError(receipt, expectedContentHash) {
     const value = receipt?.[field];
     return typeof value !== "string" || !value;
   });
-  if (!missing.length && receipt.content_hash === expectedContentHash) return null;
-  const detail = missing.length ? `missing_${missing.join("_")}` : "content_hash_mismatch";
+  let detail = missing.length ? `missing_${missing.join("_")}` : null;
+  if (!detail && !["accepted", "noop", "superseded"].includes(receipt.outcome)) detail = "outcome_invalid";
+  if (!detail && receipt.submitted_content_hash !== expectedContentHash) detail = "submitted_content_hash_mismatch";
+  if (!detail && receipt.outcome === "accepted" && receipt.content_hash !== expectedContentHash) detail = "content_hash_mismatch";
+  if (!detail) return null;
   const error = new Error(`receiver_contract_incompatible:${detail}`);
   error.code = "receiver_contract_incompatible";
   return error;

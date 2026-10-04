@@ -546,7 +546,7 @@ def test_receiver_declares_durable_browser_backfill_ack_contract(tmp_path: Path)
 
     assert response.status == HTTPStatus.OK
     assert response.getheader("X-Request-ID")
-    assert body.durable_ack_fields == ("receiver_request_id", "content_hash")
+    assert body.durable_ack_fields == ("receiver_request_id", "content_hash", "submitted_content_hash", "outcome")
     assert body.assertion_candidates is True
 
 
@@ -1580,3 +1580,82 @@ def test_receiver_settles_ancestor_barriers_before_http_ack_and_duplicate_retry(
         else:
             assert events == ["file", tmp_path, "publish", provider_dir]
         assert target.exists()
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "noop", "superseded"])
+def test_http_receipt_preserves_resident_identity_through_backfill_retirement(tmp_path: Path, outcome: str) -> None:
+    import copy
+    import subprocess
+
+    retained = _payload()
+    retained["capture_id"] = "resident-capture"
+    retained_session = cast(dict[str, object], retained["session"])
+    retained_session["updated_at"] = "2026-04-24T00:05:00Z"
+    cast(list[dict[str, object]], retained_session["turns"])[0]["identity_observation"] = {
+        "origin": "chatgpt-export",
+        "provider_conversation_id": "conv-123",
+        "provider_message_id": "u1",
+        "adapter_name": "chatgpt-dom-v1",
+        "fidelity": "native",
+    }
+    incoming = copy.deepcopy(retained)
+    incoming["capture_id"] = "incoming-capture"
+    incoming_session = cast(dict[str, object], incoming["session"])
+    if outcome != "noop":
+        incoming_session["turns"] = [
+            {
+                "provider_turn_id": "other-turn",
+                "role": "user",
+                "text": "Different",
+                "identity_observation": {
+                    "origin": "chatgpt-export",
+                    "provider_conversation_id": "conv-123",
+                    "provider_message_id": "other-turn",
+                    "adapter_name": "chatgpt-dom-v1",
+                    "fidelity": "native",
+                },
+            }
+        ]
+        incoming_session["updated_at"] = "2026-04-24T00:01:00Z" if outcome == "superseded" else "2026-04-24T00:06:00Z"
+    cast(dict[str, object], incoming["provenance"])["captured_at"] = "2026-04-24T00:06:00Z"
+    with _running_receiver(tmp_path) as (host, port):
+        first = _request(host, port, "POST", "/v1/browser-captures", body=retained, origin=_EXTENSION_ORIGIN)
+        first_receipt = json.loads(first.read())
+        assert first.status == HTTPStatus.ACCEPTED
+        artifact = tmp_path / first_receipt["artifact_ref"]
+        retained_bytes = artifact.read_bytes()
+        completed = subprocess.run(
+            ["node", str(Path(__file__).parents[2] / "infra/browser_receiver_ack.mjs")],
+            input=json.dumps({"endpoint": f"http://{host}:{port}/v1/browser-captures", "capture": incoming}),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        result = json.loads(completed.stdout)
+    receipt = result["item"]["receiver_receipt"]
+    assert receipt["outcome"] == outcome
+    assert receipt["content_hash"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert result["submissions"] == 1
+    assert result["item"]["envelope"] is None
+    assert result["job"]["status"] == "complete"
+    if outcome == "superseded":
+        assert artifact.read_bytes() == retained_bytes
+        assert receipt["capture_id"] == "chatgpt:resident-capture"
+        assert receipt["submitted_content_hash"] != receipt["content_hash"]
+        assert [identity["message_ref"].rsplit(":", 1)[-1] for identity in receipt["accepted_identities"]] == ["u1"]
+        assert result["item"]["state"] == "superseded"
+        assert result["item"]["content_hash"] is None
+        assert result["revision"] is None
+        assert result["job"]["progress"]["complete"] == 0
+        assert result["job"]["progress"]["superseded"] == 1
+    else:
+        assert result["item"]["state"] == "complete"
+        assert result["revision"]["receiver_content_hash"] == receipt["content_hash"]
+        assert result["item"]["content_hash"] == receipt["content_hash"]
+        if outcome == "noop":
+            assert artifact.read_bytes() == retained_bytes
+            assert receipt["capture_id"] == "chatgpt:resident-capture"
+            assert receipt["submitted_content_hash"] != receipt["content_hash"]
+        else:
+            assert receipt["content_hash"] == receipt["submitted_content_hash"]
+            assert receipt["capture_id"] == "chatgpt:incoming-capture"

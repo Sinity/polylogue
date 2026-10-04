@@ -63,7 +63,7 @@ class FixtureAdapter {
 function harness({ adapter = new FixtureAdapter(), receiver = null, receiverPreflight = null, checkpoint = null, captureOverride = null, start = 100000, instanceId = "instance-a", policy = {}, store = new MemoryBackfillStore() } = {}) {
   let now = start;
   const alarms = { create: vi.fn(async () => undefined) };
-  const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, content_hash: await serializedContentHash(serialized) }));
+  const durableReceiver = receiver || vi.fn(async (envelope, serialized) => ({ receiver_request_id: `ack-${envelope.session.provider_session_id}`, outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }));
   const coordinator = new BackfillCoordinator({
     store,
     adapters: { chatgpt: adapter },
@@ -90,6 +90,46 @@ async function enumerateThenAdvance(h, job) {
 
 describe("background backfill coordinator", () => {
   beforeEach(() => vi.restoreAllMocks());
+
+  it.each(["accepted", "noop", "superseded"])("keeps retained ACK truth for %s", async (outcome) => {
+    const receiver = vi.fn(async (_capture, serialized) => ({
+      receiver_request_id: "retained-ack", outcome,
+      submitted_content_hash: await serializedContentHash(serialized),
+      content_hash: outcome === "accepted" ? await serializedContentHash(serialized) : "resident-hash",
+    }));
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+    h.advance(1000);
+    await h.coordinator.wake(job.id);
+    const item = (await h.store.listQueue(job.id))[0];
+    expect(item.envelope).toBeNull();
+    expect(receiver).toHaveBeenCalledTimes(1);
+    expect((await h.coordinator.status(job.id)).status).toBe("complete");
+    if (outcome === "superseded") {
+      expect(item).toMatchObject({ state: "superseded", content_hash: null, last_response_class: "receiver_superseded" });
+      expect(await h.store.getRevision("chatgpt", "one")).toBeUndefined();
+    } else {
+      expect(item.state).toBe("complete");
+      expect(item.content_hash).toBe(item.receiver_receipt.content_hash);
+      expect((await h.store.getRevision("chatgpt", "one")).receiver_content_hash).toBe(item.content_hash);
+    }
+  });
+
+  it.each(["foreign_submission", "unknown_outcome", "accepted_wrong_hash"])("refuses %s ACK without dropping retained input", async (fault) => {
+    const receiver = vi.fn(async (_capture, serialized) => ({
+      receiver_request_id: "ack", outcome: fault === "unknown_outcome" ? "unknown" : "accepted",
+      submitted_content_hash: fault === "foreign_submission" ? "foreign" : await serializedContentHash(serialized),
+      content_hash: fault === "accepted_wrong_hash" ? "wrong" : await serializedContentHash(serialized),
+    }));
+    const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    await h.coordinator.wake(job.id);
+    expect((await h.store.listQueue(job.id))[0]).toMatchObject({ state: "captured_waiting_receiver", envelope: expect.any(Object) });
+    expect((await h.coordinator.status(job.id)).cooldown_reason).toBe("receiver_contract_incompatible");
+  });
 
   it("survives a service-worker restart and completes each native capture once", async () => {
     const h = harness();
@@ -154,7 +194,7 @@ describe("background backfill coordinator", () => {
     const receiver = vi.fn(async (_envelope, serialized) => {
       calls += 1;
       if (calls === 1) throw new Error("receiver_down");
-      return { receiver_request_id: "ack-recovered", content_hash: await serializedContentHash(serialized) };
+      return { receiver_request_id: "ack-recovered", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) };
     });
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver });
     const job = await startJob(h);
@@ -344,7 +384,7 @@ describe("background backfill coordinator", () => {
   it("pauses exactly once on a 202-shaped ACK missing durable fields, then explicitly drains its stored envelope", async () => {
     let compatible = false;
     const receiver = vi.fn(async (_envelope, serialized) => compatible
-      ? { receiver_request_id: "ack-after-upgrade", content_hash: await serializedContentHash(serialized) }
+      ? { receiver_request_id: "ack-after-upgrade", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }
       : { receiver_request_id: "accepted-but-stale" });
     const receiverPreflight = vi.fn(async () => undefined);
     const h = harness({ adapter: new FixtureAdapter(["one"]), receiver, receiverPreflight });
@@ -925,7 +965,7 @@ describe("background backfill coordinator", () => {
       .mockResolvedValueOnce(response([{ uuid: "org-1" }]))
       .mockResolvedValueOnce(response([{ uuid: "claude-1", updated_at: "2026-01-02T00:00:00Z" }]))
       .mockResolvedValueOnce(response({ uuid: "claude-1", chat_messages: [{ uuid: "m1", sender: "human", text: "hello" }] }));
-    const receiver = vi.fn(async (_envelope, serialized) => ({ receiver_request_id: "ack", content_hash: await serializedContentHash(serialized) }));
+    const receiver = vi.fn(async (_envelope, serialized) => ({ receiver_request_id: "ack", outcome: "accepted", submitted_content_hash: await serializedContentHash(serialized), content_hash: await serializedContentHash(serialized) }));
     const first = new BackfillCoordinator({ store, adapters: { "claude-ai": new ClaudeBackfillAdapter(fetchImpl) }, receiver, alarms, clock: () => now, random: () => 0 });
     const job = await first.start({ provider: "claude-ai", cutoff: "2026-01-01T00:00:00Z", policy: { baseCadenceMs: 1000, maxDailyRequests: 3 } });
     await first.wake(job.id);
