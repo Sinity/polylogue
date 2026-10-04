@@ -135,3 +135,5 @@ In-memory action-sequence matching streams completed all-pairs witnesses with on
 Python transcript anchors resolve and read their bounded page on the same controlled archive snapshot, with canonical domain hydration and continuation framing. Exhaustive Python topology helpers explicitly request the complete selected graph on one repository snapshot; ordinary topology calls retain their bounded node/edge windows and continuation.
 
 Warm daemon query results refresh relative-time display fields from the retained timestamps through the canonical row projection. Cached selection rows, ranking, continuation and snapshot authority remain unchanged.
+
+Action rows and tool episodes retain the canonical `outcome_unknown_reason`. A paired result with an unknown verdict remains distinct from a missing result or an ambiguous association; episode caveats describe those separate evidence states. Append outcome reconciliation excludes empty tool IDs, matching the canonical association owner.

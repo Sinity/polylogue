@@ -168,15 +168,22 @@ class ArchiveReadInsights:
                     is_error=int(row["is_error"]) if row["is_error"] is not None else None,
                     exit_code=int(row["exit_code"]) if row["exit_code"] is not None else None,
                     result_state=state,
+                    outcome_unknown_reason=row["outcome_unknown_reason"],
                     context_before=tuple(reversed(str(row["context_before"]).split("\n")))
                     if row["context_before"]
                     else (),
                     context_after=tuple(str(row["context_after"]).split("\n")) if row["context_after"] else (),
                     next_action=str(row["next_action"])[:1000] if row["next_action"] else None,
                     followup_class=str(row["followup_class"]) if row["followup_class"] else None,
-                    caveat="outcome unknown: no paired structural result"
-                    if state in {"no_result", "outcome_unknown"}
-                    else "structural outcome from tool result",
+                    caveat=(
+                        "outcome unknown: no paired structural result"
+                        if state == "no_result"
+                        else "outcome unknown: paired structural result has no trusted verdict"
+                        if state == "outcome_unknown" and row["tool_result_block_id"] is not None
+                        else "outcome unknown: ambiguous result association"
+                        if state == "outcome_unknown"
+                        else "structural outcome from tool result"
+                    ),
                 )
             )
         return result

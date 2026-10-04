@@ -4424,6 +4424,12 @@ components:
           title: Exit Code
         result_state:
           $ref: '#/components/schemas/ActionResultState'
+        outcome_unknown_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Outcome Unknown Reason
         followup_class:
           anyOf:
           - type: string

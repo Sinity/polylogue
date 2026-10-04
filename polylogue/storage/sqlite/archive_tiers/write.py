@@ -4609,7 +4609,7 @@ def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> N
                b.signature, b.semantic_extra_json, m.position, m.variant_index, b.position
         FROM blocks AS b
         JOIN messages AS m ON m.message_id = b.message_id
-        WHERE b.session_id = ? AND b.tool_id IS NOT NULL
+        WHERE b.session_id = ? AND b.tool_id IS NOT NULL AND b.tool_id != ''
           AND b.block_type IN ('tool_use', 'tool_result')
         ORDER BY m.position, m.variant_index, b.position
         """,

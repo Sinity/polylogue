@@ -53,6 +53,7 @@ export type ActionQueryRowPayload = {
   readonly message_id: string;
   readonly occurred_at_ms?: number | null;
   readonly origin: string;
+  readonly outcome_unknown_reason?: string | null;
   readonly output_text?: string | null;
   readonly result_state: ActionResultState;
   readonly semantic_type?: string | null;
