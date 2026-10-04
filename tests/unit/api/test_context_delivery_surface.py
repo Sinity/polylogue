@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
 
@@ -257,8 +258,11 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
         )
 
 
+@pytest.mark.frozen_clock_modules("polylogue.api.archive")
 async def test_context_scheduler_ledger_has_a_facade_reader(
-    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+    tmp_path: Path,
+    facade_daemon_writer: Callable[[Path], AbstractContextManager[object]],
+    frozen_clock: FrozenClock,
 ) -> None:
     archive_root = tmp_path / "archive-ledger-reader"
     _seed(archive_root, provider_session_id="ledger-target", text="scheduler evidence")
@@ -271,6 +275,7 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
             records = await poly.list_context_injection_ledger(target_session="codex-session:ledger-target")
 
     assert records
+    assert all(record.observed_at_ms == int(frozen_clock.now().timestamp() * 1000) for record in records)
     assert records[0].row.source == "archive-context"
     assert records[0].row.execution_context_ref.startswith("sha256:")
 

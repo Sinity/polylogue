@@ -3477,6 +3477,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.api.facade_client import FacadeDaemonRequiredError, submit_facade_writer
         from polylogue.context.product_image import compile_context_image
 
+        observed_at_ms = int(datetime.now(UTC).timestamp() * 1000)
         image = await compile_context_image(self, spec)
         with suppress(OSError, sqlite3.Error, DatabaseError, FacadeDaemonRequiredError):
             await submit_facade_writer(
@@ -3485,6 +3486,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 {
                     "build_ref": image.build_ref,
                     "ledger_rows": [cast(ContextLedgerRecord, row).as_dict() for row in image.ledger],
+                    "observed_at_ms": observed_at_ms,
                 },
             )
         return image
