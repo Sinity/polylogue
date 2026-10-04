@@ -115,3 +115,5 @@ preserve this contract; MCP supplies its smaller delivery budget to the owner.
 ## Aggregate selection
 
 `query.aggregate` reduces the same canonical distinct session relation used by scalar scope reads. Explicit IDs, lexical/action matching and structural predicates intersect before order, limit, sample and offset; count, statistics and grouping reduce that selected window. Content-excluded counts use the shared survivor walk and apply the requested window after exclusion. Ordinary list totals continue to count every survivor independently of their presentation page. Statistics with content exclusion remain a typed refusal.
+
+Message-branch predicates retain the default top-level session scope; only explicit session lineage selectors or root choices change that scope. Row `fields`/`select` projections cannot be combined with `count` or `agg` terminals in either order. Boundary errors offer equivalent names accepted at the requested boundary, and DSL discovery uses the actual grammar metadata rather than internal plan attributes.
