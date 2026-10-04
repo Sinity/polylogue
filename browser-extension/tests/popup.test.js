@@ -643,7 +643,7 @@ describe("popup capture", () => {
     document.getElementById("debug-export").click();
     await vi.waitFor(() => expect(globalThis.__lastExportBlob).not.toBeNull());
     const text = await new Promise((resolve, reject) => {
-      const reader = new window.FileReader();
+      const reader = new globalThis.window.FileReader();
       reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(reader.error);
       reader.readAsText(globalThis.__lastExportBlob);
@@ -868,17 +868,9 @@ describe("popup capture", () => {
             next_attempt_at: "2026-08-26T00:05:00Z",
             last_error: "ECONNREFUSED",
             tab_url: "https://chatgpt.com/c/conv-secret?share=1",
-            envelope: {
-              session: {
-                provider: "chatgpt",
-                provider_session_id: "conv-secret",
-                provider_meta: { capture_fidelity: "native_full" },
-                turns: [
-                  { provider_turn_id: "u1", role: "user", text: "MY PRIVATE PROMPT" },
-                  { provider_turn_id: "a1", role: "assistant", text: "MY PRIVATE ANSWER", attachments: [{ name: "a" }] },
-                ],
-              },
-            },
+            provider: "chatgpt", provider_session_id: "conv-secret",
+            capture_fidelity: "native_full", turn_count: 2, attachment_count: 1,
+            title: "MY PRIVATE PROMPT",
           }],
         },
       },
@@ -981,7 +973,7 @@ describe("popup capture", () => {
         entries: [
           {
             id: "polylogue-ext-1",
-            envelope: { session: { provider: "chatgpt", provider_session_id: "conv-9" } },
+            provider: "chatgpt", provider_session_id: "conv-9",
             attempts: 2,
             enqueued_at: new Date(Date.now() - 60000).toISOString(),
             next_attempt_at: new Date(Date.now() + 120000).toISOString(),

@@ -91,13 +91,7 @@ describe("shared operator status vocabulary", () => {
           enqueued_at: "2026-07-16T11:58:00Z",
           next_attempt_at: "2026-07-16T12:01:00Z",
           last_error: "receiver unavailable",
-          envelope: {
-            session: {
-              provider: "chatgpt",
-              provider_session_id: "conversation-1",
-              title: "Architecture review",
-            },
-          },
+          provider: "chatgpt", provider_session_id: "conversation-1", title: "Architecture review",
         }],
       },
       freshnessQueue: {
@@ -185,7 +179,7 @@ describe("shared operator status vocabulary", () => {
   it("marks unfinished capture and backfill work receiver-offline", () => {
     const items = api.normalizeWorkItems({
       receiverOnline: false,
-      captureQueue: { entries: [{ id: "capture", envelope: { session: { provider: "chatgpt", provider_session_id: "c1" } } }] },
+      captureQueue: { entries: [{ id: "capture", provider: "chatgpt", provider_session_id: "c1" }] },
       backfillJobs: [{ id: "backfill", provider: "chatgpt", status: "running" }],
     });
 

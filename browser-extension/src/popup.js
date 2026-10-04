@@ -360,10 +360,9 @@ function renderQueue(queue) {
   }
   listNode.innerHTML = entries
     .map((entry) => {
-      const session = entry.envelope?.session || {};
-      const provider = session.provider || "unknown";
-      const providerSessionId = session.provider_session_id || "";
-      const title = session.title || `${provider} ${providerSessionId}`.trim();
+      const provider = entry.provider || "unknown";
+      const providerSessionId = entry.provider_session_id || "";
+      const title = entry.title || `${provider} ${providerSessionId}`.trim();
       const meta = [
         `attempt ${entry.attempts || 0}`,
         entry.next_attempt_at ? operatorStatusApi.normalizeWorkItems({ captureQueue: { entries: [entry] } })[0]?.cadence : null,
@@ -816,7 +815,7 @@ document.getElementById("backfill-controls")?.addEventListener("click", async (e
   if (action === "export") {
     const result = await chrome.runtime.sendMessage({ type: "polylogue.backfill.export", job_id: jobId });
     if (result?.ok) {
-      const blob = new Blob([`${JSON.stringify(result.ledger, null, 2)}\n`], { type: "application/json" });
+      const blob = new globalThis.Blob([`${JSON.stringify(result.ledger, null, 2)}\n`], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -905,10 +904,8 @@ document.getElementById("pair-with-code")?.addEventListener("click", async () =>
 });
 
 // The support packet exists to be exported and shared with an operator or a
-// bug report. A retry queue entry carries the whole capture envelope --
-// `session.turns` and their text -- and `/v1/browser-actions` carries each
-// intent's drafted reply, so serializing either verbatim disclosed
-// transcripts. Project both to the diagnostic fields a triage actually reads.
+// bug report. Retry bodies live in IndexedDB; keep the status metadata and
+// drafted browser replies projected to the diagnostic fields triage reads.
 function supportPacketOrigin(url) {
   if (typeof url !== "string" || !url) return null;
   try {
@@ -924,8 +921,6 @@ function supportPacketCaptureQueue(queue) {
     dropped_count: Number(queue?.dropped_count) || 0,
     entry_count: entries.length,
     entries: entries.map((entry) => {
-      const session = entry?.envelope?.session || {};
-      const turns = Array.isArray(session.turns) ? session.turns : [];
       return {
         id: entry?.id ?? null,
         reason: entry?.reason ?? null,
@@ -935,14 +930,11 @@ function supportPacketCaptureQueue(queue) {
         last_error: entry?.last_error ?? null,
         tab_origin: supportPacketOrigin(entry?.tab_url),
         envelope: {
-          provider: session.provider ?? null,
-          provider_session_id: session.provider_session_id ?? null,
-          capture_fidelity: session.provider_meta?.capture_fidelity ?? null,
-          turn_count: turns.length,
-          attachment_count: turns.reduce(
-            (count, turn) => count + (Array.isArray(turn.attachments) ? turn.attachments.length : 0),
-            0,
-          ),
+          provider: entry?.provider ?? null,
+          provider_session_id: entry?.provider_session_id ?? null,
+          capture_fidelity: entry?.capture_fidelity ?? null,
+          turn_count: entry?.turn_count ?? null,
+          attachment_count: entry?.attachment_count ?? null,
         },
       };
     }),

@@ -466,15 +466,10 @@ async function startBackfill(request) {
 
 // ---- Capture retry queue --------------------------------------------------
 //
-// When the receiver is unreachable or returns a 5xx/429, a capture envelope
-// is durable-queued in runtimeChrome.storage.local instead of being dropped. A
-// background alarm drains the queue with per-entry exponential backoff. The
-// queue is intentionally bounded (both by entry count and serialized byte
-// size) — a wedged/offline receiver must not let this grow unbounded; the
-// oldest entries are evicted first and counted in `dropped_count`.
+// Receiver outages retain each original capture body in IndexedDB. The local
+// storage value is a body-free status cache; an alarm delivers retained bodies
+// one at a time with per-entry backoff. Physical storage failure is explicit.
 const CAPTURE_QUEUE_KEY = "polylogueCaptureQueue";
-const CAPTURE_QUEUE_MAX_ENTRIES = 20;
-const CAPTURE_QUEUE_MAX_BYTES = 40 * 1024 * 1024;
 const CAPTURE_QUEUE_EMPTY = Object.freeze({ entries: [], dropped_count: 0 });
 const CAPTURE_RETRY_ALARM = BACKGROUND_ALARMS.captureRetry;
 const CAPTURE_RETRY_BASE_DELAY_MS = 30000;
@@ -799,10 +794,6 @@ function retryDelayForAttempt(attempts) {
   return Math.min(delay, CAPTURE_RETRY_MAX_DELAY_MS);
 }
 
-function byteLength(value) {
-  return new TextEncoder().encode(JSON.stringify(value)).length;
-}
-
 function envelopeSessionSummary(envelope) {
   const session = envelope?.session || {};
   return {
@@ -817,11 +808,40 @@ function envelopeSessionSummary(envelope) {
   };
 }
 
+const captureRetryStore = new IndexedDbBackfillStore();
+let captureRetryInitialization = null;
+
+function captureRetryMetadata(entry) {
+  const { envelope, ...metadata } = entry;
+  if (!envelope) return metadata;
+  const summary = envelopeSessionSummary(envelope);
+  return { ...metadata, provider: summary.provider, provider_session_id: summary.providerSessionId,
+    title: envelope.session?.title || null, capture_fidelity: summary.captureMode,
+    turn_count: summary.turnCount, attachment_count: summary.attachmentCount };
+}
+
+async function initializeCaptureRetries() {
+  if (!captureRetryInitialization) {
+    captureRetryInitialization = (async () => {
+      const stored = await runtimeChrome.storage.local.get({ [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY });
+      const previous = stored[CAPTURE_QUEUE_KEY];
+      // Transfer original retry inputs once, atomically with the completion
+      // marker. The body-free local value is only a derived status cache.
+      await captureRetryStore.importCaptureRetries((previous?.entries || []).map((entry) => ({
+        metadata: captureRetryMetadata(entry), envelope: entry.envelope,
+      })));
+      const entries = await captureRetryStore.listCaptureRetries();
+      const queue = { entries, dropped_count: previous?.dropped_count || 0 };
+      await cacheCaptureQueue(queue);
+      return queue.dropped_count;
+    })().catch((error) => { captureRetryInitialization = null; throw error; });
+  }
+  return captureRetryInitialization;
+}
+
 async function getCaptureQueue() {
-  const stored = await runtimeChrome.storage.local.get({ [CAPTURE_QUEUE_KEY]: CAPTURE_QUEUE_EMPTY });
-  const queue = stored[CAPTURE_QUEUE_KEY];
-  if (!queue || !Array.isArray(queue.entries)) return { entries: [], dropped_count: 0 };
-  return { entries: queue.entries, dropped_count: queue.dropped_count || 0 };
+  const dropped_count = await initializeCaptureRetries();
+  return { entries: await captureRetryStore.listCaptureRetries(), dropped_count };
 }
 
 async function refreshQueueBadge() {
@@ -831,11 +851,21 @@ async function refreshQueueBadge() {
   await runtimeChrome.action.setBadgeBackgroundColor({ color: badge.color });
 }
 
-async function saveCaptureQueue(queue) {
-  await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue });
+async function cacheCaptureQueue(queue) {
   cachedQueueLength = queue.entries.length;
-  await refreshQueueBadge();
+  try {
+    await runtimeChrome.storage.local.set({ [CAPTURE_QUEUE_KEY]: queue });
+    await refreshQueueBadge();
+  } catch {
+    // This derived status cache cannot retract successful body admission or
+    // resurrect a body already retired in the IndexedDB transaction.
+  }
   return queue;
+}
+
+async function saveCaptureQueue(queue) {
+  await captureRetryStore.replaceCaptureRetryMetadata(queue.entries);
+  return cacheCaptureQueue(queue);
 }
 
 async function ensureRetryAlarm() {
@@ -874,43 +904,26 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
     last_error: String(error?.message || error || "unknown"),
   };
-  const entryByteSize = byteLength(entry);
-  if (entryByteSize > CAPTURE_QUEUE_MAX_BYTES) {
-    // A single envelope over budget can never fit; queueing it would only
-    // evict every other pending retry to make room for one that still won't
-    // fit. Surface it as an immediate drop instead.
-    const queue = await getCaptureQueue();
-    await saveCaptureQueue({ entries: queue.entries, dropped_count: (queue.dropped_count || 0) + 1 });
-    await appendCaptureLog({
-      ok: false,
-      reason: "capture_queue_entry_over_budget",
+  try {
+    await initializeCaptureRetries();
+    await captureRetryStore.putCaptureRetry(captureRetryMetadata(entry), envelope);
+  } catch {
+    await appendCaptureLog({ ok: false, reason: "capture_retry_storage_failed",
       provider: envelope?.session?.provider || null,
-      provider_session_id: envelope?.session?.provider_session_id || null,
-      byte_size: entryByteSize,
-      error: entry.last_error,
-    });
-    return { queue: await getCaptureQueue(), accepted: false, evicted: [entry] };
+      provider_session_id: envelope?.session?.provider_session_id || null });
+    return { accepted: false };
   }
-  const queue = await getCaptureQueue();
-  let entries = [...queue.entries, entry];
-  let droppedCount = queue.dropped_count || 0;
-  const evicted = [];
-  while (entries.length > CAPTURE_QUEUE_MAX_ENTRIES || byteLength(entries) > CAPTURE_QUEUE_MAX_BYTES) {
-    evicted.push(entries[0]);
-    entries = entries.slice(1);
-    droppedCount += 1;
-  }
-  const nextQueue = { entries, dropped_count: droppedCount };
-  await saveCaptureQueue(nextQueue);
+  const nextQueue = await getCaptureQueue();
+  await cacheCaptureQueue(nextQueue);
   await ensureRetryAlarm();
   await appendCaptureLog({
     ok: false,
     reason: "capture_queued_for_retry",
     queued_id: entry.id,
     error: entry.last_error,
-    queue_length: entries.length,
+    queue_length: nextQueue.entries.length,
   });
-  return { queue: nextQueue, accepted: true, evicted };
+  return { queue: nextQueue, accepted: true };
   });
 }
 
@@ -942,9 +955,10 @@ async function drainCaptureQueue(trigger = "alarm") {
       remaining.push(entry);
       continue;
     }
-    const envelope = await withExtensionInstanceAttribution(entry.envelope);
-    const summary = envelopeSessionSummary(envelope);
+    const summary = { provider: entry.provider, providerSessionId: entry.provider_session_id,
+      captureMode: entry.capture_fidelity, turnCount: entry.turn_count, attachmentCount: entry.attachment_count };
     try {
+      const envelope = await withExtensionInstanceAttribution(await captureRetryStore.getCaptureRetryEnvelope(entry.id));
       const result = await postJson("/v1/browser-captures", envelope);
       drained += 1;
       if (result.outcome === "superseded") {
@@ -3370,7 +3384,7 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
       configured_url: settings.baseUrl,
     },
     work: {
-      capture_queue: stored[CAPTURE_QUEUE_KEY] || { entries: [], dropped_count: 0 },
+      capture_queue: await getCaptureQueue(),
       freshness_queue: freshnessQueue,
       backfill_jobs: backfillJobs || [],
     },
@@ -3406,7 +3420,7 @@ export function startBackgroundRuntime(adapters) {
   cachedQueueLength = 0;
   runtimeChrome = adapters;
   runtimeNetwork = adapters.network;
-void loadCaptureQueueIntoCache();
+void loadCaptureQueueIntoCache().catch((error) => appendDebugLog({ stage: "capture_retry_storage_error", error: String(error.message || error) }));
 void replaceLegacyAcceptedMessageIdentities();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
@@ -3583,23 +3597,12 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch (error) {
         if (isRetryableCaptureError(error)) {
           const queued = await enqueueCaptureForRetry({ envelope, reason: message.reason, error, tab: sender.tab });
-          for (const evicted of queued.accepted ? queued.evicted : []) {
-            const evictedSummary = envelopeSessionSummary(evicted.envelope);
-            await appendConversationTimeline({
-              provider: evictedSummary.provider,
-              providerSessionId: evictedSummary.providerSessionId,
-              event: "held_with_reason",
-              reason: evicted.reason,
-              detail: queued.accepted ? "capture_queue_evicted" : "capture_queue_entry_over_budget",
-              tabId: evicted.tab_id || null,
-            });
-          }
           await appendConversationTimeline({
             provider: summary.provider,
             providerSessionId: summary.providerSessionId,
             event: "held_with_reason",
             reason: message.reason || "content_script_capture",
-            detail: queued.accepted ? "capture_queued_for_retry" : "capture_queue_entry_over_budget",
+            detail: queued.accepted ? "capture_queued_for_retry" : "capture_retry_storage_failed",
             tabId: sender.tab?.id || null,
           });
           await setStateForTab(sender.tab?.id || null, {
@@ -3759,8 +3762,8 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           attempts: entry.attempts,
           next_attempt_at: entry.next_attempt_at,
           last_error: entry.last_error,
-          provider: entry.envelope?.session?.provider || null,
-          provider_session_id: entry.envelope?.session?.provider_session_id || null,
+          provider: entry.provider || null,
+          provider_session_id: entry.provider_session_id || null,
         })),
       });
       return;

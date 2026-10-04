@@ -199,6 +199,16 @@ polylogued browser-capture serve (Python)
 polylogued daemon → ingests → FTS index
 ```
 
+## Automatic capture retries
+
+Automatic capture retries retain each original envelope in IndexedDB separately
+from the queue metadata used by the popup. Delivery reads one retained envelope
+at a time. A receiver outage does not evict captures because of their size or
+the number of pending retries; failed storage admission is reported explicitly.
+Original local-storage retry bodies are transferred before the metadata cache
+is replaced. This does not remove the separate provider capture bridge and
+asset acquisition limits.
+
 ## Resumable background collection
 
 The service-worker coordinator runs provider-native inventory deltas outside the

@@ -1,6 +1,6 @@
 export const BACKFILL_ALARM = "polylogueBackfillWake";
 export const BACKFILL_DB_NAME = "polylogue-browser-backfill";
-export const BACKFILL_DB_VERSION = 2;
+export const BACKFILL_DB_VERSION = 3;
 export const BACKFILL_RECOVERY_CHECKPOINT_VERSION = 1;
 export const PROVIDER_REQUEST_TIMEOUT_MS = 60000;
 export const DURABLE_RECEIVER_ACK_FIELDS = Object.freeze(["receiver_request_id", "content_hash", "submitted_content_hash", "outcome"]);
