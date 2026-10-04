@@ -90,6 +90,27 @@ def test_raw_sample_specs_are_deterministic_and_preserve_hash_fixture_shape() ->
     assert {spec.tags for spec in first} == {("synthetic", "test", "raw-samples")}
 
 
+def test_named_workloads_preserve_default_style_without_changing_explicit_shapes() -> None:
+    for profile in NAMED_WORKLOAD_PROFILES:
+        assert {spec.style for spec in profile.corpus_specs()} == {"default"}
+
+    profile = named_workload_profile("cli-mixed")
+    explicit = profile.workload.corpus_specs((WorkloadSessionShape("claude-code", 1, 2, 2, style="tool-heavy"),))
+    assert explicit[0].style == "tool-heavy"
+
+
+@pytest.mark.parametrize("prefix", ("workload-name:", "workload-purpose:"))
+def test_caller_tokens_cannot_mask_declaration_identity(prefix: str) -> None:
+    profile = named_workload_profile("cli-chatgpt").workload
+    with pytest.raises(ValueError, match="reserved declaration prefixes"):
+        dataclasses.replace(profile, profile_tokens=(*profile.profile_tokens, f"{prefix}old", f"{prefix}new"))
+
+    ordinary = dataclasses.replace(
+        profile, profile_tokens=(*profile.profile_tokens, "workload-name", "workload-purpose")
+    )
+    assert ordinary.identity_tokens[-2:] == (f"workload-name:{profile.name}", f"workload-purpose:{profile.purpose}")
+
+
 def test_profile_name_and_purpose_are_part_of_artifact_identity() -> None:
     profile = named_workload_profile("cli-chatgpt")
     shapes = tuple(
