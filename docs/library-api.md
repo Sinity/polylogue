@@ -142,6 +142,15 @@ Archive coverage and archive debt are public insights too:
 - `ArchiveCoverageInsight`: provider/day/week session, message, cost, and activity coverage rollups
 - `ArchiveDebtInsight`: derived-tier debt rows (FTS, profile, materialization, raw-link, user-overlay coverage) with issue counts
 
+## Private descriptive delegation packet
+
+```python
+async with Polylogue.open() as archive:
+    packet = await archive.regenerate_private_fable_packet(seed="neutral", requested_size=20)
+```
+
+The packet binds one Index/User snapshot and exhausts canonical delegation and annotation pages. Missing supported evidence produces named `not_supported` reasons; it does not fabricate descriptive conclusions. The CLI counterpart is `polylogue ops insights fable-packet --seed neutral --requested-size 20` through the resident daemon.
+
 ## Filter Chain API
 
 All examples below assume an open archive, where `archive.filter()` yields a
@@ -395,6 +404,7 @@ asyncio.run(main())
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
 | `import_annotation_batch(request, registry)` | Import a durable typed annotation batch under a declared schema version |
+| `regenerate_private_fable_packet(seed=..., requested_size=...)` | Compile a private descriptive delegation packet on one Index/User snapshot, or return named `not_supported` evidence gaps |
 
 
 ---

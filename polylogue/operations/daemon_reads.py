@@ -310,6 +310,10 @@ def execute_read_operation(
         from polylogue.operations.insight_reads import execute_insight_rigor
 
         result = execute_insight_rigor(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.fable_packet":
+        from polylogue.operations.fable_packet import execute_fable_packet
+
+        result = execute_fable_packet(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "completion":
         result = _completion_payload(payload, archive=archive)
     elif name == "facets":

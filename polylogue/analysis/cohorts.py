@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
+from typing import ClassVar
+
+from pydantic import ConfigDict
 
 _UNKNOWN = "unknown"
 
@@ -36,6 +39,8 @@ class CohortCandidate:
 class CohortSpec:
     """Inputs that define a reproducible population and sample selection."""
 
+    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
+
     population_query: str
     archive_cursor: str
     seed: str
@@ -54,6 +59,8 @@ class CohortSpec:
 class CohortStratumCount:
     """Population and selected counts for one declared stratum."""
 
+    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
+
     key: tuple[tuple[str, str], ...]
     population_count: int
     eligible_count: int
@@ -63,6 +70,8 @@ class CohortStratumCount:
 @dataclass(frozen=True)
 class CohortManifest:
     """Byte-stable record of a cohort population and deterministic sample."""
+
+    __pydantic_config__: ClassVar[ConfigDict] = ConfigDict(extra="forbid", strict=True)
 
     manifest_id: str
     spec: CohortSpec
@@ -122,7 +131,11 @@ def _rank(spec: CohortSpec, candidate: CohortCandidate) -> tuple[str, str]:
     return sha256(material.encode("utf-8")).hexdigest(), candidate.object_ref
 
 
-def _manifest_id(spec: CohortSpec, candidates: Sequence[CohortCandidate]) -> str:
+def _manifest_id(spec: CohortSpec, candidates: Sequence[CohortCandidate], checkpoint: Callable[[], None]) -> str:
+    def observed(candidate: CohortCandidate) -> CohortCandidate:
+        checkpoint()
+        return candidate
+
     payload = {
         "spec": asdict(spec),
         "population": [
@@ -132,14 +145,16 @@ def _manifest_id(spec: CohortSpec, candidates: Sequence[CohortCandidate]) -> str
                 "template_key": candidate.template_key,
                 "exclusion_reason": candidate.exclusion_reason,
             }
-            for candidate in sorted(candidates, key=lambda item: item.object_ref)
+            for candidate in map(observed, sorted(candidates, key=lambda item: item.object_ref))
         ],
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def compile_cohort_manifest(spec: CohortSpec, candidates: Sequence[CohortCandidate]) -> CohortManifest:
+def compile_cohort_manifest(
+    spec: CohortSpec, candidates: Sequence[CohortCandidate], *, checkpoint: Callable[[], None] = lambda: None
+) -> CohortManifest:
     """Compile a deterministic stratified sample manifest.
 
     Each stratum contributes in round-robin order after a stable seeded rank.
@@ -148,7 +163,11 @@ def compile_cohort_manifest(spec: CohortSpec, candidates: Sequence[CohortCandida
     the complete sample; excluded candidates remain counted but never selected.
     """
 
-    candidate_by_ref = {candidate.object_ref: candidate for candidate in candidates}
+    checkpoint()
+    candidate_by_ref = {}
+    for candidate in candidates:
+        checkpoint()
+        candidate_by_ref[candidate.object_ref] = candidate
     if len(candidate_by_ref) != len(candidates):
         raise ValueError("cohort candidates must have unique object_ref values")
     if any(not candidate.object_ref for candidate in candidates):
@@ -161,11 +180,18 @@ def compile_cohort_manifest(spec: CohortSpec, candidates: Sequence[CohortCandida
     groups: dict[tuple[tuple[str, str], ...], list[CohortCandidate]] = defaultdict(list)
     population_groups: Counter[tuple[tuple[str, str], ...]] = Counter()
     for candidate in candidates:
+        checkpoint()
         population_groups[_stratum_key(candidate, spec.strata)] += 1
     for candidate in included:
+        checkpoint()
         groups[_stratum_key(candidate, spec.strata)].append(candidate)
+
+    def observed_rank(candidate: CohortCandidate) -> tuple[str, str]:
+        checkpoint()
+        return _rank(spec, candidate)
+
     for group in groups.values():
-        group.sort(key=lambda candidate: _rank(spec, candidate))
+        group.sort(key=observed_rank)
 
     selected: list[CohortCandidate] = []
     selected_templates: Counter[str] = Counter()
@@ -177,6 +203,7 @@ def compile_cohort_manifest(spec: CohortSpec, candidates: Sequence[CohortCandida
             group = groups[key]
             position = group_positions[key]
             while position < len(group):
+                checkpoint()
                 candidate = group[position]
                 position += 1
                 template = candidate.template_key
@@ -209,7 +236,7 @@ def compile_cohort_manifest(spec: CohortSpec, candidates: Sequence[CohortCandida
     )
     template_counts = Counter(candidate.template_key or _UNKNOWN for candidate in candidates)
     return CohortManifest(
-        manifest_id=_manifest_id(spec, candidates),
+        manifest_id=_manifest_id(spec, candidates, checkpoint),
         spec=spec,
         population_count=len(candidates),
         eligible_count=len(included),

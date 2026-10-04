@@ -259,6 +259,43 @@ class HermesHealthWireResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(HermesHealthResult.__pydantic_core_schema__))
 
 
+class FablePacketWireRequest(_OperationPayload):
+    seed: str
+    requested_size: int = Field(ge=0)
+    schema_id: str = "delegation.discourse"
+    schema_version: int = Field(default=1, ge=1)
+    exact_template_cap: int = Field(default=1, ge=1)
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.fable_packet_contracts import FablePacketRequest
+
+        return handler.resolve_ref_schema(handler(FablePacketRequest.__pydantic_core_schema__))
+
+
+class FablePacketWireResult(_OperationPayload):
+    packet: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_packet(cls, value: object) -> object:
+        from polylogue.operations.fable_packet_contracts import FablePacketResult
+
+        _validate_json_result_model(FablePacketResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.fable_packet_contracts import FablePacketResult
+
+        return handler.resolve_ref_schema(handler(FablePacketResult.__pydantic_core_schema__))
+
+
 class StatusRequest(_OperationPayload):
     include_archive_readiness: bool = False
 
@@ -1765,6 +1802,15 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="InsightRigorWireResult",
         request_model=InsightRigorWireRequest,
         result_model=InsightRigorWireResult,
+    ),
+    DaemonOperationSpec(
+        "insights.fable_packet",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.fable_packet.request/v1",
+        result_contract="insights.fable_packet.result/v1",
+        request_model=FablePacketWireRequest,
+        result_model=FablePacketWireResult,
     ),
     DaemonOperationSpec(
         "insights.hermes_health",

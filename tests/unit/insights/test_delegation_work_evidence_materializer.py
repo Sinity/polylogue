@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import sqlite3
@@ -21,84 +20,13 @@ from polylogue.analysis.delegation_work_evidence_materializer import (
 )
 from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.write_guard import install_archive_write_guard
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
-
-
-def _seed_delegation(archive_root: Path, *, count: int = 1) -> None:
-    from tests.infra.archive_templates import bootstrap_archive_root
-
-    bootstrap_archive_root(archive_root)
-    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
-    for index in range(count):
-        _seed_one_delegation(archive_root, "" if index == 0 else f"-{index}")
-
-
-def _seed_one_delegation(archive_root: Path, suffix: str) -> None:
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute(
-            """
-            INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
-            VALUES (?, 'claude-code-session', 'Parent', ?, 1, 2)
-            """,
-            (f"parent{suffix}", hashlib.sha256(f"parent{suffix}".encode()).digest()),
-        )
-        parent_id = conn.execute(
-            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = ?",
-            (f"parent{suffix}",),
-        ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO sessions (
-                native_id, origin, title, content_hash, created_at_ms, updated_at_ms, branch_type, parent_session_id
-            ) VALUES (?, 'claude-code-session', 'Child', ?, 1, 2, 'subagent', ?)
-            """,
-            (f"child{suffix}", hashlib.sha256(f"child{suffix}".encode()).digest(), parent_id),
-        )
-        child_id = conn.execute(
-            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = ?",
-            (f"child{suffix}",),
-        ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash, occurred_at_ms)
-            VALUES (?, 'dispatch', 0, 'assistant', 'message', ?, 1)
-            """,
-            (parent_id, b"m" * 32),
-        )
-        message_id = conn.execute(
-            "SELECT message_id FROM messages WHERE session_id = ? AND native_id = 'dispatch'", (parent_id,)
-        ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO blocks (
-                message_id, session_id, position, block_type, tool_name, tool_id, semantic_type, tool_input
-            ) VALUES (?, ?, 0, 'tool_use', 'Task', 'task-1', 'subagent', '{"prompt":"review"}')
-            """,
-            (message_id, parent_id),
-        )
-        # block_id is generated as message_id || ':' || position; a literal
-        # tool_id ("task-1") is a different value and would leave the join
-        # in delegation_facts_source (index.py) unresolved.
-        block_id = conn.execute(
-            "SELECT block_id FROM blocks WHERE message_id = ? AND position = 0", (message_id,)
-        ).fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO session_links (
-                src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
-                parent_tool_use_block_id, observed_at_ms
-            ) VALUES (?, 'claude-code-session', ?, 'subagent', ?, ?, 1)
-            """,
-            (child_id, f"parent{suffix}", parent_id, block_id),
-        )
+from tests.infra.delegation_packets import seed_delegations
 
 
 def test_materializer_replaces_archive_projection_and_tracks_delegation_freshness(tmp_path: Path) -> None:
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
 
     assert delegation_work_evidence_materialization_needed(tmp_path) is True
     assert materialize_delegation_work_evidence_archive(tmp_path) == 1
@@ -171,7 +99,7 @@ def test_materializer_pins_digest_and_rows_to_the_same_index_connection(
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
     connections: list[sqlite3.Connection] = []
     snapshot = materializer._snapshot_connection
     query = ArchiveStore.query_delegations
@@ -195,7 +123,7 @@ def test_materializer_pins_digest_and_rows_to_the_same_index_connection(
 
 def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> None:
     """The freshness probe and materialization read run outside writer admission."""
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
     stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
 
     def admit(actor: str, work: Callable[[], object]) -> object:
@@ -216,7 +144,7 @@ def test_stage_uses_active_index_generation_after_promotion(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, conventional_path: str
 ) -> None:
     """The active pointer wins when the conventional index is missing or stale."""
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
     generation = tmp_path / ".index-generations" / "promoted"
     generation.mkdir(parents=True)
     if conventional_path == "missing":
@@ -298,7 +226,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
     """
     from polylogue.logging import capture
 
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
     stage = make_delegation_work_evidence_stage(tmp_path / "index.db")
 
     def fail_probe(_archive_root: Path) -> bool:
@@ -339,7 +267,7 @@ def test_delegation_population_larger_than_a_read_page_materializes_completely(
     like the old 100,000-row refusal, stops at the first page and returns 2
     (or raises) instead of 3 for a three-delegation archive read one row a page.
     """
-    _seed_delegation(tmp_path, count=3)
+    seed_delegations(tmp_path, count=3)
     monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_ROWS", 1)
 
     assert delegation_work_evidence_materialization_needed(tmp_path) is True
@@ -355,7 +283,7 @@ def test_delegation_snapshot_digest_is_stable_and_content_sensitive(tmp_path: Pa
     makes the equality assertion red; a digest that ignores materialized
     content makes the inequality assertion red.
     """
-    _seed_delegation(tmp_path)
+    seed_delegations(tmp_path)
     first = delegation_work_evidence_snapshot(tmp_path)
     second = delegation_work_evidence_snapshot(tmp_path)
     assert first.format() == second.format()
@@ -470,7 +398,7 @@ def test_keyset_delegation_pages_equal_the_one_pass_read(tmp_path: Path, directi
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
 
-    _seed_delegation(tmp_path, count=4)
+    seed_delegations(tmp_path, count=4)
     every = QueryBoolPredicate("and", ())
     with open_operation_read(tmp_path) as pinned:
         archive = pinned.archive
@@ -513,7 +441,7 @@ def test_materializer_reads_delegations_by_keyset_not_offset(tmp_path: Path, mon
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    _seed_delegation(tmp_path, count=3)
+    seed_delegations(tmp_path, count=3)
     monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_ROWS", 1)
     calls: list[tuple[int, object]] = []
     real = ArchiveStore.query_delegations
@@ -539,7 +467,7 @@ def test_delegation_pages_are_bounded_by_text_bytes_and_still_complete(
     """
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    _seed_delegation(tmp_path, count=3)
+    seed_delegations(tmp_path, count=3)
     monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_TEXT_BYTES", 1)
     page_sizes: list[int] = []
     real = ArchiveStore.query_delegations
@@ -565,7 +493,7 @@ def test_a_keyset_delegation_page_seeks_by_index_instead_of_sorting(tmp_path: Pa
     from polylogue.operations.operation_context import open_operation_read
     from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
 
-    _seed_delegation(tmp_path, count=3)
+    seed_delegations(tmp_path, count=3)
     statements: list[str] = []
     with open_operation_read(tmp_path) as pinned:
         archive = pinned.archive
