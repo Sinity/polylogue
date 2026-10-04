@@ -74,6 +74,10 @@ provider (`docs/provider-origin-identity.md:15-30`;
   with matching native role/text to produce private owner coordinates. The
   parser refuses absent or conflicting evidence instead of inventing an ID.
 
+- Grok native and export human/user sender records establish human authorship,
+  including prose that resembles runtime instructions. Textual message type
+  stays independently classified; native tool and reasoning blocks retain
+  their structural classification.
 - Detection is shape-based and ordered by declared tightness, per payload mode.
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.
@@ -138,3 +142,7 @@ entry. Intake, batch byte accounting and dispatcher events expose the partial;
 the attempt carries `batch:partial_admission` and its event is degraded. No-session
 and settled corrupt observations remain excluded. The literal raw retains the
 unfinished tail so a later completed observation can advance normally.
+
+Grok native tool results declare `not_reported` when outcome evidence is absent
+and `unsupported_construct` when a supplied outcome has an unsupported shape.
+Both reasons remain typed unknown outcomes through storage and readback.

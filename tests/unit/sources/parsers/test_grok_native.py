@@ -9,10 +9,13 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.core.enums import BlockType
+from polylogue.archive.hydration import archive_envelope_to_session
+from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers import grok
 from polylogue.sources.parsers.base import AdmissionUnit
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 @pytest.fixture
@@ -148,13 +151,25 @@ def test_native_asset_metadata_only_and_malformed_records_are_visible(bundle: di
     session.unit_accounting.assert_conserved()
 
 
-def test_native_result_unsupported_outcome_is_not_reported_as_absence(bundle: dict[str, Any]) -> None:
+def test_native_result_unsupported_outcome_is_not_reported_as_absence(
+    bundle: dict[str, Any], workspace_env: dict[str, Path]
+) -> None:
     bundle["responses"]["responses"] = [
         {"responseId": "tool", "sender": "assistant", "toolResponses": [{"isError": "future-status"}]}
     ]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].blocks[0].is_error is None
     assert session.messages[0].blocks[0].outcome_unknown_reason == "unsupported_construct"
+    with ArchiveStore(workspace_env["archive_root"]) as archive:
+        _, stored_id = archive.write_raw_and_parsed(
+            session,
+            payload=json.dumps(bundle).encode(),
+            source_path="/example/grok-native.json",
+            acquired_at_ms=1735689600000,
+        )
+        hydrated = archive.read_session(stored_id)
+        assert hydrated.messages[0].blocks[0].tool_outcome == "unknown"
+        assert hydrated.messages[0].blocks[0].tool_result_outcome_unknown_reason == "unsupported_construct"
 
 
 def test_native_missing_message_id_does_not_pair_tools_by_ordinal(bundle: dict[str, Any]) -> None:
@@ -164,3 +179,45 @@ def test_native_missing_message_id_does_not_pair_tools_by_ordinal(bundle: dict[s
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].provider_message_id == ""
     assert all(block.tool_id is None for block in session.messages[0].blocks)
+
+
+@pytest.mark.parametrize("sender", ["human", "user"])
+def test_native_human_sender_authorship_survives_persisted_hydration(
+    bundle: dict[str, Any], workspace_env: dict[str, Path], sender: str
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    response = bundle["responses"]["responses"][0]
+    response["sender"] = sender
+    response["message"] = "# AGENTS.md instructions for a sample project\nPlease explain this document."
+    session = grok.parse_native_bundle(bundle, "human-context")[0]
+    assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+    assert session.messages[0].message_type is MessageType.CONTEXT
+    with ArchiveStore(archive_root) as archive:
+        _, stored_id = archive.write_raw_and_parsed(
+            session,
+            payload=json.dumps(bundle).encode(),
+            source_path="/example/grok-native.json",
+            acquired_at_ms=1735689600000,
+        )
+        hydrated = archive_envelope_to_session(archive.read_session(stored_id))
+        message = next(iter(hydrated.messages))
+        assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED
+        assert message.message_type is MessageType.CONTEXT
+        assert message.is_human_authored
+        summary = archive.read_summary(stored_id)
+        assert summary.authored_user_message_count == 1
+        assert summary.authored_user_word_count > 0
+
+
+def test_native_human_sender_does_not_reclassify_structured_tool_output(bundle: dict[str, Any]) -> None:
+    bundle["responses"]["responses"] = [
+        {
+            "responseId": "tool-output",
+            "sender": "human",
+            "toolResponses": [{"text": "# AGENTS.md instructions for a sample project", "is_error": False}],
+        }
+    ]
+    message = grok.parse_native_bundle(bundle, "structured")[0].messages[0]
+    assert message.message_type is MessageType.TOOL_RESULT
+    assert message.material_origin is MaterialOrigin.TOOL_RESULT
+    assert message.blocks[0].is_error is False
