@@ -125,3 +125,5 @@ Session-list envelopes from both full sessions and summaries use the canonical r
 Query-unit capability rows include their executable field names from the canonical unit metadata. Capability search covers these fields and existing operator and lowering bindings, so structural fields can be discovered without first guessing a unit.
 
 Disconnected archive reads keep admission with the original worker until physical cleanup completes. Their bounded caller drain waits do not cancel that worker, and its eventual exception is observed without creating a second loop-level failure report.
+
+Profile and latency insight readers normalize comma-separated repository and tag scopes through the same canonical CSV and session predicates as session queries. Values within one filter are alternatives; repository and tag filters intersect before ordering and pagination.
