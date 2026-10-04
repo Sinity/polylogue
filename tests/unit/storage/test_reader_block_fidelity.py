@@ -10,7 +10,7 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.runtime import AttachmentRecord, BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -30,6 +30,7 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
             ParsedMessage(
                 provider_message_id=f"m{index}",
                 role=Role.USER,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED if index % 2 else MaterialOrigin.RUNTIME_CONTEXT,
                 blocks=[
                     ParsedContentBlock(type=BlockType.CODE, text=f"print({index})", metadata={"language": "python"}),
                     ParsedContentBlock(type=BlockType.IMAGE, text="neutral image", media_type="image/png"),
@@ -150,3 +151,18 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
         assert len(custom) == 15
         assert [len(message.blocks) for message in custom] == [2] * 15
         assert batches == [7, 7, 1]
+
+        async def forbidden_full_session(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a filtered iterator hydrated the entire session")
+
+        monkeypatch.setattr(api, "get_session", forbidden_full_session)
+        filtered = [
+            message
+            async for message in api.iter_messages(
+                session_id, material_origin=(MaterialOrigin.HUMAN_AUTHORED,), limit=3
+            )
+        ]
+        assert [message.id for message in filtered] == [
+            message.id for message in single.messages if message.material_origin == MaterialOrigin.HUMAN_AUTHORED
+        ][:3]
+        check(filtered)

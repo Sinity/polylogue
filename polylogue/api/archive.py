@@ -4683,31 +4683,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         limit: int | None = None,
     ) -> AsyncGenerator[Message, None]:
         async def _iter() -> AsyncGenerator[Message, None]:
-            if not material_origin:
-                async with aclosing(
-                    self.repository.iter_messages(
-                        session_id,
-                        message_roles=message_roles,
-                        limit=limit,
-                    )
-                ) as messages:
-                    async for message in messages:
-                        yield message
-                return
-
-            session = await self.get_session(session_id)
-            if session is None:
-                return
-            count = 0
-            for message in session.messages:
-                if message_roles and message.role not in message_roles:
-                    continue
-                if message.material_origin not in material_origin:
-                    continue
-                if limit is not None and count >= limit:
-                    break
-                count += 1
-                yield message
+            async with aclosing(
+                self.repository.iter_messages(
+                    session_id,
+                    message_roles=message_roles,
+                    material_origin=material_origin,
+                    limit=limit,
+                )
+            ) as messages:
+                async for message in messages:
+                    yield message
 
         return _iter()
 

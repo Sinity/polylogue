@@ -37,7 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 if TYPE_CHECKING:
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.core.types import SessionId
-    from polylogue.storage.sqlite.queries.messages import MessageTypeName
+    from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -402,6 +402,7 @@ class RepositoryArchiveSessionMixin:
         session_id: str,
         *,
         message_roles: MessageRoleFilter = (),
+        material_origin: MaterialOriginFilter | None = None,
         limit: int | None = None,
     ) -> AsyncGenerator[Message, None]:
         conv_record = await self.queries.get_session(session_id)
@@ -410,6 +411,7 @@ class RepositoryArchiveSessionMixin:
             self.queries.iter_messages(
                 session_id,
                 message_roles=message_roles,
+                material_origin=material_origin,
                 limit=limit,
             )
         ) as records:

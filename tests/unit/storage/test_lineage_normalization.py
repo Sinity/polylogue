@@ -5550,7 +5550,9 @@ def test_inherited_stream_hydrates_only_message_owned_attachments_in_one_snapsho
         update={
             "attachments": [
                 _prefix_attachment("m1", caption="original"),
-                _prefix_attachment("m2", provider_attachment_id="outside", name="outside.txt"),
+                _prefix_attachment("m2").model_copy(
+                    update={"provider_attachment_id": "outside", "name": "outside.txt"}
+                ),
             ]
         }
     )
@@ -5559,7 +5561,9 @@ def test_inherited_stream_hydrates_only_message_owned_attachments_in_one_snapsho
         update={
             "attachments": [
                 _prefix_attachment("m1", caption="original"),
-                _prefix_attachment("x2", provider_attachment_id="tail", caption="original tail", name="tail.txt"),
+                _prefix_attachment("x2", caption="original tail").model_copy(
+                    update={"provider_attachment_id": "tail", "name": "tail.txt"}
+                ),
             ]
         }
     )

@@ -753,6 +753,7 @@ async def iter_messages(
     *,
     chunk_size: int = 100,
     message_roles: MessageRoleFilter = (),
+    material_origin: MaterialOriginFilter | None = None,
     limit: int | None = None,
 ) -> AsyncGenerator[MessageRecord, None]:
     """Stream a session's messages in transcript order, chunked.
@@ -774,7 +775,14 @@ async def iter_messages(
             pass
         try:
             async with aclosing(
-                iter_messages(conn, session_id, chunk_size=chunk_size, message_roles=message_roles, limit=limit)
+                iter_messages(
+                    conn,
+                    session_id,
+                    chunk_size=chunk_size,
+                    message_roles=message_roles,
+                    material_origin=material_origin,
+                    limit=limit,
+                )
             ) as records:
                 async for record in records:
                     yield record
@@ -786,9 +794,13 @@ async def iter_messages(
     session_id = await _resolve_session_id(conn, session_id)
     segments, _completeness = await _lineage_segments(conn, session_id)
     role_values = message_role_sql_values(message_roles)
+    material_values = _material_origin_values(material_origin)
     yielded = 0
     for segment in segments:
         where, bound_params = _segment_predicate(segment, role_values=role_values)
+        if material_values:
+            where += f" AND m.material_origin IN ({','.join('?' for _ in material_values)})"
+            bound_params = (*bound_params, *material_values)
         after = ""
         cursor_params: tuple[int, ...] = ()
         while limit is None or yielded < limit:

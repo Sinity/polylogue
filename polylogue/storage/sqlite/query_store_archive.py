@@ -365,6 +365,7 @@ class SQLiteQueryStoreArchiveMixin:
         *,
         chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
+        material_origin: MaterialOriginFilter | None = None,
         limit: int | None = None,
     ) -> AsyncGenerator[MessageRecord, None]:
         if chunk_size <= 0:
@@ -380,6 +381,7 @@ class SQLiteQueryStoreArchiveMixin:
                     session_id,
                     chunk_size=chunk_size,
                     message_roles=message_roles,
+                    material_origin=material_origin,
                     limit=limit,
                 )
             ) as records,
