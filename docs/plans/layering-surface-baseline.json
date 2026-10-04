@@ -291,11 +291,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/setting.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.user_settings_write"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
     "import": "polylogue.storage.archive_identity"
   },
