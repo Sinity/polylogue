@@ -15,6 +15,8 @@ from polylogue.storage.sqlite.query_objects import (
     ResultSetManifest,
     get_query,
     get_result_set,
+    promote_query,
+    promote_result_set,
     put_query,
     put_query_name,
     put_result_set,
@@ -330,3 +332,66 @@ def test_a_refused_tombstone_aborts_before_any_deletion(target_kind: str, actor:
     assert get_result_set(conn, relation.result_set_id) is not None
     assert conn.execute("SELECT COUNT(*) FROM query_excision_ledger").fetchone()[0] == 0
     assert conn.execute("SELECT status FROM assertions WHERE assertion_id='keep-note'").fetchone()[0] == "active"
+
+
+@pytest.mark.parametrize("target_kind", ["query", "result-set"])
+@pytest.mark.parametrize("promoted", [False, True])
+def test_excision_ledger_retains_each_objects_declared_link(target_kind: str, promoted: bool) -> None:
+    """Deletion must retain the forgetting contract rather than the selector.
+
+    A query and its relation may declare distinct links. Both survive query
+    excision; relation-only excision preserves the query and its contract.
+    Unpromoted objects retain the existing target-reference linkage.
+    """
+    conn = _conn()
+    query, relation = _query_with_relation(conn)
+    query_link = "excision:query-α"
+    relation_link = " excision:relation-β "
+    if promoted:
+        promote_query(
+            conn,
+            query_hash=query.query_hash,
+            privacy_class="sensitive",
+            retention_policy={"retain": True},
+            excision_link=query_link,
+            promoted_at_ms=3,
+        )
+        promote_result_set(
+            conn,
+            result_set_id=relation.result_set_id,
+            privacy_class="sensitive",
+            retention_policy={"retain": True},
+            excision_link=relation_link,
+            promoted_at_ms=3,
+        )
+    target = query.ref if target_kind == "query" else f"result-set:{relation.result_set_id}"
+    receipt = apply_query_excision(
+        conn, plan_query_excision(conn, target), reason="remove", actor="user:test", now_ms=4
+    )
+    assert receipt.status == "applied"
+    assert get_result_set(conn, relation.result_set_id) is None
+    result_link = conn.execute(
+        "SELECT excision_link FROM query_excision_ledger WHERE result_set_id = ?", (relation.result_set_id,)
+    ).fetchone()
+    assert result_link[0] == (relation_link if promoted else target)
+    query_ledger = conn.execute(
+        "SELECT excision_link FROM query_excision_ledger WHERE query_hash = ?", (query.query_hash,)
+    ).fetchone()
+    if target_kind == "query":
+        assert get_query(conn, query.query_hash) is None
+        assert query_ledger[0] == (query_link if promoted else target)
+    else:
+        surviving = get_query(conn, query.query_hash)
+        assert surviving is not None
+        assert surviving.excision_link == (query_link if promoted else None)
+        assert query_ledger is None
+
+    # A retry resolves an already removed object; it must retain the original
+    # ledger linkage rather than replace it with the selector now available.
+    apply_query_excision(conn, plan_query_excision(conn, target), reason="retry", actor="user:test", now_ms=5)
+    assert (
+        conn.execute(
+            "SELECT excision_link FROM query_excision_ledger WHERE result_set_id = ?", (relation.result_set_id,)
+        ).fetchone()[0]
+        == result_link[0]
+    )
