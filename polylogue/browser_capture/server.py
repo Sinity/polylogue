@@ -11,13 +11,14 @@ from collections.abc import Callable
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import NotRequired, TypedDict
+from typing import BinaryIO, NotRequired, TypedDict
 from urllib.parse import parse_qs, quote, urlparse
 from uuid import uuid4
 
 from pydantic import ValidationError
 
 from polylogue.browser_capture.actions import (
+    ACTION_ATTACHMENT_CHUNK_BYTES,
     BrowserActionConflictError,
     BrowserActionLeaseError,
     BrowserActionQuotaError,
@@ -28,8 +29,9 @@ from polylogue.browser_capture.actions import (
     enqueue_action,
     get_action,
     list_actions,
-    read_action_attachment,
+    open_action_attachment,
     reconcile_action,
+    store_action_attachment,
     update_action,
 )
 from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for_receiver
@@ -291,7 +293,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
-    def _send_bytes(self, payload: bytes, *, content_type: str, filename: str) -> None:
+    def _send_attachment(self, stream: BinaryIO, size: int, *, content_type: str, filename: str) -> None:
         if any(ord(character) < 32 or ord(character) == 127 for character in filename):
             raise ValueError("download filename contains control characters")
         safe_content_type = content_type if _SAFE_MEDIA_TYPE.fullmatch(content_type) else "application/octet-stream"
@@ -301,7 +303,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.OK.value)
         self.send_header("X-Request-ID", self._request_id())
         self.send_header("Content-Type", safe_content_type)
-        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("Content-Length", str(size))
         self.send_header(
             "Content-Disposition",
             f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{quote(filename, safe='')}",
@@ -310,7 +312,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", origin or "null")
             self.send_header("Vary", "Origin")
         self.end_headers()
-        self.wfile.write(payload)
+        while chunk := stream.read(ACTION_ATTACHMENT_CHUNK_BYTES):
+            self.wfile.write(chunk)
 
     def _safe_error(self, status: HTTPStatus, message: str) -> None:
         """Send a safe error response — no absolute paths or stack traces."""
@@ -440,25 +443,33 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if parsed.path.startswith("/v1/browser-actions/") and "/attachments/" in parsed.path:
             prefix = "/v1/browser-actions/"
             action_id, attachment_id = parsed.path[len(prefix) :].split("/attachments/", maxsplit=1)
+            body_started = False
             try:
-                result = read_action_attachment(action_id, attachment_id, spool_path=self.server.config.spool_path)
+                with open_action_attachment(
+                    action_id, attachment_id, spool_path=self.server.config.spool_path
+                ) as result:
+                    if result is None:
+                        self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action_attachment")
+                        return
+                    attachment, stream = result
+                    body_started = True
+                    self._send_attachment(
+                        stream, attachment.size_bytes, content_type=attachment.mime_type, filename=attachment.name
+                    )
             except BrowserActionConflictError:
                 self._safe_error(HTTPStatus.CONFLICT, "browser_action_attachment_integrity_mismatch")
-                return
             except ValueError:
                 self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_browser_action_id")
-                return
             except (OSError, BrowserActionStateError) as exc:
                 logger.warning(
-                    "browser_capture.action_attachment_failed", request_id=self._request_id(), error=repr(exc)
+                    "browser_capture.action_attachment_failed",
+                    request_id=self._request_id(),
+                    error_type=type(exc).__name__,
                 )
-                self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
-                return
-            if result is None:
-                self._safe_error(HTTPStatus.NOT_FOUND, "unknown_browser_action_attachment")
-                return
-            attachment, content = result
-            self._send_bytes(content, content_type=attachment.mime_type, filename=attachment.name)
+                if body_started:
+                    self.close_connection = True
+                else:
+                    self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "attachment_storage_unavailable")
             return
         if parsed.path.startswith("/v1/browser-actions/"):
             action_id = parsed.path[len("/v1/browser-actions/") :]
@@ -571,8 +582,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._observe_request("POST", self._do_post)
 
-    def _content_length(self) -> int | None:
-        """Return a positive declared body length, or send the error and return None."""
+    def _content_length(self, *, allow_empty: bool = False) -> int | None:
+        """Return a declared length (zero only for file uploads), or send the error."""
+        if allow_empty and self.headers.get("Content-Length") is None:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
+            return None
         declared = self.headers.get("Content-Length", "0").strip()
         # ``Content-Length = 1*DIGIT``; ``int`` would also take a sign,
         # ``_`` separators and non-ASCII digits.
@@ -580,7 +594,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return None
         length = int(declared)
-        if length <= 0:
+        if length < 0 or (length == 0 and not allow_empty):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
         return length
@@ -896,6 +910,26 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if self._reject_origin() or self._reject_token():
             return
         path = urlparse(self.path).path
+        if path == "/v1/browser-action-attachments":
+            length = self._content_length(allow_empty=True)
+            if length is None:
+                return
+            try:
+                reference = store_action_attachment(self.rfile.read, length, spool_path=self.server.config.spool_path)
+            except ValueError:
+                self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_browser_action_attachment")
+                return
+            except BrowserActionConflictError:
+                self._safe_error(HTTPStatus.CONFLICT, "browser_action_attachment_integrity_mismatch")
+                return
+            except OSError as exc:
+                self._safe_error(
+                    HTTPStatus.INSUFFICIENT_STORAGE if is_storage_exhausted(exc) else HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "attachment_storage_unavailable",
+                )
+                return
+            self._send_json(HTTPStatus.CREATED, {"attachment_ref": reference, "size_bytes": length})
+            return
         if path.startswith("/v1/capture-jobs/") and path.endswith("/checkpoint"):
             self._capture_job_checkpoint(path)
             return

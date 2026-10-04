@@ -3434,7 +3434,108 @@ describe("provider-neutral browser action worker", () => {
     expect(stored.polylogueCaptureFreshnessQueue?.provider_cooldowns?.chatgpt).toBeGreaterThan(Date.now());
   });
 
-  it("stops reading an attachment response at the extension transport limit", async () => {
+  it("streams an attachment above 16 MiB into bounded owned MAIN calls before recording submit intent", async () => {
+    const size = 17 * 1024 * 1024 + 3;
+    const chunk = new Uint8Array(65536).fill(110);
+    const oracle = createHash("sha256");
+    for (let left = size; left > 0; left -= chunk.length) oracle.update(chunk.subarray(0, Math.min(left, chunk.length)));
+    const item = { attachment_id: "attachment-1", name: "neutral.bin", mime_type: "application/octet-stream", size_bytes: size, sha256: oracle.digest("hex") };
+    const action = {
+      action_id: "action-stream", receiver_id: "rx-action-test", provider: "chatgpt", operation: "conversation.create",
+      target: { conversation_id: "new" }, text: "Neutral streaming fixture", attachments: [item],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "stage_only", status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    let released = false;
+    let downloaded = 0;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      if (String(url).includes("/v1/browser-actions?claim_by=")) { const result = claimed ? [] : [action]; claimed = true; return responseJson({ actions: result }); }
+      if (String(url).endsWith("/attachments/attachment-1")) return {
+        ok: true, body: { getReader: () => ({
+          read: async () => {
+            if (downloaded === size) return { done: true };
+            const value = chunk.subarray(0, Math.min(chunk.length, size - downloaded));
+            downloaded += value.length;
+            return { done: false, value };
+          },
+          releaseLock: () => { released = true; }, cancel: vi.fn(),
+        }) },
+      };
+      if (String(url).endsWith("/action-stream/events")) { updates.push(JSON.parse(options.body)); return responseJson({ action }); }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    const { transferBrowserActionAttachmentInPage } = await import("../src/actions/chatgpt.js");
+    const observed = [];
+    globalThis.chrome.scripting.executeScript = vi.fn(async (call) => {
+      if (call.func.name === "transferBrowserActionAttachmentInPage") {
+        observed.push({ command: call.args[2], encodedLength: call.args[5]?.length || 0 });
+        return [{ result: transferBrowserActionAttachmentInPage(...call.args) }];
+      }
+      const state = globalThis.__polylogueBrowserActionAttachments;
+      expect(state.entries.get(item.attachment_id).file.size).toBe(size);
+      expect(released).toBe(true);
+      expect(updates.at(-1)).toMatchObject({ phase: "preparing" });
+      return [{ result: { ok: true, outcome: "drafted", provider_evidence: { attachment_count: 1 } } }];
+    });
+    try {
+      alarmListener({ name: "polylogueBrowserActionWake" });
+      await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("drafted"), { timeout: 10000 });
+      expect(downloaded).toBe(size);
+      expect(observed.filter((row) => row.command === "append").length).toBe(Math.ceil(size / 65536));
+      expect(Math.max(...observed.map((row) => row.encodedLength))).toBeLessThanOrEqual(Math.ceil(65536 / 3) * 4);
+      expect(observed.at(-1).command).toBe("discard");
+      expect(globalThis.__polylogueBrowserActionAttachments).toBeUndefined();
+    } finally { delete globalThis.__polylogueBrowserActionAttachments; }
+  });
+
+  it.each(["hash", "read_failure", "http_failure"])("settles reader and page parts before refusing an attachment %s failure", async (failure) => {
+    const item = { attachment_id: "attachment-1", name: "neutral.bin", mime_type: "application/octet-stream", size_bytes: 3, sha256: "00".repeat(32) };
+    const action = {
+      action_id: "action-integrity", receiver_id: "rx-action-test", provider: "chatgpt", operation: "conversation.create",
+      target: { conversation_id: "new" }, text: "Neutral integrity fixture", attachments: [item],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "submit_once", status: "leased",
+    };
+    const updates = [];
+    let claimed = false, read = false, cancelled = false, released = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      if (String(url).includes("/v1/browser-actions?claim_by=")) { const result = claimed ? [] : [action]; claimed = true; return responseJson({ actions: result }); }
+      if (String(url).endsWith("/attachments/attachment-1") && failure === "http_failure") return {
+        ok: false, status: 429, headers: { get: () => "7" }, body: { cancel: async () => { cancelled = true; } },
+      };
+      if (String(url).endsWith("/attachments/attachment-1")) return { ok: true, body: { getReader: () => ({
+        read: async () => { if (read) { if (failure === "read_failure") throw new Error("protocol_attachment_read_failed"); return { done: true }; } read = true; return { done: false, value: new Uint8Array([97, 98, 99]) }; },
+        cancel: async () => { cancelled = true; }, releaseLock: () => { released = true; },
+      }) } };
+      if (String(url).endsWith("/action-integrity/events")) { updates.push(JSON.parse(options.body)); return responseJson({ action }); }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    const { transferBrowserActionAttachmentInPage } = await import("../src/actions/chatgpt.js");
+    const commands = [];
+    globalThis.chrome.scripting.executeScript = vi.fn(async (call) => {
+      expect(call.func.name).toBe("transferBrowserActionAttachmentInPage");
+      commands.push(call.args[2]);
+      return [{ result: transferBrowserActionAttachmentInPage(...call.args) }];
+    });
+    try {
+      alarmListener({ name: "polylogueBrowserActionWake" });
+      await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe(failure === "http_failure" ? "rate_limited" : "provider_drift"));
+      expect(released).toBe(failure !== "http_failure");
+      expect(cancelled).toBe(failure !== "hash");
+      if (failure === "http_failure") expect(updates.at(-1).retry_after_seconds).toBe(7);
+      else expect(commands).toContain("append");
+      expect(commands).not.toContain("finish");
+      expect(commands.at(-1)).toBe("discard");
+      expect(globalThis.__polylogueBrowserActionAttachments).toBeUndefined();
+      expect(updates.some((entry) => entry.phase === "submit_intent")).toBe(false);
+    } finally { delete globalThis.__polylogueBrowserActionAttachments; }
+  });
+
+  it("rejects a response larger than the declared attachment and settles its reader", async () => {
     const action = {
       action_id: "action-oversized",
       receiver_id: "rx-action-test",
@@ -3486,9 +3587,11 @@ describe("provider-neutral browser action worker", () => {
 
     alarmListener({ name: "polylogueBrowserActionWake" });
     await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("provider_drift"));
-    expect(updates.at(-1).detail).toContain("protocol_attachment_transport_limit");
+    expect(updates.at(-1).detail).toContain("protocol_attachment_size_mismatch");
     expect(cancelled).toBe(true);
-    expect(globalThis.chrome.scripting.executeScript).not.toHaveBeenCalled();
+    const commands = globalThis.chrome.scripting.executeScript.mock.calls.map(([call]) => call.args?.[2]);
+    expect(commands).toContain("discard");
+    expect(commands).not.toContain(undefined);
   });
 });
 

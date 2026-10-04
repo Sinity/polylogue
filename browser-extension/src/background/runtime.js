@@ -1,3 +1,4 @@
+import { AttachmentSha256 } from "../actions/sha256.js";
 import { BackfillCoordinator } from "../backfill/coordinator.js";
 import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS, receiverAckContractError, serializedContentHash, retryAfterMs } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
@@ -7,6 +8,7 @@ import { CaptureJobClient } from "../backfill/capture_jobs.js";
 import {
   classifyBrowserActionFailure,
   executeChatGptBrowserActionInPage,
+  transferBrowserActionAttachmentInPage,
 } from "../actions/chatgpt.js";
 import {
   chatGptCaptureNeedsFollowUp,
@@ -63,7 +65,7 @@ const CAPTURE_FRESHNESS_QUEUE_KEY = "polylogueCaptureFreshnessQueue";
 const CAPTURE_FRESHNESS_LEASE_MS = 2 * 60 * 1000;
 const CAPTURE_FRESHNESS_SWEEP_MINUTES = 15;
 const CAPTURE_FRESHNESS_SWEEP_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES = 16 * 1024 * 1024;
+const BROWSER_ACTION_ATTACHMENT_CHUNK_BYTES = 64 * 1024;
 const CAPTURE_MESSAGE_TIMEOUT_MS = 35000;
 const BACKFILL_PAGE_REQUEST_TIMEOUT_MS = 58000;
 const BACKFILL_TRANSPORT_TAB_TTL_MS = 5 * 60 * 1000;
@@ -2689,63 +2691,71 @@ async function decideBrowserActionApproval(actionId, decision) {
   });
 }
 
-async function browserActionAttachmentBytes(action) {
+async function transferBrowserActionAttachments(action, ownerInstanceId, transport) {
   const settings = await receiverSettings();
-  const attachments = [];
-  let total = 0;
-  for (const item of action.attachments || []) {
-    total += Number(item.size_bytes || 0);
-    if (total > BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES) {
-      throw new Error(`protocol_attachment_transport_limit:${total}`);
-    }
-    const requestId = buildReceiverRequestId();
-    const response = await runtimeNetwork(
-      `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
-      { headers: await requestHeaders({ requestId }) },
-    );
-    if (!response.ok) {
-      const error = new Error(`browser_action_attachment_http_${response.status}`);
-      error.retryAfterSeconds = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
-      throw error;
-    }
-    const remaining = BROWSER_ACTION_MAX_EXTENSION_TRANSPORT_BYTES - (total - Number(item.size_bytes || 0));
-    const declaredLength = Number.parseInt(response.headers.get("Content-Length") || "", 10);
-    if (Number.isFinite(declaredLength) && declaredLength > remaining) {
-      throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + declaredLength}`);
-    }
-    if (!response.body?.getReader) throw new Error("protocol_attachment_stream_unavailable");
-    const reader = response.body.getReader();
-    const chunks = [];
-    let downloaded = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      downloaded += value.byteLength;
-      if (downloaded > remaining) {
-        await reader.cancel().catch(() => undefined);
-        throw new Error(`protocol_attachment_transport_limit:${total - Number(item.size_bytes || 0) + downloaded}`);
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(downloaded);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    if (bytes.length !== item.size_bytes) throw new Error(`protocol_attachment_size_mismatch:${item.attachment_id}`);
-    const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))]
-      .map((value) => value.toString(16).padStart(2, "0"))
-      .join("");
-    if (digest !== item.sha256) throw new Error(`protocol_attachment_hash_mismatch:${item.attachment_id}`);
-    attachments.push({
-      attachment_id: item.attachment_id,
-      name: item.name,
-      mime_type: item.mime_type,
-      content_base64: bytesToBase64(bytes),
+  const transfer = async (command, item = null, offset = 0, encoded = "") => {
+    const [result] = await runtimeChrome.scripting.executeScript({
+      target: { tabId: transport.tab.id }, world: "MAIN",
+      func: transferBrowserActionAttachmentInPage,
+      args: [action.action_id, ownerInstanceId, command, item, offset, encoded],
     });
+    if (!result?.result?.ok) throw new Error("protocol_attachment_transfer_response_missing");
+  };
+  try {
+    await transfer("begin");
+    for (const item of action.attachments || []) {
+      if (!Number.isSafeInteger(item.size_bytes) || item.size_bytes < 0) {
+        throw new Error("protocol_attachment_size_unrepresentable");
+      }
+      await transfer("start", item);
+      const requestId = buildReceiverRequestId();
+      const response = await runtimeNetwork(
+        `${settings.baseUrl}/v1/browser-actions/${encodeURIComponent(action.action_id)}/attachments/${encodeURIComponent(item.attachment_id)}`,
+        { headers: await requestHeaders({ requestId }) },
+      );
+      if (!response.ok) {
+        const error = new Error(`browser_action_attachment_http_${response.status}`);
+        error.retryAfterSeconds = Number.parseInt(response.headers.get("Retry-After") || "", 10) || null;
+        if (response.body?.cancel) await response.body.cancel();
+        throw error;
+      }
+      if (!response.body?.getReader) throw new Error("protocol_attachment_stream_unavailable");
+      const reader = response.body.getReader();
+      const hasher = new AttachmentSha256();
+      let downloaded = 0;
+      let complete = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { complete = true; break; }
+          if (downloaded + value.byteLength > item.size_bytes) throw new Error("protocol_attachment_size_mismatch");
+          for (let at = 0; at < value.byteLength; at += BROWSER_ACTION_ATTACHMENT_CHUNK_BYTES) {
+            const chunk = value.subarray(at, at + BROWSER_ACTION_ATTACHMENT_CHUNK_BYTES);
+            hasher.update(chunk);
+            await transfer("append", item, downloaded, bytesToBase64(chunk));
+            downloaded += chunk.byteLength;
+          }
+        }
+        if (downloaded !== item.size_bytes) throw new Error("protocol_attachment_size_mismatch");
+        if (hasher.digestHex() !== item.sha256) throw new Error("protocol_attachment_hash_mismatch");
+        await transfer("finish", item);
+      } finally {
+        try { if (!complete) await reader.cancel(); } finally { reader.releaseLock(); }
+      }
+    }
+  } catch (error) {
+    // Settle owned page parts before allowing the transport to be reused.
+    await transfer("discard");
+    throw error;
   }
-  return attachments;
+}
+
+async function discardBrowserActionAttachments(action, ownerInstanceId, transport) {
+  const [result] = await runtimeChrome.scripting.executeScript({
+    target: { tabId: transport.tab.id }, world: "MAIN", func: transferBrowserActionAttachmentInPage,
+    args: [action.action_id, ownerInstanceId, "discard"],
+  });
+  if (!result?.result?.ok) throw new Error("protocol_attachment_cleanup_response_missing");
 }
 
 function browserActionTargetUrl(action) {
@@ -2781,7 +2791,7 @@ function startBrowserActionLeaseHeartbeat(action, ownerInstanceId, phase) {
       if (stopped) return;
       await updateBrowserAction(action.action_id, ownerInstanceId, {
         outcome: "progress",
-        phase,
+        phase: typeof phase === "function" ? phase() : phase,
         detail: "renewed browser action lease during provider execution",
       });
     }).catch((error) => {
@@ -2805,34 +2815,35 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
   let pageExecutionStarted = false;
   let actionTransport = null;
   try {
-    const attachments = await browserActionAttachmentBytes(action);
     const result = await withProviderTransportOperation(action.provider, async () => {
       const transport = await prepareBrowserActionTransport(action);
       actionTransport = transport;
-      await updateBrowserAction(action.action_id, ownerInstanceId, {
-        outcome: "progress",
-        phase: action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
-        detail: action.submit_policy === "submit_once"
-          ? "durable submit intent recorded before the single provider submit boundary"
-          : "owned inactive provider target prepared for a staged draft",
-      });
-      submitIntentRecorded = action.submit_policy === "submit_once";
-      pageExecutionStarted = true;
       const stopHeartbeat = startBrowserActionLeaseHeartbeat(
         action,
         ownerInstanceId,
-        action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+        () => submitIntentRecorded ? "submit_intent" : "preparing",
       );
       try {
+        if (action.attachments?.length) await transferBrowserActionAttachments(action, ownerInstanceId, transport);
+        await updateBrowserAction(action.action_id, ownerInstanceId, {
+          outcome: "progress",
+          phase: action.submit_policy === "submit_once" ? "submit_intent" : "preparing",
+          detail: action.submit_policy === "submit_once"
+            ? "durable submit intent recorded before the single provider submit boundary"
+            : "owned inactive provider target prepared for a staged draft",
+        });
+        submitIntentRecorded = action.submit_policy === "submit_once";
+        pageExecutionStarted = true;
         const [execution] = await runtimeChrome.scripting.executeScript({
           target: { tabId: transport.tab.id },
           world: "MAIN",
           func: executeChatGptBrowserActionInPage,
-          args: [action, attachments],
+          args: [action, ownerInstanceId],
         });
         return execution?.result;
       } finally {
-        await stopHeartbeat();
+        try { if (action.attachments?.length) await discardBrowserActionAttachments(action, ownerInstanceId, transport); }
+        finally { await stopHeartbeat(); }
       }
     });
     if (!result?.ok) {

@@ -19,6 +19,7 @@ The receiver listens on `127.0.0.1:8765` by default and accepts the route contra
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`
 - `GET /v1/archive-state?provider=chatgpt&provider_session_id=...` -> `BrowserCaptureArchiveStatePayload`
 - `POST /v1/browser-captures` with `BrowserCaptureEnvelope` -> `BrowserCaptureAcceptedPayload` or `BrowserCaptureErrorPayload`
+- `PUT /v1/browser-action-attachments` -> streamed immutable attachment input, returning its SHA-256 `attachment_ref` and byte count
 - `GET/POST /v1/browser-actions...` -> provider-neutral draft/submit intents, leases, exact receipts, explicit uncertain-submit reconciliation, and explicit operator approval for destructive submits
 
 `/v1/archive-state` reports archive visibility, not just receiver spool
@@ -350,3 +351,17 @@ provider sessions (`chatgpt`, `claude-ai`) rather than a distinct acquisition
 source family; the daemon web API exposes status/read surfaces but not a full
 web workbench flow; extension-id pinning is still operator policy rather than a
 default because unpacked extension ids are local-install specific.
+
+
+Browser action attachments are uploaded as binary bodies with `Content-Length`
+before enqueue. The action request carries `attachment_ref`, `name`, and
+`mime_type`; inline base64 input is refused. The CLI streams each open input
+file into the same receiver-owned input store. Acknowledged upload references
+retain their original bytes independently of action delivery.
+
+The extension streams the verified attachment download into the original owned
+provider document in 64 KiB chunks, hashing incrementally before making a File
+available to the composer. It removes transient page parts after success or
+failure. The advertised `attachment_chunk_bytes` describes a transfer unit,
+not a maximum attachment size. Provider upload constraints remain observable
+provider failures; Polylogue does not impose the former 16 MiB attachment cap.

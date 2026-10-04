@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-import base64
+import errno
+import hashlib
+import io
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -10,9 +12,11 @@ from http import HTTPStatus
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.browser_capture import actions as browser_actions
 from polylogue.browser_capture.actions import (
@@ -23,8 +27,9 @@ from polylogue.browser_capture.actions import (
     decide_action_approval,
     enqueue_action,
     get_action,
-    read_action_attachment,
+    open_action_attachment,
     reconcile_action,
+    store_action_attachment,
     update_action,
 )
 from polylogue.browser_capture.models import (
@@ -47,6 +52,11 @@ from tests.infra.frozen_clock import FrozenClock
 pytestmark = pytest.mark.frozen_clock_modules("polylogue.browser_capture.actions")
 _RECEIVER_ID = "rx-browser-action-test"
 _ORIGIN = "chrome-extension://polylogue-browser-action-test"
+
+
+@pytest.fixture(autouse=True)
+def staged_context_input(tmp_path: Path) -> None:
+    store_action_attachment(io.BytesIO(b"exact context").read, 13, spool_path=tmp_path)
 
 
 def _request(
@@ -75,7 +85,7 @@ def _request(
             BrowserActionAttachmentInput(
                 name="context.txt",
                 mime_type="text/plain",
-                content_base64=base64.b64encode(b"exact context").decode(),
+                attachment_ref=hashlib.sha256(b"exact context").hexdigest(),
             )
         ],
         presentation=BrowserActionPresentation(
@@ -117,13 +127,11 @@ def test_enqueue_hash_pins_inputs_and_is_idempotent(tmp_path: Path) -> None:
     assert first.contract == "polylogue.browser-actions/v1"
     assert first.submit_policy == "submit_once"
     assert len(first.request_sha256) == 64
-    attachment, content = read_action_attachment(
-        first.action_id,
-        first.attachments[0].attachment_id,
-        spool_path=tmp_path,
-    ) or pytest.fail("missing action attachment")
-    assert attachment.sha256 == first.attachments[0].sha256
-    assert content == b"exact context"
+    with open_action_attachment(first.action_id, first.attachments[0].attachment_id, spool_path=tmp_path) as result:
+        assert result is not None
+        attachment, stream = result
+        assert attachment.sha256 == first.attachments[0].sha256
+        assert stream.read() == b"exact context"
 
     with pytest.raises(BrowserActionConflictError, match="different input"):
         enqueue_action(
@@ -704,7 +712,7 @@ def test_attachment_download_headers_are_safe_for_unicode_metadata(tmp_path: Pat
                 BrowserActionAttachmentInput(
                     name="résumé.zip",
                     mime_type="text/plain; charset=utf-8",
-                    content_base64=base64.b64encode(b"safe bytes").decode(),
+                    attachment_ref=store_action_attachment(io.BytesIO(b"safe bytes").read, 10, spool_path=tmp_path),
                 )
             ]
         }
@@ -740,11 +748,245 @@ def test_route_contracts_cover_every_browser_action_route() -> None:
         "browser_action_list_claim",
         "browser_action_read",
         "browser_action_attachment",
+        "browser_action_attachment_upload",
         "browser_action_update",
         "browser_action_reconcile",
         "browser_action_approval",
     } <= kinds
+    assert browser_capture_route_contract_for("PUT", "/v1/browser-action-attachments") is not None
     assert browser_capture_route_contract_for("GET", "/v1/browser-actions/action-1") is not None
     assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/events") is not None
     assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/reconcile") is not None
     assert browser_capture_route_contract_for("POST", "/v1/browser-actions/action-1/approval") is not None
+
+
+def test_attachment_upload_streams_above_old_limit_and_pins_http_action(tmp_path: Path) -> None:
+    size = 17 * 1024 * 1024 + 7
+    digest = hashlib.sha256()
+    chunk = b"n" * (64 * 1024)
+    remaining = size
+    with _receiver(tmp_path) as (host, port):
+        connection = HTTPConnection(host, port)
+        connection.putrequest("PUT", "/v1/browser-action-attachments")
+        connection.putheader("Origin", _ORIGIN)
+        connection.putheader("Content-Length", str(size))
+        connection.endheaders()
+        while remaining:
+            part = chunk[: min(remaining, len(chunk))]
+            connection.send(part)
+            digest.update(part)
+            remaining -= len(part)
+        response = connection.getresponse()
+        payload = json.loads(response.read())
+        assert response.status == HTTPStatus.CREATED
+        connection.close()
+        assert payload == {"attachment_ref": digest.hexdigest(), "size_bytes": size}
+        request = _request().model_copy(
+            update={
+                "attachments": [
+                    BrowserActionAttachmentInput(
+                        name="neutral.bin",
+                        attachment_ref=payload["attachment_ref"],
+                    )
+                ]
+            }
+        )
+        status, content, _ = _http(host, port, "POST", "/v1/browser-actions", body=request.model_dump(mode="json"))
+        assert status == HTTPStatus.ACCEPTED
+        action = json.loads(content)["action"]
+        item = action["attachments"][0]
+        connection = HTTPConnection(host, port)
+        connection.request(
+            "GET",
+            f"/v1/browser-actions/{action['action_id']}/attachments/{item['attachment_id']}",
+            headers={"Origin": _ORIGIN},
+        )
+        response = connection.getresponse()
+        assert response.status == HTTPStatus.OK
+        assert int(response.getheader("Content-Length") or "-1") == size
+        observed = hashlib.sha256()
+        count = 0
+        while part := response.read(64 * 1024):
+            observed.update(part)
+            count += len(part)
+        connection.close()
+        assert (count, observed.hexdigest()) == (size, digest.hexdigest())
+    # Cold action/read and the independently retained upload have exact bytes.
+    assert get_action(action["action_id"], spool_path=tmp_path).attachments[0].size_bytes == size
+    assert (tmp_path / "browser-actions" / ".inputs" / digest.hexdigest()).stat().st_size == size
+
+
+def test_attachment_input_reads_are_bounded_and_partial_input_is_never_acknowledged(tmp_path: Path) -> None:
+    requests: list[int] = []
+    remaining = 17 * 1024 * 1024
+
+    def read(size: int) -> bytes:
+        nonlocal remaining
+        requests.append(size)
+        count = min(size, remaining)
+        remaining -= count
+        return b"x" * count
+
+    reference = store_action_attachment(read, remaining, spool_path=tmp_path)
+    assert len(reference) == 64
+    assert max(requests) <= browser_actions.ACTION_ATTACHMENT_CHUNK_BYTES
+    assert remaining == 0
+    with pytest.raises(ValueError, match="incomplete"):
+        store_action_attachment(io.BytesIO(b"short").read, 6, spool_path=tmp_path)
+    inputs = tmp_path / "browser-actions" / ".inputs"
+    assert list(inputs.glob(".upload-*")) == []
+    assert not (inputs / hashlib.sha256(b"short").hexdigest()).exists()
+    empty = store_action_attachment(io.BytesIO().read, 0, spool_path=tmp_path)
+    assert empty == hashlib.sha256(b"").hexdigest()
+
+
+def test_attachment_upload_refuses_inline_predecessor_and_missing_reference(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        BrowserActionAttachmentInput(name="neutral.txt", content_base64="YWJj")
+    request = _request().model_copy(
+        update={"attachments": [BrowserActionAttachmentInput(name="neutral.txt", attachment_ref="00" * 32)]}
+    )
+    with pytest.raises(FileNotFoundError):
+        enqueue_action(request, receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    assert get_action("action-1", spool_path=tmp_path) is None
+
+
+def test_attachment_upload_sync_failure_never_returns_a_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_fsync(_descriptor: int) -> None:
+        raise OSError(errno.EIO, "synthetic disk failure")
+
+    with _receiver(tmp_path) as (host, port):
+        monkeypatch.setattr(browser_actions.os, "fsync", fail_fsync)
+        connection = HTTPConnection(host, port)
+        connection.request("PUT", "/v1/browser-action-attachments", body=b"neutral", headers={"Origin": _ORIGIN})
+        response = connection.getresponse()
+        assert response.status == HTTPStatus.INTERNAL_SERVER_ERROR
+        assert json.loads(response.read()) == {
+            "ok": False,
+            "receiver": "polylogue-browser-capture",
+            "schema_version": 1,
+            "error": "attachment_storage_unavailable",
+        }
+        connection.close()
+    inputs = tmp_path / "browser-actions" / ".inputs"
+    assert list(inputs.glob(".upload-*")) == []
+    assert not (inputs / hashlib.sha256(b"neutral").hexdigest()).exists()
+
+
+def test_attachment_directory_entries_settle_before_upload_ack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path / "new" / "spool"
+    events: list[tuple[str, Path]] = []
+    original_sync = browser_actions.sync_directory
+    original_link = browser_actions.os.link
+
+    def sync(path: Path) -> None:
+        original_sync(path)
+        events.append(("sync", path))
+
+    def link(source: Path, target: Path) -> None:
+        original_link(source, target)
+        events.append(("link", target))
+
+    monkeypatch.setattr(browser_actions, "sync_directory", sync)
+    monkeypatch.setattr(browser_actions.os, "link", link)
+    reference = store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root)
+    target = root / "browser-actions" / ".inputs" / reference
+    published = events.index(("link", target))
+    for parent in [tmp_path, root.parent, root, root / "browser-actions"]:
+        assert ("sync", parent) in events[:published]
+    assert ("sync", target.parent) in events[published + 1 :]
+    events.clear()
+    assert store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root) == reference
+    assert ("sync", target.parent) in events
+
+
+def test_attachment_download_retains_verified_original_inode(tmp_path: Path) -> None:
+    action = enqueue_action(_request(), receiver_id=_RECEIVER_ID, spool_path=tmp_path)
+    item = action.attachments[0]
+    path = tmp_path / "browser-actions" / action.action_id / "attachments" / item.attachment_id
+    with open_action_attachment(action.action_id, item.attachment_id, spool_path=tmp_path) as result:
+        assert result is not None
+        _, stream = result
+        replacement = path.with_suffix(".new")
+        replacement.write_bytes(b"different bytes")
+        replacement.replace(path)
+        assert stream.read() == b"exact context"
+    assert stream.closed
+    with pytest.raises(BrowserActionConflictError):
+        with open_action_attachment(action.action_id, item.attachment_id, spool_path=tmp_path):
+            pass
+
+
+def test_action_cli_streams_the_original_open_file_into_reference_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.daemon import browser_capture as capture_cli
+
+    path = tmp_path / "neutral.bin"
+    size = 17 * 1024 * 1024
+    with path.open("wb") as stream:
+        for _ in range(size // 65536):
+            stream.write(b"n" * 65536)
+
+    def refuse_whole_read(_path: Path) -> bytes:
+        raise AssertionError("whole-file input read")
+
+    monkeypatch.setattr(Path, "read_bytes", refuse_whole_read)
+    monkeypatch.setattr(browser_actions, "browser_capture_spool_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        capture_cli.BrowserCaptureReceiverConfig, "default", lambda: SimpleNamespace(spool_path=tmp_path)
+    )
+    monkeypatch.setattr(capture_cli, "receiver_identity", lambda _config: _RECEIVER_ID)
+    monkeypatch.setattr(capture_cli, "resolve_receiver_auth_token", lambda *_args, **_kwargs: None)
+    result = CliRunner().invoke(
+        capture_cli.action_command,
+        [
+            "--provider",
+            "chatgpt",
+            "--text",
+            "Neutral request",
+            "--attachment",
+            str(path),
+            "--model-slug",
+            "gpt-5-6-pro",
+            "--model-label",
+            "GPT-5.6 Sol",
+            "--effort-label",
+            "Pro",
+            "--format",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    action = json.loads(result.output)
+    assert action["attachments"][0]["size_bytes"] == size
+    assert path.stat().st_size == size
+    assert (tmp_path / "browser-actions" / ".inputs" / action["attachments"][0]["sha256"]).stat().st_size == size
+
+
+def test_attachment_directory_retry_rechecks_preexisting_unsynced_ancestors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "retry" / "spool"
+    original = browser_actions.sync_directory
+    failed = False
+    observed: list[Path] = []
+
+    def sync(path: Path) -> None:
+        nonlocal failed
+        if path == tmp_path and not failed:
+            failed = True
+            raise OSError(errno.EIO, "synthetic ancestor fault")
+        original(path)
+        observed.append(path)
+
+    monkeypatch.setattr(browser_actions, "sync_directory", sync)
+    with pytest.raises(OSError):
+        store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root)
+    assert (root / "browser-actions" / ".inputs").exists()
+    observed.clear()
+    reference = store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root)
+    assert tmp_path in observed
+    assert (root / "browser-actions" / ".inputs" / reference).exists()

@@ -38,9 +38,8 @@ _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandone
 # conversation content -- that travels the capture route, which owns the spool
 # quota. The registry database lives outside the spool directory whose
 # capture bodies the receiver reserves space for, so an uncapped event body
-# grows registry.sqlite3 without any reservation noticing. 64 KiB is well below the local
-# attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
-# content) and still far above any real event: the largest payloads are a
+# grows registry.sqlite3 without any reservation noticing. 64 KiB is
+# far above any real event: the largest payloads are a
 # handful of refs and a reason string.
 CAPTURE_JOB_EVENT_MAX_BYTES = 64 * 1024
 # Every event is client-driven and a job's lifetime is bounded by its

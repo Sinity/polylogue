@@ -25,7 +25,56 @@ export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
   return { outcome: "network_error", retry_after_seconds: retryAfterSeconds, detail };
 }
 
-export async function executeChatGptBrowserActionInPage(action, attachments) {
+// This function is serialized into the same MAIN document as the executor.
+// The original action/lease tuple owns the transient provider File parts.
+export function transferBrowserActionAttachmentInPage(actionId, ownerId, command, item = null, offset = 0, encoded = "") {
+  const key = "__polylogueBrowserActionAttachments";
+  const owned = () => {
+    const state = globalThis[key];
+    if (!state || state.actionId !== actionId || state.ownerId !== ownerId) {
+      throw new Error("protocol_attachment_owner_mismatch");
+    }
+    return state;
+  };
+  if (command === "begin") {
+    if (globalThis[key]) throw new Error("protocol_attachment_transfer_busy");
+    globalThis[key] = { actionId, ownerId, entries: new Map() };
+  } else if (command === "discard") {
+    // A replaced document has no state. Never delete another owner's parts.
+    if (globalThis[key]) { owned(); delete globalThis[key]; }
+  } else {
+    const state = owned();
+    if (!item || !Number.isSafeInteger(item.size_bytes) || item.size_bytes < 0) {
+      throw new Error("protocol_attachment_size_unrepresentable");
+    }
+    if (command === "start") {
+      if (state.entries.has(item.attachment_id)) throw new Error("protocol_attachment_duplicate");
+      state.entries.set(item.attachment_id, { metadata: item, size: 0, parts: [], file: null });
+    } else {
+      const entry = state.entries.get(item.attachment_id);
+      if (!entry || entry.metadata.sha256 !== item.sha256 || entry.file) {
+        throw new Error("protocol_attachment_transfer_mismatch");
+      }
+      if (command === "append") {
+        const binary = atob(encoded);
+        if (binary.length > 64 * 1024 || offset !== entry.size || entry.size + binary.length > item.size_bytes) {
+          throw new Error("protocol_attachment_chunk_mismatch");
+        }
+        const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+        // Blob retains the bytes in the provider document, outside extension IPC.
+        entry.parts.push(new globalThis.Blob([bytes]));
+        entry.size += bytes.length;
+      } else if (command === "finish") {
+        if (entry.size !== item.size_bytes) throw new Error("protocol_attachment_size_mismatch");
+        entry.file = new File(entry.parts, item.name, { type: item.mime_type });
+        entry.parts = [];
+      } else throw new Error("protocol_attachment_command_unknown");
+    }
+  }
+  return { ok: true };
+}
+
+export async function executeChatGptBrowserActionInPage(action, ownerId) {
   // chrome.scripting serializes this function into MAIN world. All helpers and
   // constants therefore intentionally live inside the function body.
   const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -131,6 +180,8 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     .map((node) => ({ id: node.getAttribute("data-message-id"), text: normalizedText(textOf(node)) }))
     .filter((message) => message.id);
 
+  const attachmentState = globalThis.__polylogueBrowserActionAttachments;
+  const attachments = action.attachments || [];
   let submissionMayHaveOccurred = false;
   try {
     if (location.hostname !== "chatgpt.com" && !location.hostname.endsWith(".chatgpt.com")) {
@@ -222,11 +273,15 @@ export async function executeChatGptBrowserActionInPage(action, attachments) {
     if (attachments.length && !fileInput) throw new Error("protocol_file_input_missing");
     if (attachments.length) {
       const transfer = new DataTransfer();
+      if (attachmentState?.actionId !== action.action_id || attachmentState?.ownerId !== ownerId) {
+        throw new Error("protocol_attachment_owner_mismatch");
+      }
       for (const item of attachments) {
-        const binary = atob(item.content_base64);
-        const bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-        transfer.items.add(new File([bytes], item.name, { type: item.mime_type }));
+        const entry = attachmentState.entries.get(item.attachment_id);
+        if (!entry?.file || entry.metadata.sha256 !== item.sha256 || entry.file.size !== item.size_bytes) {
+          throw new Error("protocol_attachment_transfer_incomplete");
+        }
+        transfer.items.add(entry.file);
       }
       fileInput.files = transfer.files;
       fileInput.dispatchEvent(new Event("change", { bubbles: true, composed: true }));
