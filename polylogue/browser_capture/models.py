@@ -630,7 +630,9 @@ class BrowserActionAttachmentInput(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     mime_type: str = Field(default="application/octet-stream", min_length=1, max_length=255)
-    content_base64: str
+    model_config = ConfigDict(extra="forbid")
+
+    attachment_ref: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("name")
     @classmethod

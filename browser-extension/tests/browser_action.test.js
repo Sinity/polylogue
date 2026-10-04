@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   classifyBrowserActionFailure,
   executeChatGptBrowserActionInPage,
+  transferBrowserActionAttachmentInPage,
 } from "../src/actions/chatgpt.js";
 
 function installPage(url = "https://chatgpt.com/") {
@@ -134,7 +135,7 @@ describe("ChatGPT browser action adapter", () => {
     tool.dataset.inlineSelectionPill = "";
     tool.textContent = "Create image";
     document.querySelector("#prompt-textarea").appendChild(tool);
-    const result = await executeChatGptBrowserActionInPage(action(), []);
+    const result = await executeChatGptBrowserActionInPage(action(), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -150,7 +151,7 @@ describe("ChatGPT browser action adapter", () => {
 
   it("stages a verified Chat / ChatGPT / Standard draft on the free-tier flat model switcher", async () => {
     installFreeTierPage();
-    const result = await executeChatGptBrowserActionInPage(freeTierAction(), []);
+    const result = await executeChatGptBrowserActionInPage(freeTierAction(), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -165,7 +166,7 @@ describe("ChatGPT browser action adapter", () => {
   it("fails closed when neither a composer pill nor a flat model switcher exists", async () => {
     installFreeTierPage();
     document.querySelector('[data-testid="model-switcher-dropdown-button"]').remove();
-    const result = await executeChatGptBrowserActionInPage(freeTierAction(), []);
+    const result = await executeChatGptBrowserActionInPage(freeTierAction(), "lease-owner");
 
     expect(result).toMatchObject({ ok: false, detail: "protocol_model_selector_missing" });
   });
@@ -189,7 +190,7 @@ describe("ChatGPT browser action adapter", () => {
       work.setAttribute("data-state", "off");
     });
 
-    const result = await executeChatGptBrowserActionInPage(action(), []);
+    const result = await executeChatGptBrowserActionInPage(action(), "lease-owner");
 
     expect(result).toMatchObject({ ok: true, outcome: "drafted", observed_surface: "Chat" });
     expect(chat.getAttribute("aria-checked")).toBe("true");
@@ -232,7 +233,7 @@ describe("ChatGPT browser action adapter", () => {
       operation: "conversation.reply",
       target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -283,7 +284,7 @@ describe("ChatGPT browser action adapter", () => {
       operation: "conversation.reply",
       target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -313,7 +314,7 @@ describe("ChatGPT browser action adapter", () => {
       operation: "conversation.reply",
       target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -355,7 +356,7 @@ describe("ChatGPT browser action adapter", () => {
       operation: "conversation.reply",
       target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
 
     expect(result).toMatchObject({
       ok: true,
@@ -376,7 +377,7 @@ describe("ChatGPT browser action adapter", () => {
       operation: "conversation.reply",
       target: { conversation_id: "conversation-1", conversation_url: null, project_ref: null },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
 
     expect(result).toMatchObject({
       ok: false,
@@ -395,7 +396,7 @@ describe("ChatGPT browser action adapter", () => {
         project_ref: "g-p-required",
       },
       submit_policy: "submit_once",
-    }), []);
+    }), "lease-owner");
     expect(result).toMatchObject({
       ok: false,
       detail: "project mismatch before compose",
@@ -403,10 +404,41 @@ describe("ChatGPT browser action adapter", () => {
     });
   });
 
+  it("uses the owned streamed File in the actual composer and refuses another lease", async () => {
+    installPage();
+    const input = document.createElement("input");
+    input.type = "file";
+    document.body.appendChild(input);
+    document.body.innerText = "neutral.txt";
+    const files = [];
+    const previous = globalThis.DataTransfer;
+    globalThis.DataTransfer = class {
+      constructor() { this.items = { add: (file) => files.push(file) }; }
+      get files() { return files; }
+    };
+    Object.defineProperty(input, "files", { writable: true, value: [] });
+    const item = { attachment_id: "a1", name: "neutral.txt", mime_type: "text/plain", size_bytes: 3, sha256: "11".repeat(32) };
+    const transfer = (...args) => transferBrowserActionAttachmentInPage("action-1", "lease-owner", ...args);
+    try {
+      transfer("begin"); transfer("start", item); transfer("append", item, 0, btoa("abc")); transfer("finish", item);
+      const request = action({ submit_policy: "stage_only", attachments: [item] });
+      const refused = await executeChatGptBrowserActionInPage(request, "foreign-owner");
+      expect(refused).toMatchObject({ ok: false, detail: "protocol_attachment_owner_mismatch", submission_may_have_occurred: false });
+      expect(files).toEqual([]);
+      const drafted = await executeChatGptBrowserActionInPage(request, "lease-owner");
+      expect(drafted).toMatchObject({ ok: true, outcome: "drafted", provider_evidence: { attachment_count: 1 } });
+      expect(files).toHaveLength(1);
+      expect(files[0]).toMatchObject({ name: "neutral.txt", size: 3, type: "text/plain" });
+      expect(input.files).toBe(files);
+    } finally {
+      transfer("discard"); globalThis.DataTransfer = previous;
+    }
+  });
+
   it("survives MAIN-world serialization without module bindings", async () => {
     installPage();
     const serialized = (0, eval)(`(${executeChatGptBrowserActionInPage.toString()})`);
-    await expect(serialized(action({ provider: "claude" }), [])).resolves.toMatchObject({
+    await expect(serialized(action({ provider: "claude" }), "lease-owner")).resolves.toMatchObject({
       ok: false,
       detail: "unsupported provider or surface target mismatch",
       submission_may_have_occurred: false,
