@@ -140,3 +140,14 @@ The `ops insights audit` command also uses resident `insights.rigor`: every regi
 `ops insights fable-packet` uses resident `insights.fable_packet` with normal pinned Index/User authority and cancellation. Its exhaustive evidence paging and named unsupported outcomes are documented in [the query/read atlas](query-read-path.md).
 
 `polylogued run --listener-info-path <path>` atomically creates private JSON without replacing an existing destination with the process `pid` and actual bound `listeners.api` and `listeners.browser_capture` host/port pairs (null for disabled listeners). Publication follows all enabled TCP binds and is socket readback, not archive readiness. Port zero requests distinct kernel-assigned listeners; equal positive ports on overlapping hosts remain refused. Component startup events report the assigned port for a zero request. A caller must identify its child and use a unique destination or reject stale process identity. The AgentCTL proof uses this output without closing and reacquiring port reservations.
+
+
+Ingest diagnostics keep receipt units distinct: `parsed_raw_count` supplies
+successful file counts and file rates; `materialized_count` supplies session
+throughput. A measured zero file count does not use an older stage-event value.
+Stage-event queued/needed file denominators take precedence over parsed counts.
+Finished-batch durations and throughput include `completed_with_failures` as
+well as `completed`; failed and interrupted attempts remain separate statuses
+and do not enter that duration/rate population. Prometheus attempt counts expose
+every declared operation-run status. The pinned workload projection applies the
+same completion population without reopening its supplied reader.

@@ -24,6 +24,8 @@ ConvergenceDebtStatus = Literal["failed", "deferred"]
 CursorLagSeverity = Literal["info", "warning", "error", "critical"]
 JudgmentSchedulerStatus = Literal["completed", "parked", "failed"]
 OperationRunStatus = Literal["running", "completed", "failed", "interrupted", "completed_with_failures"]
+# Finished batches include partial completions; aborts are a separate population.
+COMPLETED_OPERATION_RUN_STATUSES: tuple[OperationRunStatus, ...] = ("completed", "completed_with_failures")
 RouteObservationStatus = Literal["ok", "error", "degraded", "timed_out", "unavailable"]
 RouteDaemonPath = Literal["daemon", "direct"]
 ContextInjectionDecision = Literal["included", "degraded", "dropped"]
@@ -69,6 +71,7 @@ __all__ = [
     "MessageId",
     "MessageIdentitySource",
     "OperationRunStatus",
+    "COMPLETED_OPERATION_RUN_STATUSES",
     "RouteDaemonPath",
     "RouteObservationDropReasonToken",
     "RouteObservationStatus",

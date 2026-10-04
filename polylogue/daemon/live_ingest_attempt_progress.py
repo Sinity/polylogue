@@ -33,6 +33,7 @@ import sqlite3
 from typing import Literal
 
 from polylogue.core.stats import percentile
+from polylogue.core.types import COMPLETED_OPERATION_RUN_STATUSES
 
 # Public typed vocabulary -----------------------------------------------------
 
@@ -86,8 +87,8 @@ def classify_attempt_progress(
 def completed_total_time_samples(conn: sqlite3.Connection) -> list[float]:
     """Return per-attempt ``total_time_s`` for completed attempts.
 
-    The substrate query reads only completed attempts (``status =
-    'completed'``) with a strictly positive ``total_time_s``. We
+    The substrate query reads finished batches, including partial completions,
+    with a strictly positive duration. We
     deliberately ignore failed/cancelled rows because their durations
     reflect early-abort paths, not the cost of a successful attempt; a
     p95 cutoff biased downward by aborts would over-classify successful
@@ -99,7 +100,8 @@ def completed_total_time_samples(conn: sqlite3.Connection) -> list[float]:
 
     rows = conn.execute(
         "SELECT started_at_ms, finished_at_ms FROM ingest_attempts "
-        "WHERE status = 'completed' AND finished_at_ms IS NOT NULL"
+        "WHERE status IN (?, ?) AND finished_at_ms IS NOT NULL",
+        COMPLETED_OPERATION_RUN_STATUSES,
     ).fetchall()
     return [(int(row[1]) - int(row[0])) / 1000.0 for row in rows if int(row[1]) > int(row[0])]
 

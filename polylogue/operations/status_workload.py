@@ -16,6 +16,7 @@ from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.raw_failure_evidence import raw_failure_outcome_code, validated_raw_failure_evidence_kind
 from polylogue.core.sqlite_introspection import relation_exists
 from polylogue.core.status_error_privacy import redact_status_error
+from polylogue.core.types import COMPLETED_OPERATION_RUN_STATUSES
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle_from_connection
 from polylogue.storage.tier_access import capture_sqlite_read
 
@@ -133,9 +134,9 @@ def _ops_workload_status_from_ready_connection(
         f"""
         SELECT COUNT(*), COALESCE(SUM(parsed_raw_count), 0), COALESCE(SUM(materialized_count), 0)
         FROM {schema}.ingest_attempts
-        WHERE status = 'completed' AND finished_at_ms >= ?
+        WHERE status IN (?, ?) AND finished_at_ms >= ?
         """,
-        (now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS,),
+        (*COMPLETED_OPERATION_RUN_STATUSES, now_ms - _WORKLOAD_THROUGHPUT_WINDOW_MS),
     ).fetchone()
     batches = int(throughput_row[0] or 0) if throughput_row is not None else 0
     files = int(throughput_row[1] or 0) if throughput_row is not None else 0

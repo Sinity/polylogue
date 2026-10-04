@@ -180,3 +180,11 @@ class TestComputeSlowThreshold:
         conn.commit()
         threshold = compute_slow_threshold_s(conn)
         assert threshold == pytest.approx(100.0, rel=1e-3)
+
+
+@pytest.mark.parametrize("status", ["completed_with_failures", "failed", "interrupted"])
+def test_completed_duration_population_includes_only_finished_batches(status: str) -> None:
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE ingest_attempts (started_at_ms INTEGER, finished_at_ms INTEGER, status TEXT)")
+        conn.execute("INSERT INTO ingest_attempts VALUES (1000, 3000, ?)", (status,))
+        assert completed_total_time_samples(conn) == ([2.0] if status == "completed_with_failures" else [])
