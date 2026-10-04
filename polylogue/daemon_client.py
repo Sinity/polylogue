@@ -24,6 +24,7 @@ import struct
 import uuid
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -143,6 +144,7 @@ class DaemonClient:
         *,
         mutation: bool = False,
         timeout_s: float | None = None,
+        prepare_body: Callable[[], dict[str, object]] | None = None,
     ) -> tuple[int, dict[str, Any] | None] | None:
         """Return the response status with its decoded JSON object, if any."""
 
@@ -153,6 +155,9 @@ class DaemonClient:
             # Connect before resolving credentials: an absent socket must cost
             # nothing, least of all a write into the archive root.
             connection.connect()
+            if prepare_body is not None:
+                body = prepare_body()
+                raw = json.dumps(body, separators=(",", ":")).encode()
             headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
             token = self.auth_token
             if token:
@@ -259,12 +264,38 @@ class DaemonClient:
         deadline_ms = request.deadline_ms
         if writes and deadline_ms is None:
             raise DaemonOperationProtocolError("write operation request has no execution deadline")
+
+        def bound_body() -> dict[str, object]:
+            nonlocal request
+            # Resolve canonical client expectations only after the resident socket
+            # connects. Absent-daemon routes must not load storage or version code.
+            # Lifecycle controls must remain usable to recover already accepted work.
+            if operation not in {
+                "status",
+                "operation.status",
+                "operation.await",
+                "operation.cancel",
+                "operation.result",
+            }:
+                if request.index_schema_version is None:
+                    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+                    request = replace(request, index_schema_version=INDEX_SCHEMA_VERSION)
+                if request.daemon_version is None:
+                    from polylogue.version import POLYLOGUE_VERSION
+
+                    request = replace(request, daemon_version=POLYLOGUE_VERSION)
+                request = DaemonOperationRequest.from_dict(request.to_dict())
+            body: dict[str, object] = request.to_dict()
+            return body
+
         raw = self._request_json_response(
             "POST",
             "/api/operation",
             request.to_dict(),
             mutation=writes,
             timeout_s=self._response_timeout_s(deadline_ms),
+            prepare_body=bound_body,
         )
         if raw is None:
             return None
