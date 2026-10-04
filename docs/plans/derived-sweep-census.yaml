@@ -758,3 +758,11 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM attachments WHERE ref_count <= 0 after the refs this session dropped were recounted; it removes rows nothing references and never rewrites a retained one"
+
+  - file: "polylogue/operations/daemon_mutations.py"
+    function: "_prepare_mutation_selection"
+    subject: "vector_failure"
+    kind: "read_path_substitution"
+    scope: "writing_module"
+    classification: presentation_projection
+    reason: "Compose canonical read dependencies from the original pinned vector failure and provider failure; the pinned failure takes precedence and reaches the authoritative selection verdict."

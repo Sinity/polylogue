@@ -573,24 +573,48 @@ class InsightRebuildRequest(_OperationPayload):
 DELETE_SELECTION_MAX_BODY_BYTES = 64 * 1024 * 1024
 
 
+class MutationSelectionRequest(_OperationPayload):
+    """The resident operation owns matching and its explicit cardinality intent."""
+
+    params: dict[str, object] = Field(default_factory=dict)
+    mode: Literal["single", "first", "all", "page"] = "single"
+
+    @model_validator(mode="after")
+    def preserve_selection_intent(self) -> MutationSelectionRequest:
+        from polylogue.operations.query_lowering import cli_query_spec
+
+        spec = cli_query_spec(self.params)
+        if self.mode != "page" and (spec.limit is not None or spec.offset or spec.cursor or spec.sample is not None):
+            raise ValueError("whole-set mutation cardinality does not accept a query display window")
+        if self.mode == "all" and spec.latest:
+            raise ValueError("latest and all select different scopes")
+        return self
+
+
 class DeletePreviewRequest(_OperationPayload):
-    # No count cap: the preview splits any selection into bounded audit
-    # chunks, and the operation's ``max_body_bytes`` bounds the transport.
-    session_ids: list[str] = Field(min_length=1)
+    session_ids: list[str] | None = Field(default=None, min_length=1)
+    selection: MutationSelectionRequest | None = None
+
+    @model_validator(mode="after")
+    def exact_selection(self) -> DeletePreviewRequest:
+        if (self.session_ids is None) == (self.selection is None):
+            raise ValueError("supply exactly one explicit selection or resident query selection")
+        if self.session_ids is not None:
+            if any(not value for value in self.session_ids):
+                raise ValueError("session identifiers must be nonempty")
+            if len(set(self.session_ids)) != len(self.session_ids):
+                raise ValueError("selection_is_not_canonical")
+        return self
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
     preview_ref: str | None = Field(default=None, min_length=1)
-    preview_refs: list[str] | None = Field(default=None, min_length=1)
+    preview_request_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteAuthorizeRequest:
-        if (self.preview_ref is None) == (self.preview_refs is None):
-            raise ValueError("supply exactly one of preview_ref or preview_refs")
-        if self.preview_refs is not None and (
-            any(not ref for ref in self.preview_refs) or len(set(self.preview_refs)) != len(self.preview_refs)
-        ):
-            raise ValueError("preview_refs must be distinct nonempty references")
+        if (self.preview_ref is None) == (self.preview_request_id is None):
+            raise ValueError("supply exactly one preview reference or preview operation reference")
         return self
 
 
@@ -600,17 +624,12 @@ class DeleteCancelRequest(DeleteAuthorizeRequest):
 
 class DeleteExecuteRequest(_OperationPayload):
     authorization_ref: str | None = Field(default=None, min_length=1)
-    authorization_refs: list[str] | None = Field(default=None, min_length=1)
+    authorization_request_id: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteExecuteRequest:
-        if (self.authorization_ref is None) == (self.authorization_refs is None):
-            raise ValueError("supply exactly one of authorization_ref or authorization_refs")
-        if self.authorization_refs is not None and (
-            any(not ref for ref in self.authorization_refs)
-            or len(set(self.authorization_refs)) != len(self.authorization_refs)
-        ):
-            raise ValueError("authorization_refs must be distinct nonempty references")
+        if (self.authorization_ref is None) == (self.authorization_request_id is None):
+            raise ValueError("supply exactly one authorization reference or authorization operation reference")
         return self
 
 
@@ -654,29 +673,44 @@ class SessionMetadataRequest(_OperationPayload):
 
 
 class SessionMarkRequest(_OperationPayload):
-    """Star/pin/archive marks over whole sessions.
+    """One combined User change over explicit API IDs or a resident query scope."""
 
-    Session-scoped by name and by contract: a message- or block-targeted mark
-    needs the async insight-target resolver that still lives on the Python
-    facade, so this operation deliberately carries session ids only and the
-    handler resolves each one against the index with the durable user-tier
-    alias fallback.
-    """
-
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    session_ids: list[str] | None = Field(default=None, min_length=1)
+    selection: MutationSelectionRequest | None = None
     add_marks: list[str] = Field(default_factory=list)
     remove_marks: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    remove_tags: list[str] = Field(default_factory=list)
+    pairs: list[list[str]] = Field(default_factory=list)
+    note_text: str | None = None
 
     @model_validator(mode="after")
-    def nonempty_disjoint_marks(self) -> SessionMarkRequest:
-        if not self.add_marks and not self.remove_marks:
-            raise ValueError("supply at least one mark to add or remove")
-        if any(not value.strip() for value in (*self.add_marks, *self.remove_marks)):
-            raise ValueError("mark types must be nonempty")
+    def validate_all_intents(self) -> SessionMarkRequest:
+        from polylogue.core.user_state_targets import validate_mark_type
+        from polylogue.surfaces.payloads import validate_metadata_key
+
+        if (self.session_ids is None) == (self.selection is None):
+            raise ValueError("supply exactly one explicit session selection or resident query selection")
+        if self.session_ids is not None and any(not value for value in self.session_ids):
+            raise ValueError("session identifiers must be nonempty")
+        for value in (*self.add_marks, *self.remove_marks):
+            validate_mark_type(value)
         if set(self.add_marks) & set(self.remove_marks):
             raise ValueError("a mark cannot be added and removed in one request")
-        if any(not value for value in self.session_ids):
-            raise ValueError("session identifiers must be nonempty")
+        if any(not value.strip() for value in (*self.tags, *self.remove_tags)):
+            raise ValueError("tags must be nonempty")
+        if set(self.tags) & set(self.remove_tags):
+            raise ValueError("a tag cannot be added and removed in one request")
+        for pair in self.pairs:
+            if len(pair) != 2:
+                raise ValueError("metadata pairs must contain exactly a key and value")
+            error = validate_metadata_key(pair[0])
+            if error is not None:
+                raise ValueError(error)
+        if self.note_text is not None and not self.note_text.strip():
+            raise ValueError("note text must be nonblank")
+        if not (self.add_marks or self.remove_marks or self.tags or self.remove_tags or self.pairs or self.note_text):
+            raise ValueError("supply at least one User change")
         return self
 
 
@@ -905,6 +939,8 @@ class EmbeddingFailureResolveRequest(_OperationPayload):
 
 class OperationStatusRequest(_OperationPayload):
     request_id: str = Field(min_length=1)
+    parts_offset: int = Field(default=0, ge=0)
+    parts_limit: int = Field(default=40, ge=1, le=40)
 
 
 class OperationAwaitRequest(OperationStatusRequest):
@@ -1183,15 +1219,20 @@ class MutationResult(_OperationPayload):
     status: Literal["prepared", "authorized", "cancelled"] | None = None
     operation: str | None = None
     preview_ref: str | None = None
-    preview_refs: list[str] | None = None
     authorization_ref: str | None = None
-    authorization_refs: list[str] | None = None
     session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
     outcome: str | None = None
     sequence: int | None = Field(default=None, ge=0)
-    reference: dict[str, object] | None = None
+    reference: AcceptedOperationReference | None = None
+    source_request_id: str | None = None
+    tag_count: int | None = Field(default=None, ge=0)
+    applied_count: int | None = Field(default=None, ge=0)
+    not_attempted_count: int | None = Field(default=None, ge=0)
+    parts_total: int | None = Field(default=None, ge=0)
+    parts_offset: int | None = Field(default=None, ge=0)
+    next_parts_offset: int | None = Field(default=None, ge=0)
     effect: Literal["committed", "no-effect", "indeterminate"] | None = None
     completed_chunks: int | None = Field(default=None, ge=0)
     affected_count: int | None = Field(default=None, ge=0)
@@ -1234,20 +1275,20 @@ class MutationResult(_OperationPayload):
         elif self.status == "prepared":
             from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
 
-            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
-                raise ValueError("prepared result requires exact preview references and selection sample")
-            if (
-                self.session_count is None
-                or self.session_count < 1
-                or len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS)
-                or self.expires_at_ms is None
-            ):
-                raise ValueError("prepared result requires selection count, its leading sample and expiry")
+            if self.session_count is None or self.session_ids_sample is None:
+                raise ValueError("prepared result requires its measured selection")
+            if len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS):
+                raise ValueError("prepared result requires the declared bounded selection sample")
+            if self.session_count:
+                if self.reference is None or self.expires_at_ms is None:
+                    raise ValueError("nonempty preview requires its durable operation reference and expiry")
+                if self.reference.artifact_kind != "preview-batch":
+                    raise ValueError("prepared result does not name sealed preview authority")
         elif self.status == "authorized":
-            if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
-                raise ValueError("authorized result requires exact authorization references")
-        elif not self.preview_refs:
-            raise ValueError("cancelled preview result requires exact preview references")
+            if self.reference is None or self.reference.artifact_kind != "authorization-batch":
+                raise ValueError("authorized result requires its durable operation reference")
+        elif self.reference is None or self.reference.artifact_kind != "cancelled-preview-batch":
+            raise ValueError("cancelled result requires its durable operation reference")
         return self
 
 
@@ -2401,7 +2442,13 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.add_mark",
-        additional_capabilities=("archive.remove_mark",),
+        additional_capabilities=(
+            "archive.remove_mark",
+            "archive.add_tag",
+            "archive.remove_tag",
+            "archive.set_metadata",
+            "archive.save_annotation",
+        ),
         deadline_s=120.0,
         request_contract="mutation.session.mark.request/v1",
         result_contract="mutation.result/v1",
@@ -2409,7 +2456,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=SessionMarkRequest,
         result_model=MutationResult,
-        handler="mutation_session_mark",
+        handler="execute_session_mark_operation",
     ),
     DaemonOperationSpec(
         "mutation.annotation.save",

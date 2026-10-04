@@ -79,6 +79,8 @@ _STAGED_OPERATIONS = frozenset(
         "maintenance.embeddings.backfill",
         "maintenance.backup",
         "maintenance.restore_verified_backup",
+        "mutation.session.delete.preview",
+        "mutation.session.mark",
     }
 )
 
@@ -539,7 +541,12 @@ class DaemonOperationRuntime:
                 exchange.terminal_envelope = exchange.future.result().to_dict()
                 return exchange.terminal_envelope
             except Exception as exc:
-                error = {"code": type(exc).__name__, "detail": str(exc), "retryable": False}
+                error = {
+                    "code": str(getattr(exc, "code", type(exc).__name__)),
+                    "detail": str(exc),
+                    "retryable": False,
+                    "data": getattr(exc, "data", {}),
+                }
         else:
             error = {"code": "accepted_worker_cancelled", "retryable": True}
         # A cancelled/failed worker after possible effect is not proof of
@@ -970,9 +977,15 @@ class DaemonOperationRuntime:
                         )
                         from polylogue.operations.daemon_ingest import execute_ingest_operation
                         from polylogue.operations.daemon_insights import execute_insights_rebuild_operation
+                        from polylogue.operations.daemon_mutations import (
+                            execute_session_delete_preview_operation,
+                            execute_session_mark_operation,
+                        )
 
                         staged = {
                             "ingest": execute_ingest_operation,
+                            "mutation.session.delete.preview": execute_session_delete_preview_operation,
+                            "mutation.session.mark": execute_session_mark_operation,
                             "maintenance.insights.rebuild": execute_insights_rebuild_operation,
                             "maintenance.embeddings.backfill": execute_embedding_backfill_operation,
                             "maintenance.backup": execute_backup_operation,
@@ -1093,7 +1106,12 @@ class DaemonOperationRuntime:
                     except Exception as exc:
                         outcome = "indeterminate" if exchange.acceptance_started else "failed"
                         envelope = self._pending_envelope(exchange, outcome=outcome, record=record)
-                        envelope["error"] = {"code": type(exc).__name__, "detail": str(exc), "retryable": False}
+                        envelope["error"] = {
+                            "code": str(getattr(exc, "code", type(exc).__name__)),
+                            "detail": str(exc),
+                            "retryable": False,
+                            "data": getattr(exc, "data", {}),
+                        }
                     if exchange.acceptance_started and exchange.binding is not None:
                         audit = AuditRepository.for_archive_root(self.archive_root)
                         try:
@@ -1246,7 +1264,7 @@ class DaemonOperationRuntime:
                                 )
                             }
                         )
-                        parts = audit.machine_parts(binding)
+                        parts = audit.iter_machine_parts(binding)
                         if any(part["operation_id"] is None for part in parts) or (
                             record["artifact_kind"] == "source-generation"
                             and machine_request_state(audit, record)["outcome"]
@@ -1295,7 +1313,18 @@ class DaemonOperationRuntime:
                         if snapshot.identity.authority_identity_digest != archive_identity:
                             raise ValueError("archive_identity_stale")
                         record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
-                        state = machine_request_state(audit, record) if record is not None else None
+                        state = (
+                            machine_request_state(
+                                audit,
+                                record,
+                                parts_offset=_operation_int(
+                                    request.payload.get("parts_offset", 0), field="parts offset"
+                                ),
+                                parts_limit=_operation_int(request.payload.get("parts_limit", 40), field="parts limit"),
+                            )
+                            if record is not None
+                            else None
+                        )
                 except AuditContinuityError:
                     pending = True
                     still_executing = (

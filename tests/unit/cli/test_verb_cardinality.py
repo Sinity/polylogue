@@ -6,24 +6,25 @@ Cardinality rules (from #1814):
   - analyze: no cardinality restriction (applies to result set).
   - delete: requires --dry-run for preview; --yes plus --all for multi-match.
 
-All three verbs share the single :func:`check_cardinality` path from
-``polylogue.cli.verb_cardinality``.
+Read cardinality uses the shared guard. Mutating verbs delegate matching and
+cardinality to the resident operation before accepting any durable effect.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from contextlib import AbstractContextManager
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 import click
 import pytest
+from click.testing import Result
 
 from polylogue.cli import query_verbs
-from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
@@ -223,405 +224,163 @@ class TestReadVerbCardinality:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def resident_cardinality_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.storage_records import SessionBuilder
+
+    initialize_active_archive_root(tmp_path)
+    for index in range(3):
+        SessionBuilder(tmp_path / "index.db", f"conv-{index}").provider("claude-ai").add_message(
+            f"m{index}", role="user", text="cardinality evidence"
+        ).save()
+    with cli_daemon_archive(tmp_path, monkeypatch):
+        yield tmp_path
+
+
+def _resident_verb(root: Path, expression: str, verb: str, *flags: str) -> Result:
+    from click.testing import CliRunner
+
+    from polylogue.cli.click_app import cli
+
+    return CliRunner().invoke(cli, ["--plain", "--format", "json", "find", expression, "then", verb, *flags])
+
+
+def _resident_marks(root: Path) -> list[dict[str, str]]:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    with ArchiveStore.open_existing(root, read_only=True) as archive:
+        return list(archive.list_marks())
+
+
 class TestMarkVerbCardinality:
-    """mark_verb enforces the singleton / --all / --first contract."""
+    """The resident canonical query decides cardinality before any User effect."""
 
-    def _mark_callback(self) -> object:
-        cb = getattr(query_verbs.mark_verb.callback, "__wrapped__", None)
-        assert callable(cb), "mark_verb.callback must be a context-decorated function"
-        return cb
-
-    def _call_mark(
-        self,
-        child: click.Context,
-        *,
-        tags_to_add: tuple[str, ...] = (),
-        tags_to_remove: tuple[str, ...] = (),
-        star: bool = False,
-        unstar: bool = False,
-        pin: bool = False,
-        unpin: bool = False,
-        do_archive: bool = False,
-        do_unarchive: bool = False,
-        note_text: str | None = None,
-        apply_all: bool = False,
-        first_only: bool = False,
+    @pytest.mark.parametrize(
+        ("expression", "flags", "count"),
+        [
+            ("id:ext-conv-0", (), 1),
+            ("origin:claude-ai-export", ("--all",), 3),
+            ("origin:claude-ai-export", ("--first",), 1),
+        ],
+    )
+    def test_singleton_all_and_first_apply_the_exact_scope(
+        self, resident_cardinality_archive: Path, expression: str, flags: tuple[str, ...], count: int
     ) -> None:
-        cb = self._mark_callback()
-        cb(  # type: ignore[operator]
-            child,
-            tags_to_add,
-            tags_to_remove,
-            star,
-            unstar,
-            pin,
-            unpin,
-            do_archive,
-            do_unarchive,
-            note_text,
-            apply_all,
-            first_only,
-            None,
-        )
+        root = resident_cardinality_archive
+        result = _resident_verb(root, expression, "mark", "--star", *flags)
+        assert result.exit_code == 0, (result.output, result.exception)
+        assert json.loads(result.output)["session_count"] == count
+        assert len(_resident_marks(root)) == count
 
-    @staticmethod
-    def _recorder(issued: list[tuple[str, dict[str, object]]]) -> object:
-        """Stand in for the daemon: record the declared write, report success.
+    @pytest.mark.parametrize("expression", ["origin:chatgpt-export", "origin:claude-ai-export"])
+    def test_empty_and_ambiguous_default_refuse_without_effect(
+        self, resident_cardinality_archive: Path, expression: str
+    ) -> None:
+        root = resident_cardinality_archive
+        result = _resident_verb(root, expression, "mark", "--star")
+        assert result.exit_code != 0, result.output
+        assert _resident_marks(root) == []
 
-        ``mark`` no longer writes in-process; each branch lowers to a declared
-        operation through ``_submit_mutation_operation``. Recording the
-        (operation, payload) pairs observes the same law the old facade-method
-        assertions did, at the seam that now carries it.
-        """
+    @pytest.mark.parametrize(
+        "flags",
+        [("--first", "--all", "--star"), ("--star", "--unstar"), ("--tag-add", "x", "--tag-remove", "x")],
+    )
+    def test_all_incompatible_intents_refuse_before_any_effect(
+        self, resident_cardinality_archive: Path, flags: tuple[str, ...]
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        def _served(_config: object, name: str, payload: dict[str, object]) -> dict[str, object]:
-            issued.append((name, dict(payload)))
-            selection = payload.get("session_ids")
-            return {"status": "ok", "affected_count": len(selection) if isinstance(selection, list) else 1}
+        root = resident_cardinality_archive
+        result = _resident_verb(root, "id:ext-conv-0", "mark", *flags)
+        assert result.exit_code != 0, result.output
+        assert _resident_marks(root) == []
+        with ArchiveStore.open_existing(root, read_only=True) as archive:
+            assert archive.read_summary("claude-ai-export:ext-conv-0").tags == ()
 
-        return _served
+    def test_no_flags_is_an_explicit_no_op(self, resident_cardinality_archive: Path) -> None:
+        root = resident_cardinality_archive
+        result = _resident_verb(root, "origin:claude-ai-export", "mark")
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output)["affected_count"] == 0
+        assert _resident_marks(root) == []
 
-    def test_singleton_match_applies_operations(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
-        issued: list[tuple[str, dict[str, object]]] = []
+    @pytest.mark.parametrize(
+        ("add", "remove", "kind"),
+        [("--star", "--unstar", "star"), ("--pin", "--unpin", "pin"), ("--archive", "--unarchive", "archive")],
+    )
+    def test_every_mark_type_adds_and_removes_on_the_same_scope(
+        self, resident_cardinality_archive: Path, add: str, remove: str, kind: str
+    ) -> None:
+        root = resident_cardinality_archive
+        added = _resident_verb(root, "id:ext-conv-0", "mark", add)
+        assert added.exit_code == 0, added.output
+        assert [row["mark_type"] for row in _resident_marks(root)] == [kind]
+        removed = _resident_verb(root, "id:ext-conv-0", "mark", remove)
+        assert removed.exit_code == 0, removed.output
+        assert _resident_marks(root) == []
 
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["session-abc"],
-            ),
-            patch(
-                "polylogue.cli.archive_query._submit_mutation_operation",
-                side_effect=self._recorder(issued),
-            ),
-        ):
-            # Should not raise.
-            self._call_mark(child, tags_to_add=("reviewed",), apply_all=False)
+    def test_tag_removal_and_note_share_the_authoritative_batch(self, resident_cardinality_archive: Path) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        assert issued == [
-            ("mutation.session.tag", {"session_ids": ["session-abc"], "tags": ["reviewed"]}),
-        ]
+        root = resident_cardinality_archive
+        added = _resident_verb(root, "id:ext-conv-0", "mark", "--tag-add", "reviewed")
+        assert added.exit_code == 0, added.output
+        removed = _resident_verb(root, "id:ext-conv-0", "mark", "--tag-remove", "reviewed", "--note", "neutral note")
+        assert removed.exit_code == 0, removed.output
+        payload = json.loads(removed.output)
+        assert payload["reference"]["part_count"] == 2
+        with ArchiveStore.open_existing(root, read_only=True) as archive:
+            assert archive.read_summary("claude-ai-export:ext-conv-0").tags == ()
+            assert len(archive.list_annotations()) == 1
 
-    def test_multi_match_without_all_raises(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
 
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2", "id3"],
-            ),
-        ):
-            with pytest.raises(click.UsageError, match="--all"):
-                self._call_mark(child, tags_to_add=("reviewed",), apply_all=False)
+class TestDeleteVerbCardinality:
+    """Dry runs and committed deletes use the same resident selection contract."""
 
-    def test_multi_match_with_all_passes_cardinality(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
-        issued: list[tuple[str, dict[str, object]]] = []
+    @pytest.mark.parametrize(
+        ("expression", "flags", "count"), [("id:ext-conv-0", (), 1), ("origin:claude-ai-export", ("--all",), 3)]
+    )
+    def test_preview_and_apply_have_identical_scope(
+        self, resident_cardinality_archive: Path, expression: str, flags: tuple[str, ...], count: int
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2"],
-            ),
-            patch(
-                "polylogue.cli.archive_query._submit_mutation_operation",
-                side_effect=self._recorder(issued),
-            ),
-        ):
-            # Should not raise — --all is present.
-            self._call_mark(child, tags_to_add=("sprint",), apply_all=True)
+        root = resident_cardinality_archive
+        preview = _resident_verb(root, expression, "delete", "--dry-run", *flags)
+        assert preview.exit_code == 0, preview.output
+        data = json.loads(preview.output)
+        assert (data["status"], data["session_count"], data["affected_count"]) == ("preview", count, 0)
+        applied = _resident_verb(root, expression, "delete", "--yes", *flags)
+        assert applied.exit_code == 0, applied.output
+        assert json.loads(applied.output)["affected_count"] == count
+        with ArchiveStore.open_existing(root, read_only=True) as archive:
+            assert archive.count_sessions() == 3 - count
 
-        # --all means every matched session reaches the writer, not just one.
-        assert issued == [
-            ("mutation.session.tag", {"session_ids": ["id1", "id2"], "tags": ["sprint"]}),
-        ]
+    @pytest.mark.parametrize("flags", [("--dry-run",), ("--yes",), ()])
+    def test_ambiguous_or_unconfirmed_delete_preserves_every_session(
+        self, resident_cardinality_archive: Path, flags: tuple[str, ...]
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    def test_multi_match_with_first_uses_first_only(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(polylogue=MagicMock(), config=MagicMock())
-        issued: list[tuple[str, dict[str, object]]] = []
+        root = resident_cardinality_archive
+        result = _resident_verb(root, "origin:claude-ai-export", "delete", *flags)
+        assert result.exit_code != 0, result.output
+        with ArchiveStore.open_existing(root, read_only=True) as archive:
+            assert archive.count_sessions() == 3
 
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2", "id3"],
-            ),
-            patch(
-                "polylogue.cli.archive_query._submit_mutation_operation",
-                side_effect=self._recorder(issued),
-            ),
-        ):
-            # Should not raise — --first is present.
-            self._call_mark(child, tags_to_add=("sprint",), first_only=True)
-
-        # --first truncates the selection that reaches the writer to the leader.
-        assert issued == [
-            ("mutation.session.tag", {"session_ids": ["id1"], "tags": ["sprint"]}),
-        ]
-
-    def test_zero_matches_raises(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=[],
-            ),
-        ):
-            with pytest.raises(click.UsageError, match="No sessions matched"):
-                self._call_mark(child, tags_to_add=("sprint",))
-
-    def test_mark_uses_shared_check_cardinality(self) -> None:
-        """mark_verb must call check_cardinality (the shared path)."""
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2"],
-            ),
-            patch(
-                "polylogue.cli.verb_cardinality.check_cardinality",
-                side_effect=CardinalityError("mocked error"),
-            ) as mock_check,
-        ):
-            with pytest.raises(click.UsageError, match="mocked error"):
-                self._call_mark(child, tags_to_add=("t",), apply_all=False)
-
-        mock_check.assert_called_once_with(
-            2,
-            allow_all=False,
-            first_only=False,
-            operation="mark",
-            candidates=["id1", "id2"],
-            bounded=False,
-        )
+    def test_empty_preview_reports_zero_without_authority(self, resident_cardinality_archive: Path) -> None:
+        root = resident_cardinality_archive
+        result = _resident_verb(root, "origin:chatgpt-export", "delete", "--dry-run", "--all")
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["session_count"] == payload["affected_count"] == 0
+        assert "reference" not in payload
 
 
 # ---------------------------------------------------------------------------
 # delete_verb — cardinality enforcement (updated verb)
 # ---------------------------------------------------------------------------
-
-
-class TestDeleteVerbCardinality:
-    """delete_verb enforces cardinality and --dry-run / --yes / --all contract."""
-
-    def _delete_callback(self) -> object:
-        cb = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
-        assert callable(cb), "delete_verb.callback must be a context-decorated function"
-        return cb
-
-    def _call_delete(
-        self,
-        child: click.Context,
-        *,
-        dry_run: bool = False,
-        yes_flag: bool = False,
-        all_flag: bool = False,
-        output_format: str | None = None,
-    ) -> None:
-        cb = self._delete_callback()
-        cb(child, dry_run, yes_flag, all_flag, output_format)  # type: ignore[operator]
-
-    def test_dry_run_probes_before_resolving_ids(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
-                return_value=["id1"],
-            ) as mock_probe,
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1"],
-            ),
-            patch("polylogue.cli.verb_cardinality.check_cardinality") as mock_card,
-            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
-        ):
-            self._call_delete(child, dry_run=True)
-
-        mock_probe.assert_called_once()
-        # The probe reads one past the listed candidates so a refusal can say
-        # whether its candidate list is complete.
-        assert mock_probe.call_args.kwargs == {"limit": AMBIGUITY_CANDIDATE_LIMIT + 1}
-        mock_card.assert_not_called()
-        mock_exec.assert_called_once()
-
-    def test_multi_match_dry_run_requires_all_before_resolving_ids(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=["id1", "id2"]),
-            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb") as mock_resolve,
-            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
-            pytest.raises(click.UsageError, match="Use --all to preview every matched session"),
-        ):
-            self._call_delete(child, dry_run=True)
-
-        mock_resolve.assert_not_called()
-        mock_exec.assert_not_called()
-
-    def test_dry_run_all_previews_full_resolved_set_not_truncated_query(self) -> None:
-        """Dry-run previews the full pre-resolved ID set.
-
-        Regression for the #1873 truncation: dry-run must NOT re-run the query
-        through ``_execute_query_verb`` (which caps at the default limit of 20 and
-        would preview fewer sessions than ``--yes --all`` actually deletes). It
-        must use the same resolution + delete path the real delete uses, with
-        ``dry_run=True``, so the previewed set equals the deleted set.
-        """
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        resolved = [f"id{i}" for i in range(60)]
-        with (
-            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=resolved[:2]),
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=resolved,
-            ),
-            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_query,
-            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
-        ):
-            self._call_delete(child, dry_run=True, all_flag=True)
-
-        mock_query.assert_not_called()
-        args, kwargs = mock_exec.call_args
-        assert list(args[1]) == resolved, "dry-run must preview every resolved id, not a page"
-        assert kwargs.get("dry_run") is True
-
-    def test_multi_match_without_all_raises(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2"],
-            ),
-        ):
-            with pytest.raises(click.UsageError, match="--all"):
-                self._call_delete(child, yes_flag=True, all_flag=False)
-
-    def test_multi_match_with_yes_and_all_delegates(self) -> None:
-        # Bug 1 fix: delete uses execute_delete_by_session_ids (not _execute_query_verb)
-        # so all resolved IDs are deleted rather than only the first limit=20.
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2"],
-            ),
-            patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as mock_exec,
-        ):
-            self._call_delete(child, yes_flag=True, all_flag=True)
-
-        mock_exec.assert_called_once()
-
-    def test_zero_matches_raises(self) -> None:
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=[],
-            ),
-        ):
-            with pytest.raises(click.UsageError, match="No sessions matched"):
-                self._call_delete(child, yes_flag=True, all_flag=True)
-
-    @pytest.mark.parametrize("all_flag", [False, True])
-    def test_zero_match_delete_submits_no_mutation(self, all_flag: bool, capsys: pytest.CaptureFixture[str]) -> None:
-        """A selection that matches nothing never reaches the daemon write.
-
-        ``delete --yes`` refuses with the typed empty-cardinality error, and
-        ``delete --dry-run`` reports an empty preview, both before any
-        declared mutation is submitted.
-
-        Anti-vacuity: move the cardinality check after
-        ``execute_delete_by_session_ids`` and the exploding submit runs.
-        """
-        from polylogue.cli.verb_cardinality import EmptyCardinalityError
-
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock(), ui=SimpleNamespace(plain=True))
-
-        def _no_submit(*_args: object, **_kwargs: object) -> object:
-            raise AssertionError("a zero-match delete submitted a mutation")
-
-        with (
-            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=[]),
-            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]),
-            patch("polylogue.cli.operation_kernel.configured_mutation_operation", _no_submit),
-            patch("polylogue.cli.archive_query._submit_mutation_operation", _no_submit),
-        ):
-            with pytest.raises(EmptyCardinalityError):
-                self._call_delete(child, yes_flag=True, all_flag=all_flag)
-            self._call_delete(child, dry_run=True, all_flag=all_flag)
-
-        preview = json.loads(capsys.readouterr().out)
-        assert (preview["status"], preview["session_count"], preview["affected_count"]) == ("preview", 0, 0)
-
-    def test_delete_uses_shared_check_cardinality(self) -> None:
-        """delete_verb must call check_cardinality (the shared path)."""
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1", "id2"],
-            ),
-            patch(
-                "polylogue.cli.verb_cardinality.check_cardinality",
-                side_effect=CardinalityError("mocked cardinality error"),
-            ) as mock_check,
-        ):
-            with pytest.raises(click.UsageError, match="mocked cardinality error"):
-                self._call_delete(child, yes_flag=True, all_flag=False)
-
-        mock_check.assert_called_once_with(
-            2,
-            allow_all=False,
-            first_only=False,
-            operation="delete",
-            candidates=["id1", "id2"],
-            bounded=False,
-        )
-
-    def test_yes_flag_sets_force_on_delegated_request(self) -> None:
-        # Bug 1 fix: delete passes force=True to execute_delete_by_session_ids.
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        captured_kwargs: list[dict[str, object]] = []
-
-        def _capture(env: object, ids: list[str], *, force: bool) -> None:
-            captured_kwargs.append({"ids": ids, "force": force})
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1"],
-            ),
-            patch(
-                "polylogue.cli.archive_query.execute_delete_by_session_ids",
-                side_effect=_capture,
-            ),
-        ):
-            self._call_delete(child, yes_flag=True)
-
-        assert captured_kwargs[0]["force"] is True, "--yes must propagate force=True to execute_delete_by_session_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -733,68 +492,6 @@ class TestAnalyzeVerbNoBcardinality:
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteUsesPreResolvedIds:
-    """delete_verb must operate on all pre-resolved IDs, not re-query with limit=20."""
-
-    def _delete_callback(self) -> object:
-        cb = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
-        assert callable(cb)
-        return cb
-
-    def test_all_resolved_ids_are_deleted_not_truncated(self) -> None:
-        """Bug 1: execute_delete_by_session_ids is called with all resolved IDs.
-
-        Before the fix, _execute_query_verb re-ran the query with limit=20,
-        silently truncating large result sets.  After the fix, the pre-resolved
-        IDs are forwarded directly.
-        """
-        many_ids = [f"id{i}" for i in range(50)]  # more than the old default limit of 20
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        captured: list[list[str]] = []
-
-        def _capture(env: object, ids: list[str], *, force: bool) -> None:
-            captured.append(list(ids))
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=many_ids,
-            ),
-            patch(
-                "polylogue.cli.archive_query.execute_delete_by_session_ids",
-                side_effect=_capture,
-            ),
-        ):
-            cb = self._delete_callback()
-            cb(child, False, True, True, None)  # type: ignore[operator]  # dry_run=F, yes=T, all=T
-
-        assert captured, "execute_delete_by_session_ids must be called"
-        assert len(captured[0]) == 50, (
-            f"Expected all 50 IDs to be deleted but got {len(captured[0])}. "
-            "delete_verb may be re-querying with a limit instead of using pre-resolved IDs."
-        )
-
-    def test_delete_does_not_call_execute_query_verb_for_non_dry_run(self) -> None:
-        """After the fix, the non-dry-run delete path must NOT call _execute_query_verb."""
-        _, child = _context_pair()
-        child.obj = SimpleNamespace(config=MagicMock())
-
-        with (
-            patch(
-                "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-                return_value=["id1"],
-            ),
-            patch("polylogue.cli.archive_query.execute_delete_by_session_ids"),
-            patch("polylogue.cli.query_verbs._execute_query_verb") as mock_exec,
-        ):
-            cb = self._delete_callback()
-            cb(child, False, True, False, None)  # type: ignore[operator]  # yes=T
-
-        mock_exec.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # Non-mocked >50-session delete cardinality evidence (#1873 recovery pack)
 # ---------------------------------------------------------------------------
@@ -806,11 +503,11 @@ class TestDeleteCardinalityLargeNonMocked:
     The invariant that makes ``delete --yes --all`` safe is that three sets are
     identical and none is silently page-limited:
 
-        guard set (cardinality)  ==  dry-run preview set  ==  deleted set
+        canonical query set  ==  resident preview set  ==  deleted set
 
     The default query page limit is 20 (50 in some paths); seeding 60 matching
-    sessions makes any truncation observable. This exercises the real
-    ``resolve_session_ids_for_verb`` + ``delete_verb`` + ``ArchiveStore`` path.
+    sessions makes any truncation observable. This exercises the real resident preview, authorization and bound executor.
+    The CLI carries a bounded sample and durable reference for the complete set.
     """
 
     TOKEN = "zzbulkdeletetoken"
@@ -843,12 +540,11 @@ class TestDeleteCardinalityLargeNonMocked:
         all_flag: bool,
         output_format: str | None = None,
     ) -> dict[str, object]:
-        import json
 
         _, child = _context_pair(query_terms=(self.TOKEN,))
         child.obj = env
         self._delete_callback()(child, dry_run, yes_flag, all_flag, output_format)  # type: ignore[operator]
-        # _emit_delete prints exactly one JSON document to stdout.
+        # The resident delete adapter prints exactly one JSON document to stdout.
         captured = self._capsys.readouterr().out.strip()
         return cast(dict[str, object], json.loads(captured))
 
@@ -856,42 +552,10 @@ class TestDeleteCardinalityLargeNonMocked:
     def _bind_capsys(self, capsys: pytest.CaptureFixture[str]) -> None:
         self._capsys = capsys
 
-    @staticmethod
-    def _daemon_delete_route(archive_root: Path) -> Any:
-        """Stand in for the daemon's three-step delete, doing the real delete.
-
-        `_emit_delete` has no non-daemon route: it refuses outright when the
-        daemon does not answer the prepare call. This test is about cardinality
-        -- that the previewed set, the deleted set and the guard set are the
-        same unlimited set -- not about which process performs the write, so
-        the stub prepares from the caller's own resolved ids and then deletes
-        them through the real ArchiveStore.
-        """
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        prepared: dict[str, list[str]] = {}
-
-        def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
-            if operation.endswith(".preview"):
-                prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
-                return {
-                    "status": "prepared",
-                    "preview_ref": "preview:delete",
-                    "session_count": len(prepared["ids"]),
-                    "session_ids_sample": list(prepared["ids"])[:20],
-                }
-            if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_refs": ["test-authorization"]}
-            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-                affected = archive.delete_sessions(tuple(prepared["ids"]))
-            return {"status": "deleted", "affected_count": affected, "session_ids": prepared["ids"]}
-
-        return _route
-
     def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(
         self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
+        from polylogue.cli.session_rows import query_complete_session_selection
         from tests.infra.app_env import make_app_env
 
         index_db = workspace_env["archive_root"] / "index.db"
@@ -902,36 +566,39 @@ class TestDeleteCardinalityLargeNonMocked:
             request = RootModeRequest.from_params({"query": (self.TOKEN,)})
 
             # 1. Guard set: the full matched set, not a default page.
-            guard = resolve_session_ids_for_verb(env, request)
+            guard = query_complete_session_selection(env.config, request).ids
             assert len(guard) == self.COUNT, f"cardinality guard truncated to {len(guard)} (expected {self.COUNT})"
             assert len(set(guard)) == self.COUNT, "guard set has duplicates"
 
             # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
             #    only the first page while --yes --all deleted everything).
-            with pytest.raises(click.UsageError, match="Use --all to preview every matched session"):
+            with pytest.raises(click.UsageError) as ambiguous:
                 self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
+            from polylogue.cli.verb_cardinality import AmbiguousCardinalityError
+
+            assert isinstance(ambiguous.value, AmbiguousCardinalityError)
+            assert ambiguous.value.bounded is True
 
             preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=True)
             assert preview["status"] == "preview"
             assert preview["session_count"] == self.COUNT
             assert preview["affected_count"] == 0
-            preview_ids = preview["session_ids"]
-            assert isinstance(preview_ids, list)
-            assert set(preview_ids) == set(guard), "dry-run preview set diverges from the guard set"
+            sample = preview["session_ids_sample"]
+            assert isinstance(sample, list) and len(sample) == 20
+            assert set(sample).issubset(guard)
+            reference = preview["reference"]
+            assert isinstance(reference, dict)
+            assert reference["artifact_kind"] == "preview-batch"
 
             # Dry-run mutates nothing.
-            assert len(resolve_session_ids_for_verb(env, request)) == self.COUNT
+            assert len(query_complete_session_selection(env.config, request).ids) == self.COUNT
 
             # 3. Deleted set: --yes --all removes the entire matched set.
-            with patch(
-                "polylogue.cli.archive_query._submit_mutation_operation",
-                side_effect=self._daemon_delete_route(workspace_env["archive_root"]),
-            ):
-                result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
+            result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
             assert result["session_count"] == self.COUNT
             assert result["affected_count"] == self.COUNT, (
                 f"delete truncated to {result['affected_count']} (expected {self.COUNT})"
             )
 
             # The archive no longer matches the query: deleted set == guard set.
-            assert resolve_session_ids_for_verb(env, request) == []
+            assert query_complete_session_selection(env.config, request).ids == []

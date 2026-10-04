@@ -2977,25 +2977,35 @@ def test_async_execute_query_archive_deletes_session_by_id(
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
-    # Delete has no non-daemon route: `_emit_delete` refuses outright when the
-    # daemon does not answer the prepare call. Stub the three-step handshake and
-    # keep this case's real claim -- that the resolved session id is the one
-    # carried into the delete -- by asserting it at the daemon boundary, which
-    # is where the write now happens.
+    # This surface sends the canonical selector to the resident owner.
+    from tests.infra.daemon_operations import accepted_operation_reference
+
     def _daemon_delete(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         if operation.endswith(".preview"):
-            assert payload["session_ids"] == ["codex-session:native-1"]
+            selection = payload["selection"]
+            assert isinstance(selection, dict)
+            assert selection["params"]["conv_id"] == "codex-session:native-1"
             return {
                 "status": "prepared",
-                "preview_ref": "preview:delete",
                 "session_count": 1,
                 "session_ids_sample": ["codex-session:native-1"],
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                ),
             }
         if operation.endswith(".authorize"):
-            # The daemon issues one durable authorization reference per preview
-            # reference; ``_delete_authorization_refs`` refuses a count mismatch.
-            return {"status": "authorized", "authorization_refs": ["authz:delete"]}
-        return {"status": "deleted", "affected_count": 1, "session_ids": ["codex-session:native-1"]}
+            assert payload == {"preview_request_id": "preview-owner"}
+            return {
+                "status": "authorized",
+                "source_request_id": "preview-owner",
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.authorize",
+                    request_id="authorization-owner",
+                    artifact_kind="authorization-batch",
+                ),
+            }
+        assert payload == {"authorization_request_id": "authorization-owner"}
+        return {"status": "deleted", "affected_count": 1}
 
     with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_daemon_delete):
         asyncio.run(
@@ -3119,24 +3129,40 @@ def test_async_execute_query_archive_delete_dry_run_does_not_delete(
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "conv_id": "codex-session:native-1",
-                "delete_matched": True,
-                "dry_run": True,
-                "output_format": "json",
-            },
-        )
-    )
+    from tests.infra.daemon_operations import accepted_operation_reference
 
+    def preview(_config: object, operation: str, request: dict[str, object]) -> dict[str, object]:
+        assert operation == "mutation.session.delete.preview"
+        selection = request["selection"]
+        assert isinstance(selection, dict)
+        assert selection["params"]["conv_id"] == "codex-session:native-1"
+        return {
+            "status": "prepared",
+            "session_count": 1,
+            "session_ids_sample": ["codex-session:native-1"],
+            "reference": accepted_operation_reference(
+                operation, request_id="preview-owner", artifact_kind="preview-batch"
+            ),
+        }
+
+    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=preview):
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "conv_id": "codex-session:native-1",
+                    "delete_matched": True,
+                    "dry_run": True,
+                    "output_format": "json",
+                },
+            )
+        )
     payload = json.loads(capsys.readouterr().out)
     assert payload["status"] == "preview"
     assert payload["session_count"] == 1
     assert payload["affected_count"] == 0
-    assert payload["session_ids"] == ["codex-session:native-1"]
+    assert payload["session_ids_sample"] == ["codex-session:native-1"]
 
 
 def test_async_execute_query_archive_rejects_combined_delete_mutations(

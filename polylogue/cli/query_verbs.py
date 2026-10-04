@@ -1737,18 +1737,8 @@ def delete_verb(
         polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
     """
-    from polylogue.cli.contextual_errors import (
-        AMBIGUITY_CANDIDATE_LIMIT,
-        AmbiguousSelectionError,
-        ContextualCliError,
-        NextAction,
-    )
-    from polylogue.cli.verb_cardinality import (
-        check_cardinality,
-        probe_session_ids_for_verb,
-        require_exact_mutation_selection,
-        resolve_session_ids_for_verb,
-    )
+    from polylogue.cli.contextual_errors import ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
     output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
@@ -1770,32 +1760,11 @@ def delete_verb(
     ):
         return
 
-    from polylogue.cli.archive_query import execute_delete_by_session_ids
+    from polylogue.cli.archive_query import execute_delete_selection
 
-    # Decided before any read: a contradictory or windowed selection is refused
-    # rather than resolved to some wider set than the operator chose.
     require_exact_mutation_selection(request, allow_all=all_flag, operation="delete")
-
-    # dry-run: require explicit multi-target scope before materializing a broad
-    # preview. Once --all is supplied, resolve the SAME full ID set the real
-    # delete uses rather than re-running the query through _execute_query_verb,
-    # which caps at the default limit of 20 and would preview fewer sessions
-    # than --yes --all actually deletes (#1873).
     if dry_run:
-        probe_ids = probe_session_ids_for_verb(env, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
-        if len(probe_ids) > 1 and not all_flag:
-            raise AmbiguousSelectionError(
-                "'delete dry-run' matched multiple sessions. "
-                "Use --all to preview every matched session, or narrow the query.",
-                candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
-                bounded=len(probe_ids) > AMBIGUITY_CANDIDATE_LIMIT,
-                next_actions=(
-                    NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
-                    NextAction("Preview one session", "polylogue find id:'<REF>' then delete --dry-run"),
-                ),
-            )
-        session_ids = resolve_session_ids_for_verb(env, request)
-        execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
+        execute_delete_selection(env, request, mode="all" if all_flag else "single", force=True, dry_run=True)
         return
     if not yes_flag:
         raise ContextualCliError(
@@ -1806,19 +1775,7 @@ def delete_verb(
             ),
         )
 
-    # Enforce cardinality before any destructive action.
-    session_ids = resolve_session_ids_for_verb(env, request)
-    check_cardinality(
-        len(session_ids),
-        allow_all=all_flag,
-        first_only=False,
-        operation="delete",
-        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
-        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
-    )
-
-    # Delete using the pre-resolved IDs so all matched sessions are removed.
-    execute_delete_by_session_ids(env, session_ids, force=yes_flag)
+    execute_delete_selection(env, request, mode="all" if all_flag else "single", force=yes_flag)
 
 
 @click.group("mark", invoke_without_command=True)
@@ -1881,14 +1838,8 @@ def mark_verb(
         polylogue find id:abc then mark --pin
         polylogue find 'repo:polylogue since:7d' then mark --tag-add sprint --all
     """
-    import hashlib
-
-    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, ContextualCliError, NextAction
-    from polylogue.cli.verb_cardinality import (
-        check_cardinality,
-        require_exact_mutation_selection,
-        resolve_session_ids_for_verb,
-    )
+    from polylogue.cli.contextual_errors import ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import require_exact_mutation_selection
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1926,63 +1877,49 @@ def mark_verb(
             ),
         )
 
-    # Resolve matched sessions and enforce cardinality.
+    if not (
+        tags_to_add
+        or tags_to_remove
+        or star
+        or unstar
+        or pin
+        or unpin
+        or do_archive
+        or do_unarchive
+        or note_text is not None
+    ):
+        if effective_output_format == "json":
+            from polylogue.surfaces.payloads import MutationResultPayload
+
+            click.echo(
+                MutationResultPayload(status="ok", operation="mutate", affected_count=0).to_json(exclude_none=True)
+            )
+        else:
+            click.echo("No mark operations specified.")
+        return
+
     require_exact_mutation_selection(request, allow_all=apply_all, operation="mark")
-    session_ids = resolve_session_ids_for_verb(env, request)
-    check_cardinality(
-        len(session_ids),
-        allow_all=apply_all,
-        first_only=first_only,
-        operation="mark",
-        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
-        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    from polylogue.cli.archive_query import _object_int, submit_cli_mutation
+    from polylogue.cli.lowering import lower_user_change
+
+    result = submit_cli_mutation(
+        env,
+        "mutation.session.mark",
+        lower_user_change(
+            request,
+            mode="all" if apply_all else "first" if first_only else "single",
+            tags=tags_to_add,
+            remove_tags=tags_to_remove,
+            add_marks=tuple(name for name, flag in (("star", star), ("pin", pin), ("archive", do_archive)) if flag),
+            remove_marks=tuple(
+                name for name, flag in (("star", unstar), ("pin", unpin), ("archive", do_unarchive)) if flag
+            ),
+            note_text=note_text,
+        ),
     )
 
-    # Honour --first: act only on the leading result when multiple matched.
-    target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
-
-    # Every branch below is a durable ``user.db`` write, and the daemon is the
-    # sole writer: each lowers to a declared operation through the kernel
-    # instead of opening a writable store in this process. The facade route it
-    # replaced (``Polylogue.add_tag``/``add_mark``/``save_annotation`` ->
-    # ``_execute_facade_mutation``) was invisible to the mutation-authority
-    # layering rule, because it entered through ``polylogue/api`` rather than
-    # through a substrate import (polylogue-gjwto).
-    from polylogue.cli.archive_query import submit_cli_mutation
-
-    add_marks = [name for name, flag in (("star", star), ("pin", pin), ("archive", do_archive)) if flag]
-    remove_marks = [name for name, flag in (("star", unstar), ("pin", unpin), ("archive", do_unarchive)) if flag]
-    selection = list(target_ids)
-
-    if tags_to_add:
-        submit_cli_mutation(env, "mutation.session.tag", {"session_ids": selection, "tags": list(tags_to_add)})
-    if tags_to_remove:
-        submit_cli_mutation(
-            env, "mutation.session.tag", {"session_ids": selection, "remove_tags": list(tags_to_remove)}
-        )
-    if add_marks or remove_marks:
-        submit_cli_mutation(
-            env,
-            "mutation.session.mark",
-            {"session_ids": selection, "add_marks": add_marks, "remove_marks": remove_marks},
-        )
-    if note_text is not None:
-        for sid in target_ids:
-            # Stable per-session identity, deliberately excluding note_text: the
-            # help text promises "add or update" a single mutable note per
-            # session (mirroring add_mark's one-row-per-target behavior), so a
-            # second `mark --note` call on the same session must update the
-            # existing annotation in place rather than fork a new content-hash
-            # row every time the text changes (polylogue-tilk).
-            digest = hashlib.sha256(sid.encode("utf-8", errors="surrogatepass")).hexdigest()
-            submit_cli_mutation(
-                env,
-                "mutation.annotation.save",
-                {"annotation_id": f"note-{digest}", "session_id": sid, "note_text": note_text},
-            )
-
     # Report.
-    count = len(target_ids)
+    count = _object_int(result.get("session_count"))
     ops: list[str] = []
     if tags_to_add:
         ops.append(f"added tags: {', '.join(tags_to_add)}")
@@ -2010,8 +1947,9 @@ def mark_verb(
                 status="ok",
                 operation="mutate",
                 session_count=count,
-                affected_count=count if ops else 0,
-                session_ids=tuple(target_ids),
+                affected_count=_object_int(result.get("affected_count")),
+                session_ids_sample=tuple(cast(list[str], result.get("session_ids_sample") or [])),
+                reference=cast(dict[str, object] | None, result.get("reference")),
             ).to_json(exclude_none=True)
         )
     elif ops:

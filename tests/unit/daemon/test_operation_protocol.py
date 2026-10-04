@@ -255,7 +255,7 @@ def test_cli_delete_refuses_a_selection_that_drifted_after_authorization(
         monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
 
         with pytest.raises(click.ClickException):
-            archive_query._emit_delete(AppEnv(), (drifted, surviving), params={"force": True, "dry_run": False})
+            archive_query.execute_delete_by_session_ids(AppEnv(), [drifted, surviving], force=True, dry_run=False)
 
         assert _session_ids(stack.archive_root) == [surviving]
 
@@ -272,7 +272,7 @@ def test_cli_delete_of_a_zero_match_selection_submits_no_delete(
     for nothing.
 
     Anti-vacuity: let the ``delete`` verb pass an empty selection on to
-    ``_emit_delete`` without its ``count == 0`` branch and the CLI submits
+    the resident preview without its measured empty-selection branch and the CLI submits
     ``mutation.session.delete.preview`` for nothing.
     """
     import polylogue.cli.archive_query as archive_query

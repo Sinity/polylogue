@@ -19,13 +19,14 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-from polylogue.cli.archive_query import _emit_delete, _emit_user_mutations
+from polylogue.cli.archive_query import _emit_user_mutations, execute_delete_selection
 from polylogue.cli.operation_kernel import (
     OperationCancelledError,
     OperationKernel,
     OperationRequest,
     OperationUnavailableError,
 )
+from polylogue.cli.root_request import RootModeRequest
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_SPECS,
     MUTATION_OPERATION_NAMES,
@@ -34,6 +35,7 @@ from polylogue.operations.daemon_protocol import (
     daemon_operation_spec,
 )
 from polylogue.operations.mutation_transaction import ConfirmationRequiredError
+from tests.infra.daemon_operations import accepted_operation_reference
 
 if TYPE_CHECKING:
     from polylogue.operations.audit import AuditRepository
@@ -116,15 +118,29 @@ class TestDeleteChokePoint:
                 return {
                     "status": "prepared",
                     "preview_ref": "preview:1",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                     "session_count": 1,
                     "session_ids_sample": ["s1"],
                 }
             if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_ref": "authorization:1"}
+                return {
+                    "status": "authorized",
+                    "authorization_ref": "authorization:1",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.authorize",
+                        request_id="authorization-owner",
+                        artifact_kind="authorization-batch",
+                    ),
+                }
             return {"status": "deleted", "affected_count": 1}
 
         with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
-            _emit_delete(_env(), ("s1",), params={"force": True, "dry_run": False})
+            execute_delete_selection(
+                _env(), RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+            )
 
         assert issued == [
             "mutation.session.delete.preview",
@@ -143,6 +159,9 @@ class TestDeleteChokePoint:
                 return {
                     "status": "prepared",
                     "preview_ref": "preview:1",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                     "session_count": 1,
                     "session_ids_sample": ["s1"],
                 }
@@ -150,14 +169,16 @@ class TestDeleteChokePoint:
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
-            pytest.raises(click.ClickException, match="invalid delete authorization"),
+            pytest.raises(click.ClickException, match="delete operation reference|different delete selection"),
         ):
-            _emit_delete(_env(), ("s1",), params={"force": True, "dry_run": False})
+            execute_delete_selection(
+                _env(), RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+            )
 
         assert "mutation.session.delete.execute" not in issued
 
-    def test_authorization_token_count_must_match_the_previewed_chunks(self) -> None:
-        """One token cannot stand in for two previewed chunks."""
+    def test_authorization_reference_must_cover_the_whole_previewed_selection(self) -> None:
+        """A smaller authorization cannot stand in for the complete durable preview."""
         issued: list[str] = []
 
         def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
@@ -165,17 +186,33 @@ class TestDeleteChokePoint:
             if operation.endswith(".preview"):
                 return {
                     "status": "prepared",
-                    "preview_refs": ["preview:1", "preview:2"],
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview",
+                        request_id="preview-owner",
+                        artifact_kind="preview-batch",
+                        part_count=2,
+                    ),
                     "session_count": 2,
                     "session_ids_sample": ["s1", "s2"],
                 }
-            return {"status": "authorized", "authorization_ref": "authorization:1"}
+            return {
+                "status": "authorized",
+                "authorization_ref": "authorization:1",
+                "source_request_id": "preview-owner",
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.authorize",
+                    request_id="authorization-owner",
+                    artifact_kind="authorization-batch",
+                ),
+            }
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
-            pytest.raises(click.ClickException, match="invalid delete authorization"),
+            pytest.raises(click.ClickException, match="delete operation reference|different delete selection"),
         ):
-            _emit_delete(_env(), ("s1", "s2"), params={"force": True, "dry_run": False})
+            execute_delete_selection(
+                _env(), RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+            )
 
         assert "mutation.session.delete.execute" not in issued
 
@@ -205,20 +242,39 @@ class TestDeleteChokePoint:
                 return {
                     "status": "prepared",
                     "preview_ref": "preview:1",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                     "session_count": count,
                     "session_ids_sample": sample,
                 }
             if operation.endswith(".authorize"):
-                return {"status": "authorized", "authorization_ref": "authorization:1"}
+                return {
+                    "status": "authorized",
+                    "authorization_ref": "authorization:1",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.authorize",
+                        request_id="authorization-owner",
+                        artifact_kind="authorization-batch",
+                    ),
+                }
             return {"status": "deleted", "affected_count": count}
 
-        selection = tuple(f"s{index}" for index in range(max(count, 1)))
         with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
             if accepted:
-                _emit_delete(_env(), selection, params={"force": True, "dry_run": False})
+                execute_delete_selection(
+                    _env(), RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+                )
             else:
-                with pytest.raises(click.ClickException, match="delete preview"):
-                    _emit_delete(_env(), selection, params={"force": True, "dry_run": False})
+                with pytest.raises(click.ClickException, match="delete preview|No sessions"):
+                    execute_delete_selection(
+                        _env(),
+                        RootModeRequest.from_params({"query": ("needle",)}),
+                        mode="all",
+                        force=True,
+                        dry_run=False,
+                    )
 
         assert ("mutation.session.delete.execute" in issued) is accepted
         if accepted:
@@ -241,16 +297,27 @@ class TestCancellation:
                 return {
                     "status": "prepared",
                     "preview_ref": "preview:1",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                     "session_count": 1,
                     "session_ids_sample": ["s1"],
                 }
-            return {"status": "cancelled", "preview_ref": "preview:1"}
+            return {
+                "status": "cancelled",
+                "source_request_id": "preview-owner",
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.cancel", request_id="cancel-owner", artifact_kind="cancelled-preview-batch"
+                ),
+            }
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
             pytest.raises(click.exceptions.Exit) as exit_info,
         ):
-            _emit_delete(env, ("s1",), params={"force": False, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=False
+            )
 
         assert exit_info.value.exit_code != 0
         assert issued == ["mutation.session.delete.preview", "mutation.session.delete.cancel"]
@@ -269,18 +336,29 @@ class TestCancellation:
                 return {
                     "status": "prepared",
                     "preview_ref": "preview:1",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                     "session_count": 1,
                     "session_ids_sample": ["s1"],
                 }
             if operation.endswith(".authorize"):
                 raise KeyboardInterrupt
-            return {"status": "cancelled", "preview_ref": "preview:1"}
+            return {
+                "status": "cancelled",
+                "source_request_id": "preview-owner",
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.cancel", request_id="cancel-owner", artifact_kind="cancelled-preview-batch"
+                ),
+            }
 
         with (
             patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
             pytest.raises(click.exceptions.Exit) as exit_info,
         ):
-            _emit_delete(env, ("s1",), params={"force": False, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=False
+            )
 
         assert exit_info.value.exit_code != 0
         assert issued[-1] == "mutation.session.delete.cancel"
@@ -338,7 +416,9 @@ class TestUserMutationRefusal:
         ):
             _emit_user_mutations(
                 env,
-                ("s1",),
+                RootModeRequest.from_params({"query": ("needle",)}),
+                limit=10,
+                offset=0,
                 tags_to_add=("triage",),
                 metadata_to_set=(),
             )

@@ -5637,7 +5637,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if (
             not isinstance(preview_ref, str)
             or not preview_ref
-            or state.get("preview_refs") != [preview_ref]
             or not isinstance(sample, list)
             or len(sample) != 1
             or not isinstance(sample[0], str)

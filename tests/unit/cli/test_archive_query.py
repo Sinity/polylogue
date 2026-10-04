@@ -16,7 +16,6 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.archive_query import (
     _csv_tokens,
     _decode_cursor,
-    _emit_delete,
     _emit_stats,
     _execute_archive_query_stdout,
     _has_value,
@@ -32,7 +31,7 @@ from polylogue.cli.archive_query import (
     _tool_tokens,
     _tuple_tokens,
     _validate_cursor_request_identity,
-    execute_delete_by_session_ids,
+    execute_delete_selection,
 )
 from polylogue.cli.operation_kernel import (
     OperationFailedError,
@@ -67,6 +66,7 @@ from polylogue.config import Config
 from polylogue.operations import OperationSpec, build_runtime_operation_catalog
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow, ArchiveMessageRow, ArchiveSessionEnvelope
+from tests.infra.daemon_operations import accepted_operation_reference
 
 
 @pytest.mark.parametrize("output_format", ["json", "yaml", "ndjson", "csv", "plaintext"])
@@ -1008,7 +1008,7 @@ def test_field_projection_keeps_terminal_outcome() -> None:
 
 
 class TestEmitDeleteMachineModeNoPrompt:
-    """`_emit_delete` must never block on an interactive prompt in machine mode (#1818 P6).
+    """The resident delete adapter must never block on an interactive prompt in machine mode (#1818 P6).
 
     The delete verb always emits a JSON MutationResultPayload. In plain mode
     (machine output, non-TTY pipe, or POLYLOGUE_FORCE_PLAIN) it must refuse a
@@ -1042,7 +1042,31 @@ class TestEmitDeleteMachineModeNoPrompt:
         env = self._env(plain=True)
         archive = self._archive()
 
-        _emit_delete(env, ("s1", "s2"), params={"force": False, "dry_run": False})
+        with patch(
+            "polylogue.cli.archive_query._submit_mutation_operation",
+            side_effect=[
+                {
+                    "status": "prepared",
+                    "session_count": 2,
+                    "session_ids_sample": ["s1", "s2"],
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
+                },
+                {
+                    "status": "cancelled",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.cancel",
+                        request_id="cancel-owner",
+                        artifact_kind="cancelled-preview-batch",
+                    ),
+                },
+            ],
+        ):
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=False
+            )
 
         env.ui.confirm.assert_not_called()
         archive.delete_sessions.assert_not_called()
@@ -1076,13 +1100,18 @@ class TestEmitDeleteMachineModeNoPrompt:
                         "preview_ref": "preview:delete",
                         "session_count": 1,
                         "session_ids_sample": ["s1"],
+                        "reference": accepted_operation_reference(
+                            "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                        ),
                     },
                     acknowledgement,
                 ],
             ),
             pytest.raises(click.ClickException, match="invalid delete cancellation acknowledgement"),
         ):
-            _emit_delete(env, ("s1",), params={"force": False, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=False
+            )
 
     def test_dry_run_evidence_lists_matched_sessions(self, capsys: pytest.CaptureFixture[str]) -> None:
         spec = self._delete_spec()
@@ -1091,7 +1120,20 @@ class TestEmitDeleteMachineModeNoPrompt:
         env = self._env(plain=True)
         archive = self._archive()
 
-        _emit_delete(env, ("s1", "s2"), params={"force": False, "dry_run": True})
+        with patch(
+            "polylogue.cli.archive_query._submit_mutation_operation",
+            return_value={
+                "status": "prepared",
+                "session_count": 2,
+                "session_ids_sample": ["s1", "s2"],
+                "reference": accepted_operation_reference(
+                    "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                ),
+            },
+        ):
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=True
+            )
 
         env.ui.confirm.assert_not_called()
         archive.delete_sessions.assert_not_called()
@@ -1100,7 +1142,7 @@ class TestEmitDeleteMachineModeNoPrompt:
         assert payload["operation"] == "delete"
         assert payload["session_count"] == 2
         assert payload["affected_count"] == 0
-        assert payload["session_ids"] == ["s1", "s2"]
+        assert payload["session_ids_sample"] == ["s1", "s2"]
 
     def test_plain_forced_delete_routes_through_daemon_without_prompt(self, capsys: pytest.CaptureFixture[str]) -> None:
         env = self._env(plain=True)
@@ -1114,12 +1156,25 @@ class TestEmitDeleteMachineModeNoPrompt:
                     "preview_ref": "preview:delete",
                     "session_count": 2,
                     "session_ids_sample": ["s1", "s2"],
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                 },
-                {"status": "authorized", "authorization_refs": ["daemon-token"]},
+                {
+                    "status": "authorized",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.authorize",
+                        request_id="authorization-owner",
+                        artifact_kind="authorization-batch",
+                    ),
+                },
                 {"status": "deleted", "affected_count": 2},
             ],
         ) as daemon_delete:
-            _emit_delete(env, ("s1", "s2"), params={"force": True, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+            )
 
         env.ui.confirm.assert_not_called()
         archive.delete_sessions.assert_not_called()
@@ -1128,35 +1183,36 @@ class TestEmitDeleteMachineModeNoPrompt:
             "mutation.session.delete.authorize",
             "mutation.session.delete.execute",
         ]
-        assert [call.args[2] for call in daemon_delete.call_args_list] == [
-            {"session_ids": ["s1", "s2"]},
-            {"preview_refs": ["preview:delete"]},
-            {"authorization_refs": ["daemon-token"]},
+        assert daemon_delete.call_args_list[0].args[2]["selection"]["params"]["query"] == ["needle"]
+        assert [call.args[2] for call in daemon_delete.call_args_list[1:]] == [
+            {"preview_request_id": "preview-owner"},
+            {"authorization_request_id": "authorization-owner"},
         ]
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "deleted"
         assert payload["affected_count"] == 2
 
-    def test_resolved_batch_releases_selection_snapshot_before_daemon_write(self) -> None:
-        """Known IDs need no SQLite reader while the daemon owns the delete."""
-
+    def test_resident_selection_does_not_open_a_client_archive_reader(self) -> None:
+        """The daemon alone owns the selection snapshot and mutation authority."""
         env = self._env(plain=True)
         with (
             patch(
-                # Patched at its definition site: the delete path imports it
-                # lazily, so guarding the source covers every importer.
                 "polylogue.archive.query.transaction.archive_read_context",
-                side_effect=AssertionError("must not pin a WAL reader"),
+                side_effect=AssertionError("client must not pin a reader"),
             ),
-            patch("polylogue.cli.archive_query._emit_delete") as emit_delete,
+            patch(
+                "polylogue.cli.archive_query._submit_mutation_operation",
+                return_value={
+                    "status": "prepared",
+                    "session_count": 0,
+                    "session_ids_sample": [],
+                },
+            ) as submit,
         ):
-            execute_delete_by_session_ids(env, ["s1", "s2"], force=True)
-
-        emit_delete.assert_called_once_with(
-            env,
-            ("s1", "s2"),
-            params={"force": True, "delete_matched": True, "dry_run": False},
-        )
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=True
+            )
+        assert submit.call_args.args[2]["selection"]["params"]["query"] == ["needle"]
 
     @pytest.mark.parametrize(
         "daemon_error",
@@ -1193,7 +1249,9 @@ class TestEmitDeleteMachineModeNoPrompt:
             ) as offline_ownership,
             pytest.raises(click.ClickException),
         ):
-            _emit_delete(env, ("s1", "s2"), params={"force": True, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+            )
 
         offline_ownership.assert_not_called()
         archive.delete_sessions.assert_not_called()
@@ -1218,8 +1276,19 @@ class TestEmitDeleteMachineModeNoPrompt:
                     "preview_ref": "preview:delete",
                     "session_count": 2,
                     "session_ids_sample": ["s1", "s2"],
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                 },
-                {"status": "authorized", "authorization_refs": ["daemon-token"]},
+                {
+                    "status": "authorized",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.authorize",
+                        request_id="authorization-owner",
+                        artifact_kind="authorization-batch",
+                    ),
+                },
                 OperationFailedError(
                     "failed",
                     None,
@@ -1229,13 +1298,16 @@ class TestEmitDeleteMachineModeNoPrompt:
                         "completed_chunks": 2,
                         "affected_count": 512,
                         "not_attempted": [2],
+                        "not_attempted_count": 1,
                         "stop_reason": "refused",
                     },
                 ),
             ],
         ):
             with pytest.raises(MutationPartiallyAppliedRefusal) as context:
-                _emit_delete(env, ("s1", "s2"), params={"force": True, "dry_run": False})
+                execute_delete_selection(
+                    env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=True, dry_run=False
+                )
 
         refusal = context.value
         assert (refusal.completed_chunks, refusal.affected_count) == (2, 512)
@@ -1262,6 +1334,7 @@ class TestEmitDeleteMachineModeNoPrompt:
                 completed_chunks=2,
                 affected_count=512,
                 not_attempted=(2,),
+                not_attempted_count=1,
                 stop_reason="refused",
             )
 
@@ -1283,6 +1356,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             "completed_chunks": 2,
             "affected_count": 512,
             "not_attempted": [2],
+            "not_attempted_count": 1,
             "stop_reason": "refused",
         }
 
@@ -1315,6 +1389,9 @@ class TestEmitDeleteMachineModeNoPrompt:
                         "preview_ref": "preview:delete",
                         "session_count": 1,
                         "session_ids_sample": ["s1"],
+                        "reference": accepted_operation_reference(
+                            "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                        ),
                     },
                 }
 
@@ -1353,6 +1430,9 @@ class TestEmitDeleteMachineModeNoPrompt:
             "preview_ref": "preview:delete",
             "session_count": 1,
             "session_ids_sample": ["s1"],
+            "reference": accepted_operation_reference(
+                "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+            ),
         }
 
     def test_confirmed_delete_routes_to_explicit_split_root_daemon(
@@ -1425,11 +1505,24 @@ class TestEmitDeleteMachineModeNoPrompt:
                     "preview_ref": "preview:delete",
                     "session_count": 2,
                     "session_ids_sample": ["s1", "s2"],
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.preview", request_id="preview-owner", artifact_kind="preview-batch"
+                    ),
                 },
-                {"status": "cancelled", "preview_ref": "preview:delete"},
+                {
+                    "status": "cancelled",
+                    "source_request_id": "preview-owner",
+                    "reference": accepted_operation_reference(
+                        "mutation.session.delete.cancel",
+                        request_id="cancel-owner",
+                        artifact_kind="cancelled-preview-batch",
+                    ),
+                },
             ],
         ) as daemon_delete:
-            _emit_delete(env, ("s1", "s2"), params={"force": False, "dry_run": False})
+            execute_delete_selection(
+                env, RootModeRequest.from_params({"query": ("needle",)}), mode="all", force=False, dry_run=False
+            )
 
         env.ui.confirm.assert_called_once()
         archive.delete_sessions.assert_not_called()
@@ -1437,7 +1530,7 @@ class TestEmitDeleteMachineModeNoPrompt:
             "mutation.session.delete.preview",
             "mutation.session.delete.cancel",
         ]
-        assert daemon_delete.call_args_list[-1].args[2] == {"preview_refs": ["preview:delete"]}
+        assert daemon_delete.call_args_list[-1].args[2] == {"preview_request_id": "preview-owner"}
         payload = json.loads(capsys.readouterr().out)
         assert payload["status"] == "aborted"
 
@@ -1708,3 +1801,23 @@ def test_delete_of_ranked_matches_names_each_session_once(
     document = json.loads(capsys.readouterr().out)
     assert document["session_count"] == 2
     assert document["session_ids"] == ["s:1", "s:2"]
+
+
+@pytest.mark.parametrize("remaining", [1000, None])
+def test_partial_mutation_count_is_not_inferred_from_the_part_page(remaining: int | None) -> None:
+    from polylogue.cli.shared.helper_support import partially_applied_refusal
+
+    data: dict[str, object] = {
+        "effect": "committed",
+        "completed_chunks": 1,
+        "affected_count": 1,
+        "not_attempted": [1, 2],
+        "stop_reason": "refused",
+    }
+    if remaining is not None:
+        data["not_attempted_count"] = remaining
+    refusal = partially_applied_refusal(OperationFailedError("failed", None, data), "mutation.session.mark")
+    assert refusal is not None
+    assert refusal.not_attempted == (1, 2)
+    assert refusal.not_attempted_count == remaining
+    assert refusal.affected_count == 1

@@ -33,7 +33,9 @@ def durable_session_alias_matches(token: str, canonical_id: str) -> bool:
     return bool(separator and (native_id == token or native_id.startswith(token)))
 
 
-def resolve_durable_user_state_session_id(archive_root: Path, token: str) -> str | None:
+def resolve_durable_user_state_session_id(
+    archive_root: Path, token: str, *, connection: sqlite3.Connection | None = None, schema: str | None = None
+) -> str | None:
     """Resolve a session alias from canonical mark/annotation owners.
 
     The index is rebuildable, while mark and annotation ownership is durable.
@@ -44,37 +46,41 @@ def resolve_durable_user_state_session_id(archive_root: Path, token: str) -> str
     """
     if not token:
         return None
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema else "assertions"
+
+    def read(conn: sqlite3.Connection) -> str | None:
+        matched: str | None = None
+        with closing(
+            conn.execute(
+                f"SELECT target_ref, scope_ref FROM {table} WHERE kind IN (?, ?) "
+                "AND COALESCE(status, 'active') != 'deleted'",
+                (AssertionKind.MARK.value, AssertionKind.ANNOTATION.value),
+            )
+        ) as rows:
+            for row in rows:
+                for value in (row[0], row[1]):
+                    if not isinstance(value, str) or not value.startswith("session:"):
+                        continue
+                    canonical_id = value[len("session:") :]
+                    if canonical_id and durable_session_alias_matches(token, canonical_id):
+                        if matched is not None and matched != canonical_id:
+                            raise ValueError(f"session id alias {token!r} is ambiguous")
+                        matched = canonical_id
+        return matched
+
+    if connection is not None:
+        # The supplied reader retains its original pinned User snapshot.
+        return read(connection)
     user_db = archive_root / "user.db"
     if not user_db.exists():
         return None
     try:
         with closing(open_readonly_connection(user_db)) as conn:
-            rows = conn.execute(
-                """
-                SELECT target_ref, scope_ref
-                FROM assertions
-                WHERE kind IN (?, ?)
-                  AND COALESCE(status, 'active') != 'deleted'
-                """,
-                (AssertionKind.MARK.value, AssertionKind.ANNOTATION.value),
-            ).fetchall()
+            return read(conn)
     except sqlite3.Error:
         return None
-
-    canonical_ids: set[str] = set()
-    for row in rows:
-        for value in (row[0], row[1]):
-            if not isinstance(value, str):
-                continue
-            if value.startswith("session:"):
-                canonical_id = value[len("session:") :]
-                if canonical_id:
-                    canonical_ids.add(canonical_id)
-
-    matches = {canonical_id for canonical_id in canonical_ids if durable_session_alias_matches(token, canonical_id)}
-    if len(matches) > 1:
-        raise ValueError(f"session id alias {token!r} is ambiguous")
-    return next(iter(matches), None)
 
 
 __all__ = ["durable_session_alias_matches", "resolve_durable_user_state_session_id"]

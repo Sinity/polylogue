@@ -189,6 +189,7 @@ def run_machine_entry(
             completed_chunks=exc.completed_chunks,
             affected_count=exc.affected_count,
             not_attempted=exc.not_attempted,
+            not_attempted_count=exc.not_attempted_count,
             stop_reason=exc.stop_reason,
         ).emit(exit_code=exc.exit_code)
     except OperationUnavailableError as exc:
