@@ -52,7 +52,7 @@ def resolve_single_session_id(
     """
     from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
     from polylogue.cli.select import machine_output_requested, resolve_ambiguous_selection
-    from polylogue.cli.session_rows import query_session_ids, query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     spec = request.query_spec()
     if not spec.latest and not spec.has_filters():
@@ -60,10 +60,14 @@ def resolve_single_session_id(
 
     config = cast("Config", request.config())
     if spec.latest or first_only:
-        session_ids = query_session_ids(config, request, limit=1)
+        selection = query_session_selection(config, request, limit=1)
+        selection.require_authoritative()
+        session_ids = selection.ids
         return session_ids[0] if session_ids else None
 
-    rows = query_session_rows(config, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
+    selection = query_session_selection(config, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
+    selection.require_authoritative()
+    rows = selection.rows
     if len(rows) <= 1:
         return rows[0].session_id if rows else None
 
@@ -72,7 +76,9 @@ def resolve_single_session_id(
         # must offer the whole selection, so it walks all of it.
         if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
             return list(rows)
-        return query_session_rows(config, request, limit=None)
+        complete = query_session_selection(config, request, limit=None)
+        complete.require_authoritative()
+        return list(complete.rows)
 
     return resolve_ambiguous_selection(
         env,

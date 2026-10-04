@@ -263,10 +263,11 @@ def run_select(
     print_field: SelectPrintField,
 ) -> None:
     """Select one session from the rows the ``cli.query`` operation reports."""
-    from polylogue.cli.session_rows import query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     try:
-        rows = query_session_rows(env.config, request, limit=limit)
+        selection = query_session_selection(env.config, request, limit=limit)
+        rows = list(selection.rows)
     except Exception as exc:
         from polylogue.archive.query.spec import QuerySpecError
 
@@ -277,10 +278,14 @@ def run_select(
     if selected is None:
         if rows:
             click.echo(render_select_rows(rows, print_field))
+            selection.finish()
             return
+        if selection.outcome is not None and not selection.outcome.rows_are_authoritative:
+            selection.finish()
         click.echo("No sessions matched.", err=True)
         raise SystemExit(2)
     click.echo(render_select_row(selected, print_field))
+    selection.finish()
 
 
 __all__ = [

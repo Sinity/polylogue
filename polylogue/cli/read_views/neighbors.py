@@ -100,6 +100,7 @@ def run_read_neighbors(env: AppEnv, request: RootModeRequest, invocation: ReadVi
                 },
             ),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except OperationKernelError as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure

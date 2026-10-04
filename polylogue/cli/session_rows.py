@@ -16,11 +16,13 @@ separate code path.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, NoReturn
 
 import click
 
 from polylogue.cli.select import SelectSessionRow
+from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
@@ -55,26 +57,72 @@ def select_row_from_operation_row(item: Mapping[str, object]) -> SelectSessionRo
     )
 
 
-def query_session_ids(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    limit: int,
-    daemon_disabled: bool = False,
-) -> list[str]:
-    """Return the session ids ``request`` selects, at most ``limit`` of them."""
+@dataclass(frozen=True, slots=True)
+class SessionSelection:
+    """Selected rows and the verdict of the operation that selected them.
 
-    return [row.session_id for row in query_session_rows(config, request, limit=limit, daemon_disabled=daemon_disabled)]
+    A failed missing-session lookup has no pinned page or verdict. It remains
+    unbound rather than inventing authority from its absent rows.
+    """
+
+    rows: tuple[SelectSessionRow, ...]
+    outcome: OutcomeEnvelope | None
+    server_authority: str
+    snapshot_epoch: str | None
+
+    @property
+    def ids(self) -> list[str]:
+        return [row.session_id for row in self.rows]
+
+    def require_bound(self) -> None:
+        from polylogue.cli.operation_kernel import OperationEnvelopeError
+
+        if self.outcome is None or self.snapshot_epoch is None:
+            raise OperationEnvelopeError("selection has no pinned operation outcome or view")
+
+    def require_authoritative(self) -> None:
+        from polylogue.cli.operation_kernel import OperationFailedError
+
+        self.require_bound()
+        assert self.outcome is not None
+        if not self.outcome.rows_are_authoritative:
+            raise OperationFailedError(
+                "selection_not_authoritative",
+                "the query did not produce an authoritative target selection",
+                {"outcome": self.outcome.to_dict()},
+            )
+
+    def finish(self) -> None:
+        from polylogue.cli.render.outcome import finish_supplied_outcome
+
+        self.require_bound()
+        assert self.outcome is not None
+        finish_supplied_outcome(self.outcome)
 
 
-def query_session_rows(
+def _selection_outcome(previous: OutcomeEnvelope | None, payload: Mapping[str, object]) -> OutcomeEnvelope:
+    from pydantic import ValidationError
+
+    from polylogue.cli.operation_kernel import OperationEnvelopeError
+
+    try:
+        current = OutcomeEnvelope.model_validate(payload.get("outcome"))
+    except ValidationError as exc:
+        raise OperationEnvelopeError("cli.query omitted or returned an invalid terminal outcome") from exc
+    if previous is None:
+        return current
+    composed = combine_outcomes((previous, current))
+    return composed.model_copy(update={"detail": {**previous.detail, **current.detail, **composed.detail}})
+
+
+def query_session_selection(
     config: Config,
     request: RootModeRequest,
     *,
     limit: int | None,
     offset: int = 0,
     daemon_disabled: bool = False,
-) -> list[SelectSessionRow]:
+) -> SessionSelection:
     """Return up to ``limit`` distinct selector rows for ``request``.
 
     A list page reports ``items`` at session grain. A ranked selection
@@ -93,16 +141,21 @@ def query_session_rows(
     """
 
     rows: list[SelectSessionRow] = []
+    outcome: OutcomeEnvelope | None = None
+    authority = "unknown"
     snapshot_epoch: str | None = None
     seen: set[str] = set()
     page_size = COMPLETE_SELECTION_PAGE if limit is None else min(limit, COMPLETE_SELECTION_PAGE)
     while limit is None or len(rows) < limit:
-        payload = _query_page(config, request, limit=page_size, offset=offset, daemon_disabled=daemon_disabled)
+        payload, authority = _query_page_with_authority(
+            config, request, limit=page_size, offset=offset, daemon_disabled=daemon_disabled
+        )
         if payload is None:
             if snapshot_epoch is not None:
                 _incomplete_selection("session disappeared while resolving the selection")
-            return rows
+            return SessionSelection(tuple(rows), outcome, authority, snapshot_epoch)
         snapshot_epoch = _selection_frame(snapshot_epoch, payload)
+        outcome = _selection_outcome(outcome, payload)
         page = _session_rows(payload)
         for item in page:
             row = select_row_from_operation_row(item)
@@ -111,13 +164,13 @@ def query_session_rows(
             seen.add(row.session_id)
             rows.append(row)
             if limit is not None and len(rows) >= limit:
-                return rows
+                return SessionSelection(tuple(rows), outcome, authority, snapshot_epoch)
         next_offset = payload.get("next_offset")
         if not page or isinstance(next_offset, bool) or not isinstance(next_offset, int) or next_offset <= offset:
-            return rows
+            return SessionSelection(tuple(rows), outcome, authority, snapshot_epoch)
         offset = next_offset
         page_size = COMPLETE_SELECTION_PAGE
-    return rows
+    return SessionSelection(tuple(rows), outcome, authority, snapshot_epoch)
 
 
 #: Page size used when walking a complete selection. The operation clamps an
@@ -126,12 +179,12 @@ def query_session_rows(
 COMPLETE_SELECTION_PAGE = 500
 
 
-def query_complete_session_ids(
+def query_complete_session_selection(
     config: Config,
     request: RootModeRequest,
     *,
     daemon_disabled: bool = False,
-) -> list[str]:
+) -> SessionSelection:
     """Return every session id ``request`` selects, walking the page boundary.
 
     A mutating verb's cardinality guard and the mutation it authorises must see
@@ -143,20 +196,24 @@ def query_complete_session_ids(
     """
 
     ids: list[str] = []
+    selected_rows: list[SelectSessionRow] = []
+    outcome: OutcomeEnvelope | None = None
+    authority = "unknown"
     snapshot_epoch: str | None = None
     seen: set[str] = set()
     offset = 0
     expected_total: int | None = None
     total_is_known = False
     while True:
-        payload = _query_page(
+        payload, authority = _query_page_with_authority(
             config, request, limit=COMPLETE_SELECTION_PAGE, offset=offset, daemon_disabled=daemon_disabled
         )
         if payload is None:
             if snapshot_epoch is not None:
                 _incomplete_selection("session disappeared while resolving the selection")
-            return ids
+            return SessionSelection(tuple(selected_rows), outcome, authority, snapshot_epoch)
         snapshot_epoch = _selection_frame(snapshot_epoch, payload)
+        outcome = _selection_outcome(outcome, payload)
         rows = _session_rows(payload)
         # Ranked hits are block-grain, so a session may recur across hits; a
         # session-grain list page repeating an id is a broken continuation.
@@ -182,6 +239,7 @@ def query_complete_session_ids(
                 _incomplete_selection("cli.query repeated a session id while resolving the selection")
             seen.add(session_id)
             ids.append(session_id)
+            selected_rows.append(select_row_from_operation_row(row))
 
         if "next_offset" not in payload:
             _incomplete_selection("cli.query omitted continuation metadata")
@@ -189,7 +247,7 @@ def query_complete_session_ids(
         if next_offset is None:
             if total_is_known and len(ids) != expected_total:
                 _incomplete_selection("cli.query ended before its reported total")
-            return ids
+            return SessionSelection(tuple(selected_rows), outcome, authority, snapshot_epoch)
         if isinstance(next_offset, bool) or not isinstance(next_offset, int):
             _incomplete_selection("cli.query returned an invalid continuation offset")
         if not rows:
@@ -226,47 +284,6 @@ def _incomplete_selection(detail: str) -> NoReturn:
     """Fail closed before a mutating verb can apply a partial selection."""
 
     raise click.ClickException(f"Refusing incomplete all-selection: {detail}.")
-
-
-def query_session_rows_with_authority(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    limit: int,
-    offset: int = 0,
-    daemon_disabled: bool = False,
-) -> tuple[list[SelectSessionRow], str]:
-    """Return selector rows plus the authority mode that actually answered.
-
-    The bare landing screen used to print ``Archive: ready (daemon)`` whenever
-    ``--no-daemon`` was absent, although the kernel falls back to the
-    in-process reader when no socket answers (polylogue-jfabc;
-    ``cli/daemon_probe.py`` documents exactly why provenance must not be
-    inferred from success).  The result's own authority is the discriminator,
-    so it is carried out of the read rather than guessed at the call site.
-    """
-
-    payload, authority = _query_page_with_authority(
-        config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled
-    )
-    if payload is not None:
-        _selection_frame(None, payload)
-    rows = [] if payload is None else [select_row_from_operation_row(row) for row in _session_rows(payload)]
-    return rows, authority
-
-
-def _query_page(
-    config: Config,
-    request: RootModeRequest,
-    *,
-    limit: int,
-    offset: int,
-    daemon_disabled: bool,
-) -> Mapping[str, object] | None:
-    payload, _authority = _query_page_with_authority(
-        config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled
-    )
-    return payload
 
 
 def _query_page_with_authority(
@@ -315,9 +332,8 @@ def _session_rows(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 __all__ = [
     "COMPLETE_SELECTION_PAGE",
-    "query_complete_session_ids",
-    "query_session_ids",
-    "query_session_rows",
-    "query_session_rows_with_authority",
+    "SessionSelection",
+    "query_complete_session_selection",
+    "query_session_selection",
     "select_row_from_operation_row",
 ]

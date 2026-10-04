@@ -90,6 +90,7 @@ def run_read_context(env: AppEnv, request: RootModeRequest, invocation: ReadView
                 },
             ),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except OperationKernelError as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure
@@ -150,6 +151,7 @@ def run_read_context_image(env: AppEnv, request: RootModeRequest, invocation: Re
                 },
             ),
             daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
         )
     except OperationKernelError as exc:
         from polylogue.cli.render.outcome import exit_for_read_failure

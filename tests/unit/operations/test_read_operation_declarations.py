@@ -507,3 +507,103 @@ class TestSessionReadEvidenceKinds:
                     "complete": True,
                 },
             )
+
+
+class TestSelectedDomainRead:
+    def test_domain_pages_bind_the_real_query_view(self, tmp_path: Path) -> None:
+        from polylogue.archive.session.domain_models import Session
+
+        sessions = _seed(tmp_path, count=1, messages=3)
+        selected = _run(tmp_path, "cli.query", {"params": {}})
+        epoch = selected["snapshot_epoch"]
+        payload = {"ref": sessions[0], "limit": 2, "session_projection": "domain", "selection_epoch": epoch}
+        first = _run(tmp_path, "session.read", payload)
+        domain = Session.model_validate(first["session"])
+        assert domain.id == sessions[0]
+        assert len(domain.messages) == 2
+        assert first["selection_epoch"] == epoch
+        assert first["next_offset"] == 2
+        second = _run(tmp_path, "session.read", {**payload, "offset": 2, "continuation": first["continuation"]})
+        assert len(Session.model_validate(second["session"]).messages) == 1
+        assert second["complete"] is True
+        assert cast(dict[str, object], second["outcome"])["state"] == "ok"
+
+    def test_stale_selection_refuses_before_hydration(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+        sessions = _seed(tmp_path, count=1)
+        reached = []
+
+        def read(*_a, **_k):  # type: ignore[no-untyped-def]
+            reached.append(True)
+            raise AssertionError("stale selection reached hydration")
+
+        monkeypatch.setattr(ArchiveStore, "read_session_page", read)
+        with pytest.raises(QueryContinuationStaleError) as refused:
+            _run(
+                tmp_path,
+                "session.read",
+                {"ref": sessions[0], "session_projection": "domain", "selection_epoch": "old-view"},
+            )
+        assert refused.value.issued_epoch == "old-view"
+        assert refused.value.current_epoch != "old-view"
+        assert reached == []
+
+    def test_domain_continuation_refuses_projection_change(self, tmp_path: Path) -> None:
+        from polylogue.archive.query.transaction import QueryContinuationInvalidError
+
+        sessions = _seed(tmp_path, count=1, messages=3)
+        first = _run(tmp_path, "session.read", {"ref": sessions[0], "session_projection": "domain", "limit": 1})
+        with pytest.raises(QueryContinuationInvalidError):
+            _run(tmp_path, "session.read", {"ref": sessions[0], "continuation": first["continuation"]})
+
+    def test_every_selected_registered_route_rejects_a_stale_view(self, tmp_path: Path) -> None:
+        from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+        sessions = _seed(tmp_path, count=1)
+        routes: dict[str, dict[str, object]] = {
+            "read.dialogue": {"session_id": sessions[0]},
+            "read.temporal": {"session_id": sessions[0]},
+            "read.effective_context": {"session_id": sessions[0]},
+            "read.orchestration": {"session_id": sessions[0]},
+            "read.lineage": {"session_id": sessions[0]},
+            "read.topology": {"session_id": sessions[0]},
+            "read.neighbors": {"session_id": sessions[0]},
+            "read.correlation": {"session_id": sessions[0]},
+            "read.context": {"session_id": sessions[0], "observed_at": "2026-01-01T00:00:00+00:00"},
+            "read.context-image": {"seed_session_id": sessions[0], "observed_at_ms": 1},
+            "session.read": {"ref": sessions[0], "kind": "messages"},
+        }
+        for operation, operands in routes.items():
+            payload: dict[str, object] = {**operands, "selection_epoch": "stale-selected-view"}
+            declaration = daemon_operation_spec(operation)
+            assert declaration is not None and declaration.request_model is not None
+            declaration.request_model.model_validate(payload)
+            with pytest.raises(QueryContinuationStaleError) as refused:
+                _run(tmp_path, operation, payload)
+            assert refused.value.issued_epoch == "stale-selected-view"
+
+    def test_domain_projection_preserves_tool_blocks(self, tmp_path: Path) -> None:
+        from polylogue.archive.session.domain_models import Session
+
+        bootstrap_archive_root(tmp_path)
+        builder = SessionBuilder(tmp_path / "index.db", "domain-tools").provider("codex")
+        builder.add_message(
+            role="assistant",
+            text="calling tool",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Read",
+                    "tool_id": "original-tool-id",
+                    "tool_input": '{"path":"/synthetic/input.txt"}',
+                }
+            ],
+        )
+        builder.save()
+        result = _run(tmp_path, "session.read", {"ref": builder.native_session_id(), "session_projection": "domain"})
+        session = Session.model_validate(result["session"])
+        from polylogue.archive.message.models import Message
+
+        blocks = Message.model_validate(list(session.messages)[0]).blocks
+        assert any(block.get("tool_id") == "original-tool-id" and block.get("tool_name") == "Read" for block in blocks)

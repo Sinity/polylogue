@@ -24,28 +24,28 @@ from polylogue.cli import select as select_module
 from polylogue.cli.contextual_errors import AmbiguousSelectionError
 from polylogue.cli.operation_kernel import OperationUnavailableError
 from polylogue.cli.select import SelectSessionRow
+from polylogue.cli.session_rows import SessionSelection
 from polylogue.cli.shared.helper_support import DaemonRequiredError
 from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
+from tests.infra.cli_selection import fixture_query_page, selection_for_ids, selection_for_rows
 
 
 def _stub_ids(monkeypatch: pytest.MonkeyPatch, ids: Sequence[str], captured_limits: list[int] | None = None) -> None:
-    def _query_session_ids(config: object, request: object, *, limit: int, **_kwargs: object) -> list[str]:
+    def _query_session_selection(config: object, request: object, *, limit: int, **_kwargs: object) -> SessionSelection:
         if captured_limits is not None:
             captured_limits.append(limit)
-        return list(ids)
+        return selection_for_ids(ids)
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", _query_session_ids)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", _query_session_selection)
 
 
 def _stub_rows(monkeypatch: pytest.MonkeyPatch, ids: Sequence[str], captured_limits: list[int] | None = None) -> None:
-    def _query_session_rows(
-        config: object, request: object, *, limit: int, **_kwargs: object
-    ) -> list[SelectSessionRow]:
+    def _query_session_selection(config: object, request: object, *, limit: int, **_kwargs: object) -> SessionSelection:
         if captured_limits is not None:
             captured_limits.append(limit)
-        return [SelectSessionRow(session_id=ref, origin="codex-session", title=ref, date=None) for ref in ids][:limit]
+        return selection_for_ids(ids[:limit])
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", _query_session_rows)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", _query_session_selection)
 
 
 def _refuse_chooser(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,17 +149,19 @@ def _stub_hit_pages(monkeypatch: pytest.MonkeyPatch, hits: Sequence[str]) -> lis
 
     def _query_page(
         config: object, request: object, *, limit: int, offset: int, daemon_disabled: bool
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], str]:
         requested.append((offset, limit))
         page = hits[offset : offset + limit]
-        return {
-            "snapshot_epoch": "fixture-selected-frame",
-            "hits": [{"session": {"id": ref, "origin": "codex-session", "title": ref}} for ref in page],
-            "total": len(set(hits)),
-            "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
-        }
+        return fixture_query_page(
+            {
+                "snapshot_epoch": "fixture-selected-frame",
+                "hits": [{"session": {"id": ref, "origin": "codex-session", "title": ref}} for ref in page],
+                "total": len(set(hits)),
+                "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
+            }
+        ), "fixture"
 
-    monkeypatch.setattr("polylogue.cli.session_rows._query_page", _query_page)
+    monkeypatch.setattr("polylogue.cli.session_rows._query_page_with_authority", _query_page)
     return requested
 
 
@@ -284,7 +286,7 @@ def test_latest_reports_typed_daemon_refusal(monkeypatch: pytest.MonkeyPatch) ->
     def unavailable(*_args: object, **_kwargs: object) -> list[str]:
         raise OperationUnavailableError("daemon unavailable", operation="cli.query")
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", unavailable)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", unavailable)
 
     with pytest.raises(DaemonRequiredError) as exc_info:
         resolve_session_id_from_root_params({"latest": True})
@@ -304,11 +306,11 @@ def test_explicit_id_and_predicate_resolve_the_canonical_selection(
 
     seen: list[RootModeRequest] = []
 
-    def rows(config: object, request: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
+    def rows(config: object, request: RootModeRequest, *, limit: int) -> SessionSelection:
         seen.append(request)
-        return []
+        return selection_for_rows([])
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", rows)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", rows)
     assert resolve_session_id_from_root_params({"conv_id": "codex:one", **predicate}) is None
     assert len(seen) == 1
     spec = seen[0].query_spec()

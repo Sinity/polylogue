@@ -19,6 +19,8 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from tests.infra.cli_selection import selection_for_rows
+
 # ---------------------------------------------------------------------------
 # jfabc: a null total is unknown, not len(rows)
 # ---------------------------------------------------------------------------
@@ -109,8 +111,8 @@ def test_the_bare_screen_names_the_authority_from_the_result(
     monkeypatch.setattr("polylogue.cli.shared.helpers.load_effective_config", lambda _env: config)
     # The invocation never passes ``--no-daemon``, so the old screen printed
     # "(daemon)" from that alone; the result says ``direct``.
-    with patch("polylogue.cli.session_rows.query_session_rows_with_authority") as query:
-        query.return_value = ([], "direct")
+    with patch("polylogue.cli.session_rows.query_session_selection") as query:
+        query.return_value = selection_for_rows([], authority="direct")
         assert _show_bare_tty_triage(click.Context(cli, info_name="polylogue"), AppEnv(plain=True))
 
     output = capsys.readouterr().out
@@ -156,19 +158,23 @@ def test_every_verb_refuses_a_fresh_root_with_one_machine_envelope(
     runner = CliRunner()
 
     from polylogue.cli.click_app import cli
+    from polylogue.cli.machine_main import run_machine_entry
 
-    result = runner.invoke(cli, full_argv, standalone_mode=False)
-    exc = result.exception
-    assert exc is not None, f"{argv} answered a fresh root instead of refusing: {result.output}"
-
-    from polylogue.core.errors import ArchiveTierUnavailableError
-
-    assert isinstance(exc, ArchiveTierUnavailableError), f"{argv} raised {exc!r}"
-    assert exc.tier == "index"
-    assert exc.reason == "database file not found"
-    from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE
-
-    assert exc.guidance == FIRST_RUN_INDEX_GUIDANCE
+    with runner.isolation() as (out, err, _):
+        with pytest.raises(SystemExit) as stopped:
+            run_machine_entry(lambda **kwargs: cli.main(args=full_argv, **kwargs), full_argv)
+        assert stopped.value.code == 1
+        assert err.getvalue() == b""
+        envelope = json.loads(out.getvalue())
+    assert envelope["status"] == "error"
+    if argv[0] == "read":
+        assert envelope["code"] == "runtime_error"
+        assert envelope["details"]["exception_type"] == "ArchiveTierUnavailableError"
+    else:
+        assert envelope["code"] == "daemon_required"
+        assert envelope["details"]["operation"] == "cli.query"
+        assert envelope["details"]["remedy"] == "polylogued run"
+    assert not (tmp_path / "index.db").exists()
 
 
 def test_the_first_run_refusal_names_only_commands_that_exist() -> None:

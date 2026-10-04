@@ -9,9 +9,6 @@ from pathlib import Path
 
 import click
 
-from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.cli.query import project_query_results
-from polylogue.cli.query_contracts import QueryExecutionPlan
 from polylogue.cli.read_views.base import ReadViewInvocation, ReadViewOptions
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
@@ -84,12 +81,12 @@ def run_query_set_read_view(
         buf = io.StringIO()
 
         def _captured_echo_read_set(message: object = None, **_kwargs: object) -> None:
-            buf.write(str(message or "") + "\n")
+            buf.write(str(message or "") + ("\n" if _kwargs.get("nl", True) else ""))
 
         _orig_echo = click.echo
         click.echo = _captured_echo_read_set  # type: ignore[assignment]
         try:
-            run_query_set_read(
+            selection = run_query_set_read(
                 env,
                 request,
                 output_format=bulk_fmt,
@@ -103,6 +100,7 @@ def run_query_set_read_view(
         _warn_on_secret_candidates(env, rendered, label=out_path)
         Path(out_path).write_text(rendered, encoding="utf-8")
         env.ui.console.print(f"Wrote to {out_path}")
+        selection.finish()
         return
 
     if destination in (RenderDestination.CLIPBOARD, RenderDestination.BROWSER):
@@ -112,12 +110,12 @@ def run_query_set_read_view(
         buf = io.StringIO()
 
         def _captured_echo_read_set(message: object = None, **_kwargs: object) -> None:
-            buf.write(str(message or "") + "\n")
+            buf.write(str(message or "") + ("\n" if _kwargs.get("nl", True) else ""))
 
         _orig_echo = click.echo
         click.echo = _captured_echo_read_set  # type: ignore[assignment]
         try:
-            run_query_set_read(
+            selection = run_query_set_read(
                 env,
                 request,
                 output_format=bulk_fmt,
@@ -134,14 +132,16 @@ def run_query_set_read_view(
             out_path=out_path,
             output_format=fmt,
         )
+        selection.finish()
         return
 
-    run_query_set_read(
+    selection = run_query_set_read(
         env,
         request,
         output_format=bulk_fmt,
         fields=fields,
     )
+    selection.finish()
 
 
 def _run_dialogue_query_set(
@@ -158,26 +158,30 @@ def _run_dialogue_query_set(
     from polylogue.cli.read_dispatch import daemon_route_disabled
     from polylogue.cli.read_views.base import deliver_content
     from polylogue.cli.read_views.standard import _format_dialogue_session, _read_dialogue_session
-    from polylogue.cli.session_rows import query_complete_session_ids, query_session_rows
+    from polylogue.cli.session_rows import query_complete_session_selection, query_session_selection
 
     spec = request.query_spec()
     disabled = daemon_route_disabled(flag=bool(request.params.get("no_daemon")))
     if spec.limit is None:
-        session_ids = query_complete_session_ids(env.config, request, daemon_disabled=disabled)[spec.offset :]
+        selection = query_complete_session_selection(env.config, request, daemon_disabled=disabled)
+        session_ids = selection.ids[spec.offset :]
     else:
-        rows = query_session_rows(
+        selection = query_session_selection(
             env.config,
             request,
             limit=spec.limit,
             offset=spec.offset,
             daemon_disabled=disabled,
         )
-        session_ids = [row.session_id for row in rows]
+        session_ids = selection.ids
+    selection.require_bound()
     fmt = output_format or "markdown"
     projection = projection_spec.projection if projection_spec is not None else None
     rendered: list[str] = []
     for session_id in session_ids:
-        session = _read_dialogue_session(env, request, session_id, projection)
+        session = _read_dialogue_session(
+            env, request.with_param_updates(selection_epoch=selection.snapshot_epoch), session_id, projection
+        )
         if session is not None:
             rendered.append(
                 _format_dialogue_session(session, "json" if fmt in {"ndjson", "jsonl"} else fmt, projection=projection)
@@ -191,6 +195,7 @@ def _run_dialogue_query_set(
         if content:
             content += "\n"
     deliver_content(env, content, destination=destination, out_path=out_path, output_format=fmt)
+    selection.finish()
 
 
 def _view_accepts_query_set(view: str) -> bool:
@@ -303,9 +308,17 @@ def _run_registered_view_query_set(
     from polylogue.cli.read_view_handlers import run_read_view
 
     spec = request.query_spec()
-    plan = QueryExecutionPlan.from_params(request.query_params())
-    sessions = run_coroutine_sync(env.polylogue.list_sessions_for_spec(spec))
-    sessions = project_query_results(sessions, plan)
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+    from polylogue.cli.session_rows import query_session_selection
+
+    selection = query_session_selection(
+        env.config,
+        request,
+        limit=spec.limit,
+        offset=spec.offset,
+        daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+    )
+    selection.require_bound()
     options = _handler_option_values(view, projection_spec, option_values)
     wants_ndjson = _ndjson_requested(output_format)
     handler_streams_ndjson = wants_ndjson and view in _NDJSON_STREAM_VIEWS
@@ -316,13 +329,14 @@ def _run_registered_view_query_set(
     else:
         render_format = output_format
     rendered_parts: list[str] = []
-    for session in sessions:
-        session_id = str(session.id)
-        narrowed = request.with_param_updates(conv_id=session_id).with_query_terms(())
+    for session_id in selection.ids:
+        narrowed = request.with_param_updates(
+            conv_id=session_id, selection_epoch=selection.snapshot_epoch
+        ).with_query_terms(())
         buf = io.StringIO()
 
         def _captured_echo(message: object = None, *, captured_buf: io.StringIO = buf, **_kwargs: object) -> None:
-            captured_buf.write(str(message or "") + "\n")
+            captured_buf.write(str(message or "") + ("\n" if _kwargs.get("nl", True) else ""))
 
         _orig_echo = click.echo
         click.echo = _captured_echo  # type: ignore[assignment]
@@ -389,6 +403,8 @@ def _run_registered_view_query_set(
         out_path=out_path,
         output_format=("ndjson" if wants_ndjson else render_format) or "markdown",
     )
+
+    selection.finish()
 
 
 __all__ = ["run_query_set_read_view"]
