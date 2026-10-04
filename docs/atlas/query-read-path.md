@@ -123,3 +123,5 @@ The CLI message walk narrows every continuation request to the remaining request
 Session-list envelopes from both full sessions and summaries use the canonical row projection for repository and working-directory display names. Full repository URLs and working-directory paths remain in their declared domain fields; explicit presentation overrides remain supported.
 
 Query-unit capability rows include their executable field names from the canonical unit metadata. Capability search covers these fields and existing operator and lowering bindings, so structural fields can be discovered without first guessing a unit.
+
+Disconnected archive reads keep admission with the original worker until physical cleanup completes. Their bounded caller drain waits do not cancel that worker, and its eventual exception is observed without creating a second loop-level failure report.
