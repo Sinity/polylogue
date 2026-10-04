@@ -369,7 +369,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
     ),
     _ExclusionCategory(
         "aggregate",
-        "aggregates reached through the `query` operation's aggregate result semantics",
+        "aggregate and readiness projections reached through query, explain, or status operations",
         (
             "aggregate_sessions",
             "archive_count_sessions",
@@ -379,6 +379,8 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "query_completions",
             "query_sessions",
             "storage_stats",
+            "storage_counts",
+            "query_capability_readiness",
             "get_index_status",
             "health_check",
             "hermes_integration_health",

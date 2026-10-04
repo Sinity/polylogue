@@ -4054,6 +4054,33 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             projection="counts",
         )
 
+    async def query_capability_readiness(self) -> dict[str, object]:
+        """Read standing query-binding metadata and aggregate-only debt evidence.
+
+        This certifies only that measured scope. Missing binding evidence stays
+        unknown instead of triggering an archive-wide inspection.
+        """
+        from polylogue.daemon.convergence_debt_status import convergence_debt_stage_counts_info
+        from polylogue.operations.fts_derivation import bound_archive_fts_surface
+        from polylogue.readiness.capability import component_from_query_binding
+
+        root = _active_archive_root(self.config)
+        binding = await run_archive_read(
+            root,
+            operation="archive.query_capability_readiness",
+            arguments={},
+            work=lambda archive: bound_archive_fts_surface(archive._conn),
+            projection="query-binding",
+        )
+        debt = convergence_debt_stage_counts_info(root / "index.db", ops_db=root / "ops.db")
+        return dict(
+            component_from_query_binding(
+                binding,
+                debt_available=debt.available,
+                debt_count=sum(count for _, _, count in debt.counts) if debt.available else None,
+            ).to_dict()
+        )
+
     async def storage_stats(self) -> StorageArchiveStats:
         """Lightweight archive stats without recent-session hydration.
 

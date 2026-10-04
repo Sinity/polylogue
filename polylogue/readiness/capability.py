@@ -815,6 +815,36 @@ def component_from_transform_registry(
     )
 
 
+def component_from_query_binding(
+    binding: Mapping[str, object] | None, *, debt_available: bool, debt_count: int | None
+) -> ComponentReadiness:
+    """Project only the standing query binding and convergence-debt evidence.
+
+    An absent binding stays unmeasured; this adapter never requests a new
+    aggregate inspection or certifies whole-archive materializer readiness.
+    """
+    caveats: list[str] = []
+    if binding is None:
+        caveats.append("query_binding_unavailable")
+    if not debt_available:
+        caveats.append("convergence_debt_unavailable")
+    if debt_available and debt_count is not None and debt_count > 0:
+        caveats.append("convergence_debt_outstanding")
+        state = CapabilityReadinessState.STALE
+    elif caveats:
+        state = CapabilityReadinessState.UNKNOWN
+    else:
+        state = CapabilityReadinessState.READY
+    return ComponentReadiness(
+        component="query_binding",
+        scope="query binding and convergence debt",
+        state=state,
+        counts={"convergence_debt_count": debt_count if debt_available else None},
+        caveats=tuple(caveats),
+        evidence_refs=("index.db:messages_fts_readiness_binding", "ops.db:convergence_debt"),
+    )
+
+
 def component_from_archive_surface(
     component: str,
     surface: Mapping[str, Any],
@@ -958,6 +988,7 @@ __all__ = [
     "LEGACY_READINESS_SOURCE_TYPES",
     "STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S",
     "component_from_archive_surface",
+    "component_from_query_binding",
     "component_from_assertion_substrate",
     "component_from_catchup_status",
     "component_from_derived_model",
