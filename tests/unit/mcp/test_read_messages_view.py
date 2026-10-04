@@ -108,3 +108,25 @@ async def test_read_messages_matches_python_api_positional_order(
     assert total == len(expected)
     assert [str(message.id) for message in api_messages] == expected
     assert [message["id"] for message in payload["messages"]] == expected
+
+
+@pytest.mark.asyncio
+async def test_messages_authority_measures_the_operation_boundary(
+    mcp_server: MCPServerUnderTest, monkeypatch: pytest.MonkeyPatch, frozen_clock: object
+) -> None:
+    """A slow messages read contributes elapsed time to its returned authority."""
+    ticks = [10.0]
+    monkeypatch.setattr("polylogue.mcp.server_cutover.monotonic", lambda: ticks[0])
+    monkeypatch.setattr("polylogue.surfaces.authority.monotonic", lambda: ticks[0])
+    poly = make_polylogue_mock(resolved_id=_SESSION_ID)
+    original_read = poly.read_transcript_window
+
+    async def slow_read(*args: object, **kwargs: object) -> object:
+        ticks[0] += 0.125
+        return await original_read(*args, **kwargs)
+
+    poly.read_transcript_window = AsyncMock(side_effect=slow_read)
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        raw = await invoke_surface_async(mcp_server._tool_manager._tools["read"].fn, ref=_SESSION_ID, view="messages")
+    authority = json.loads(raw)["authority"]
+    assert authority["elapsed_ms"] == 125

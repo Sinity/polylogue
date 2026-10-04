@@ -14,6 +14,7 @@ import json
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 from polylogue.archive.session_projections import (
@@ -1472,6 +1473,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         the CLI: ``limit``/``offset`` bound the page, and the payload's
         opaque ``continuation`` resumes it until ``complete``.
         """
+        started_at = monotonic()
         from polylogue.core.refs import parse_delegation_subtree_object_id
 
         normalized = _object_ref(ref)
@@ -1595,6 +1597,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         authority=authority_for_config(
                             hooks.get_polylogue().config,
                             server_identity="direct",
+                            started_at=started_at,
                         ),
                         outcome=lineage_page_outcome(
                             matched=len(messages),

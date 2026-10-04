@@ -124,3 +124,9 @@ The fast lane is still DOM/contract-only. A later visual slice can add a
 separate browser-backed screenshot lane for the richer reader, stack,
 topology, attachment, and degraded-state matrix rather than replacing this
 unit-speed smoke.
+
+Human listing identity frames retain full identity keys. A requested tail
+preserves noncolliding abbreviations; colliding cells expand losslessly to
+full identifiers. Long native identifiers have no display truncation cap.
+Columns size themselves to the widest returned cell; machine output keeps
+full identifiers.
