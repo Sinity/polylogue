@@ -610,8 +610,8 @@ BLOCKS_SPEC = _make_table_spec(
             domain_name="semantic_type",
             domain_transform=_optional_text_value,
         ),
-        _raw_column("media_type", "media_type TEXT"),
-        _raw_column("language", "language TEXT"),
+        _raw_column("media_type", "media_type TEXT", record_name="media_type", domain_name="media_type"),
+        _raw_column("language", "language TEXT", record_name="language", domain_name="language"),
         # Display name of a DOCUMENT/IMAGE block (a project document's file
         # name), projected from parser ``metadata["name"]``; ``metadata`` has
         # no column of its own.

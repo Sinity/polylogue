@@ -28,6 +28,8 @@ parent prefixes and report cycle or dangling-branch-point status rather
 than silently claiming completeness
 (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 
+Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams hydrate blocks in bounded batches on their held read connection; closing a public stream closes its nested reader before releasing that connection.
+
 ## Scoped ranked reads
 
 Semantic and hybrid session requests qualify the canonical SQL and residual scope before ranking. The held ArchiveStore connection supplies current prose and occurrence identity to the retained-vector TEMP projection. Exact L2 scoring covers every eligible stored output; near takes the minimum over all stored seed outputs. Session witness selection, complete hybrid lane ranks and n-ary RRF precede the final session window (`polylogue/archive/query/archive_execution.py`, `polylogue/storage/search_providers/sqlite_vec_queries.py`, `polylogue/storage/sqlite/archive_tiers/archive.py`). TEMP relations use FILE storage selected at connection acquisition. Successful full lane settlement is explicit in `completed_lanes`; unavailable or failed lanes remain named gaps.

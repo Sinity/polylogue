@@ -29,6 +29,8 @@ async def get_blocks(
             tool_id,
             tool_input,
             NULL AS metadata,
+            media_type,
+            language,
             name,
             semantic_type,
             tool_result_is_error,
@@ -44,11 +46,11 @@ async def get_blocks(
     for index in range(0, len(message_ids), batch_size):
         batch = message_ids[index : index + batch_size]
         placeholders = ",".join("?" for _ in batch)
-        cursor = await conn.execute(
+        async with conn.execute(
             table_query.format(placeholders=placeholders),
             batch,
-        )
-        rows = await cursor.fetchall()
+        ) as cursor:
+            rows = await cursor.fetchall()
         for row in rows:
             mid = row["message_id"]
             if mid in result:

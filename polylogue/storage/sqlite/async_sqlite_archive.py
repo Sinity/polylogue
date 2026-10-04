@@ -13,7 +13,7 @@ intentional; shared read behavior belongs in the query store."""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,7 +28,6 @@ from polylogue.storage.runtime import (
     SessionRecord,
 )
 from polylogue.storage.search.models import SessionSearchResult
-from polylogue.storage.sqlite.queries import messages as messages_q
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 from polylogue.storage.sqlite.queries.stats import (
     AggregateMessageStats,
@@ -235,23 +234,16 @@ class SQLiteArchiveMixin:
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
         """Stream messages in chunks instead of loading all at once."""
-        if chunk_size != 100:
-            async with self._get_connection() as conn:
-                async for msg in messages_q.iter_messages(
-                    conn,
-                    session_id,
-                    chunk_size=chunk_size,
-                    message_roles=message_roles,
-                    limit=limit,
-                ):
-                    yield msg
-            return
-        async for msg in self.queries.iter_messages(
-            session_id,
-            message_roles=message_roles,
-            limit=limit,
-        ):
-            yield msg
+        async with aclosing(
+            self.queries.iter_messages(
+                session_id,
+                chunk_size=chunk_size,
+                message_roles=message_roles,
+                limit=limit,
+            )
+        ) as messages:
+            async for message in messages:
+                yield message
 
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         """Get message counts without loading messages."""

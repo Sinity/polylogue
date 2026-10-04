@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, aclosing
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -372,17 +372,42 @@ class SQLiteQueryStoreArchiveMixin:
         self,
         session_id: str,
         *,
+        chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
     ) -> AsyncIterator[MessageRecord]:
-        async with self._connection_factory() as conn:
-            async for record in messages_q.iter_messages(
-                conn,
-                session_id,
-                message_roles=message_roles,
-                limit=limit,
-            ):
-                yield record
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        # Hydrate one bounded page before yielding, using the same held
+        # connection as the message stream rather than one query per row.
+        async with (
+            self._connection_factory() as conn,
+            aclosing(
+                messages_q.iter_messages(
+                    conn,
+                    session_id,
+                    chunk_size=chunk_size,
+                    message_roles=message_roles,
+                    limit=limit,
+                )
+            ) as records,
+        ):
+            batch: list[MessageRecord] = []
+            async for record in records:
+                batch.append(record)
+                if len(batch) == chunk_size:
+                    blocks = await attachments_q.get_blocks(conn, [row.message_id for row in batch])
+                    for row in batch:
+                        row.blocks = blocks.get(row.message_id, [])
+                        _hydrate_message_text_from_blocks(row)
+                        yield row
+                    batch.clear()
+            if batch:
+                blocks = await attachments_q.get_blocks(conn, [row.message_id for row in batch])
+                for row in batch:
+                    row.blocks = blocks.get(row.message_id, [])
+                    _hydrate_message_text_from_blocks(row)
+                    yield row
 
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         async with self._connection_factory() as conn:
