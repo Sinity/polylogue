@@ -15,7 +15,10 @@ from polylogue.core.sources import source_name_to_origin
 from polylogue.core.user_state_targets import TARGET_SESSION
 from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
-from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
+    ArchiveContextDeliveryEnvelope,
+    ArchiveContextDeliverySummary,
+)
 from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.outcome import OutcomeEnvelope
 from polylogue.surfaces.payloads import (
@@ -210,7 +213,7 @@ class MCPContextDeliverySummaryPayload(SurfacePayloadModel):
     delivered_at_ms: int
 
     @classmethod
-    def from_envelope(cls, envelope: ArchiveContextDeliveryEnvelope) -> MCPContextDeliverySummaryPayload:
+    def from_summary(cls, envelope: ArchiveContextDeliverySummary) -> MCPContextDeliverySummaryPayload:
         return cls(
             snapshot_ref=envelope.snapshot_ref,
             recipient_ref=envelope.recipient_ref,

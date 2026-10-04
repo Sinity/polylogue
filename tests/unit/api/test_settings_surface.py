@@ -155,7 +155,7 @@ async def test_empty_context_authority_remains_measured_absence(tmp_path: Path) 
     _init_tiers(root)
     async with Polylogue(archive_root=root, db_path=root / "index.db") as poly:
         assert await poly.get_context_delivery("context-snapshot:missing", recipient_ref="agent:neutral") is None
-        assert await poly.list_context_deliveries() == []
+        assert (await poly.list_context_deliveries()).items == ()
         assert await poly.list_context_injection_ledger() == []
         assert await poly.correlate_hermes_context_deliveries("neutral-session") == ()
 

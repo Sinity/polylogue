@@ -66,7 +66,10 @@ from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity, ArchiveSessionSummary, IndexStatus
-from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
+from polylogue.storage.sqlite.archive_tiers.context_delivery_write import (
+    ArchiveContextDeliveryEnvelope,
+    ArchiveContextDeliveryPage,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
@@ -1379,14 +1382,17 @@ def _archive_list_context_deliveries(
     *,
     recipient_ref: str | None,
     assertion_ref: str | None,
-    limit: int | None,
-) -> list[ArchiveContextDeliveryEnvelope]:
-    """List bounded delivery-receipt envelopes, most recent first."""
+    limit: int,
+    offset: int,
+) -> ArchiveContextDeliveryPage:
+    """Read one receipt-summary page, most recent first."""
 
     from polylogue.storage.sqlite.archive_tiers.context_delivery_write import list_context_deliveries
 
     with _readable_user_tier(config) as conn:
-        return list_context_deliveries(conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit)
+        return list_context_deliveries(
+            conn, recipient_ref=recipient_ref, assertion_ref=assertion_ref, limit=limit, offset=offset
+        )
 
 
 def _archive_list_context_injection_ledger(
@@ -2886,21 +2892,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
-        limit: int | None = 50,
-    ) -> list[ArchiveContextDeliveryEnvelope]:
-        """List bounded delivery-receipt envelopes, most recent first.
+        limit: int = 50,
+        offset: int = 0,
+    ) -> ArchiveContextDeliveryPage:
+        """Read one counted receipt-summary page from durable user authority.
 
-        Read-only audit seam over the durable user-tier ledger, filterable by
-        recipient and/or assertion ref. Callers that need full disclosure of
-        one receipt's exact content still go through :meth:`get_context_delivery`,
-        which scopes disclosure to the recorded recipient.
+        Count and rows come from one SQLite snapshot. Summaries never read the
+        context image; exact recipient-scoped disclosure uses get_context_delivery.
+        Follow next_offset until it is null to enumerate the requested scope.
         """
 
         return _archive_list_context_deliveries(
             self.config,
             recipient_ref=recipient_ref,
             assertion_ref=assertion_ref,
-            limit=None if limit is None else max(1, min(limit, 200)),
+            limit=limit,
+            offset=offset,
         )
 
     async def list_context_injection_ledger(
@@ -3844,7 +3851,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             include_message_text=include_message_text,
         )
 
-    async def resolve_ref(self, ref: str) -> PublicRefResolutionPayload:
+    async def resolve_ref(
+        self, ref: str, *, limit: int = 50, offset: int = 0, continuation: str | None = None
+    ) -> PublicRefResolutionPayload:
         """Resolve one public object/evidence ref into a bounded read payload.
 
         The resolution itself is ``polylogue/operations/ref_resolution.py``,
@@ -3858,7 +3867,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.operations.ref_resolution import plan_ref_resolution
 
         archive_root = _active_archive_root(self.config)
-        plan = plan_ref_resolution(ref, archive_root=archive_root)
+        plan = plan_ref_resolution(
+            ref, archive_root=archive_root, limit=limit, offset=offset, continuation=continuation
+        )
         if plan.payload is not None:
             return plan.payload
         assert plan.read is not None

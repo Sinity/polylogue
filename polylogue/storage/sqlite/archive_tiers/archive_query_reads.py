@@ -449,6 +449,16 @@ def _archive_delegation_ancestry_row(row: sqlite3.Row) -> ArchiveDelegationAnces
     )
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveDelegationSubtreePage:
+    rows: tuple[ArchiveDelegationSubtreeRow, ...]
+    total: int
+    max_depth: int
+    limit: int
+    offset: int
+    next_cursor: tuple[int, str, str] | None
+
+
 def _archive_delegation_subtree_row(row: sqlite3.Row) -> ArchiveDelegationSubtreeRow:
     return ArchiveDelegationSubtreeRow(
         session_id=str(row["session_id"]),
@@ -489,7 +499,7 @@ FROM ancestry
 ORDER BY depth DESC
 """
 
-_DELEGATION_SUBTREE_SQL = f"""
+_DELEGATION_SUBTREE_CTE = f"""
 WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
                         instruction_tool_use_block_id, link_confidence, link_method, path) AS (
     SELECT ?, 0, NULL, NULL, NULL, NULL, NULL, '/' || ? || '/'
@@ -509,9 +519,6 @@ WITH RECURSIVE subtree(session_id, depth, parent_session_id, mapping_state,
       AND d.child_session_id IS NOT NULL
       AND instr(s.path, '/' || d.child_session_id || '/') = 0
 )
-SELECT session_id, depth, parent_session_id, mapping_state, instruction_tool_use_block_id, link_confidence, link_method
-FROM subtree
-ORDER BY depth, session_id
 """
 
 
@@ -4550,17 +4557,51 @@ def get_delegation_ancestry(self: _ArchiveQueryReadsHost, session_id: str) -> li
     return [_archive_delegation_ancestry_row(row) for row in rows]
 
 
-def get_delegation_subtree(self: _ArchiveQueryReadsHost, session_id: str) -> list[ArchiveDelegationSubtreeRow]:
-    """Return the full subtree (``session_id`` plus all transitive
-    dispatch descendants) in one recursive-CTE call, depth-annotated
-    (polylogue-qsb4). The queried session is always the first row
-    (``depth=0``), ordered breadth-first thereafter. Quarantined
-    (cycle-break) and authority-contradicted edges are never traversed.
-    Returns a single-row list (just the root) when ``session_id`` never
-    dispatched anything."""
+def get_delegation_subtree(
+    self: _ArchiveQueryReadsHost,
+    session_id: str,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    after: tuple[int, str, str] | None = None,
+) -> ArchiveDelegationSubtreePage:
+    """Return one breadth-first subtree page with whole-scope measurements.
 
-    rows = self._conn.execute(_DELEGATION_SUBTREE_SQL, (session_id, session_id)).fetchall()
-    return [_archive_delegation_subtree_row(row) for row in rows]
+    The path breaks ties when a DAG reaches the same session through several
+    parents. Continuations seek after that full key instead of rescanning an
+    increasing offset. Quarantined and authority-contradicted edges stay out.
+    """
+    if limit < 1 or offset < 0:
+        raise ValueError("delegation subtree limit must be positive and offset nonnegative")
+    params: list[object] = [session_id, session_id]
+    totals = self._conn.execute(
+        _DELEGATION_SUBTREE_CTE + "SELECT COUNT(*), COALESCE(MAX(depth), 0) FROM subtree", params
+    ).fetchone()
+    query = (
+        _DELEGATION_SUBTREE_CTE
+        + """SELECT session_id, depth, parent_session_id, mapping_state,
+        instruction_tool_use_block_id, link_confidence, link_method, path FROM subtree"""
+    )
+    if after is not None:
+        query += " WHERE (depth, session_id, path) > (?, ?, ?)"
+        params.extend(after)
+    query += " ORDER BY depth, session_id, path LIMIT ?"
+    params.append(limit)
+    if after is None:
+        query += " OFFSET ?"
+        params.append(offset)
+    rows = self._conn.execute(query, params).fetchall()
+    total = int(totals[0])
+    return ArchiveDelegationSubtreePage(
+        rows=tuple(_archive_delegation_subtree_row(row) for row in rows),
+        total=total,
+        max_depth=int(totals[1]),
+        limit=limit,
+        offset=offset,
+        next_cursor=(int(rows[-1]["depth"]), str(rows[-1]["session_id"]), str(rows[-1]["path"]))
+        if rows and offset + len(rows) < total
+        else None,
+    )
 
 
 def query_files(

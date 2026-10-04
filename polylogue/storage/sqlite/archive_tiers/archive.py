@@ -164,6 +164,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
     ArchiveDelegationAncestryRow,
     ArchiveDelegationCard,
     ArchiveDelegationQueryRow,
+    ArchiveDelegationSubtreePage,
     ArchiveDelegationSubtreeRow,
     ArchiveFileQueryRow,
     ArchiveMessageQueryRow,
@@ -7416,8 +7417,15 @@ class ArchiveStore:
     def get_delegation_ancestry(self, session_id: str) -> list[ArchiveDelegationAncestryRow]:
         return _archive_query_reads.get_delegation_ancestry(self, session_id)
 
-    def get_delegation_subtree(self, session_id: str) -> list[ArchiveDelegationSubtreeRow]:
-        return _archive_query_reads.get_delegation_subtree(self, session_id)
+    def get_delegation_subtree(
+        self,
+        session_id: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        after: tuple[int, str, str] | None = None,
+    ) -> ArchiveDelegationSubtreePage:
+        return _archive_query_reads.get_delegation_subtree(self, session_id, limit=limit, offset=offset, after=after)
 
     def query_files(
         self,
@@ -9446,6 +9454,7 @@ __all__ = [
     "ArchiveDelegationCard",
     "ArchiveDelegationQueryRow",
     "ArchiveDelegationSubtreeRow",
+    "ArchiveDelegationSubtreePage",
     "ArchiveFileQueryRow",
     "ArchiveMessageQueryRow",
     "ArchiveAggMetricSpec",
