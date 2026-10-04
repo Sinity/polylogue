@@ -190,6 +190,7 @@ class MessageRecord(BaseModel):
     position: int = 0
     is_active_leaf: bool = False
     blocks: list[BlockRecord] = Field(default_factory=list)
+    attachments: list[AttachmentRecord] = Field(default_factory=list)
     source_name: str = ""
     word_count: int = 0
     has_tool_use: int = 0

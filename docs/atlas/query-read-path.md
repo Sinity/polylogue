@@ -28,7 +28,7 @@ parent prefixes and report cycle or dangling-branch-point status rather
 than silently claiming completeness
 (`_composed_transcript_plan` in `polylogue/storage/sqlite/archive_tiers/write.py:3399`).
 
-Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams hydrate blocks in bounded batches on their held read connection; closing a public stream closes its nested reader before releasing that connection.
+Ordinary block reads preserve the stored language and media type through typed records and domain hydration. Message streams plan inherited prefixes as bounded lineage segments and hydrate blocks and message-owned attachment references in batches on one read snapshot; closing a public stream closes its nested reader before releasing that connection.
 
 ## Scoped ranked reads
 

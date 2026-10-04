@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import AsyncGenerator, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -766,82 +767,47 @@ async def iter_messages(
     (``get_messages_paginated``) share ``_TRANSCRIPT_ORDER``: a caller may take
     a total from one and slice the other.
     """
-    session_id = await _resolve_session_id(conn, session_id)
-    yielded = 0
-    effective_roles = message_roles
-
-    # Keyset streaming is per-session, but a prefix-sharing child's logical
-    # transcript spans its parent, so the cursor cannot stream across the
-    # lineage boundary. Compose the full transcript and yield from it for forks
-    # (a minority of sessions); plain sessions keep the linear keyset stream
-    # below (#2470).
-    if await _prefix_sharing_edge(conn, session_id) is not None:
-        composed = _filter_composed(await get_messages(conn, session_id), message_role=effective_roles)
-        for record in composed:
-            if limit is not None and yielded >= limit:
-                return
-            yield record
-            yielded += 1
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if not conn.in_transaction:
+        async with conn.execute("BEGIN DEFERRED"):
+            pass
+        try:
+            async with aclosing(
+                iter_messages(conn, session_id, chunk_size=chunk_size, message_roles=message_roles, limit=limit)
+            ) as records:
+                async for record in records:
+                    yield record
+        finally:
+            async with conn.execute("ROLLBACK"):
+                pass
         return
 
-    role_values = message_role_sql_values(effective_roles)
-
-    # Keyset cursor of the previous chunk's final row.
-    last_position: int = -1
-    last_variant: int = -1
-    have_cursor = False
-
-    while True:
-        query = f"""
-            SELECT {_MESSAGE_RECORD_SELECT}
-            FROM messages m
-            JOIN sessions s ON s.session_id = m.session_id
-            WHERE m.session_id = ?
-        """
-        params: list[str | int] = [session_id]
-
-        if role_values:
-            placeholders = ",".join("?" for _ in role_values)
-            query += f" AND m.role IN ({placeholders})"
-            params.extend(role_values)
-
-        if have_cursor:
-            query += " AND (m.position > ? OR (m.position = ? AND m.variant_index > ?))"
-            params.extend([last_position, last_position, last_variant])
-
-        query += f" ORDER BY {_TRANSCRIPT_ORDER}"
-
-        fetch_limit = chunk_size
-        if limit is not None:
-            remaining = limit - yielded
-            if remaining <= 0:
+    session_id = await _resolve_session_id(conn, session_id)
+    segments, _completeness = await _lineage_segments(conn, session_id)
+    role_values = message_role_sql_values(message_roles)
+    yielded = 0
+    for segment in segments:
+        where, bound_params = _segment_predicate(segment, role_values=role_values)
+        after = ""
+        cursor_params: tuple[int, ...] = ()
+        while limit is None or yielded < limit:
+            fetch_limit = chunk_size if limit is None else min(chunk_size, limit - yielded)
+            async with conn.execute(
+                f"SELECT {_MESSAGE_RECORD_SELECT} FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+                f"WHERE {where}{after} ORDER BY {_TRANSCRIPT_ORDER} LIMIT ?",
+                (*bound_params, *cursor_params, fetch_limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+            for row in rows:
+                yield decode(row)
+                yielded += 1
+            if len(rows) < fetch_limit:
                 break
-            fetch_limit = min(chunk_size, remaining)
-
-        query += " LIMIT ?"
-        params.append(fetch_limit)
-
-        cursor = await conn.execute(query, tuple(params))
-        rows = list(await cursor.fetchall())
-
-        if not rows:
-            break
-
-        last_row = rows[-1]
-        last_position = int(last_row["position"])
-        last_variant = int(last_row["branch_index"])
-        have_cursor = True
-
-        decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
-
-        for row in rows:
-            yield decode(row)
-            yielded += 1
-            if limit is not None and yielded >= limit:
-                return
-
-        if len(rows) < fetch_limit:
-            break
+            last = rows[-1]
+            after = " AND (m.position, m.variant_index) > (?, ?)"
+            cursor_params = (int(last["position"]), int(last["branch_index"]))
 
 
 __all__ = [
