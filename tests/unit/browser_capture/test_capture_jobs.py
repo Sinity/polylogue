@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -24,8 +24,16 @@ from polylogue.browser_capture.capture_jobs import (
     capture_job_database_path,
     capture_job_scope_namespace,
 )
+from polylogue.browser_capture.models import BrowserBackfillCheckpointRequest, BrowserCaptureEnvelope
+from polylogue.browser_capture.receiver import (
+    read_backfill_checkpoint,
+    write_backfill_checkpoint,
+    write_capture_envelope,
+)
 from polylogue.browser_capture.route_contracts import browser_capture_route_contract_for
 from polylogue.browser_capture.server import make_server
+from polylogue.core.enums import Provider
+from polylogue.sources.dispatch import parse_payload
 
 TOKEN = "capture-job-test-token"
 SCOPE = "h1:" + "A" * 43
@@ -733,8 +741,8 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         connection.close()
 
 
-def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
-    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
+def test_concurrent_first_registry_opens_serialize_fresh_bootstrap(tmp_path: Path) -> None:
+    """Concurrent fresh openers serialize DDL and retain the current columns."""
     registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
 
     def open_and_close(registry: CaptureJobRegistry) -> None:
@@ -743,6 +751,33 @@ def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path
 
     with ThreadPoolExecutor(max_workers=len(registries)) as pool:
         list(pool.map(open_and_close, registries))
+
+
+def test_fresh_registry_preserves_preexisting_source_capture_and_checkpoint(tmp_path: Path) -> None:
+    """Fresh bookkeeping must neither remove nor reinterpret original source bytes."""
+    fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-browser-capture-v1.json"
+    payload = json.loads(fixture.read_text())
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    capture = write_capture_envelope(envelope, spool_path=tmp_path)
+    checkpoint = {"version": 1, "jobs": [], "queue": [{"id": "original-source", "envelope": payload}], "revisions": []}
+    original = write_backfill_checkpoint(
+        BrowserBackfillCheckpointRequest(extension_instance_id="original-profile", checkpoint=checkpoint),
+        spool_path=tmp_path,
+    )
+    source_files = {path: path.read_bytes() for path in tmp_path.rglob("*.json")}
+    parsed = parse_payload(Provider.CHATGPT, json.loads(capture.path.read_bytes()), "original-source")
+    assert parsed and any(attachment.inline_bytes for attachment in parsed[0].attachments)
+
+    for _ in range(2):
+        # Process-local bootstrap knowledge does not survive a receiver restart.
+        capture_jobs_module._SCHEMA_READY.clear()
+        connection = CaptureJobRegistry(tmp_path, "fresh-receiver")._connect()
+        connection.close()
+        assert {path: path.read_bytes() for path in source_files} == source_files
+        assert read_backfill_checkpoint("original-profile", spool_path=tmp_path) == original
+        assert parse_payload(Provider.CHATGPT, json.loads(capture.path.read_bytes()), "original-source") == parsed
+        duplicate = write_capture_envelope(envelope, spool_path=tmp_path)
+        assert duplicate.deduplicated and duplicate.path == capture.path
 
 
 def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
@@ -904,13 +939,8 @@ def _checkpoint(
     return body
 
 
-def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -> None:
-    """Anti-vacuity: dropping the legacy-digest branch in update() restores the 409.
-
-    The stored digest is rewritten into the shape a build before retention
-    joined it wrote, which is what a receiver spool carries across that
-    upgrade.
-    """
+def test_update_receipt_requires_the_current_complete_digest(tmp_path: Path) -> None:
+    """A request ID cannot certify a stored receipt for a different digest."""
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -926,23 +956,25 @@ def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -
             "lease_id": adopted["lease"]["lease_id"],
             "generation": adopted["lease"]["generation"],
             "proof": adopted["lease"]["proof"],
-            "request_id": "pre-upgrade-retry",
+            "request_id": "current-retry",
             "expected_revision": adopted["job"]["revision"],
             "retry": retry,
         }
         status, updated = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
         assert status == 200 and updated["duplicate"] is False
 
-        legacy = canonical_digest({"retry": retry, "lease_ttl_seconds": None})
+        status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
+        assert status == 200 and replay["duplicate"] is True
+        assert replay["receipt"] == updated["receipt"]
+
+        incomplete = canonical_digest({"retry": retry, "lease_ttl_seconds": None})
         with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
             connection.execute(
                 "UPDATE capture_job_update_receipts SET request_digest=? WHERE request_id=?",
-                (legacy, "pre-upgrade-retry"),
+                (incomplete, "current-retry"),
             )
         status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
-        assert status == 200
-        assert replay["duplicate"] is True
-        assert replay["receipt"] == updated["receipt"]
+        assert status == 409 and replay["error"]["code"] == "request_id_conflict"
 
         status, conflicting = request(
             host,
@@ -1333,35 +1365,6 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
         assert terminal["job"]["retention"]["state"] == "active"
-
-
-def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
-    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
-    path = capture_job_database_path(tmp_path)
-    with sqlite3.connect(path) as connection:
-        connection.execute(
-            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
-        )
-        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
-    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
-    capture_jobs_module._SCHEMA_READY.clear()
-    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
-    with registry._connection() as connection:
-        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-    return int(row[0])
-
-
-def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
-    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
-    default declared, so the first assertion fails and terminal jobs never
-    become eligible for collection.
-    """
-    with receiver(tmp_path) as (host, port):
-        job = create(host, port)
-    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
-    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
-    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
-    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
 
 
 def _retired_job(host: str, port: int) -> str:

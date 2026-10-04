@@ -12,6 +12,8 @@ polylogued browser-capture serve
 For normal long-running local service use, `polylogued run` starts the browser
 capture receiver together with live source watching.
 
+The internal CaptureJob registry bootstraps its current schema directly and validates update receipts against the full current request digest. It does not upgrade discarded job databases or accept obsolete receipt shapes. Browser capture files and source-bearing checkpoint mirrors are original inputs; registry bootstrap does not delete them or exclude them because they were previously acknowledged.
+
 The receiver listens on `127.0.0.1:8765` by default and accepts the route contracts in `polylogue/browser_capture/route_contracts.py`:
 
 - `GET /v1/status` -> `BrowserCaptureReceiverStatusPayload`

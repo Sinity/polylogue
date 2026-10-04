@@ -106,7 +106,7 @@ _SCHEMA_READY: set[tuple[str, int, int]] = set()
 
 
 def _database_identity(path: Path) -> tuple[str, int, int] | None:
-    """The file a completed schema upgrade applies to: its path and inode."""
+    """The file a completed fresh schema bootstrap applies to: its path and inode."""
     try:
         status = path.stat()
     except FileNotFoundError:
@@ -142,7 +142,7 @@ class CaptureJobRegistry:
         if identity is not None and identity in _SCHEMA_READY:
             return connection
         with _SCHEMA_LOCK:
-            # Serialize schema inspection and upgrades once per database file.
+            # Serialize fresh schema bootstrap once per database file.
             # Ordinary reads never take a write transaction.
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -199,28 +199,6 @@ class CaptureJobRegistry:
                 UNIQUE(job_id, request_id), UNIQUE(job_id, event_revision)
             ) STRICT"""
         )
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_job_events)")}
-        if "job_revision" not in columns:
-            connection.execute("ALTER TABLE capture_job_events ADD COLUMN job_revision INTEGER NOT NULL DEFAULT 0")
-        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
-        if "retention_json" not in job_columns:
-            connection.execute(
-                'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
-            )
-        if "retention_declared" not in job_columns:
-            connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
-            # Rows predating the bit may already hold a deliberate retention
-            # choice. Keep it from being replaced by retry-derived retention.
-            connection.execute(
-                # Compare the decoded retention, not its spelling: rows written by
-                # canonical_json use sorted keys.
-                "UPDATE capture_jobs SET retention_declared=1 WHERE CASE WHEN json_valid(retention_json) THEN NOT ("
-                "json_type(retention_json, '$.state') = 'text' AND json_extract(retention_json, '$.state') = 'active' "
-                "AND json_type(retention_json, '$.hold_reason') = 'null' "
-                "AND json_type(retention_json, '$.timeline_authoritative') = 'true' "
-                "AND (SELECT count(*) FROM json_each(retention_json)) = 3"
-                ") ELSE 1 END"
-            )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -845,14 +823,6 @@ class CaptureJobRegistry:
         if retry is None and ttl is None and retention is None:
             raise CaptureJobError(400, "empty_capture_job_update")
         request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl, "retention": retention})
-        # Retention joined the digest after update receipts were already
-        # durable. A retry/TTL-only request replayed against a receipt written
-        # before that recomputes a different digest, so its stored shape stays
-        # an accepted match. A retention-bearing request has no legacy shape
-        # and can only match the current digest.
-        legacy_digest = (
-            canonical_digest({"retry": retry, "lease_ttl_seconds": ttl}) if retention is None else request_digest
-        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
@@ -864,9 +834,7 @@ class CaptureJobRegistry:
                 (job_id, request_id),
             ).fetchone()
             if existing:
-                if not hmac.compare_digest(existing["request_digest"], request_digest) and not hmac.compare_digest(
-                    existing["request_digest"], legacy_digest
-                ):
+                if not hmac.compare_digest(existing["request_digest"], request_digest):
                     raise CaptureJobError(409, "request_id_conflict")
                 return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
             if body.get("expected_revision") != row["revision"]:
