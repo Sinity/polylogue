@@ -1264,7 +1264,7 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredent
     if (!allowCredentialRefresh) return { ok: true, status: "unauthorized", detail: "receiver_auth_missing", endpoint: settings.baseUrl, pairing: pairingBefore };
     const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null, scope);
     // The credential was just fetched; another native launch cannot improve it.
-    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: false });
+    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: false, expectedScope: bootstrap.scope });
     // The native host found nothing answering at the endpoint (a stopped
     // daemon): that is an offline receiver, not a credential problem.
     if (bootstrap.error === "receiver_unreachable") {

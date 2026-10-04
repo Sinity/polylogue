@@ -13,7 +13,7 @@ function fixture({blockPairing=false}={}){
  const storage={receiverBaseUrl:'http://127.0.0.1:41234',receiverAuthToken:'neutral-token'};
  const probe=deferred(),entered=deferred(),write=deferred(),written=deferred();const writes=[];
  const context=createContext({Date,URL,RECEIVER_PAIRING_KEY:'polylogueReceiverPairing',RECEIVER_API_SCHEMA:'polylogue-browser-capture/v1',DEFAULT_RECEIVER:'http://127.0.0.1:8765',NATIVE_BOOTSTRAP_HOST:'neutral-host',trustedReceiverHealthCache:null,runtimeChrome:{permissions:{contains:async()=>true},storage:{local:{async get(defaults){const keys=Array.isArray(defaults)?defaults:Object.keys(defaults);return Object.fromEntries(keys.filter(k=>Object.hasOwn(storage,k)||!Array.isArray(defaults)).map(k=>[k,Object.hasOwn(storage,k)?storage[k]:defaults[k]]));},async set(values){if(blockPairing&&values.polylogueReceiverPairing){written.resolve();await write.promise;}Object.assign(storage,values);writes.push(Object.keys(values));},async remove(keys){for(const key of Array.isArray(keys)?keys:[keys])delete storage[key];}}}},probeReceiverStatus:async()=>{entered.resolve();return probe.promise;}});
- new Script('let storageMutationQueue = Promise.resolve();'+source.slice(source.indexOf('function serializeStorageMutation('),source.indexOf('function replaceLegacyAcceptedMessageIdentities('))+definitions+health+'\nglobalThis.health=checkReceiverHealth;globalThis.pair=pairWithCode;globalThis.cache=()=>trustedReceiverHealthCache;globalThis.restore=restoreReceiverSettings;globalThis.configure=saveReceiverSettings;globalThis.reset=clearReceiverPairing;globalThis.dispatch=async function(message,sendResponse){'+handler+'};').runInContext(context);
+ new Script('let storageMutationQueue = Promise.resolve();'+source.slice(source.indexOf('function serializeStorageMutation('),source.indexOf('function replaceLegacyAcceptedMessageIdentities('))+definitions+health+'\nglobalThis.scope=receiverHealthScope;globalThis.health=checkReceiverHealth;globalThis.pair=pairWithCode;globalThis.cache=()=>trustedReceiverHealthCache;globalThis.restore=restoreReceiverSettings;globalThis.configure=saveReceiverSettings;globalThis.reset=clearReceiverPairing;globalThis.dispatch=async function(message,sendResponse){'+handler+'};').runInContext(context);
  return {context,storage,probe,entered,write,written,writes};
 }
 
@@ -107,6 +107,19 @@ for (const mutation of ['restore','configure','reset']) {
  const pending=f.context.health({allowCanonicalRecovery:false,allowCredentialRefresh:false});await f.entered.promise;f.probe.resolve(response);await configStarted.promise;
  assert.equal(f.context.cache(),null);permission.resolve(true);await changing;
  assert.equal((await pending).detail,'receiver_configuration_changed');assert.equal(f.context.cache(),null);assert.equal(f.storage.receiverAuthToken,'neutral-next-token');
+}
+
+// Bootstrap confirmation retains its original scope across recursive health entry.
+{
+ const f=fixture();f.storage.receiverAuthToken='';let probes=0;
+ f.context.probeReceiverStatus=async()=>{probes++;return response;};
+ f.context.bootstrapReceiverCredential=async()=>{
+   const configured=await f.context.configure(owned.baseUrl,'neutral-confirmed',await f.context.scope());
+   await f.context.restore({}, {...owned,token:'neutral-confirmed'});
+   return {ok:true,scope:configured};
+ };
+ assert.equal((await f.context.health()).detail,'receiver_configuration_changed');
+ assert.equal(probes,0);assert.deepEqual(Object.keys(f.storage),[]);
 }
 
 });
