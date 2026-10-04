@@ -45,7 +45,12 @@ from polylogue.schemas.generation.workflow import (
     persist_generated_provider_bundle,
 )
 from polylogue.schemas.operator.inference import privacy_config_from_payload
-from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitResult, SchemaVersionCommitReport
+from polylogue.schemas.operator.models import (
+    SchemaCommitRequest,
+    SchemaCommitResult,
+    SchemaVersionCommitReport,
+    operator_json_document,
+)
 from polylogue.schemas.operator.receipt import (
     SCHEMA_INFERENCE_HANDOFF_FILENAME,
     SchemaInferenceReceipt,
@@ -54,6 +59,7 @@ from polylogue.schemas.operator.receipt import (
     write_schema_inference_receipt,
 )
 from polylogue.schemas.package_publication import provider_tree_lock, publish_provider_tree, read_provider_snapshot
+from polylogue.schemas.privacy_config import PrivacyConfig
 from polylogue.schemas.promotion_audit import PromotionAuditFinding, audit_schema_artifacts
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
@@ -204,6 +210,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                 registry_before, provider_token, package.version, element_kinds
             )
 
+    privacy_config = privacy_config_from_payload(request.privacy_config) or PrivacyConfig()
     source_bundle = None
     if request.source_inputs:
         source_bundle = build_provider_bundle_from_sources(
@@ -211,7 +218,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             source_inputs=request.source_inputs,
             cache_path=request.source_cache_path,
             max_workers=request.source_workers,
-            privacy_config=privacy_config_from_payload(request.privacy_config),
+            privacy_config=privacy_config,
             prior_catalog=SchemaRegistry(storage_root=output_dir).load_package_catalog(provider_token),
             progress_callback=request.progress_callback,
         )
@@ -224,7 +231,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             db_path=request.db_path,
             providers=[request.provider],
             max_samples=request.max_samples,
-            privacy_config=privacy_config_from_payload(request.privacy_config),
+            privacy_config=privacy_config,
             full_corpus=request.full_corpus,
             archive_location=request.archive_location,
             persist=lambda root, _provider, bundle: _persist_audited(root, provider_token, bundle),
@@ -308,6 +315,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         generation=generation,
         versions=tuple(version_reports),
         dry_run=request.dry_run,
+        inference_configuration=operator_json_document(privacy_config.to_payload()),
         handoff=handoff,
         handoff_path=handoff_path if generation.success else None,
     )
@@ -341,6 +349,7 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
             generation=result.generation,
             versions=result.versions,
             dry_run=True,
+            inference_configuration=result.inference_configuration,
             handoff=result.handoff,
             handoff_path=None,
         )

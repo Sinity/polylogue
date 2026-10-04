@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.schemas.privacy_config import PrivacyConfig
 from polylogue.schemas.provider_denominator import DenominatorSubject, ProviderDenominator
 from polylogue.schemas.provider_reconciliation import (
     ProviderMatrix,
@@ -35,7 +36,7 @@ from polylogue.schemas.source_frontier import (
     SchemaFrontier,
 )
 
-CONFIGURATION: JSONDocument = {"privacy_level": "standard", "source_selection": "declared_frontier"}
+CONFIGURATION: JSONDocument = PrivacyConfig().to_payload()
 
 
 def _denominator(*subjects: DenominatorSubject) -> ProviderDenominator:
@@ -117,6 +118,7 @@ def _receipt(
         "exit_code": exit_code,
         "argv": ["devtools", "schema", "commit", "--provider", token, "--full-corpus", "--frontier"],
         "result": {
+            "inference_configuration": CONFIGURATION,
             "provider": token,
             "success": exit_code == 0,
             "sample_count": samples,
@@ -280,6 +282,7 @@ def test_zero_eligible_material_needs_the_frontier_to_agree() -> None:
         "exit_code": 0,
         "argv": ["devtools", "schema", "commit", "--provider", "grok", "--full-corpus", "--frontier"],
         "result": {
+            "inference_configuration": CONFIGURATION,
             "provider": "grok",
             "success": False,
             "terminal": "zero_eligible_material",
@@ -506,3 +509,103 @@ def test_a_generated_subject_also_needs_a_reconciled_denominator() -> None:
     )
     assert conserved.subjects[0].outcome == "generated"
     assert conserved.ok
+
+
+@pytest.mark.parametrize("recorded", [None, "malformed", {"level": "permissive"}])
+def test_reconciliation_refuses_unbound_or_mismatched_policy(recorded: object) -> None:
+    receipt = _receipt("codex", candidates=1, included=1, samples=1, statuses=("changed",))
+    result = receipt["result"]
+    assert isinstance(result, dict)
+    result["inference_configuration"] = recorded
+    with pytest.raises(ValueError, match="inference configuration"):
+        _reconcile(_denominator(_required("codex")), _frontier("codex", members=1), [receipt])
+
+
+@pytest.mark.parametrize("privacy", [None, "standard", "permissive"])
+def test_reconcile_cli_checks_receipt_policy_before_writing(
+    privacy: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    import json
+
+    from devtools import schema_reconcile
+    from polylogue.schemas import provider_reconciliation
+
+    frontier = _frontier("codex", members=1)
+    monkeypatch.setattr(schema_reconcile, "load_frontier", lambda _path: frontier)
+    monkeypatch.setattr(schema_reconcile, "check_frontier", _check)
+    monkeypatch.setattr(
+        provider_reconciliation, "derive_provider_denominator", lambda: _denominator(_required("codex"))
+    )
+    receipt = _receipt("codex", candidates=1, included=1, samples=1, statuses=("changed",))
+    result = receipt["result"]
+    assert isinstance(result, dict)
+    policy = PrivacyConfig(level="permissive").to_payload()
+    result["inference_configuration"] = policy
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    (receipts / "codex.json").write_text(json.dumps(receipt))
+    destination = tmp_path / "matrix.json"
+    destination.write_text("existing matrix")
+    args = ["--receipts", str(receipts), "--write", str(destination), "--json", "--code-revision", "synthetic"]
+    if privacy is not None:
+        args.extend(["--privacy", privacy])
+    exit_code = schema_reconcile.main(args)
+    output = capsys.readouterr()
+    if privacy == "permissive":
+        assert exit_code == 0
+        assert json.loads(output.out)["inference_configuration"] == policy
+        assert json.loads(destination.read_text())["inference_configuration"] == policy
+    else:
+        assert exit_code == 1
+        assert output.out == ""
+        assert destination.read_text() == "existing matrix"
+
+
+def test_policy_payload_preserves_all_custom_fields_and_rule_order() -> None:
+    from polylogue.schemas.operator.inference import privacy_config_from_payload
+
+    policy = PrivacyConfig(
+        level="strict",
+        safe_enum_max_length=19,
+        high_entropy_min_length=7,
+        cross_conv_min_count=11,
+        cross_conv_proportional=False,
+        field_overrides={"specific.*": "deny", "*": "allow"},
+        allow_value_patterns=["z*", "a*"],
+        deny_value_patterns=["first*", "second*"],
+    )
+    import json
+
+    rebuilt = privacy_config_from_payload(json.loads(json.dumps(policy.to_payload(), sort_keys=True)))
+    assert rebuilt is not None
+    assert rebuilt.to_payload() == policy.to_payload()
+    assert list(rebuilt.field_overrides) == ["specific.*", "*"]
+    assert rebuilt.allow_value_patterns == ["z*", "a*"]
+
+
+@pytest.mark.parametrize("change", ["rule_order", "bool_as_int"])
+def test_reconciliation_preserves_wire_rule_order_and_json_types(change: str) -> None:
+    policy = PrivacyConfig(field_overrides={"specific.*": "deny", "*": "allow"}).to_payload()
+    receipt = _receipt("codex", candidates=1, included=1, samples=1, statuses=("changed",))
+    result = receipt["result"]
+    assert isinstance(result, dict)
+    recorded = dict(policy)
+    if change == "rule_order":
+        rules = recorded["field_overrides"]
+        assert isinstance(rules, list)
+        recorded["field_overrides"] = list(reversed(rules))
+    else:
+        recorded["cross_conv_proportional"] = 0
+    result["inference_configuration"] = recorded
+    with pytest.raises(ValueError, match="inference configuration"):
+        reconcile_provider_matrix(
+            frontier=_frontier("codex", members=1),
+            check=_check(_frontier("codex", members=1)),
+            receipts=load_receipts([receipt]),
+            code_revision="synthetic",
+            inference_configuration=policy,
+            denominator=_denominator(_required("codex")),
+        )

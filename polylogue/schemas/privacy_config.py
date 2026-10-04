@@ -14,6 +14,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
+from polylogue.core.json import JSONDocument
 from polylogue.paths import config_root
 
 if sys.version_info >= (3, 11):
@@ -108,6 +109,21 @@ class PrivacyConfig:
             standard = _PRESETS["standard"]
             if getattr(self, attr) == standard.get(attr) and attr in preset:
                 setattr(self, attr, preset[attr])
+
+    def to_payload(self) -> JSONDocument:
+        """Record the complete resolved policy, preserving ordered rule precedence."""
+        return {
+            "level": self.level,
+            "safe_enum_max_length": self.safe_enum_max_length,
+            "high_entropy_min_length": self.high_entropy_min_length,
+            "cross_conv_min_count": self.cross_conv_min_count,
+            "cross_conv_proportional": self.cross_conv_proportional,
+            "field_overrides": [
+                {"pattern": pattern, "action": action} for pattern, action in self.field_overrides.items()
+            ],
+            "allow_value_patterns": list(self.allow_value_patterns),
+            "deny_value_patterns": list(self.deny_value_patterns),
+        }
 
     def effective_cross_conv_threshold(self, corpus_size: int) -> int:
         """Compute the effective cross-session threshold."""

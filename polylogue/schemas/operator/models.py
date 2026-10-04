@@ -413,6 +413,7 @@ class SchemaCommitResult:
     generation: GenerationResult
     versions: tuple[SchemaVersionCommitReport, ...]
     dry_run: bool
+    inference_configuration: JSONDocument
     handoff: SchemaInferenceReceipt | None = None
     handoff_path: Path | None = None
 
@@ -433,6 +434,7 @@ class SchemaCommitResult:
             "dry_run": self.dry_run,
             "sample_count": self.generation.sample_count,
             "phase_receipt": self.generation.phase_receipt,
+            "inference_configuration": self.inference_configuration,
             "versions": [report.to_dict() for report in self.versions],
             "handoff": self.handoff.to_payload() if self.handoff is not None else None,
             "handoff_path": str(self.handoff_path) if self.handoff_path is not None else None,

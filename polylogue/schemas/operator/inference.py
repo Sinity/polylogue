@@ -67,10 +67,24 @@ def _privacy_level(value: object) -> PrivacyLevel:
     return "standard"
 
 
-def _string_mapping(value: object) -> dict[str, str]:
-    if not isinstance(value, Mapping):
+def _field_rules(value: object) -> dict[str, str]:
+    if value is None:
         return {}
-    return {key: item for key, item in value.items() if isinstance(key, str) and isinstance(item, str)}
+    if not isinstance(value, list):
+        raise ValueError("field_overrides must be an ordered list of pattern/action rules")
+    rules: dict[str, str] = {}
+    for rule in value:
+        if (
+            not isinstance(rule, Mapping)
+            or not isinstance(rule.get("pattern"), str)
+            or not isinstance(rule.get("action"), str)
+        ):
+            raise ValueError("field_overrides requires pattern/action strings")
+        pattern, action = rule["pattern"], rule["action"]
+        if pattern in rules:
+            raise ValueError("field_overrides contains a duplicate pattern")
+        rules[pattern] = action
+    return rules
 
 
 def _string_list(value: object) -> list[str]:
@@ -105,7 +119,7 @@ def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | Non
         high_entropy_min_length=high_entropy_min_length if isinstance(high_entropy_min_length, int) else 10,
         cross_conv_min_count=cross_conv_min_count if isinstance(cross_conv_min_count, int) else 3,
         cross_conv_proportional=bool(payload.get("cross_conv_proportional", False)),
-        field_overrides=_string_mapping(field_overrides),
+        field_overrides=_field_rules(field_overrides),
         allow_value_patterns=_string_list(allow_patterns),
         deny_value_patterns=_string_list(deny_patterns),
     )
