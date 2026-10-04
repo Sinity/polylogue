@@ -1531,6 +1531,19 @@ class TestReaderSessionState:
         resolved_payload = cast(dict[str, object], result["payload"])
         assert resolved_payload["id"] == "claude-code-session:c1"
 
+    @pytest.mark.parametrize("page_query", ["limit=0", "offset=-1", "limit=invalid", "offset=invalid"])
+    def test_ref_resolve_route_refuses_invalid_page_as_client_error(
+        self, workspace_env: dict[str, Path], page_query: str
+    ) -> None:
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(
+                base_url, f"/api/refs/resolve?ref={quote('delegation:subtree:claude-code-session:c1')}&{page_query}"
+            )
+        assert status == HTTPStatus.BAD_REQUEST
+        assert payload["error"] == "invalid_argument"
+        assert payload["ok"] is False
+        assert set(payload) == {"ok", "error", "detail", "field"}
+
     def test_ref_resolution_is_one_implementation_for_the_daemon_and_the_facade(
         self, workspace_env: dict[str, Path]
     ) -> None:
