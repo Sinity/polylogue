@@ -139,7 +139,12 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
                 projection="orchestration",
             )
         )
-    assert result == payload
+    assert {key: value for key, value in result.items() if key != "outcome"} == {
+        key: value for key, value in payload.items() if key != "outcome"
+    }
+    assert result["outcome"]["state"] == payload["outcome"]
+    assert result["outcome"]["detail"]["gaps"] == payload["gaps"]
+    assert result["outcome"]["reason"] in payload["gaps"]
     assert missing["code"] == "not_found"
 
 

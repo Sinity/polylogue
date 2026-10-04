@@ -1069,6 +1069,33 @@ class TestMaintenanceConfirmGates:
         assert result.get("code") == "daemon_required"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("session_ids", [None, [], ["codex-session:one"]])
+    async def test_rebuild_insights_preserves_explicit_session_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_ids: list[str] | None
+    ) -> None:
+        from polylogue.mcp import server_cutover
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        async def dispatch(hooks: object, name: str, payload: dict[str, object]) -> str:
+            calls.append((name, payload))
+            return json.dumps({"outcome": {"state": "ok"}})
+
+        monkeypatch.setattr(server_cutover, "_daemon_operation", dispatch)
+        with installed_runtime_services(archive_root):
+            await invoke_surface_async(
+                server._tool_manager._tools["maintenance"].fn,
+                operation="rebuild_insights",
+                confirm=True,
+                session_ids=session_ids,
+            )
+        assert calls == [("maintenance.insights.rebuild", {"session_ids": session_ids})]
+
+    @pytest.mark.asyncio
     async def test_rebuild_insights_with_confirm_names_its_sealed_owner(self, tmp_path: Path) -> None:
         """A confirmed MCP rebuild is refused with the route the caller can take.
 
