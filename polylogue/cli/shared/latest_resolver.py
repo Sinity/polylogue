@@ -97,8 +97,8 @@ def resolve_session_id_from_root_params(
 
     Order:
 
-    1. Returns the value at ``root_params["conv_id"]`` if set (explicit
-       ``--id`` or positional from the calling command).
+    1. Returns an explicit ID directly only when it is the whole selection.
+       Additional predicates still resolve through the canonical query.
     2. Otherwise, if ``--latest`` is set or any narrowing filter
        (``--origin``, ``--tag``, ``--since`` etc.) is present, resolves
        through :func:`resolve_single_session_id`.
@@ -109,13 +109,14 @@ def resolve_session_id_from_root_params(
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.shared.helper_support import mutation_refusal
 
-    explicit = cast("str | None", root_params.get("conv_id"))
-    if explicit:
-        return explicit
+    request = RootModeRequest.from_params(dict(root_params))
+    spec = request.query_spec()
+    if spec.is_exact_session_ref():
+        return spec.session_id
 
     try:
         return resolve_single_session_id(
-            RootModeRequest.from_params(dict(root_params)),
+            request,
             env=env,
             operation=operation,
             first_only=first_only,

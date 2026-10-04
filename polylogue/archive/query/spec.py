@@ -683,6 +683,10 @@ class SessionQuerySpec:
         """Human-readable filter descriptions for UX/error output."""
         return describe_query_spec(self)
 
+    def is_exact_session_ref(self) -> bool:
+        """Identity alone may read directly; every additional predicate selects."""
+        return bool(self.session_id and not replace(self, session_id=None).has_filters())
+
     def has_filters(self) -> bool:
         """Whether the spec narrows session selection."""
         return query_spec_has_filters(self)
