@@ -2236,6 +2236,21 @@ def test_fork_pages_and_completeness_skip_full_hydration(tmp_path: Path, monkeyp
             assert [record.text for record in page] == ["child diverges here"]
             assert total == 2
             assert (await _message_query_reads_module.get_lineage_completeness(reader, child_id)).complete
+            stream = iter_messages(reader, child_id, chunk_size=1)
+            assert (await anext(stream)).text == "hello"
+            assert reader.in_transaction
+            await stream.aclose()
+            assert not reader.in_transaction
+            assert [row.text async for row in iter_messages(reader, child_id, chunk_size=1)] == [
+                "hello",
+                "hi there",
+                "child diverges here",
+                "child reply",
+            ]
+            assert [
+                row.text
+                async for row in iter_messages(reader, child_id, chunk_size=1, message_roles=(Role.USER,), limit=1)
+            ] == ["hello"]
             row_reads = [sql for sql in statements if "SELECT" in sql and "FROM messages m JOIN sessions s" in sql]
             assert row_reads
             assert all(" LIMIT " in sql for sql in row_reads)
@@ -5521,3 +5536,78 @@ def test_parent_replacement_preserves_already_inherited_attachments(
             assert all(owner != parent_id for owner, _, _ in attachments)
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         assert conn.execute("SELECT COUNT(*) FROM attachments WHERE ref_count <= 0").fetchone()[0] == 0
+
+
+def test_inherited_stream_hydrates_only_message_owned_attachments_in_one_snapshot(tmp_path: Path) -> None:
+    from collections.abc import AsyncIterator
+    from contextlib import aclosing, asynccontextmanager, closing
+
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
+
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
+    parent = _codex_session("parent", ["m0", "m1", "m2"]).model_copy(
+        update={
+            "attachments": [
+                _prefix_attachment("m1", caption="original"),
+                _prefix_attachment("m2").model_copy(
+                    update={"provider_attachment_id": "outside", "name": "outside.txt"}
+                ),
+            ]
+        }
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={
+            "attachments": [
+                _prefix_attachment("m1", caption="original"),
+                _prefix_attachment("x2", caption="original tail").model_copy(
+                    update={"provider_attachment_id": "tail", "name": "tail.txt"}
+                ),
+            ]
+        }
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    conn.commit()
+    conn.close()
+
+    async def exercise() -> None:
+        held: list[aiosqlite.Connection] = []
+
+        @asynccontextmanager
+        async def connection() -> AsyncIterator[aiosqlite.Connection]:
+            async with aiosqlite.connect(db) as reader:
+                reader.row_factory = aiosqlite.Row
+                held.append(reader)
+                yield reader
+
+        queries = SQLiteQueryStore(connection_factory=connection)
+        async with aclosing(queries.iter_messages(child_id, chunk_size=2)) as stream:
+            first = await anext(stream)
+            assert first.provider_message_id == "m0"
+            assert held[-1].in_transaction
+            with closing(_connect(db)) as writer:
+                writer.execute("UPDATE attachment_refs SET caption = 'changed'")
+                writer.commit()
+            rest = [record async for record in stream]
+            assert [record.provider_message_id for record in rest] == ["m1", "x2"]
+            assert [(a.session_id, a.display_name, a.caption) for a in rest[0].attachments] == [
+                (parent_id, "shared.txt", "original")
+            ]
+            assert not first.attachments
+            assert [(a.session_id, a.display_name, a.caption) for a in rest[1].attachments] == [
+                (child_id, "tail.txt", "original tail")
+            ]
+            assert all(a.display_name != "outside.txt" for record in rest for a in record.attachments)
+        eager = await queries.get_messages(child_id)
+        page, total, completeness = await queries.get_messages_paginated(child_id, limit=3)
+        grouped = await queries.get_messages_batch([child_id])
+        assert total == 3 and completeness.complete
+        for records in (eager, page, grouped[child_id]):
+            assert [record.provider_message_id for record in records] == ["m0", "m1", "x2"]
+            assert [(a.session_id, a.display_name, a.caption) for a in records[1].attachments] == [
+                (parent_id, "shared.txt", "changed")
+            ]
+
+    asyncio.run(exercise())

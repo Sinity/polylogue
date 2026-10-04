@@ -231,6 +231,7 @@ class SQLiteArchiveMixin:
         *,
         chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
+        material_origin: MaterialOriginFilter | None = None,
         limit: int | None = None,
     ) -> AsyncGenerator[MessageRecord, None]:
         """Stream messages in chunks instead of loading all at once."""
@@ -239,6 +240,7 @@ class SQLiteArchiveMixin:
                 session_id,
                 chunk_size=chunk_size,
                 message_roles=message_roles,
+                material_origin=material_origin,
                 limit=limit,
             )
         ) as messages:
