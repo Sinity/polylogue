@@ -123,3 +123,14 @@ UDS and HTTP operation responses encode into private temporary scratch before he
 Backup and verified restore bind the daemon version and control authority without an implicit Index version precondition. Their declared tier copy and recovery paths remain available when the derived Index is missing or skewed. An explicitly supplied Index precondition is preserved and refused when that control snapshot cannot prove it.
 
 Context compilation submits its disposable scheduler ledger with the compilation start time in milliseconds. Every ledger producer supplies that time explicitly; the resident writer preserves it and refuses a request that omits it rather than inventing an epoch-zero observation.
+
+## Resident insight pages
+
+The eleven registered `analyze insights` list commands call `insights.list`
+through the daemon. Its closed discriminated request and result branches use
+the registry's existing query and item models. The canonical page reader is
+shared with the Python facade and executes on the resident pinned archive
+snapshot: origin tag rollups are merged before paging, and cost estimates are
+enriched and filtered before paging. Missing daemon or unavailable insight
+authority refuses instead of opening a local archive. Special readiness,
+export, health and rigor commands retain their separate existing routes.

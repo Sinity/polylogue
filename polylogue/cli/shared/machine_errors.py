@@ -350,6 +350,8 @@ _JSON_FORMAT_FLAGS = ("--format", "--output-format", "-f")
 def wants_json(argv: list[str]) -> bool:
     """Detect JSON machine-output intent from raw argv before Click parses."""
     for index, arg in enumerate(argv):
+        if arg == "--json":
+            return True
         for flag in _JSON_FORMAT_FLAGS:
             if arg == flag and index + 1 < len(argv) and argv[index + 1] == "json":
                 return True

@@ -150,7 +150,7 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
     params = insights_module._build_click_params(insight_type)
     command = insights_module._build_insight_command(insight_type)
 
-    assert [param.name for param in params] == ["provider", "limit", "offset", "output_format"]
+    assert [param.name for param in params] == ["provider", "limit", "output_format", "offset", "output_format"]
     assert command.name == "test-insight"
     assert command.help == "List test insights."
 
@@ -158,23 +158,36 @@ def test_build_click_params_and_insight_command_cover_dynamic_registration() -> 
 def test_make_callback_renders_insights_and_surfaces_query_errors() -> None:
     callback = insights_module._make_callback(get_insight_type("session_profiles"))
     raw_callback = getattr(callback, "__wrapped__", callback)
-    env = SimpleNamespace(polylogue=MagicMock())
+    env = SimpleNamespace(config=MagicMock())
     ctx = click.Context(click.Command("profiles"))
     ctx.obj = env
 
     request = SimpleNamespace(query_kwargs={"limit": 1}, wants_json=True)
+    result = {
+        "page": {"insight": "session_profiles", "items": [], "total": 0},
+        "outcome": {"state": "empty", "reason": "no_rows_in_scope", "detail": {}},
+    }
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
-        with patch("polylogue.cli.commands.insights.fetch_insights", return_value=["row"]) as fetch_insights:
+        with patch("polylogue.cli.commands.insights.dispatch_read", return_value=(result, "daemon")) as dispatch:
             with patch("polylogue.cli.commands.insights.render_insight_items") as render_items:
                 raw_callback(ctx, output_format="json")
 
-    fetch_insights.assert_called_once()
-    render_items.assert_called_once_with(["row"], get_insight_type("session_profiles"), json_mode=True)
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[0] is env.config
+    operation = dispatch.call_args.args[1]
+    assert operation.operation == "insights.list"
+    assert operation.payload == {"page": {"insight": "session_profiles", "query": {"limit": 1}}}
+    render_items.assert_called_once()
+    assert render_items.call_args.args == ([], get_insight_type("session_profiles"))
+    assert render_items.call_args.kwargs["json_mode"] is True
+    assert render_items.call_args.kwargs["outcome"].state == "empty"
 
     with patch("polylogue.cli.commands.insights.InsightCommandRequest.from_context", return_value=request):
-        with patch("polylogue.cli.commands.insights.fetch_insights", side_effect=InsightQueryError("bad query")):
-            with pytest.raises(SystemExit, match="insights profiles: bad query"):
-                raw_callback(ctx, output_format=None)
+        with patch("polylogue.cli.commands.insights.build_insight_query", side_effect=InsightQueryError("bad query")):
+            with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
+                with pytest.raises(SystemExit, match="insights profiles: bad query"):
+                    raw_callback(ctx, output_format=None)
+                dispatch.assert_not_called()
 
 
 def test_status_wants_json_checks_command_and_root_flags() -> None:

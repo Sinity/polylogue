@@ -33,10 +33,12 @@ from polylogue.analysis.registry import (
     INSIGHT_REGISTRY,
     InsightQueryError,
     InsightType,
-    fetch_insights,
+    build_insight_query,
     render_insight_items,
 )
 from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.cli.operation_kernel import OperationRequest
+from polylogue.cli.read_dispatch import dispatch_read
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import (
     InsightCommandInputError,
@@ -131,10 +133,21 @@ def _make_callback(pt: InsightType) -> Callable[..., None]:
                 kwargs=kwargs,
                 inherited_root_keys=accepted_root_keys,
             )
-            items = fetch_insights(pt, env.polylogue, **request.query_kwargs)
+            build_insight_query(pt, **request.query_kwargs)
+            result, _served_by = dispatch_read(
+                env.config,
+                OperationRequest("insights.list", {"page": {"insight": pt.name, "query": request.query_kwargs}}),
+            )
+            from polylogue.operations.insight_contracts import InsightListResult
+
+            parsed = InsightListResult.model_validate(result)
+            page = parsed.page
+            if page.insight != pt.name:
+                raise click.ClickException("resident insight page belongs to a different query type")
+            items = page.items
         except (ArchiveInsightUnavailableError, InsightCommandInputError, InsightQueryError) as exc:
             fail(f"insights {pt.resolved_cli_command_name}", str(exc))
-        render_insight_items(items, pt, json_mode=request.wants_json)
+        render_insight_items(items, pt, json_mode=request.wants_json, outcome=parsed.outcome)
 
     return callback
 

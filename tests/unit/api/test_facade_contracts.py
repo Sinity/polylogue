@@ -37,6 +37,7 @@ import pytest
 
 import polylogue.api.archive as archive_module
 from polylogue import Polylogue
+from polylogue.analysis import insight_reads
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.importer import AnnotationBatchImportRequest
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema, AnnotationSchemaRegistry
@@ -7104,7 +7105,6 @@ def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
     from types import SimpleNamespace
 
     from polylogue.analysis.archive import SessionCostInsightQuery
-    from polylogue.api import insights as insights_api
 
     rows = [
         SimpleNamespace(
@@ -7122,11 +7122,11 @@ def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
             page = rows[offset:] if limit is None else rows[offset : offset + limit]
             yield from page
 
-    monkeypatch.setattr(insights_api, "enrich_session_cost_insight", lambda archive, insight: insight)
+    monkeypatch.setattr(insight_reads, "enrich_session_cost_insight", lambda archive, insight: insight)
 
     archive = cast("ArchiveStore", _Archive())
-    by_status = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(status="priced", limit=1))
-    by_model = insights_api._session_cost_insight_page(archive, SessionCostInsightQuery(model="m", limit=1, offset=1))
+    by_status = insight_reads._session_cost_insight_page(archive, SessionCostInsightQuery(status="priced", limit=1))
+    by_model = insight_reads._session_cost_insight_page(archive, SessionCostInsightQuery(model="m", limit=1, offset=1))
 
     assert [insight.session_id for insight in by_status] == ["older"]
     assert [insight.session_id for insight in by_model] == ["older"]

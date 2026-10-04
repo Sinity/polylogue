@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import itertools
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from polylogue.analysis.archive import (
     ArchiveCoverageInsight,
@@ -28,9 +27,8 @@ from polylogue.analysis.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.analysis.cost_enrichment import enrich_session_cost_insight, enrich_session_cost_insights
+from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT, CompactLineageGraph
-from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.analysis.topology import (
@@ -118,48 +116,6 @@ if TYPE_CHECKING:
         ) -> list[ArchiveDebtInsight]: ...
 
 
-def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsightQuery) -> list[SessionCostInsight]:
-    """One page of enriched session cost insights, filtered before the page cut.
-
-    ``status`` and ``model`` are decided on the *enriched* estimate, so neither
-    can be pushed into the archive query: filtering an already-cut page would
-    answer "of the newest N, the matching ones". The matched scope is scanned
-    in one forward pass until the requested page is full.
-    """
-
-    def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
-        return archive.iter_session_cost_insights(
-            session_id=request.session_id,
-            origin=request.origin,
-            since_ms=_archive_query_date_ms("since", request.since),
-            until_ms=_archive_query_date_ms("until", request.until),
-            limit=limit,
-            offset=offset,
-        )
-
-    if request.status is None and request.model is None:
-        return enrich_session_cost_insights(archive, list(scan(limit=request.limit, offset=request.offset)))
-
-    def matches(insight: SessionCostInsight) -> bool:
-        if request.status is not None and insight.estimate.status != request.status:
-            return False
-        return request.model is None or request.model in {
-            insight.estimate.normalized_model,
-            insight.estimate.model_name,
-        }
-
-    # One forward scan of the matched scope: ``islice`` skips the offset
-    # without retaining it and stops as soon as the page is full.
-    matching = (
-        enriched
-        for enriched in (enrich_session_cost_insight(archive, insight) for insight in scan())
-        if matches(enriched)
-    )
-    start = max(int(request.offset), 0)
-    stop = None if request.limit is None else start + max(int(request.limit), 0)
-    return list(itertools.islice(matching, start, stop))
-
-
 class _RepositorySurface(Protocol):
     async def get_session_topology(
         self,
@@ -215,52 +171,21 @@ class PolylogueInsightsMixin:
         query: SessionTagRollupQuery | None = None,
     ) -> list[SessionTagRollupInsight]:
         request = query or SessionTagRollupQuery()
-        since_ms = _archive_query_date_ms("since", request.since)
-        until_ms = _archive_query_date_ms("until", request.until)
-
-        def read(archive: ArchiveStore) -> tuple[list[SessionTagRollupInsight], list[SessionTagRollupInsight]]:
-            # The archive rebuild does not write ``origin:<name>`` rows into
-            # session_tags (origin identity lives on sessions.origin), so the
-            # archive read only returns explicit/auto tags. Synthesize the
-            # origin rollups to preserve the legacy ``insights tags``
-            # contract, then merge them with the materialized tag rollups.
-            materialized = archive.list_session_tag_rollup_insights(
-                origin=request.origin,
-                query=request.query,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                limit=None,
-                offset=0,
-            )
-            origin_rollups = synthesize_origin_tag_rollups(
-                archive,
-                origin=request.origin,
-                query=request.query,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                materialized_at=datetime.now(UTC).isoformat(),
-            )
-            return materialized, origin_rollups
-
-        materialized, origin_rollups = await run_archive_read(
+        return await run_archive_read(
             _active_archive_root(self.config),
             operation="insights.session_tag_rollups",
-            arguments={"origin": request.origin, "query": request.query, "since": since_ms, "until": until_ms},
-            work=read,
+            arguments={
+                "origin": request.origin,
+                "query": request.query,
+                "since": _archive_query_date_ms("since", request.since),
+                "until": _archive_query_date_ms("until", request.until),
+            },
+            work=lambda archive: cast(list[SessionTagRollupInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="tag-rollups",
             stable_order="session_count:desc,tag",
         )
-        rollups = sorted(
-            [*materialized, *origin_rollups],
-            key=lambda rollup: (-rollup.session_count, rollup.tag),
-        )
-        if request.offset:
-            rollups = rollups[request.offset :]
-        if request.limit is not None:
-            rollups = rollups[: max(int(request.limit), 0)]
-        return rollups
 
     async def get_thread_insight(self, thread_id: str) -> ThreadInsight | None:
         return await run_archive_read(
@@ -280,13 +205,7 @@ class PolylogueInsightsMixin:
             _active_archive_root(self.config),
             operation="insights.thread.list",
             arguments={"query": request.query, "since": request.since, "until": request.until},
-            work=lambda archive: archive.list_thread_insights(
-                query=request.query,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            ),
+            work=lambda archive: cast(list[ThreadInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="thread-insights",
@@ -307,14 +226,7 @@ class PolylogueInsightsMixin:
                 "since": request.since,
                 "until": request.until,
             },
-            work=lambda archive: archive.list_archive_coverage_insights(
-                group_by=request.group_by,
-                origin=request.origin,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            ),
+            work=lambda archive: cast(list[ArchiveCoverageInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="archive-coverage",
@@ -329,7 +241,9 @@ class PolylogueInsightsMixin:
             _active_archive_root(self.config),
             operation="insights.tool_usage.list",
             arguments={"query": query},
-            work=lambda archive: archive.list_tool_usage_insights(query),
+            work=lambda archive: cast(
+                list[ToolUsageInsight], read_insight_page(archive, query or ToolUsageInsightQuery())
+            ),
             page_size=getattr(query, "limit", None),
             offset=getattr(query, "offset", 0),
             projection="tool-usage",
@@ -341,7 +255,9 @@ class PolylogueInsightsMixin:
             _active_archive_root(self.config),
             operation="insights.tool_episodes.list",
             arguments={"query": query},
-            work=lambda archive: archive.list_tool_episode_insights(query),
+            work=lambda archive: cast(
+                list[ToolEpisodeInsight], read_insight_page(archive, query or ToolEpisodeQuery())
+            ),
             page_size=getattr(query, "limit", None),
             offset=getattr(query, "offset", 0),
             projection="tool-episodes",
@@ -357,7 +273,7 @@ class PolylogueInsightsMixin:
             _active_archive_root(self.config),
             operation="insights.command_shapes.list",
             arguments={"query": request},
-            work=lambda archive: archive.list_command_shape_usage(request),
+            work=lambda archive: cast(list[CommandShapeUsage], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="command-shapes",
@@ -382,7 +298,7 @@ class PolylogueInsightsMixin:
                 "limit": request.limit,
                 "offset": request.offset,
             },
-            work=lambda archive: _session_cost_insight_page(archive, request),
+            work=lambda archive: cast(list[SessionCostInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="session-cost",
@@ -485,14 +401,7 @@ class PolylogueInsightsMixin:
                 "since": request.since,
                 "until": request.until,
             },
-            work=lambda archive: archive.list_cost_rollup_insights(
-                origin=request.origin,
-                model=request.model,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            ),
+            work=lambda archive: cast(list[CostRollupInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="cost-rollup",
@@ -515,15 +424,7 @@ class PolylogueInsightsMixin:
                 "since": request.since,
                 "until": request.until,
             },
-            work=lambda archive: archive.list_usage_timeline_insights(
-                origin=request.origin,
-                model=request.model,
-                group_by=request.group_by,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                limit=request.limit,
-                offset=request.offset,
-            ),
+            work=lambda archive: cast(list[UsageTimelineInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="usage-timeline",
@@ -540,12 +441,7 @@ class PolylogueInsightsMixin:
             _active_archive_root(self.config),
             operation="insights.archive_debt.list",
             arguments={"category": request.category, "only_actionable": request.only_actionable},
-            work=lambda archive: archive.list_archive_debt_insights(
-                category=request.category,
-                only_actionable=request.only_actionable,
-                limit=request.limit,
-                offset=request.offset,
-            ),
+            work=lambda archive: cast(list[ArchiveDebtInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="archive-debt",

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
 import click
 
@@ -46,6 +46,9 @@ from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuer
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.core.errors import PolylogueError
 from polylogue.core.evidence_families import fact_family_schema
+
+if TYPE_CHECKING:
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 InsightAccessor: TypeAlias = Callable[[ArchiveInsightModel], str]
 
@@ -222,13 +225,17 @@ def render_insight_items(
     insight_type: InsightType,
     *,
     json_mode: bool = False,
+    outcome: OutcomeEnvelope | None = None,
 ) -> None:
     """Render insight items using the insight type descriptor."""
 
     if json_mode:
         from polylogue.surfaces.machine_envelope import emit_success
 
-        emit_success(insight_items_payload(items, insight_type))
+        payload = insight_items_payload(items, insight_type)
+        if outcome is not None:
+            payload["outcome"] = outcome.to_dict()
+        emit_success(payload)
         return
 
     if not items:
@@ -902,7 +909,7 @@ class InsightQueryError(PolylogueError):
     http_status_code = 400
 
 
-def _build_query(
+def build_insight_query(
     insight_type: InsightType,
     **kwargs: object,
 ) -> ArchiveInsightModel:
@@ -931,7 +938,7 @@ def fetch_insights(
 
     from polylogue.core.async_bridge import run_coroutine_sync
 
-    query = _build_query(insight_type, **kwargs)
+    query = build_insight_query(insight_type, **kwargs)
     method = getattr(operations, insight_type.operations_method_name)
     return list(run_coroutine_sync(method(query)))
 
@@ -943,7 +950,7 @@ async def fetch_insights_async(
 ) -> list[ArchiveInsightModel]:
     """Async variant of ``fetch_insights()``."""
 
-    query = _build_query(insight_type, **kwargs)
+    query = build_insight_query(insight_type, **kwargs)
     method = getattr(operations, insight_type.operations_method_name)
     return list(await method(query))
 
@@ -960,6 +967,7 @@ __all__ = [
     "RetentionVerdict",
     "RetiredInsightType",
     "unverdicted_insight_types",
+    "build_insight_query",
     "fetch_insights",
     "fetch_insights_async",
     "get_insight_type",
