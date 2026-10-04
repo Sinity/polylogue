@@ -529,7 +529,15 @@ describe("ChatGPT continuous generation observation", () => {
       await vi.advanceTimersByTimeAsync(1000);
       expect(hints.flatMap(hint => hint.generation_observations || []).map(observation => observation.state)).toContain("completed");
       expect(hints.every(hint => hint.provider_session_id === "conversation-1")).toBe(true);
-    } finally { dom.window.close(); vi.useRealTimers(); }
+      const count = hints.length;
+      dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+      article.append(stop); text.textContent = "Mutation after page ownership ended";
+      await Promise.resolve(); await vi.advanceTimersByTimeAsync(1000);
+      expect(hints).toHaveLength(count);
+    } finally {
+      dom.window.dispatchEvent(new dom.window.Event("pagehide"));
+      dom.window.close(); vi.useRealTimers();
+    }
   });
 });
 

@@ -1183,6 +1183,11 @@
       characterData: true,
       subtree: true,
     });
+    window.addEventListener("pagehide", () => {
+      freshnessObserver.disconnect();
+      if (domFreshnessScanTimer) clearTimeout(domFreshnessScanTimer);
+      domFreshnessScanTimer = null;
+    });
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type !== "polylogue.capturePage") return false;
