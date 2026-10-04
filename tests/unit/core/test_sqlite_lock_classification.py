@@ -44,6 +44,8 @@ def test_shared_lock_codes_are_transient(predicate: _Predicate) -> None:
         errorcode=sqlite3.SQLITE_LOCKED | (1 << 8),
         errorname="SQLITE_LOCKED_SHAREDCACHE",
     )
+    protocol = _operational_error("WAL race", errorcode=sqlite3.SQLITE_PROTOCOL, errorname="SQLITE_PROTOCOL")
+    assert predicate(protocol) is True
     assert predicate(busy) is True
     assert predicate(locked) is True
     assert predicate(shared_cache) is True
@@ -163,3 +165,12 @@ def test_readiness_reports_unreadable_derived_models_instead_of_an_empty_mapping
         readiness_module._collect_table_status_best_effort(sqlite3.connect(":memory:"), deep=True, probe_only=False)
         == {}
     )
+
+
+@pytest.mark.parametrize("predicate", _PREDICATES)
+def test_protocol_name_is_transient_and_corruption_code_takes_precedence(predicate: _Predicate) -> None:
+    protocol = _operational_error("WAL race", errorcode=None, errorname="SQLITE_PROTOCOL")
+    assert predicate(protocol) is True
+    for code in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_IOERR):
+        error = _operational_error("locking protocol", errorcode=code, errorname="SQLITE_PROTOCOL")
+        assert predicate(error) is False

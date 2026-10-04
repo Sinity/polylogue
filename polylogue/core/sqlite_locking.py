@@ -5,15 +5,19 @@ from __future__ import annotations
 import sqlite3
 
 _SQLITE_PRIMARY_RESULT_CODE_MASK = 0xFF
-_TRANSIENT_SQLITE_LOCK_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED})
-_TRANSIENT_SQLITE_LOCK_NAMES = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_LOCKED_SHAREDCACHE"})
+_TRANSIENT_SQLITE_LOCK_CODES = frozenset({sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED, sqlite3.SQLITE_PROTOCOL})
+_TRANSIENT_SQLITE_LOCK_NAMES = frozenset(
+    {"SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_LOCKED_SHAREDCACHE", "SQLITE_PROTOCOL"}
+)
 _CORRUPT_SQLITE_CODES = frozenset({sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB, sqlite3.SQLITE_IOERR})
 _CORRUPT_SQLITE_NAME_PREFIXES = ("SQLITE_CORRUPT", "SQLITE_NOTADB", "SQLITE_IOERR")
 
 
 def is_transient_sqlite_lock(exc: BaseException) -> bool:
-    """Return whether SQLite reported retryable BUSY or LOCKED contention.
+    """Return whether SQLite reported retryable SQLite locking contention.
 
+    SQLITE_PROTOCOL reports a WAL lock race exhausted after repeated retries
+    (https://www.sqlite.org/rescode.html#protocol), not damaged input.
     Extended result codes such as ``SQLITE_LOCKED_SHAREDCACHE`` retain the
     ``SQLITE_LOCKED`` primary code in their low byte.  Prefer SQLite's typed
     result metadata over message text so corruption or I/O failures that happen
