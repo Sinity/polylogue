@@ -804,7 +804,6 @@ def _build_read_projection_spec(
             # query predicates such as typed_only, sort, and reference scope.
             # Passing only the fields repeated below made ReadRequest look
             # canonical while silently normalizing a reduced selection.
-            "selection": query_spec,
             "output_format": effective_format,
             "views": views,
             "destination": destination,
@@ -834,6 +833,7 @@ def _build_read_projection_spec(
             "include_assertions": include_assertions,
         },
         preset=primary_view,
+        selection=query_spec,
     )
     return selection_projection.model_copy(
         update={"projection": normalized_request.projection, "render": normalized_request.render}

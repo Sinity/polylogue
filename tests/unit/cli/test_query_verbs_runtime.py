@@ -13,6 +13,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
@@ -445,11 +446,13 @@ def test_read_request_normalization_receives_the_full_parsed_selection(monkeypat
     normalized_selections: list[object] = []
     normalize = ReadRequest.normalize
 
-    def recording_normalize(params: dict[str, object], *, preset: str | None = None) -> ReadRequest:
-        result = normalize(params, preset=preset)
+    def recording_normalize(
+        params: dict[str, object], *, preset: str | None = None, selection: SessionQuerySpec | None = None
+    ) -> ReadRequest:
+        result = normalize(params, preset=preset, selection=selection)
         # query_spec() also normalizes the root request. Only the projection
         # handoff carries both views and the full parsed selection.
-        if "views" in params and "selection" in params:
+        if "views" in params and selection is not None:
             normalized_selections.append(result.selection)
         return result
 

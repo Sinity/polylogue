@@ -37,7 +37,7 @@ def test_normalizer_owns_selection_projection_and_render() -> None:
 def test_normalizer_preserves_already_lowered_selection() -> None:
     selection = SessionQuerySpec.from_params({"query": "needle", "origin": "chatgpt-export", "filter_has_paste": True})
 
-    request = ReadRequest.normalize({"selection": selection}, preset="summary")
+    request = ReadRequest.normalize({}, preset="summary", selection=selection)
 
     assert request.selection is selection
     assert request.selection.filter_has_paste is True
@@ -55,9 +55,10 @@ def test_preset_catalog_and_schema_are_derived_from_the_registry() -> None:
     schema = read_contract_schema()
 
     assert tuple(entry["name"] for entry in catalog) == tuple(preset.name for preset in READ_PRESETS)
-    assert schema["properties"]["preset"]["enum"] == sorted(preset.name for preset in READ_PRESETS)
-    assert schema["properties"]["projection"]["fields"]
-    assert schema["properties"]["render"]["fields"]
+    assert schema["properties"]["preset"]["anyOf"][0]["enum"] == sorted(preset.name for preset in READ_PRESETS)
+    assert schema["additionalProperties"] is False
+    assert "required" not in schema
+    assert {"query", "views", "output_format"} <= schema["properties"].keys()
 
 
 def test_every_declared_read_view_is_normalizable() -> None:
@@ -114,3 +115,47 @@ def test_default_read_formats_belong_to_their_profile() -> None:
         }
         assert request.render.format in formats
         assert read_preset(profile.view_id).format == request.render.format
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"views": ["dialogue"], "query": "needle", "output_format": "json"},
+        {"max_tokens": "80", "redact_paths": "false"},
+    ],
+)
+def test_flat_machine_schema_accepts_normalizable_inputs(payload: dict[str, object]) -> None:
+    from jsonschema import Draft202012Validator
+
+    Draft202012Validator(read_contract_schema()).validate(payload)
+    request = ReadRequest.normalize(payload)
+    assert request.preset == "summary"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"selection": {}},
+        {"projection": {}},
+        {"render": {}},
+        {"unknown": True},
+        {"views": "dialogue"},
+        {"views": ["not-a-view"]},
+        {"query": {"text": "needle"}},
+        {"max_tokens": [80]},
+        {"max_tokens": "eighty"},
+        {"redact_paths": "perhaps"},
+        {"output_format": "not-a-format"},
+    ],
+)
+def test_flat_machine_schema_and_normalizer_refuse_malformed_shapes(payload: dict[str, object]) -> None:
+    from jsonschema import Draft202012Validator
+
+    assert list(Draft202012Validator(read_contract_schema()).iter_errors(payload))
+    with pytest.raises(ValueError):
+        ReadRequest.normalize(payload)
+
+
+def test_false_query_flag_uses_the_same_boolean_input_contract() -> None:
+    assert ReadRequest.normalize({"typed_only": "false"}).selection.typed_only is False

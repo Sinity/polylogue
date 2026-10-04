@@ -78,15 +78,12 @@ def _selection_params(request: RootModeRequest) -> dict[str, object]:
     refuses ranked combinations it cannot filter before ranking.
     """
 
-    # Imported under its private name deliberately: ``archive/query/spec.py``
-    # is IN the derived-schema identity closure, and adding a public alias
-    # there would move the identity (and invalidate a rebuild) for a rename.
-    from polylogue.archive.query.spec import _RECOGNIZED_PARAMS
+    from polylogue.archive.query.spec import QUERY_PARAMETER_NAMES
 
     return {
         key: value
         for key, value in request.params.items()
-        if key in _RECOGNIZED_PARAMS and value is not None and value not in ((), [])
+        if key in QUERY_PARAMETER_NAMES and value is not None and value not in ((), [])
     }
 
 

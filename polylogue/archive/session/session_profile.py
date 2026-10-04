@@ -4,6 +4,7 @@ from polylogue.archive.session.models import SessionAnalysis, SessionProfile
 from polylogue.archive.session.runtime import (
     build_session_analysis,
     build_session_profile,
+    build_session_terminal_state,
     infer_auto_tags,
 )
 
@@ -12,5 +13,6 @@ __all__ = [
     "SessionProfile",
     "build_session_analysis",
     "build_session_profile",
+    "build_session_terminal_state",
     "infer_auto_tags",
 ]

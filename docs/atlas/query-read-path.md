@@ -20,6 +20,22 @@ signalled by `find`, a quoted expression, or field syntax. The query DSL is
 lowered to SQL; it is not a grep-like post-filter. Pagination and cancellation
 are part of the route contract (`polylogue/archive/query/transaction.py:1-100`).
 
+## Shared read input
+
+`ReadRequest.normalize` and `read_contract_schema` share the flat input
+validation declaration. `{}` selects the summary preset. For example,
+`{"preset":"dialogue","query":"needle","output_format":"json"}` overrides
+selection and rendering; `views` is an array of declared view names. Unknown
+keys, nested `selection`/`projection`/`render` objects, and malformed values
+are refused. Query and projection owners additionally validate semantics.
+Python callers pass an already lowered `SessionQuerySpec` through the explicit
+`selection` keyword; it is not a machine input field.
+
+Hydrated session rows obtain terminal state from the canonical structural
+classifier without computing a full profile, costs, timing, or topics. Profile
+construction reuses its existing actions with that same classifier. Missing
+structural evidence remains `unknown`.
+
 ## Read identities
 
 Use generated session, message, and block identities for exact reads. Use
