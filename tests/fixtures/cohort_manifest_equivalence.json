@@ -1,0 +1,2257 @@
+{
+  "candidates": [
+    {
+      "object_ref": "delegation:z",
+      "dimensions": {
+        "origin": "\u00e9",
+        "model": "x"
+      },
+      "template_key": "same",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:a",
+      "dimensions": {
+        "origin": "a",
+        "model": "x"
+      },
+      "template_key": "same",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:c",
+      "dimensions": {
+        "origin": "a",
+        "model": null
+      },
+      "template_key": "other",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:b",
+      "dimensions": {
+        "origin": "a",
+        "model": "x"
+      },
+      "template_key": null,
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:d",
+      "dimensions": {
+        "origin": "\u00e9",
+        "model": "x"
+      },
+      "template_key": "",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:e",
+      "dimensions": {
+        "origin": "\u00e9",
+        "model": "y"
+      },
+      "template_key": "unknown",
+      "exclusion_reason": "edge_only"
+    },
+    {
+      "object_ref": "delegation:f",
+      "dimensions": {
+        "origin": "a",
+        "model": ""
+      },
+      "template_key": "same",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:g",
+      "dimensions": {
+        "origin": "\"",
+        "model": "y"
+      },
+      "template_key": "other",
+      "exclusion_reason": null
+    },
+    {
+      "object_ref": "delegation:h",
+      "dimensions": {
+        "origin": "a",
+        "model": "x"
+      },
+      "template_key": null,
+      "exclusion_reason": "unresolved"
+    }
+  ],
+  "cases": [
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "344fb96db7e7eed48878b1b1cc132bce19f67a3c0d4eee26246a284795da11c1",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "2a10e852bf55a0c092e9b1826648b4588d0f925bdf37eb40746d5eefc7185ffa",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "39ad657805938afa8afdafb66b5675c81e17c440700c30d8e76adda13ca93588",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "890149b51af348ec2183bb5cc1c82081795f7d54ccb9842b1fffa14a6721574d",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "7fb4f51ae6e711077fdf91a9a6be4d1d96b7ef803ce0278fc37b2f05a2cfbba1",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "f3534e9f237c69695e4cfe1b322e5153d6e152237e78b3dac84aba87c9b5cf2a",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "21140bed34d53ed6f3714fb8b1484bd98ddd27d5864156975341f7307b6a65ce",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "5e440e462580fff56e3658649dc78ba36bca0208cec89cd5b6ac1524d6f36afb",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "772b42707b749496d9f582dd6e36a04d56fbfacf9205d935289fada53371de0e",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "5b09c94a267f3745da12b07f95a4d383c30a687843c7ed45cfb93db7b61ed39f",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 13
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "9993af45368ea42cfe1a29ac82779e905413599f6212d415bff138fa319a6fc2",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 16
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "neutral",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "fcbc98b9435a10cd4802026053e8bf1f5745afb71fa5341417bcbd009a091477",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "neutral",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 14
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "72d6e3b9cccfbe87a7a5790fd60cd879f4b90256028784d8b33a476f0054e6f2",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "b8dda5b8239c538de28d3543bf110d71f51d1e18752d2170ed37072fad2cfe38",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 0,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "105ddda21f40347952132a922bb08506a4396b22365ab79131f06374ff2ca55e",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 0,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "55d342f7a9d727e98410e89a724449ff40159e72d138af2af2324f16f2faeec3",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "9b99d0a85c8d035b695b488dc9ec1aff6205192bcd4e7794f36b9caf20c53632",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 1,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "1983c57a25b46698bf884014c1dfeb62c4685495ce56a19d2aafffe77426c61c",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 1,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 0
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "613c5544e6dbbc2a3deb09e8d3e0513677b7e5598e2f393640ee5facf1804c3a",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "46c3058734a543dc71cc0e6a144d3dc2ecb9b54fc4e004a480aa7a69a50ee92a",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 4,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "d5a267dce2919eccb656c1f50ec91e60c6720701460cff893d8c6dea390e9018",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 4,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 0
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": null
+      },
+      "expected": {
+        "manifest_id": "f33de34c72d836610ab35c906a8cf9e954ceb56f1798ab215b106829c25d67c9",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": null
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 13
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 1
+      },
+      "expected": {
+        "manifest_id": "e56f0ecb63895bb520c5f0453157fb3871656e16890ef807440d260f8ae0c993",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 1
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:f",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 16
+      }
+    },
+    {
+      "spec": {
+        "population_query": "neutral full population",
+        "archive_cursor": "original-frame",
+        "seed": "second",
+        "requested_size": 20,
+        "strata": [
+          "origin",
+          "model"
+        ],
+        "exact_template_cap": 2
+      },
+      "expected": {
+        "manifest_id": "1d84814b70f358e6bb169080dc94176169bdc7c018f7eb7fb4bdfa08e3460773",
+        "spec": {
+          "population_query": "neutral full population",
+          "archive_cursor": "original-frame",
+          "seed": "second",
+          "requested_size": 20,
+          "strata": [
+            "origin",
+            "model"
+          ],
+          "exact_template_cap": 2
+        },
+        "population_count": 9,
+        "eligible_count": 7,
+        "selected_refs": [
+          "delegation:g",
+          "delegation:c",
+          "delegation:a",
+          "delegation:z",
+          "delegation:b",
+          "delegation:d"
+        ],
+        "excluded_counts": {
+          "edge_only": 1,
+          "unresolved": 1
+        },
+        "stratum_counts": [
+          {
+            "key": {
+              "origin": "\"",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 1,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "unknown"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 1
+          },
+          {
+            "key": {
+              "origin": "a",
+              "model": "x"
+            },
+            "population_count": 3,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "x"
+            },
+            "population_count": 2,
+            "eligible_count": 2,
+            "selected_count": 2
+          },
+          {
+            "key": {
+              "origin": "\u00e9",
+              "model": "y"
+            },
+            "population_count": 1,
+            "eligible_count": 0,
+            "selected_count": 0
+          }
+        ],
+        "template_counts": {
+          "other": 2,
+          "same": 3,
+          "unknown": 4
+        },
+        "shortfall": 14
+      }
+    }
+  ]
+}

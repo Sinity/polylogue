@@ -66,7 +66,8 @@ def test_resident_packet_reads_every_page_on_its_original_frame(
         assert result.packet.status == "not_supported"
         assert "missing_annotation_schema" in result.packet.not_supported_reasons
         assert result.outcome.state == "degraded"
-    assert sum(returned) == 257
+    assert sum(returned) == 514
+    assert returned.count(0) == 2
     assert len([size for size in returned if size]) >= 2
     assert returned[-1] == 0
     assert assertion_returned == [256, 1, 0]

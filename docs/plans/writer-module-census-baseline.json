@@ -7,10 +7,20 @@
     ]
   },
   {
+    "file": "polylogue/analysis/cohorts.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/analysis/delegation_work_evidence_materializer.py",
     "tiers": [
       "index"
     ]
+  },
+  {
+    "file": "polylogue/analysis/fable_packet.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/api/archive.py",
