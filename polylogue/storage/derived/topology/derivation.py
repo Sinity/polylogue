@@ -47,7 +47,7 @@ class _SessionQuerySource(Protocol):
     async def list_session_links_for_session(
         self, session_id: str, *, limit: int | None = None
     ) -> list[dict[str, object]]: ...
-    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]: ...
+    async def list_session_links_to_session(self, session_id: str, *, limit: int | None) -> list[dict[str, object]]: ...
 
 
 def _kind(value: object) -> TopologyEdgeKind:
@@ -251,19 +251,20 @@ async def derive_session_topology_async(
     session_id: str,
     *,
     node_offset: int = 0,
-    node_limit: int = 200,
-    edge_limit: int = 500,
+    node_limit: int | None = 200,
+    edge_limit: int | None = 500,
 ) -> SessionTopology | None:
     """Compose one bounded, stable page from canonical link-neighborhood reads.
 
     The continuation is an opaque ``node-offset`` token.  Each request
     recomputes a deterministic BFS prefix from canonical rows, then returns a
-    page from that prefix.  No route scans sessions or session_links globally.
+    page from that prefix. ``None`` limits request the complete selected
+    graph for exhaustive helpers. No route scans sessions or session_links globally.
     """
     target = await source.get_session(session_id)
     if target is None:
         return None
-    if node_offset < 0 or node_limit < 1 or edge_limit < 1:
+    if node_offset < 0 or (node_limit is not None and node_limit < 1) or (edge_limit is not None and edge_limit < 1):
         raise ValueError("topology page bounds must be positive")
 
     # Resolve the root by walking only this child's canonical outbound rows.
@@ -273,8 +274,10 @@ async def derive_session_topology_async(
     seen_ancestors = {str(current.session_id)}
     link_truncated = False
     while True:
-        outbound = await source.list_session_links_for_session(str(current.session_id), limit=edge_limit + 1)
-        if len(outbound) > edge_limit:
+        outbound = await source.list_session_links_for_session(
+            str(current.session_id), limit=None if edge_limit is None else edge_limit + 1
+        )
+        if edge_limit is not None and len(outbound) > edge_limit:
             link_truncated = True
             outbound = outbound[:edge_limit]
         links.extend(outbound)
@@ -293,11 +296,11 @@ async def derive_session_topology_async(
         current = parent
     root_id = str(current.session_id)
 
-    scan_limit = node_offset + node_limit + 1
+    scan_limit = None if node_limit is None else node_offset + node_limit + 1
     queue: deque[str] = deque([root_id])
     discovered: set[str] = set()
     bfs_ids: list[str] = []
-    while queue and len(bfs_ids) < scan_limit:
+    while queue and (scan_limit is None or len(bfs_ids) < scan_limit):
         current_id = queue.popleft()
         if current_id in discovered:
             continue
@@ -307,13 +310,17 @@ async def derive_session_topology_async(
         records[current_id] = record
         discovered.add(current_id)
         bfs_ids.append(current_id)
-        outbound = await source.list_session_links_for_session(current_id, limit=edge_limit + 1)
-        if len(outbound) > edge_limit:
+        outbound = await source.list_session_links_for_session(
+            current_id, limit=None if edge_limit is None else edge_limit + 1
+        )
+        if edge_limit is not None and len(outbound) > edge_limit:
             link_truncated = True
             outbound = outbound[:edge_limit]
         links.extend(outbound)
-        inbound = await source.list_session_links_to_session(current_id, limit=scan_limit + 1)
-        if len(inbound) > scan_limit:
+        inbound = await source.list_session_links_to_session(
+            current_id, limit=None if scan_limit is None else scan_limit + 1
+        )
+        if scan_limit is not None and len(inbound) > scan_limit:
             link_truncated = True
             inbound = inbound[:scan_limit]
         links.extend(inbound)
@@ -335,7 +342,7 @@ async def derive_session_topology_async(
     # `compose_session_topology` is the one graph classification; paging only trims its
     # already classified stable BFS output and never remaps an edge.
     all_nodes = composed.nodes
-    page_nodes = all_nodes[node_offset : node_offset + node_limit]
+    page_nodes = all_nodes[node_offset : None if node_limit is None else node_offset + node_limit]
     page_ids = {str(node.session_id) for node in page_nodes}
     page_edges = tuple(edge for edge in composed.edges if str(edge.child_id) in page_ids)[:edge_limit]
     more_nodes = len(all_nodes) > node_offset + len(page_nodes) or bool(queue)

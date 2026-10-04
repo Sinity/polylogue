@@ -4723,12 +4723,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         ``around`` names a message whose window is wanted instead of a
         coordinate naming it (polylogue-idrej). It is resolved to an offset
-        through the shared locator before the window is framed, so the window
-        -- and the continuation it mints -- are identical to asking for the
+        through the shared locator on the same pinned reader as the window.
+        The continuation it mints is identical to asking for the
         offset this call reports back in ``TranscriptWindow.offset``.
         """
 
-        from polylogue.operations.message_locator import window_offset_around
         from polylogue.operations.transcript_window import message_transcript_window, window_request
 
         if around is not None:
@@ -4736,18 +4735,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 raise ValueError("around and an explicit window coordinate name two different windows")
             if message_role or message_type is not None or material_origin:
                 raise ValueError("around cannot be combined with transcript filters")
-            archive_root = _active_archive_root(self.config)
-            offset = await run_archive_read(
-                archive_root,
-                operation="archive.message.locate",
-                arguments={"session_id": session_id, "around": around, "limit": limit},
-                work=lambda archive: window_offset_around(
-                    archive, archive.resolve_session_id(session_id), around, limit
-                ),
-                page_size=limit,
-                projection="message-location",
-                stable_order="position",
-            )
 
         return await message_transcript_window(
             self,
@@ -4762,6 +4749,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     "material_origin": tuple(material_origin),
                 },
             ),
+            around=around,
         )
 
     def iter_messages(

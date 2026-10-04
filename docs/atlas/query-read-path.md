@@ -131,3 +131,5 @@ Profile and latency insight readers normalize comma-separated repository and tag
 Session-list projection rows bind their public names to existing renderer profiles, CLI option and execution metadata, and evidence-family contracts. Adding a name with a declared renderer updates these consumers together; removing a name retires it from their public vocabularies. Unknown renderer families and collisions with another read view refuse at contract construction.
 
 In-memory action-sequence matching streams completed all-pairs witnesses with one iterative search path. It does not cap intermediate candidates; the existential answer peeks the first completed witness from the same stream. Ordered, adjacent and elapsed-time edges retain their declared semantics.
+
+Python transcript anchors resolve and read their bounded page on the same controlled archive snapshot, with canonical domain hydration and continuation framing. Exhaustive Python topology helpers explicitly request the complete selected graph on one repository snapshot; ordinary topology calls retain their bounded node/edge windows and continuation.

@@ -233,6 +233,8 @@ class ArchiveBlockRow:
     semantic_type: str | None = None
     tool_input: str | None = None
     metadata: str | None = None
+    media_type: str | None = None
+    signature: str | None = None
     language: str | None = None
     name: str | None = None
     # Legacy structural fields retained for compatibility. tool_outcome is the

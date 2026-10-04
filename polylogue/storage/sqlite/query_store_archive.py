@@ -99,7 +99,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await session_links_q.list_session_links_for_session(conn, session_id, limit=limit)
 
-    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]:
+    async def list_session_links_to_session(self, session_id: str, *, limit: int | None) -> list[dict[str, object]]:
         async with self._connection_factory() as conn:
             return await session_links_q.list_session_links_to_session(conn, session_id, limit=limit)
 

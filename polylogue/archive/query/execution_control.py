@@ -705,6 +705,7 @@ async def execute_archive_read(
     ctx: QueryExecutionContext,
     controller: QueryAdmissionController | None = None,
     read_timeout: float = 5.0,
+    index_path: Path | None = None,
 ) -> T:
     """Run one archive read off the event loop under admission control.
 
@@ -718,7 +719,7 @@ async def execute_archive_read(
     reader = InterruptibleSQLiteRead(ctx)
 
     def _admitted_run() -> T:
-        return reader.run(archive_root, work, read_timeout=read_timeout)
+        return reader.run(archive_root, work, read_timeout=read_timeout, index_path=index_path)
 
     from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter
 

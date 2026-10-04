@@ -303,7 +303,7 @@ def read_transcript_window_sync(
 
 
 async def message_transcript_window(
-    api: Any, request: SessionRead, *, content_projection: Any = None
+    api: Any, request: SessionRead, *, content_projection: Any = None, around: str | None = None
 ) -> TranscriptWindow[Any]:
     """Answer a transcript window as domain ``Message`` rows.
 
@@ -320,6 +320,57 @@ async def message_transcript_window(
     # The reader filters by the selection the window is framed with. A resumed
     # request that states only its continuation carries default filters, so
     # reading those would serve unfiltered rows at a filtered token's offset.
+    # The repository's explicit index path is authoritative for compatibility
+    # facades constructed with a split configured root and active database.
+    active_db = Path(api.repository.backend.db_path)
+    active_root = active_db.parent
+    if active_root.name == ".index-generations":
+        active_root = active_root.parent
+    elif active_root.parent.name == ".index-generations":
+        active_root = active_root.parent.parent
+    if around is not None:
+        if request.continuation is not None or request.offset:
+            raise ValueError("around and an explicit window coordinate name two different windows")
+        if request.message_role or request.message_type is not None or request.material_origin or content_projection:
+            raise ValueError("around cannot be combined with transcript filters")
+        _request, transaction = frame_request(request)
+
+        def anchored_window(archive: Any) -> TranscriptWindow[Any]:
+            from types import SimpleNamespace
+
+            from polylogue.archive.hydration import archive_message_to_domain
+            from polylogue.core.enums import Origin
+            from polylogue.core.errors import SessionNotFoundError
+            from polylogue.operations.message_locator import window_offset_around
+
+            ref = request.ref.removeprefix("session:")
+            try:
+                session_id = archive.resolve_session_id(ref)
+            except KeyError as exc:
+                raise SessionNotFoundError(ref) from exc
+            offset = window_offset_around(archive, session_id, around, request.limit)
+            anchored = request.model_copy(update={"offset": offset})
+
+            def read_page(limit: int, offset: int) -> tuple[list[Any], int, Any]:
+                envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
+                if envelope.total_message_count is None:
+                    raise ValueError("bounded transcript page lacks its declared total")
+                return (
+                    [
+                        archive_message_to_domain(row, origin=Origin(envelope.origin), include_null_block_fields=True)
+                        for row in envelope.messages
+                    ],
+                    envelope.total_message_count,
+                    SimpleNamespace(
+                        complete=envelope.lineage_complete,
+                        truncation_reason=envelope.lineage_truncation_reason,
+                    ),
+                )
+
+            return read_transcript_window_sync(archive, anchored, read=read_page)
+
+        return await QueryTransaction(active_root, transaction).run(anchored_window, index_path=active_db)
+
     submitted = request
     request, _transaction = frame_request(submitted)
     session_id = request.ref.removeprefix("session:")
@@ -381,14 +432,6 @@ async def message_transcript_window(
             raise SessionNotFoundError(session_id)
         return messages, total, completeness
 
-    # The repository's explicit index path is authoritative for compatibility
-    # facades constructed with a split configured root and active database.
-    active_db = Path(api.repository.backend.db_path)
-    active_root = active_db.parent
-    if active_root.name == ".index-generations":
-        active_root = active_root.parent
-    elif active_root.parent.name == ".index-generations":
-        active_root = active_root.parent.parent
     return await read_transcript_window(active_root, submitted, read=read)
 
 

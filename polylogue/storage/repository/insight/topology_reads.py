@@ -26,8 +26,8 @@ class RepositoryInsightTopologyReadMixin:
         session_id: str,
         *,
         node_offset: int = 0,
-        node_limit: int = 200,
-        edge_limit: int = 500,
+        node_limit: int | None = 200,
+        edge_limit: int | None = 500,
     ) -> SessionTopology | None:
         """Return the resolved lineage graph rooted at ``session_id``.
 

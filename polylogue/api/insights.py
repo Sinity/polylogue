@@ -166,8 +166,8 @@ class _RepositorySurface(Protocol):
         session_id: str,
         *,
         node_offset: int = 0,
-        node_limit: int = 200,
-        edge_limit: int = 500,
+        node_limit: int | None = 200,
+        edge_limit: int | None = 500,
     ) -> SessionTopology | None: ...
 
     async def resolve_id(self, session_id: str, *, strict: bool = False) -> object: ...
@@ -793,8 +793,8 @@ class PolylogueInsightsMixin:
         session_id: str,
         *,
         node_offset: int = 0,
-        node_limit: int = 200,
-        edge_limit: int = 500,
+        node_limit: int | None = 200,
+        edge_limit: int | None = 500,
     ) -> SessionTopology | None:
         """Return the typed :class:`SessionTopology` for ``session_id``.
 
@@ -863,7 +863,7 @@ class PolylogueInsightsMixin:
         resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return []
-        topology = await self.get_session_topology(resolved)
+        topology = await self.get_session_topology(resolved, node_limit=None, edge_limit=None)
         if topology is None:
             return []
         return topology.ancestor_refs(resolved)
@@ -874,7 +874,7 @@ class PolylogueInsightsMixin:
         resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return []
-        topology = await self.get_session_topology(resolved)
+        topology = await self.get_session_topology(resolved, node_limit=None, edge_limit=None)
         if topology is None:
             return []
         return topology.descendant_refs(resolved)
@@ -885,7 +885,7 @@ class PolylogueInsightsMixin:
         resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return []
-        topology = await self.get_session_topology(resolved)
+        topology = await self.get_session_topology(resolved, node_limit=None, edge_limit=None)
         if topology is None:
             return []
         return topology.sibling_refs(resolved)
@@ -896,7 +896,7 @@ class PolylogueInsightsMixin:
         resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return []
-        topology = await self.get_session_topology(resolved)
+        topology = await self.get_session_topology(resolved, node_limit=None, edge_limit=None)
         if topology is None:
             return []
         return topology.thread_refs(resolved)
@@ -907,7 +907,7 @@ class PolylogueInsightsMixin:
         resolved = await self._resolve_for_topology(session_id)
         if resolved is None:
             return None
-        topology = await self.get_session_topology(resolved)
+        topology = await self.get_session_topology(resolved, node_limit=None, edge_limit=None)
         if topology is None:
             return None
         return LogicalSession(
