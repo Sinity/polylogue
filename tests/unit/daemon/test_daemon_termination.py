@@ -311,7 +311,7 @@ def test_a_vanished_run_with_no_evidence_names_what_is_missing(archive: Path, fr
         "systemd_oomd": "journal_query_failed",
         SOURCE_CGROUP: "cgroup_removed",
         SOURCE_BOOT: "current_boot_id_unavailable",
-        SOURCE_WORKLOAD: "no_workload_receipt_carries_run_id",
+        SOURCE_WORKLOAD: "resident_workload_receipt_unavailable",
     }
     with sqlite3.connect(archive / "ops.db") as conn:
         last_heartbeat = conn.execute(
@@ -396,12 +396,12 @@ def test_receipt_joins_the_run_and_its_last_workload_by_run_id(
 ) -> None:
     """A route observed inside the prior daemon run carries its run id to the receipt."""
     from polylogue.logging import set_run_context
-    from polylogue.operations.route_observation import observe_route
+    from polylogue.operations.route_observation import measure_route
 
     prior = _prior_run(archive, frozen_clock)
     set_run_context(run_id=prior.run_id, component="daemon")
     try:
-        with observe_route(archive_root=archive, surface="cli", route="cli.status") as observation:
+        with measure_route(surface="cli", route="cli.status") as observation:
             pass
     finally:
         set_run_context()
@@ -412,15 +412,14 @@ def test_receipt_joins_the_run_and_its_last_workload_by_run_id(
 
     _current, receipts = _reconcile(archive, FakeEvidence())
     receipt = _only(receipts)
-    assert receipt.last_workload is not None
-    assert receipt.last_workload["route"] == "cli.status"
-    assert SOURCE_WORKLOAD not in receipt.missing_sources
+    assert receipt.last_workload is None
+    assert SOURCE_WORKLOAD in receipt.missing_sources
 
 
 def test_a_route_outside_a_daemon_carries_no_daemon_run_id(archive: Path) -> None:
-    from polylogue.operations.route_observation import observe_route
+    from polylogue.operations.route_observation import measure_route
 
-    with observe_route(archive_root=None, surface="cli", route="cli.status") as observation:
+    with measure_route(surface="cli", route="cli.status") as observation:
         pass
     assert observation.receipt is not None
     workload = observation.receipt.to_workload_receipt()

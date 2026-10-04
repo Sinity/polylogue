@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,18 +22,13 @@ from polylogue.core.types import (
     DaemonTerminationClass,
     JudgmentSchedulerStatus,
     OperationRunStatus,
-    RouteDaemonPath,
-    RouteObservationDropReasonToken,
-    RouteObservationStatus,
     require_literal,
 )
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.storage.sqlite.archive_tiers.ops import McpCallSessionRelation
 
 MCP_CALL_LOG_RETENTION_MS = 90 * 24 * 60 * 60 * 1000
-ROUTE_OBSERVATION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
-ROUTE_OBSERVATION_ROW_CAP = 20_000
-# polylogue-1xc.12: bounded like ROUTE_OBSERVATION_* above -- a 30 day window
+# polylogue-1xc.12: a 30 day window
 # (long enough to see week-over-week drift trend) capped at 5,000 rows (one
 # sample per surface per convergence/startup pass keeps this table tiny in
 # practice; the cap is a hard backstop against a runaway sampling loop).
@@ -289,26 +283,6 @@ class ArchiveMcpCallLogEntry:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveRouteObservation:
-    """Compact read-back row for one route-latency observation (polylogue-jtwu)."""
-
-    observation_id: str
-    trace_id: str
-    surface: str
-    route: str
-    verb: str | None
-    daemon_path: str | None
-    phase: str
-    started_at_ms: int
-    duration_ms: int
-    status: str
-    git_head: str | None
-    archive_epoch: str | None
-    attributes: dict[str, object]
-    sampled: bool
-
-
-@dataclass(frozen=True, slots=True)
 class ArchiveFtsDriftSample:
     """One bounded drift-magnitude sample for an FTS-backed surface."""
 
@@ -345,7 +319,7 @@ def record_fts_drift_sample(
     writer appends a time-series snapshot of the same counters to ops.db (a
     separate database file/connection) so an operator can see drift
     MAGNITUDE trend, not just today's boolean ready/stale. Best-effort
-    telemetry like ``record_route_observation``: a plain direct INSERT,
+    telemetry delivered without the MCP call outbox: a plain direct INSERT,
     pruned by both time (``FTS_DRIFT_SAMPLE_RETENTION_MS``) and row count
     (``FTS_DRIFT_SAMPLE_ROW_CAP``) so it cannot grow unbounded.
     """
@@ -1521,261 +1495,6 @@ def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> Archi
     )
 
 
-@dataclass(frozen=True, slots=True)
-class RouteObservationDropRow:
-    """Route observations one process lost for one (surface, route, reason).
-
-    ``first_observed_at_ms``/``last_observed_at_ms`` span the lost
-    observations' own start times.
-    """
-
-    surface: str
-    route: str
-    reason: str
-    first_observed_at_ms: int
-    last_observed_at_ms: int
-    drop_count: int
-
-
-def record_route_observation(
-    conn: sqlite3.Connection,
-    *,
-    trace_id: str,
-    surface: str,
-    route: str,
-    started_at_ms: int,
-    duration_ms: int,
-    status: str,
-    verb: str | None = None,
-    daemon_path: str | None = None,
-    phase: str = "total",
-    git_head: str | None = None,
-    archive_epoch: str | None = None,
-    attributes: dict[str, object] | None = None,
-    sampled: bool = True,
-    observation_id: str | None = None,
-    drops: Sequence[RouteObservationDropRow] = (),
-) -> str:
-    """Record one bounded route-latency observation and return its id.
-
-    ``drops`` are observations the caller's process lost earlier and could not
-    record then (its ops.db was locked or missing); they land in
-    ``route_observation_drops`` in the same transaction, so a reader in any
-    process counts them beside the percentiles (polylogue-jtwu.2). Rows the
-    row cap evicts from inside the retention window are recorded there too, as
-    ``pruned`` drops attributed to their own route. Rows past the age horizon
-    are retention, not loss: no window inside retention held them.
-
-    Best-effort telemetry, not audit evidence: unlike ``record_mcp_call``
-    (durable, conflict-checked, delivered via an outbox so a dropped
-    connection cannot silently lose an entry), this writer is a plain
-    direct INSERT -- callers that cannot reach ops.db (no archive
-    configured, disposable tier missing) are expected to catch and count the
-    observation rather than block or retry. Bounded by both time (
-    ``ROUTE_OBSERVATION_RETENTION_MS``) and row count
-    (``ROUTE_OBSERVATION_ROW_CAP``) so a high-frequency route cannot let
-    this table grow unbounded between prunes.
-    """
-    require_literal(status, RouteObservationStatus, name="route observation status")
-    if daemon_path is not None:
-        require_literal(daemon_path, RouteDaemonPath, name="route daemon path")
-    for drop in drops:
-        require_literal(drop.reason, RouteObservationDropReasonToken, name="route observation drop reason")
-    if observation_id is None:
-        observation_id = str(uuid.uuid4())
-    horizon_ms = started_at_ms - ROUTE_OBSERVATION_RETENTION_MS
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO route_observations (
-                observation_id, trace_id, surface, route, verb, daemon_path, phase,
-                started_at_ms, duration_ms, status, git_head, archive_epoch, attributes_json, sampled
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                observation_id,
-                trace_id,
-                surface,
-                route,
-                verb,
-                daemon_path,
-                phase,
-                started_at_ms,
-                duration_ms,
-                status,
-                git_head,
-                archive_epoch,
-                _json_dumps(attributes or {}),
-                1 if sampled else 0,
-            ),
-        )
-        conn.execute("DELETE FROM route_observations WHERE started_at_ms < ?", (horizon_ms,))
-        conn.execute("DELETE FROM route_observation_drops WHERE last_observed_at_ms < ?", (horizon_ms,))
-        evicted: dict[tuple[str, str], list[int]] = {}
-        row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
-        if row_count > ROUTE_OBSERVATION_ROW_CAP:
-            excess = row_count - ROUTE_OBSERVATION_ROW_CAP
-            for row in conn.execute(
-                """
-                DELETE FROM route_observations WHERE observation_id IN (
-                    SELECT observation_id FROM route_observations
-                    ORDER BY started_at_ms ASC LIMIT ?
-                )
-                RETURNING surface, route, started_at_ms
-                """,
-                (excess,),
-            ).fetchall():
-                evicted.setdefault((str(row[0]), str(row[1])), []).append(int(row[2]))
-        _insert_route_observation_drops(
-            conn,
-            [
-                *drops,
-                *(
-                    RouteObservationDropRow(
-                        surface=evicted_surface,
-                        route=evicted_route,
-                        reason="pruned",
-                        first_observed_at_ms=min(starts),
-                        last_observed_at_ms=max(starts),
-                        drop_count=len(starts),
-                    )
-                    for (evicted_surface, evicted_route), starts in evicted.items()
-                ),
-            ],
-            horizon_ms=horizon_ms,
-        )
-    return observation_id
-
-
-def record_route_observation_drops(
-    conn: sqlite3.Connection,
-    *,
-    drops: Sequence[RouteObservationDropRow],
-    now_ms: int,
-) -> None:
-    """Record lost observations without a new observation (a process's final flush)."""
-    for drop in drops:
-        require_literal(drop.reason, RouteObservationDropReasonToken, name="route observation drop reason")
-    horizon_ms = now_ms - ROUTE_OBSERVATION_RETENTION_MS
-    with conn:
-        conn.execute("DELETE FROM route_observation_drops WHERE last_observed_at_ms < ?", (horizon_ms,))
-        _insert_route_observation_drops(conn, drops, horizon_ms=horizon_ms)
-
-
-def _insert_route_observation_drops(
-    conn: sqlite3.Connection,
-    drops: Sequence[RouteObservationDropRow],
-    *,
-    horizon_ms: int,
-) -> None:
-    # A drop older than the age horizon belongs to no window retention can
-    # still answer for, exactly like an aged-out observation.
-    conn.executemany(
-        """
-        INSERT INTO route_observation_drops (
-            surface, route, reason, first_observed_at_ms, last_observed_at_ms, drop_count
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                drop.surface,
-                drop.route,
-                drop.reason,
-                drop.first_observed_at_ms,
-                drop.last_observed_at_ms,
-                drop.drop_count,
-            )
-            for drop in drops
-            if drop.drop_count > 0 and drop.last_observed_at_ms >= horizon_ms
-        ],
-    )
-
-
-def route_observation_drop_counts(
-    conn: sqlite3.Connection,
-    *,
-    since_ms: int,
-    surface: str | None = None,
-) -> tuple[RouteObservationDropRow, ...]:
-    """Return the counted drops whose observed span reaches into the window.
-
-    Aggregated per (surface, route, reason), so the answer is bounded by the
-    declared routes and reasons, not by how many drops were recorded.
-    """
-    sql = """
-        SELECT surface, route, reason, MIN(first_observed_at_ms), MAX(last_observed_at_ms), SUM(drop_count)
-        FROM route_observation_drops
-        WHERE last_observed_at_ms >= ?
-    """
-    params: tuple[object, ...] = (since_ms,)
-    if surface is not None:
-        sql += " AND surface = ?"
-        params = (since_ms, surface)
-    sql += " GROUP BY surface, route, reason ORDER BY surface, route, reason"
-    return tuple(
-        RouteObservationDropRow(
-            surface=str(row[0]),
-            route=str(row[1]),
-            reason=str(row[2]),
-            first_observed_at_ms=_int_value(row[3]),
-            last_observed_at_ms=_int_value(row[4]),
-            drop_count=_int_value(row[5]),
-        )
-        for row in conn.execute(sql, params)
-    )
-
-
-def list_route_observations(
-    conn: sqlite3.Connection,
-    *,
-    surface: str | None = None,
-    route: str | None = None,
-    since_ms: int | None = None,
-    limit: int = 1000,
-) -> tuple[ArchiveRouteObservation, ...]:
-    """Return route observations newest-first, optionally filtered."""
-    query = """
-        SELECT observation_id, trace_id, surface, route, verb, daemon_path, phase,
-               started_at_ms, duration_ms, status, git_head, archive_epoch, attributes_json, sampled
-        FROM route_observations
-    """
-    clauses: list[str] = []
-    params: list[object] = []
-    if surface is not None:
-        clauses.append("surface = ?")
-        params.append(surface)
-    if route is not None:
-        clauses.append("route = ?")
-        params.append(route)
-    if since_ms is not None:
-        clauses.append("started_at_ms >= ?")
-        params.append(since_ms)
-    if clauses:
-        query += " WHERE " + " AND ".join(clauses)
-    query += " ORDER BY started_at_ms DESC, observation_id DESC LIMIT ?"
-    params.append(limit)
-    return tuple(_route_observation_from_row(row) for row in conn.execute(query, tuple(params)).fetchall())
-
-
-def _route_observation_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveRouteObservation:
-    return ArchiveRouteObservation(
-        observation_id=str(row[0]),
-        trace_id=str(row[1]),
-        surface=str(row[2]),
-        route=str(row[3]),
-        verb=None if row[4] is None else str(row[4]),
-        daemon_path=None if row[5] is None else str(row[5]),
-        phase=str(row[6]),
-        started_at_ms=_int_value(row[7]),
-        duration_ms=_int_value(row[8]),
-        status=str(row[9]),
-        git_head=None if row[10] is None else str(row[10]),
-        archive_epoch=None if row[11] is None else str(row[11]),
-        attributes=_json_loads(row[12] if isinstance(row[12], str) else None),
-        sampled=bool(row[13]),
-    )
-
-
 def read_compact_state(conn: sqlite3.Connection) -> OpsCompactState:
     """Read a compact status snapshot across OPS-tier state tables."""
     cursor_count = int(conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0])
@@ -1869,7 +1588,6 @@ __all__ = [
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
     "ArchiveFtsDriftSample",
-    "ArchiveRouteObservation",
     "ArchiveSchemaDriftSample",
     "FTS_DRIFT_SAMPLE_RETENTION_MS",
     "FTS_DRIFT_SAMPLE_ROW_CAP",
@@ -1885,7 +1603,6 @@ __all__ = [
     "latest_daemon_termination_receipt",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
-    "list_route_observations",
     "read_cursor_lag_sample",
     "read_daemon_stage_event",
     "read_embedding_catchup_run",
@@ -1900,11 +1617,7 @@ __all__ = [
     "record_judgment_scheduler_receipt",
     "record_fts_drift_sample",
     "record_ingest_attempt",
-    "RouteObservationDropRow",
     "UnreconciledDaemonRun",
-    "record_route_observation",
-    "record_route_observation_drops",
-    "route_observation_drop_counts",
     "unreconciled_daemon_runs",
     "record_schema_drift_sample",
     "summarize_schema_drift_since",
