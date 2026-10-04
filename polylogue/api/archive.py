@@ -4033,6 +4033,16 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         return await diagnose_query_miss(self, spec, config=self.config, full=full)
 
+    async def storage_counts(self) -> dict[str, int]:
+        """Read canonical session and message counts without full statistics."""
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.storage_counts",
+            arguments={},
+            work=lambda archive: archive.counts(),
+            projection="counts",
+        )
+
     async def storage_stats(self) -> StorageArchiveStats:
         """Lightweight archive stats without recent-session hydration.
 

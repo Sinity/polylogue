@@ -286,3 +286,50 @@ async def test_capability_discovery_includes_messages(mcp_server: MCPServerUnder
     page = body.get("page") or body
     assert set(page["read_views"]) == set(mcp_read_view_names())
     assert "messages" in page["read_views"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("archive_state", ["missing", "empty", "populated"])
+async def test_capability_pages_keep_declarations_without_full_statistics(
+    mcp_server: MCPServerUnderTest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_state: str
+) -> None:
+    """Missing evidence stays unknown; measured counts never invoke stats or hydration."""
+    from polylogue import Polylogue
+
+    root = tmp_path / "archive"
+    if archive_state == "populated":
+        root = _seeded_archive(tmp_path)
+    elif archive_state == "empty":
+        with ArchiveStore(root):
+            pass
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("capability pages must not aggregate statistics or hydrate sessions")
+
+    monkeypatch.setattr(ArchiveStore, "stats", forbidden)
+    monkeypatch.setattr(ArchiveStore, "read_session", forbidden)
+    poly = Polylogue(archive_root=root)
+    explain = mcp_server._tool_manager._tools["explain"].fn
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        first = json.loads(await invoke_surface_async(explain, subject="capability", limit=1))
+        second = json.loads(
+            await invoke_surface_async(explain, subject="capability", limit=1, offset=first["next_offset"])
+        )
+    assert first["items"] and second["items"]
+    assert first["items"][0]["declaration_id"] != second["items"][0]["declaration_id"]
+    assert first["read_view_profile_ids"] == second["read_view_profile_ids"]
+    assert "chronicle" in first["read_view_profile_ids"]
+    for page in (first, second):
+        if archive_state == "missing":
+            assert page["outcome"]["state"] == "degraded"
+            assert page["outcome"]["reason"] == "archive_counts_unavailable"
+            assert page["snapshot"]["freshness"] == "unknown"
+            assert all(item["observed_count"] is None and item["status"] == "unknown" for item in page["items"])
+        else:
+            assert page["outcome"]["state"] == "ok"
+            assert page["snapshot"]["freshness"] == "request-current"
+    if archive_state != "missing":
+        assert await poly.storage_counts() == {
+            "total_sessions": 1 if archive_state == "populated" else 0,
+            "total_messages": 1 if archive_state == "populated" else 0,
+        }

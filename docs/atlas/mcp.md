@@ -48,6 +48,17 @@ Public filters in these contracts are `origin`-typed (`polylogue/core/enums.py:8
 `RawOrigin` is a separate narrow literal for raw-source reads. No MCP request
 field takes a `Provider` (`polylogue/operations/session_contracts.py:9-16`).
 
+## Capability evidence
+
+`explain(subject="capability")` reads only canonical session and message
+counters through `Polylogue.storage_counts()`. It does not hydrate recent
+sessions or compute archive statistics breakdowns. If an archive tier is
+unavailable or its schema is refused, declarations and profile identities
+remain available with unknown counts and freshness. The shared outcome is
+`degraded` with `archive_counts_unavailable`; a successful empty archive has
+measured zero counts. Cancellation and other read errors retain their normal
+operation error behavior.
+
 ## Read-view discovery
 
 `explain(subject="capability")` returns `read_view_profile_ids`: the `view_id`

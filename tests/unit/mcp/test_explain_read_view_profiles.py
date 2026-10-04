@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,7 +22,7 @@ async def test_self_inspection_detects_removed_viewport_profile_on_mcp_route(
 ) -> None:
     """Deleting a shipped profile must fail the oracle even when capability total is unchanged."""
     poly = make_polylogue_mock()
-    poly.stats = AsyncMock(return_value=SimpleNamespace(session_count=0, message_count=0))
+    poly.storage_counts = AsyncMock(return_value={"total_sessions": 0, "total_messages": 0})
 
     async def real_profiles() -> list[JSONDocument]:
         # Execute the existing facade method, not a mock list derived from the oracle.
