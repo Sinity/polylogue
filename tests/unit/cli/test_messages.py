@@ -347,20 +347,14 @@ def test_run_messages_emits_json_and_passes_pagination(
     assert payload["total"] == 4
 
 
-def test_read_message_windows_reduces_an_oversized_initial_export() -> None:
-    """A full export retries a too-large first window at half size.
-
-    Anti-vacuity: retaining the fixed 200-row request raises the typed size
-    refusal instead of yielding the valid smaller page.
-    """
+def test_read_message_windows_keeps_the_complete_initial_export() -> None:
+    """A complete export does not invent a size refusal or reissue its first page."""
     payload = {"messages": [{"id": "m1", "text": "ok"}], "session": {}, "total": 1, "offset": 0}
     seen: list[int] = []
 
     def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], ServedBy]:
         limit = request.payload["limit"]  # type: ignore[attr-defined]
         seen.append(int(limit))
-        if len(seen) == 1:
-            raise OperationFailedError("result_too_large", "bounded envelope")
         return payload, ServedBy("daemon", None)
 
     with patch("polylogue.cli.messages.dispatch_read", side_effect=dispatch):
@@ -375,7 +369,7 @@ def test_read_message_windows_reduces_an_oversized_initial_export() -> None:
                 daemon_disabled=False,
             )
         )
-    assert seen == [200, 100]
+    assert seen == [200]
     assert [row["id"] for row in windows[0].rows] == ["m1"]
 
 

@@ -5280,20 +5280,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return runtime.call(request, principal, client_disconnect=disconnected)
 
     def _send_daemon_operation(self, payload: dict[str, object]) -> None:
-        from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-
-        if len(json.dumps(payload, separators=(",", ":")).encode()) > MAX_OPERATION_RESULT_BYTES:
-            payload["result"] = None
-            payload["outcome"] = "indeterminate" if payload.get("accepted_reference") else "failed"
-            payload["error"] = {"code": "result_too_large", "retryable": False}
-            self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, payload)
-            return
         status = (
             HTTPStatus.ACCEPTED if payload["outcome"] in {"accepted", "running", "indeterminate"} else HTTPStatus.OK
         )
         if payload["outcome"] in {"failed", "rejected", "timed-out", "cancelled"}:
             status = HTTPStatus.CONFLICT
-        self._send_json(status, payload)
+        from polylogue.operations.read_result_transport import TRANSFER_BYTES, staged_json_response
+
+        with staged_json_response(payload, append_newline=True) as staged:
+            size = staged.seek(0, 2)
+            staged.seek(0)
+            self.send_response(status.value)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(size))
+            self._send_request_id_header()
+            self.end_headers()
+            while chunk := staged.read(TRANSFER_BYTES):
+                self.wfile.write(chunk)
 
     def _read_bounded_json_body(self, max_bytes: int) -> dict[str, object] | None:
         raw_content_length = self.headers.get("Content-Length")

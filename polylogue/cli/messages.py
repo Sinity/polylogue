@@ -114,23 +114,9 @@ def read_message_windows(
             request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
         else:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
-        try:
-            payload, served_by = dispatch_read(
-                config, request, daemon_disabled=daemon_disabled, selection_epoch=selection_epoch
-            )
-        except OperationFailedError as exc:
-            # A wide initial page can be valid as rows yet exceed the bounded
-            # operation envelope. Retry that same coordinate with a smaller
-            # window; the successful page then mints a continuation for the
-            # smaller bound used by all following windows.
-            if exc.code != "result_too_large" or token is not None or window_limit <= 1:
-                raise
-            reduced = max(1, window_limit // 2)
-            if anchor is not None:
-                anchor_window_limit = reduced
-            else:
-                window_ceiling = reduced
-            continue
+        payload, served_by = dispatch_read(
+            config, request, daemon_disabled=daemon_disabled, selection_epoch=selection_epoch
+        )
         raw_rows = payload.get("messages")
         rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
         session = payload.get("session")

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import deque
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
@@ -15,7 +14,6 @@ from polylogue.archive.hydration import (
 from polylogue.archive.message.models import Message
 from polylogue.archive.query.sorting import OffsetSampledPage
 from polylogue.core.enums import MaterialOrigin, Origin
-from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.query_lowering import cli_read_request
 from polylogue.surfaces.chronicle import (
     build_chronicle_projection_payload,
@@ -335,12 +333,6 @@ def execute_chronicle_read(
         )
     result = build_chronicle_projection_payload(sessions, edge_limit=edge_limit)
     wire: dict[str, object] = {"view": "chronicle", "payload": result.model_dump(mode="json")}
-    encoded_size = len(json.dumps(wire, separators=(",", ":")).encode("utf-8"))
-    if encoded_size > MAX_OPERATION_RESULT_BYTES:
-        raise ValueError(
-            f"chronicle projection is {encoded_size} bytes, above the {MAX_OPERATION_RESULT_BYTES}-byte "
-            "operation result limit; reduce the session limit or chronicle edge limit and retry"
-        )
     return wire
 
 

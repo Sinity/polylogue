@@ -22,7 +22,7 @@ def test_session_window_continuation_keeps_remaining_bound(monkeypatch: pytest.M
         requests.append(request)
         resumed = request.payload.get("continuation") is not None
         if resumed and request.payload.get("limit") != 1:
-            raise OperationFailedError("result_too_large", "unrequested sixth message is oversized")
+            raise OperationFailedError("unrequested_rows", "read exceeded the selected message bound")
         start, count = (4, 1) if resumed else (0, 4)
         return {
             "session": {"session_id": "w12", "messages": [{"position": i} for i in range(start, start + count)]},
@@ -38,8 +38,8 @@ def test_session_window_continuation_keeps_remaining_bound(monkeypatch: pytest.M
     assert result["messages"] == [{"position": i} for i in range(5)]
 
 
-def test_session_window_retries_resumed_pages_without_widening(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fails if an oversized resumed page is not narrowed at its continuation, or a later page widens again."""
+def test_session_window_resumes_the_original_page_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Continuation pages preserve the requested bound and exact row sequence."""
     monkeypatch.setattr(archive_query, "_SESSION_READ_WINDOW", 4)
     requests: list[tuple[int, object]] = []
 
@@ -51,8 +51,6 @@ def test_session_window_retries_resumed_pages_without_widening(monkeypatch: pyte
         cursor = request.payload.get("continuation")
         start = int(str(cursor).removeprefix("after-")) if cursor is not None else 0
         requests.append((size, cursor))
-        if start == 4 and size > 1:
-            raise OperationFailedError("result_too_large")
         end = min(start + size, 7)
         return {
             "session": {"session_id": "w12", "messages": [{"position": i} for i in range(start, end)]},
@@ -62,5 +60,5 @@ def test_session_window_retries_resumed_pages_without_widening(monkeypatch: pyte
 
     monkeypatch.setattr(archive_query, "dispatch_read", read)
     result = archive_query._read_session_windows(cast(Config, object()), "session:w12", daemon_disabled=True)
-    assert requests == [(4, None), (4, "after-4"), (2, "after-4"), (1, "after-4"), (1, "after-5"), (1, "after-6")]
+    assert requests == [(4, None), (4, "after-4")]
     assert result["messages"] == [{"position": i} for i in range(7)]

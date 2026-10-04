@@ -21,7 +21,6 @@ from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_PRINCIPAL_CAPABILITIES,
     MAX_DECLARED_OPERATION_BODY_BYTES,
-    MAX_OPERATION_RESULT_BYTES,
     DaemonOperationRequest,
     daemon_operation_spec,
 )
@@ -86,26 +85,22 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         self._reject(code, "invalid_http_request", message or "invalid HTTP operation request")
 
     def _send(self, status: int, payload: dict[str, object]) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
-        if len(encoded) > MAX_OPERATION_RESULT_BYTES:
-            payload = {
-                **payload,
-                "result": None,
-                "outcome": "indeterminate" if payload.get("accepted_reference") else "failed",
-                "error": {"code": "result_too_large", "detail": "result exceeds the operation response bound"},
-            }
-            encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()
-            status = 413
+        from polylogue.operations.read_result_transport import TRANSFER_BYTES, staged_json_response
+
         self.close_connection = True
-        try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(encoded)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            return
+        with staged_json_response(payload) as staged:
+            size = staged.seek(0, 2)
+            staged.seek(0)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while chunk := staged.read(TRANSFER_BYTES):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                return
 
     def _reject(self, status: int, code: str, detail: str) -> None:
         """Refuse before dispatch, marking the refusal so no client can call it indeterminate.

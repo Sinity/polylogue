@@ -8,16 +8,13 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from polylogue.archive.session.domain_models import Session, SessionSummary
-from polylogue.cli.operation_kernel import OperationFailedError, OperationKernel, OperationRequest
+from polylogue.cli.operation_kernel import OperationKernel, OperationRequest
 from polylogue.cli.read_views.base import ReadViewInvocation
 from polylogue.cli.read_views.standard import _read_dialogue_session, run_read_dialogue, run_read_temporal
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.protocols import VectorProvider
-from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.read_view_dialogue_temporal import execute_dialogue_read, execute_temporal_read
 from polylogue.rendering.formatting import format_session
 from polylogue.surfaces.projection_spec import RenderDestination
@@ -173,15 +170,13 @@ def test_dialogue_markdown_file_streams_typed_pages_with_exact_rendering(tmp_pat
     scan.assert_called_once_with(env, str(out))
 
 
-def test_dialogue_single_giant_message_has_typed_wire_refusal() -> None:
-    oversized = {
-        "view": "dialogue",
-        "payload": {"session": {"messages": [{"text": "x" * (MAX_OPERATION_RESULT_BYTES + 1)}]}},
-    }
-    kernel = OperationKernel(lambda _request: {"operation": "read.dialogue", "result": oversized})
-    with pytest.raises(OperationFailedError) as exc:
-        kernel.execute(OperationRequest("read.dialogue", {"session_id": "codex-session:one", "params": {}}))
-    assert exc.value.code == "result_too_large"
+def test_dialogue_single_giant_message_preserves_the_complete_value() -> None:
+    text = "x" * (9 * 1024 * 1024)
+    value = {"view": "dialogue", "payload": {"session": {"messages": [{"text": text}]}}}
+    kernel = OperationKernel(lambda _request: {"operation": "read.dialogue", "result": value})
+    result = kernel.execute(OperationRequest("read.dialogue", {"session_id": "codex-session:one", "params": {}}))
+    assert result.value is value
+    assert result.value["payload"]["session"]["messages"][0]["text"] == text
 
 
 def test_temporal_operation_keeps_session_message_action_event_families() -> None:

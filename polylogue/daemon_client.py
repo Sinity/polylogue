@@ -39,7 +39,6 @@ from polylogue.operations.daemon_errors import (
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_OUTCOMES,
     DAEMON_OPERATION_PROTOCOL,
-    MAX_OPERATION_RESULT_BYTES,
     AcceptedOperationReference,
     DaemonAuthority,
     DaemonOperationRequest,
@@ -173,13 +172,12 @@ class DaemonClient:
                 ):
                     raise DaemonOperationProtocolError("daemon response has invalid HTTP framing")
                 declared_length = int(lengths[0])
-                if declared_length > MAX_OPERATION_RESULT_BYTES:
-                    raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
-                response_body = response.read(MAX_OPERATION_RESULT_BYTES + 1)
-                if len(response_body) != declared_length:
-                    raise DaemonOperationProtocolError("daemon response body is incomplete")
+                from polylogue.operations.read_result_transport import decode_json_response
+
                 try:
-                    decoded = json.loads(response_body.decode())
+                    decoded = decode_json_response(response, declared_length)
+                except EOFError as exc:
+                    raise DaemonOperationProtocolError("daemon response body is incomplete") from exc
                 except (UnicodeDecodeError, ValueError):
                     decoded = None
                 self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
@@ -277,7 +275,13 @@ class DaemonClient:
                 "operation.cancel",
                 "operation.result",
             }:
-                if request.index_schema_version is None:
+                if request.index_schema_version is None and operation not in {
+                    "maintenance.backup",
+                    "maintenance.restore_verified_backup",
+                }:
+                    # These controls copy/recover declared tiers without an Index
+                    # reader. An explicit Index precondition still reaches the
+                    # server unchanged and must be verified there.
                     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
                     request = replace(request, index_schema_version=INDEX_SCHEMA_VERSION)
@@ -441,7 +445,7 @@ class DaemonClient:
             if reference is not None:
                 AcceptedOperationReference.model_validate(reference)
             if response.get("outcome") == "completed" and response.get("error") is None:
-                validate_operation_result(request.operation, response.get("result"))
+                validate_operation_result(request.operation, response.get("result"), native_result=False)
         except (ValueError, RuntimeError) as exc:
             raise DaemonOperationProtocolError(str(exc)) from exc
         return response
@@ -644,7 +648,7 @@ class DaemonClient:
                 result = state.get("result", state)
                 if state["outcome"] == "completed" or (operation == "ingest" and state["outcome"] == "degraded"):
                     try:
-                        validate_operation_result(operation, result)
+                        validate_operation_result(operation, result, native_result=False)
                     except RuntimeError as exc:
                         raise DaemonOperationProtocolError(str(exc)) from exc
                 # Receipt recovery observed source/audit authority, not the

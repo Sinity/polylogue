@@ -7,7 +7,6 @@ archive, storage, or daemon-server imports.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -18,7 +17,6 @@ from polylogue.operations.daemon_errors import (
 )
 from polylogue.operations.daemon_protocol import (
     DAEMON_INDETERMINATE_OUTCOMES,
-    MAX_OPERATION_RESULT_BYTES,
     DaemonOperationSpec,
     OperationStatus,
     daemon_operation_spec,
@@ -115,14 +113,6 @@ class OperationCancelledError(OperationKernelError):
         super().__init__(f"{operation} was cancelled" if detail is None else f"{operation} was cancelled: {detail}")
 
 
-def _result_size(value: object) -> int:
-    """Return the bounded wire size of a JSON-compatible operation result."""
-    try:
-        return len(json.dumps(value, separators=(",", ":"), default=str).encode())
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise OperationEnvelopeError("operation result is not JSON serializable") from exc
-
-
 @dataclass(frozen=True, slots=True)
 class OperationRequest:
     """A lowered operation request; no surface-specific query vocabulary."""
@@ -176,8 +166,6 @@ class OperationKernel:
             # settles the write.
             raise OperationIndeterminateError(str(exc), request_id=exc.request_id) from exc
         except DaemonOperationProtocolError as exc:
-            if "size" in str(exc):
-                raise OperationFailedError("result_too_large", str(exc)) from exc
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         except Exception as exc:
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
@@ -228,8 +216,6 @@ class OperationKernel:
             if "result" not in envelope:
                 raise OperationEnvelopeError("daemon response omitted the operation result")
             value = envelope.get("result")
-            if _result_size(value) > MAX_OPERATION_RESULT_BYTES:
-                raise OperationFailedError("result_too_large", "daemon operation result exceeds the bounded size")
             generation = envelope.get("generation")
             if isinstance(generation, Mapping) and generation.get("state") in {"stale", "mismatch"}:
                 raise OperationFailedError("stale_generation", generation.get("reason"))

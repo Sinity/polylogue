@@ -87,14 +87,10 @@ def test_terminal_and_stale_daemon_states_are_typed(envelope: dict[str, object],
     assert exc_info.value.code == code
 
 
-def test_oversized_result_is_rejected_before_rendering() -> None:
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-
-    with pytest.raises(OperationFailedError) as exc_info:
-        OperationKernel(lambda _request: {"result": "x" * (MAX_OPERATION_RESULT_BYTES + 1)}).execute(
-            OperationRequest("cli.query", {})
-        )
-    assert exc_info.value.code == "result_too_large"
+def test_large_result_preserves_the_complete_value() -> None:
+    value = "x" * (9 * 1024 * 1024)
+    result = OperationKernel(lambda _request: {"result": value}).execute(OperationRequest("cli.query", {}))
+    assert result.value is value
 
 
 def test_timeout_is_not_evidence_of_daemon_absence() -> None:
@@ -141,18 +137,12 @@ def test_a_raised_indeterminate_mutation_is_typed_by_class_not_by_name() -> None
         )
 
 
-def test_a_raised_size_protocol_error_is_reported_as_an_oversized_result() -> None:
-    """The size refusal survives the move off name matching.
-
-    Anti-vacuity: dropping the ``DaemonOperationProtocolError`` branch leaves
-    the generic ``daemon_transport_error`` code, which this assertion rejects.
-    """
-
+def test_protocol_errors_preserve_transport_failure_without_prose_classification() -> None:
     with pytest.raises(OperationFailedError) as exc_info:
         _raising(DaemonOperationProtocolError("result exceeds the declared size limit")).execute(
             OperationRequest("cli.query", {})
         )
-    assert exc_info.value.code == "result_too_large"
+    assert exc_info.value.code == "daemon_transport_error"
 
 
 @pytest.mark.parametrize(

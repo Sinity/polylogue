@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.archive.hydration import archive_message_to_domain
 from polylogue.core.enums import Origin
-from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.read_view_chronicle import _select_summaries
 from polylogue.surfaces.compaction import CompactProjectionSpec, compact_sessions
 
@@ -76,12 +74,6 @@ def execute_compact_read(
             links.append(link)
     pack = compact_sessions(sessions, spec=_projection_spec(payload), session_links=links)
     wire: dict[str, object] = {"view": "compact", "payload": pack.model_dump(mode="json")}
-    encoded_size = len(json.dumps(wire, separators=(",", ":")).encode("utf-8"))
-    if encoded_size > MAX_OPERATION_RESULT_BYTES:
-        raise ValueError(
-            f"compact projection is {encoded_size} bytes, above the {MAX_OPERATION_RESULT_BYTES}-byte "
-            "operation result limit; reduce the session limit or --max-tokens and retry"
-        )
     return wire
 
 

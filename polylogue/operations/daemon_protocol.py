@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping
+import math
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic_core import SchemaValidator, core_schema
 
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
@@ -30,7 +33,6 @@ from polylogue.operations.read_contracts import (
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
-MAX_OPERATION_RESULT_BYTES = 8 * 1024 * 1024
 
 
 class DaemonAuthority(StrEnum):
@@ -1033,9 +1035,9 @@ class QueryResult(_OperationResult):
         if not (next_offset is None or (isinstance(next_offset, int) and not isinstance(next_offset, bool))):
             raise ValueError("next_offset must be an integer offset or null")
         if "items" in payload:
-            SessionListResponse.model_validate_json(json.dumps(payload), strict=True)
+            _validate_json_result_model(SessionListResponse, payload)
         else:
-            SearchEnvelope.model_validate_json(json.dumps(payload), strict=True)
+            _validate_json_result_model(SearchEnvelope, payload)
         return value
 
 
@@ -1048,7 +1050,7 @@ class QueryUnitsResult(_OperationResult):
         if not isinstance(value, dict):
             raise ValueError("query unit result must be an object")
         model = QueryUnitAggregateEnvelope if value.get("mode") == "query-unit-aggregate" else QueryUnitEnvelope
-        model.model_validate_json(json.dumps(value), strict=True)
+        _validate_json_result_model(model, value)
         return value
 
 
@@ -1184,7 +1186,7 @@ class FacetsResult(_OperationResult):
     def canonical_facets_contract(cls, value: object) -> object:
         from polylogue.surfaces.payloads import FacetsResponse
 
-        FacetsResponse.model_validate_json(json.dumps(value), strict=True)
+        _validate_json_result_model(FacetsResponse, value)
         return value
 
 
@@ -1338,7 +1340,7 @@ class AcceptedOperationReference(_OperationPayload):
     accepted_deadline_unix_ms: int | None
 
     def to_dict(self) -> dict[str, object]:
-        return self.model_dump(mode="json")
+        return cast(dict[str, object], self.model_dump(mode="json"))
 
     @classmethod
     def from_record(cls, record: Mapping[str, object]) -> AcceptedOperationReference:
@@ -2786,13 +2788,131 @@ class OperationResultContractError(RuntimeError):
     """An executor or peer returned a value outside its declared contract."""
 
 
-def validate_operation_result(operation: str, result: object) -> None:
-    """Validate without coercing or rewriting the product's wire value."""
+def _check_result_wire(value: object, *, native_result: bool) -> None:
+    """Walk the existing value without encoding strings or duplicating rows."""
+    stack = [iter((value,))]
+    active: set[int] = set()
+    owners: list[int] = []
+    while stack:
+        try:
+            item = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+            if owners:
+                active.remove(owners.pop())
+            continue
+        if item is None or isinstance(item, str | bool | int):
+            continue
+        if isinstance(item, float):
+            if not math.isfinite(item):
+                raise ValueError("result contains a nonfinite JSON number")
+            continue
+        if isinstance(item, dict):
+            for key in item:
+                if isinstance(key, str):
+                    continue
+                if not native_result or not (key is None or isinstance(key, bool | int | float)):
+                    raise ValueError("result object keys must be JSON strings")
+                if isinstance(key, float) and not math.isfinite(key):
+                    raise ValueError("result contains a nonfinite JSON object key")
+            children = iter(item.values())
+        elif isinstance(item, list) or (native_result and isinstance(item, tuple)):
+            children = iter(item)
+        else:
+            raise TypeError(f"result contains a non-JSON value: {type(item).__name__}")
+        identity = id(item)
+        if identity in active:
+            raise ValueError("result contains a circular JSON value")
+        active.add(identity)
+        owners.append(identity)
+        stack.append(children)
+
+
+def _json_result_object(value: object) -> object:
+    """Normalize native encoder-supported keys only when a mapping needs it."""
+    if not isinstance(value, dict) or all(isinstance(key, str) for key in value):
+        return value
+
+    def wire_key(key: object) -> str:
+        if isinstance(key, str):
+            return key
+        if key is None:
+            return "null"
+        if key is True:
+            return "true"
+        if key is False:
+            return "false"
+        if isinstance(key, int | float):
+            return str(key)
+        raise TypeError("result object key is not JSON encodable")
+
+    return {wire_key(key): item for key, item in value.items()}
+
+
+@cache
+def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
+    """Compile this protocol's observed JSON tuple/enum/datetime vocabulary.
+
+    Scalars remain strict. JSON arrays can fill tuple fields; string enums and
+    ISO datetimes use their declared JSON forms. This does not relax wire
+    admission or add a general schema conversion facility.
+    """
+
+    def adapt(value: Any) -> Any:
+        if isinstance(value, list):
+            return [adapt(child) for child in value]
+        if not isinstance(value, dict):
+            return value
+        result = {key: adapt(child) for key, child in value.items()}
+        kind = result.get("type")
+        if kind in {"str", "int", "float", "bool", "dict", "enum", "datetime"}:
+            result["strict"] = True
+        if kind == "model":
+            result["config"] = {**result.get("config", {}), "strict": True}
+        if kind in {"tuple", "list"}:
+            # The wire walker admits only arrays (native server tuples are
+            # arrays at delivery). Item schemas retain strict scalar checks.
+            result["strict"] = False
+        elif kind == "dict":
+            return core_schema.no_info_before_validator_function(_json_result_object, result)
+        elif kind == "enum":
+            enum_type = result["cls"]
+
+            def enum_value(item: object) -> object:
+                if not isinstance(item, str):
+                    raise ValueError("JSON enum value must be a string")
+                return enum_type(item)
+
+            return core_schema.no_info_before_validator_function(enum_value, result)
+        elif kind == "datetime":
+            datetime_validator = SchemaValidator(core_schema.datetime_schema(strict=False))
+
+            def datetime_value(item: object) -> object:
+                if not isinstance(item, str):
+                    raise ValueError("JSON datetime value must be a string")
+                return datetime_validator.validate_python(item)
+
+            return core_schema.no_info_before_validator_function(datetime_value, result)
+        return result
+
+    # pydantic_core's rebuild option prevents reuse of the model's original
+    # Python validator, which would discard the JSON-specific adaptations.
+    model.model_rebuild()
+    return SchemaValidator(adapt(model.__pydantic_core_schema__), _use_prebuilt=False)
+
+
+def _validate_json_result_model(model: type[BaseModel], result: object) -> None:
+    _json_result_validator(cast(Hashable, model)).validate_python(_json_result_object(result))
+
+
+def validate_operation_result(operation: str, result: object, *, native_result: bool = True) -> None:
+    """Validate native server or decoded client JSON without whole-result encoding."""
     spec = daemon_operation_spec(operation)
     if spec is None:
         raise OperationResultContractError(f"undeclared operation: {operation}")
     try:
-        spec.result_model.model_validate_json(json.dumps(result, allow_nan=False), strict=True)
+        _check_result_wire(result, native_result=native_result)
+        _validate_json_result_model(spec.result_model, result)
     except (ValidationError, TypeError, ValueError) as exc:
         raise OperationResultContractError(f"invalid {operation} result: {exc}") from exc
 
@@ -3039,7 +3159,6 @@ __all__ = [
     "MUTATION_OPERATION_NAMES",
     "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",
-    "MAX_OPERATION_RESULT_BYTES",
     "DaemonAuthority",
     "DAEMON_OPERATION_OUTCOMES",
     "DaemonFallback",

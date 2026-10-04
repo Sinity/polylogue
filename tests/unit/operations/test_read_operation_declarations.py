@@ -323,15 +323,6 @@ class TestSessionRead:
         with pytest.raises(ValueError, match="session not found"):
             _run(tmp_path, "session.read", {"ref": "codex-session:absent"})
 
-    def test_a_window_above_the_result_bound_is_refused_not_truncated(self) -> None:
-        """Mutation: drop the bound check and an oversized window is either
-        rejected by the transport with no guidance or silently truncated."""
-
-        from polylogue.operations.daemon_reads import _require_deliverable_window
-
-        with pytest.raises(ValueError, match="operation result bound"):
-            _require_deliverable_window({"filler": "x" * (9 * 1024 * 1024)}, limit=2000)
-
 
 class TestSessionReference:
     def test_a_non_reference_expression_is_refused(self, tmp_path: Path) -> None:

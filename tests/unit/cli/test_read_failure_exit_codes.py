@@ -1,7 +1,7 @@
 """A failed read exits on its own status, not on the empty status.
 
 polylogue-jtrtj: ``archive_query._read_failure_as_usage_error`` turned every
-typed read failure that was not ``daemon_required``/``result_too_large`` into a
+typed read failure that was not ``daemon_required`` into a
 ``click.UsageError``.  Click exits 2 for that, and 2 is ``EMPTY_EXIT_CODE`` --
 so a dropped daemon connection, a read that hit its deadline, a cancelled read
 and a refused request were all indistinguishable by exit status from "matched
@@ -371,9 +371,9 @@ def test_the_facets_route_leaves_through_the_read_failure_terminal(
     "exc",
     [
         OperationFailedError("QueryTimeoutError", "query exceeded its deadline", {"deadline_ms": 5000}),
-        OperationFailedError("result_too_large", "facet page exceeds the transport bound"),
+        OperationFailedError("deadline_exceeded", "query exceeded its deadline"),
     ],
-    ids=["deadline", "too-large"],
+    ids=["query-deadline", "server-deadline"],
 )
 def test_the_facets_remedy_names_options_facets_takes(
     exc: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

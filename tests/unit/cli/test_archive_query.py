@@ -1559,23 +1559,15 @@ class TestSessionSummaryText:
         assert "private reasoning" not in rendered
         assert "shell" in rendered and '"command": "pytest"' in rendered
 
-    def test_transcript_window_retries_oversized_first_page_smaller(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A pageable transcript does not fail on its oversized default window.
-
-        Anti-vacuity: make the first 200-row request exceed the operation byte
-        bound while a 100-row retry succeeds; without reduction the typed error
-        escapes before any export can be produced.
-        """
+    def test_transcript_window_keeps_the_requested_first_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A complete page is delivered without speculative size retries."""
         from polylogue.cli import archive_query
-        from polylogue.cli.operation_kernel import OperationFailedError
 
         limits: list[int | None] = []
 
         def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], None]:
             limit = request.payload.get("limit")  # type: ignore[attr-defined]
             limits.append(limit if isinstance(limit, int) else None)
-            if len(limits) == 1:
-                raise OperationFailedError("result_too_large", "oversized fixture page")
             return {"session": {"session_id": "fixture", "messages": []}, "complete": True}, None
 
         monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
@@ -1585,7 +1577,7 @@ class TestSessionSummaryText:
             ]
             == []
         )
-        assert limits == [200, 100]
+        assert limits == [200]
 
     """``read --view summary`` must render a condensed synopsis, not the full
     transcript (#analyze-perf): previously ``summary`` and ``transcript``
@@ -1773,34 +1765,45 @@ class TestDaemonSearchEnvelopeHonestPagination:
         assert envelope["limit"] == 25
 
 
+@pytest.mark.uses_real_clock("runs the resident UDS selector and waits for its original preview settlement")
 def test_delete_of_ranked_matches_names_each_session_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A ranked page with several hits in one session previews that session once.
-
-    Anti-vacuity: build ``matched_session_ids`` from every hit again and the
-    preview counts three sessions and lists ``s:1`` twice.
-    """
+    """Three real ranked hits in two sessions become two resident targets."""
     import polylogue.cli.archive_query as archive_query
+    from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.storage_records import SessionBuilder
 
-    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
-    payload: dict[str, object] = {
-        "hits": [{"session_id": "s:1"}, {"session_id": "s:2"}, {"session_id": "s:1"}],
-        "total": 3,
-        "limit": 10,
-    }
+    root = tmp_path / "archive"
+    session_ids: list[str] = []
+
+    def seed(archive_root: Path) -> None:
+        for native, count in (("ranked-one", 2), ("ranked-two", 1)):
+            builder = SessionBuilder(archive_root / "index.db", native).provider("codex")
+            for number in range(count):
+                builder.add_message(text=f"needle neutral ranked message {number}")
+            builder.save()
+            session_ids.append(builder.native_session_id())
+
+    config = Config(archive_root=root, render_root=tmp_path, sources=[], db_path=root / "index.db")
     monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
-    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda *, flag=False: False)
-    monkeypatch.setattr(archive_query, "dispatch_read", lambda *_args, **_kwargs: (payload, None))
-
-    _execute_archive_query_stdout(
-        AppEnv(),
-        RootModeRequest.from_params({"query": ("needle",), "delete_matched": True, "dry_run": True, "limit": 10}),
-    )
-
+    with running_daemon_operations(root, seed_archive=seed) as stack:
+        monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
+        ranked = stack.client.operation("cli.query", {"params": {"query": ["needle"], "limit": 10}})
+        assert ranked is not None and ranked["outcome"] == "completed", ranked
+        hits = ranked["result"]["hits"]
+        assert len(hits) == 3 and sum(hit["session"]["id"] == session_ids[0] for hit in hits) == 2
+        _execute_archive_query_stdout(
+            AppEnv(),
+            RootModeRequest.from_params({"query": ("needle",), "delete_matched": True, "dry_run": True, "limit": 10}),
+        )
     document = json.loads(capsys.readouterr().out)
+    assert document["status"] == "preview"
     assert document["session_count"] == 2
-    assert document["session_ids"] == ["s:1", "s:2"]
+    assert len(document["session_ids_sample"]) == 2
+    assert set(document["session_ids_sample"]) == set(session_ids)
+    assert document["affected_count"] == 0
+    assert document["reference"]["operation_name"] == "mutation.session.delete.preview"
 
 
 @pytest.mark.parametrize("remaining", [1000, None])
