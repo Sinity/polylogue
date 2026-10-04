@@ -223,16 +223,20 @@ def apply_query_excision(
     ledger_ids: list[str] = []
     for query_hash in query_hashes_to_remove:
         ledger_id = f"query-excision:{hashlib.sha256(('query:' + query_hash).encode()).hexdigest()}"
+        row = conn.execute("SELECT excision_link FROM queries WHERE query_hash = ?", (query_hash,)).fetchone()
+        excision_link = row[0] if row is not None and row[0] is not None else plan.target_ref
         conn.execute(
             "INSERT INTO query_excision_ledger (ledger_id, query_hash, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?) ON CONFLICT(ledger_id) DO NOTHING",
-            (ledger_id, query_hash, plan.target_ref, reason_digest, actor, now_ms),
+            (ledger_id, query_hash, excision_link, reason_digest, actor, now_ms),
         )
         ledger_ids.append(ledger_id)
     for result_set_id in plan.result_set_ids:
         ledger_id = f"query-excision:{hashlib.sha256(('result-set:' + result_set_id).encode()).hexdigest()}"
+        row = conn.execute("SELECT excision_link FROM result_sets WHERE result_set_id = ?", (result_set_id,)).fetchone()
+        excision_link = row[0] if row is not None and row[0] is not None else plan.target_ref
         conn.execute(
             "INSERT INTO query_excision_ledger (ledger_id, result_set_id, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?) ON CONFLICT(ledger_id) DO NOTHING",
-            (ledger_id, result_set_id, plan.target_ref, reason_digest, actor, now_ms),
+            (ledger_id, result_set_id, excision_link, reason_digest, actor, now_ms),
         )
         ledger_ids.append(ledger_id)
     if plan.finding_report_refs:
