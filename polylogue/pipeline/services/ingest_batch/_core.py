@@ -151,7 +151,6 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
 if TYPE_CHECKING:
-    from polylogue.archive.write_effects import WriteEffect, WriteEffectContext
     from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.pipeline.services.parsing_models import ParseResult
@@ -3025,19 +3024,14 @@ def _commit_sync_ingest_side_effects(
     *,
     db_path: Path,
     changed_session_ids: Sequence[str],
-    settle_deferred_effects: bool = False,
 ) -> None:
     """Run post-ingest side effects through the canonical write-effects path."""
-
-    def settle_effect(effect: WriteEffect, context: WriteEffectContext) -> None:
-        effect.run(context)
 
     ArchiveWriteGateway(db_path).commit_write_sync(
         WriteOperation.INGEST,
         {
             "_connection": conn,
             "changed_session_ids": tuple(changed_session_ids),
-            **({"deferred_scheduler": settle_effect} if settle_deferred_effects else {}),
         },
     )
 
@@ -3652,7 +3646,6 @@ def _process_ingest_batch_sync(
                 conn,
                 db_path=db_path,
                 changed_session_ids=tuple(fts_repair_ids),
-                **({"settle_deferred_effects": True} if prepared_unit is not None else {}),
             )
             if pending_attachment_receipts:
                 # Receipt consumption is a real source-tier mutation and must
