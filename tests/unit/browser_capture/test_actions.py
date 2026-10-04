@@ -6,6 +6,7 @@ import errno
 import hashlib
 import io
 import json
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -42,11 +43,13 @@ from polylogue.browser_capture.models import (
     BrowserActionTarget,
     BrowserActionUpdateRequest,
 )
+from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.browser_capture.route_contracts import (
     BROWSER_CAPTURE_ROUTE_CONTRACTS,
     browser_capture_route_contract_for,
 )
 from polylogue.browser_capture.server import make_server
+from polylogue.core import durable_fs
 from tests.infra.frozen_clock import FrozenClock
 
 pytestmark = pytest.mark.frozen_clock_modules("polylogue.browser_capture.actions")
@@ -812,7 +815,9 @@ def test_attachment_upload_streams_above_old_limit_and_pins_http_action(tmp_path
         connection.close()
         assert (count, observed.hexdigest()) == (size, digest.hexdigest())
     # Cold action/read and the independently retained upload have exact bytes.
-    assert get_action(action["action_id"], spool_path=tmp_path).attachments[0].size_bytes == size
+    cold = get_action(action["action_id"], spool_path=tmp_path)
+    assert cold is not None
+    assert cold.attachments[0].size_bytes == size
     assert (tmp_path / "browser-actions" / ".inputs" / digest.hexdigest()).stat().st_size == size
 
 
@@ -842,7 +847,7 @@ def test_attachment_input_reads_are_bounded_and_partial_input_is_never_acknowled
 
 def test_attachment_upload_refuses_inline_predecessor_and_missing_reference(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
-        BrowserActionAttachmentInput(name="neutral.txt", content_base64="YWJj")
+        BrowserActionAttachmentInput.model_validate({"name": "neutral.txt", "content_base64": "YWJj"})
     request = _request().model_copy(
         update={"attachments": [BrowserActionAttachmentInput(name="neutral.txt", attachment_ref="00" * 32)]}
     )
@@ -858,7 +863,7 @@ def test_attachment_upload_sync_failure_never_returns_a_reference(
         raise OSError(errno.EIO, "synthetic disk failure")
 
     with _receiver(tmp_path) as (host, port):
-        monkeypatch.setattr(browser_actions.os, "fsync", fail_fsync)
+        monkeypatch.setattr(os, "fsync", fail_fsync)
         connection = HTTPConnection(host, port)
         connection.request("PUT", "/v1/browser-action-attachments", body=b"neutral", headers={"Origin": _ORIGIN})
         response = connection.getresponse()
@@ -878,8 +883,8 @@ def test_attachment_upload_sync_failure_never_returns_a_reference(
 def test_attachment_directory_entries_settle_before_upload_ack(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = tmp_path / "new" / "spool"
     events: list[tuple[str, Path]] = []
-    original_sync = browser_actions.sync_directory
-    original_link = browser_actions.os.link
+    original_sync = durable_fs.sync_directory
+    original_link = os.link
 
     def sync(path: Path) -> None:
         original_sync(path)
@@ -890,7 +895,7 @@ def test_attachment_directory_entries_settle_before_upload_ack(tmp_path: Path, m
         events.append(("link", target))
 
     monkeypatch.setattr(browser_actions, "sync_directory", sync)
-    monkeypatch.setattr(browser_actions.os, "link", link)
+    monkeypatch.setattr(os, "link", link)
     reference = store_action_attachment(io.BytesIO(b"neutral").read, 7, spool_path=root)
     target = root / "browser-actions" / ".inputs" / reference
     published = events.index(("link", target))
@@ -935,9 +940,7 @@ def test_action_cli_streams_the_original_open_file_into_reference_storage(
 
     monkeypatch.setattr(Path, "read_bytes", refuse_whole_read)
     monkeypatch.setattr(browser_actions, "browser_capture_spool_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        capture_cli.BrowserCaptureReceiverConfig, "default", lambda: SimpleNamespace(spool_path=tmp_path)
-    )
+    monkeypatch.setattr(BrowserCaptureReceiverConfig, "default", lambda: SimpleNamespace(spool_path=tmp_path))
     monkeypatch.setattr(capture_cli, "receiver_identity", lambda _config: _RECEIVER_ID)
     monkeypatch.setattr(capture_cli, "resolve_receiver_auth_token", lambda *_args, **_kwargs: None)
     result = CliRunner().invoke(
@@ -970,7 +973,7 @@ def test_attachment_directory_retry_rechecks_preexisting_unsynced_ancestors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "retry" / "spool"
-    original = browser_actions.sync_directory
+    original = durable_fs.sync_directory
     failed = False
     observed: list[Path] = []
 
