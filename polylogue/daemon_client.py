@@ -473,6 +473,7 @@ class DaemonClient:
                 "timeout_ms": timeout_ms,
             },
             archive_root=archive_root,
+            deadline_ms=timeout_ms,
         )
 
     def operation_to_completion(
