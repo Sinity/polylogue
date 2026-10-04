@@ -80,8 +80,10 @@ export function scheduleFreshnessHint(queueValue, {
       : requestedAt,
     attempt_count: previous?.attempt_count || 0,
     running_poll_count: previous?.running_poll_count || 0,
-    lease_owner: null,
-    lease_expires_at_ms: null,
+    // New evidence belongs to the pending generation; it does not release
+    // the capture already holding this identity's lease.
+    lease_owner: previous?.lease_owner ?? null,
+    lease_expires_at_ms: previous?.lease_expires_at_ms ?? null,
     last_error: previous?.last_error || null,
   };
   const entries = { ...queue.entries, [key]: entry };
@@ -163,15 +165,19 @@ export function completeFreshnessClaim(queueValue, claim, {
 }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const current = queue.entries[claim.key];
-  if (!current || current.generation !== claim.generation) return queue;
+  if (!current || !claim.lease_owner
+    || current.lease_owner !== claim.lease_owner
+    || current.lease_expires_at_ms !== claim.lease_expires_at_ms) return queue;
   const entries = { ...queue.entries };
-  if (!needsFollowUp && !error) {
+  if (current.generation === claim.generation && !needsFollowUp && !error) {
     delete entries[claim.key];
     return { ...queue, entries };
   }
   entries[claim.key] = {
     ...current,
-    next_attempt_at_ms: nowMs + Math.max(1_000, retryDelayMs),
+    next_attempt_at_ms: needsFollowUp || error
+      ? Math.max(current.next_attempt_at_ms || 0, nowMs + Math.max(1_000, retryDelayMs))
+      : current.next_attempt_at_ms,
     attempt_count: error ? (current.attempt_count || 0) + 1 : current.attempt_count || 0,
     running_poll_count: needsFollowUp ? (current.running_poll_count || 0) + 1 : current.running_poll_count || 0,
     lease_owner: null,

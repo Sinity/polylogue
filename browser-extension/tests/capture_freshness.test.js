@@ -113,6 +113,46 @@ describe("capture freshness queue", () => {
     });
   });
 
+  it("keeps newer hints leased until the original capture settles", () => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const updated = hint(first.queue, "conversation-1", 1500, {
+      delayMs: 0,
+      generationObservations: [{ observation_id: "new-completion", state: "completed" }],
+    });
+    expect(updated.entries[first.claim.key]).toMatchObject({
+      generation: 2, lease_owner: "one", lease_expires_at_ms: 6000,
+    });
+    expect(claimDueFreshness(updated, { nowMs: 2000, owner: "two", leaseMs: 5000 }).claim).toBeNull();
+    const settled = completeFreshnessClaim(updated, first.claim, { nowMs: 2000, needsFollowUp: false });
+    const next = claimDueFreshness(settled, { nowMs: 2000, owner: "two", leaseMs: 5000 });
+    expect(next.claim).toMatchObject({ generation: 2, generation_observations: [{ observation_id: "new-completion" }] });
+    expect(completeFreshnessClaim(next.queue, next.claim, { nowMs: 2500, needsFollowUp: false }).entries).toEqual({});
+  });
+
+  it.each(["one", "two"])("fences a late expired completion from the reclaimed %s lease", (owner) => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const next = claimDueFreshness(first.queue, { nowMs: 6001, owner, leaseMs: 5000 });
+    expect(next.claim.generation).toBe(first.claim.generation);
+    expect(next.claim.lease_expires_at_ms).not.toBe(first.claim.lease_expires_at_ms);
+    for (const result of [{ needsFollowUp: false }, { needsFollowUp: true }, { error: "network_error" }]) {
+      expect(completeFreshnessClaim(next.queue, first.claim, { nowMs: 6500, ...result })).toEqual(next.queue);
+    }
+    expect(completeFreshnessClaim(next.queue, next.claim, { nowMs: 6500, needsFollowUp: false }).entries).toEqual({});
+  });
+
+  it("retains typed retry and provider cooldown when newer evidence arrives during failure", () => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const updated = hint(first.queue, "conversation-1", 1500, { delayMs: 0, providerUpdatedAt: "2026-07-16T00:01:00Z" });
+    const cooled = extendProviderCooldown(updated, { provider: "chatgpt", untilMs: 61000, nowMs: 2000 });
+    const settled = completeFreshnessClaim(cooled, first.claim, { nowMs: 2000, needsFollowUp: false, error: "rate_limited", retryDelayMs: 7000 });
+    expect(settled.entries[first.claim.key]).toMatchObject({ generation: 2, lease_owner: null, next_attempt_at_ms: 9000, attempt_count: 1, last_error: "rate_limited" });
+    expect(claimDueFreshness(settled, { nowMs: 60999, owner: "two", leaseMs: 5000 }).claim).toBeNull();
+    expect(claimDueFreshness(settled, { nowMs: 61000, owner: "two", leaseMs: 5000 }).claim.provider_updated_at).toBe("2026-07-16T00:01:00Z");
+  });
+
   it("holds every conversation for a provider until its throttle deadline", () => {
     let queue = hint(null, "conversation-1", 1000, { delayMs: 0 });
     queue = hint(queue, "conversation-2", 1000, { delayMs: 0 });
