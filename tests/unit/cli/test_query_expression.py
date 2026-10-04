@@ -6519,3 +6519,23 @@ class TestDaemonSessionIdFilter:
         assert isinstance(payload, dict)
         hits = payload.get("hits")
         assert isinstance(hits, list) and len(hits) == 1
+
+
+@pytest.mark.parametrize("projection", ["fields text", "select text"])
+@pytest.mark.parametrize("aggregate", ["count", "agg count", "agg sum:word_count"])
+@pytest.mark.parametrize("projection_first", [True, False])
+def test_aggregate_terminal_refuses_an_ignored_row_projection(
+    projection: str, aggregate: str, projection_first: bool
+) -> None:
+    stages = (projection, aggregate) if projection_first else (aggregate, projection)
+    with pytest.raises(ExpressionCompileError) as raised:
+        parse_unit_source_expression("messages where text:neutral | " + " | ".join(stages))
+    expected_field = ("count" if aggregate == "count" else "agg") if projection_first else "fields"
+    assert raised.value.field == expected_field
+
+
+def test_nonaggregate_row_projection_remains_executable() -> None:
+    source = parse_unit_source_expression("messages where text:neutral | fields text | limit 2")
+    assert source is not None
+    assert source.selected_fields == ("text",)
+    assert source.limit == 2

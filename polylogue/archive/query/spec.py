@@ -276,7 +276,9 @@ def resolve_default_root_filter(
         return root
     if lineage_seed_from_predicate(boolean_predicate) is not None:
         return None
-    if parent_id or continuation is not None or sidechain is not None or has_branches is not None:
+    # Message branch indices do not imply a child session. Their predicate
+    # retains the default session scope, independent of its True/False operand.
+    if parent_id or continuation is not None or sidechain is not None:
         # Same reasoning as the lineage exemption above: naming a parent is an
         # explicit request for branch structure, so applying the top-level-only
         # default would drop every row the filter asked for and make explicit
@@ -372,7 +374,15 @@ def validate_params_known(params: Mapping[str, object], *, strict: bool = False)
         return
     for key in params:
         if key not in _RECOGNIZED_PARAMS:
-            alternatives = query_boundary_alternatives(key, "spec")
+            # from_params accepts CLI parameter spellings, not dataclass attributes.
+            alternatives = sorted(
+                {
+                    alternative
+                    for boundary in ("mcp", "spec", "storage", "api", "dsl")
+                    for alternative in query_boundary_alternatives(key, boundary)
+                    if alternative in _RECOGNIZED_PARAMS
+                }
+            )
             suffix = f"; accepted alternatives: {', '.join(alternatives)}" if alternatives else ""
             raise QuerySpecError(key, f"unknown query parameter: {key!r}{suffix}")
 

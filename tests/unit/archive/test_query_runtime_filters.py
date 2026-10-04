@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -407,3 +408,23 @@ def test_path_prefix_matching_is_component_bounded() -> None:
     assert path_matches_prefix(r"C:\\repo\\foo\\bar", r"C:\\repo\\foo")
     assert not path_matches_prefix("/repo/foobar", "/repo/foo")
     assert not path_matches_prefix("/repo/fooish/bar", "/repo/foo")
+
+
+def test_message_branch_filter_preserves_the_default_root_relation(workspace_env: dict[str, Path]) -> None:
+    from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.storage_records import SessionBuilder
+
+    index = workspace_env["archive_root"] / "index.db"
+    SessionBuilder(index, "root").add_message("root-message", text="neutral").save()
+    SessionBuilder(index, "child").parent_session("ext-root").branch_type("fork").add_message(
+        "child-message", text="neutral child"
+    ).save()
+    with ArchiveStore.open_existing(index.parent) as archive:
+        for operand in (True, False):
+            selected = archive.list_summaries(**plan_filter_kwargs(SessionQueryPlan(has_branches=operand)))
+            assert len(selected) == 1
+            assert selected[0].parent_id is None
+        children = archive.list_summaries(**plan_filter_kwargs(SessionQueryPlan(has_branches=False, root=False)))
+        assert len(children) == 1
+        assert children[0].parent_id is not None
