@@ -141,3 +141,37 @@ def test_domain_surface_envelopes_do_not_publish_untyped_cost_placeholders() -> 
     assert summary.cost_provenance is None
     assert row.total_cost_usd is None
     assert row.cost_provenance is None
+
+
+def test_session_list_builders_share_the_canonical_repo_and_directory_projection() -> None:
+    from polylogue.archive.session.domain_models import SessionSummary
+    from polylogue.surfaces.payloads import session_list_envelope_from_summary
+
+    for cwd in ("C:\\Users\\example\\project\\", "/home/example/project/"):
+        session = _build_session().model_copy(
+            update={
+                "git_repository_url": "https://example.invalid/team/repository.git",
+                "working_directories": (cwd,),
+            }
+        )
+        summary = SessionSummary(
+            id=session.id,
+            origin=session.origin,
+            title=session.title,
+            title_source=session.title_source,
+            git_repository_url=session.git_repository_url,
+            working_directories=session.working_directories,
+        )
+        for row in (
+            session_list_envelope_from_domain(session),
+            session_list_envelope_from_summary(summary, message_count=len(session.messages)),
+        ):
+            assert row.repo == "repository.git"
+            assert row.cwd_display == "project"
+        assert session.git_repository_url == summary.git_repository_url == "https://example.invalid/team/repository.git"
+        assert session.working_directories == summary.working_directories == (cwd,)
+        overridden = session_list_envelope_from_summary(
+            summary, message_count=1, repo="explicit-repo", cwd_display="explicit-directory"
+        )
+        assert overridden.repo == "explicit-repo"
+        assert overridden.cwd_display == "explicit-directory"
