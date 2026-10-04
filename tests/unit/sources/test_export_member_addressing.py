@@ -777,7 +777,7 @@ def test_zip_member_proof_refuses_a_changed_operational_string(tmp_path: Path) -
         **_row(source_path, payload=expected, source_index=0),
         "coordinate_format": "zip-v2",
         "entry_ordinal": 0,
-        "split_index": None,
+        "split_index": 0,
         "addressing_mode": MemberAddressingMode.WHOLE_MEMBER.value,
         "content_identity": structural_content_identity(original),
     }
