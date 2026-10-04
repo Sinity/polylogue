@@ -22,8 +22,12 @@ from typing import TYPE_CHECKING
 
 import click
 
+from polylogue.archive.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    validate_session_list_projection_cli_contract,
+)
 from polylogue.archive.viewport import read_view_choices
-from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
+from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, read_view_handler_template
 from polylogue.cli.read_views.base import (
     ReadViewChronicleOptions,
     ReadViewContextImageOptions,
@@ -73,10 +77,6 @@ from polylogue.cli.read_views.session_evidence import (
 )
 from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTIONS,
-    validate_session_list_projection_cli_contract,
-)
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
@@ -110,7 +110,9 @@ def build_read_view_handler(
 
     declaration_id = declared_as or view_id
     try:
-        metadata = READ_VIEW_HANDLER_METADATA[declaration_id]
+        metadata = (
+            read_view_handler_template(declaration_id) if declared_as else READ_VIEW_HANDLER_METADATA[declaration_id]
+        )
     except KeyError as exc:
         raise RuntimeError(f"read view {declaration_id!r} has an executable handler but no declaration") from exc
     return ReadViewHandler(

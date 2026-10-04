@@ -7,9 +7,10 @@ handlers, the archive API bridge, or storage/query stacks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
+from polylogue.archive.session_projections import bind_session_list_projection_contracts
 from polylogue.archive.viewport import read_view_choices
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
@@ -214,7 +215,7 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 # continuation family.
 #
 # Distinct read operations serve the query-set, graph, and evidence views.
-READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
+_READ_VIEW_HANDLER_TEMPLATES: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
         "optional",
@@ -388,9 +389,13 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     ),
 }
 
+READ_VIEW_HANDLER_METADATA = bind_session_list_projection_contracts(
+    _READ_VIEW_HANDLER_TEMPLATES, lambda metadata, name: replace(metadata, view_id=name)
+)
+
 
 def _view_option_names(view: str) -> frozenset[str]:
-    metadata = READ_VIEW_HANDLER_METADATA[view]
+    metadata = _READ_VIEW_HANDLER_TEMPLATES[view]
     return metadata.accepted_options | {option.name for option in metadata.declared_options}
 
 
@@ -430,6 +435,11 @@ def declared_read_view_options() -> tuple[ReadViewOptionDeclaration, ...]:
             if previous != option:
                 raise RuntimeError(f"conflicting read option declaration: {option.name}")
     return tuple(unique.values())
+
+
+def read_view_handler_template(view_id: str) -> ReadViewHandlerMetadata:
+    """Return the implementation contract borrowed by a projection row."""
+    return _READ_VIEW_HANDLER_TEMPLATES[view_id]
 
 
 def read_view_examples() -> tuple[str, ...]:
@@ -547,6 +557,7 @@ __all__ = [
     "READ_VIEW_GLOBAL_OPTION_NAMES",
     "declared_read_view_options",
     "read_view_examples",
+    "read_view_handler_template",
     "ReadViewExecutionKind",
     "ReadViewHandlerMetadata",
     "ReadViewOptionDeclaration",

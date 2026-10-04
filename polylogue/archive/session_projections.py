@@ -7,9 +7,9 @@ vocabularies from these rows instead of maintaining parallel name branches.
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, TypeVar, cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,18 +22,46 @@ class SessionListProjection:
     cli_handler: str
 
 
+_SESSION_LIST_RENDERERS = (
+    SessionListProjection("events", "get_session_events", "events", cli_handler="events"),
+    SessionListProjection("file-edits", "get_file_edits", "file_edits", cli_handler="file-edits"),
+    SessionListProjection("agent-policies", "get_agent_policies", "agent_policies", cli_handler="agent-policies"),
+    SessionListProjection(
+        "web-content", "get_web_content_constructs", "web_content_constructs", cli_handler="web-content"
+    ),
+    SessionListProjection("materials", "get_session_materials", "materials", cli_handler="materials"),
+)
+
 SESSION_LIST_PROJECTIONS: dict[str, SessionListProjection] = {
-    projection.name: projection
-    for projection in (
-        SessionListProjection("events", "get_session_events", "events", cli_handler="events"),
-        SessionListProjection("file-edits", "get_file_edits", "file_edits", cli_handler="file-edits"),
-        SessionListProjection("agent-policies", "get_agent_policies", "agent_policies", cli_handler="agent-policies"),
-        SessionListProjection(
-            "web-content", "get_web_content_constructs", "web_content_constructs", cli_handler="web-content"
-        ),
-        SessionListProjection("materials", "get_session_materials", "materials", cli_handler="materials"),
-    )
+    projection.name: projection for projection in _SESSION_LIST_RENDERERS
 }
+
+Contract = TypeVar("Contract")
+
+
+def bind_session_list_projection_contracts(
+    templates: Mapping[str, Contract], rename: Callable[[Contract, str], Contract]
+) -> dict[str, Contract]:
+    """Bind public projection names to their existing renderer contracts.
+
+    Templates are implementation families, not an independent public vocabulary.
+    Preserve template order and require every row to name a real renderer.
+    """
+    renderer_ids = {row.cli_handler for row in _SESSION_LIST_RENDERERS}
+    for name, row in SESSION_LIST_PROJECTIONS.items():
+        if row.name != name or row.cli_handler not in renderer_ids or row.cli_handler not in templates:
+            raise RuntimeError(f"invalid session projection contract: {name!r}")
+        if name in templates and name not in renderer_ids:
+            raise RuntimeError(f"session projection collides with read view: {name!r}")
+    result: dict[str, Contract] = {}
+    for name, template in templates.items():
+        if name not in renderer_ids:
+            result[name] = template
+        else:
+            for row in SESSION_LIST_PROJECTIONS.values():
+                if row.cli_handler == name:
+                    result[row.name] = rename(template, row.name)
+    return result
 
 
 def session_list_projection_names() -> tuple[str, ...]:
@@ -74,12 +102,6 @@ def validate_session_list_projection_cli_contract(cli_handler_ids: Collection[st
         raise RuntimeError(f"session projections without CLI read handlers: {', '.join(missing)}")
 
 
-# Compatibility aliases hold the import-time snapshot. Production dispatchers
-# call the functions above so the table remains the live vocabulary source.
-SESSION_LIST_PROJECTION_NAMES = session_list_projection_names()
-MCP_READ_VIEW_NAMES = mcp_read_view_names()
-MCP_GET_SESSION_PROJECTION_NAMES = mcp_get_session_projection_names()
-
 # These aliases are evaluated when the module loads, after the table above is
 # declared.  A table addition therefore reaches MCP's public Literal schema
 # without a duplicate hand-maintained type list. Mypy cannot evaluate a
@@ -88,13 +110,11 @@ MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) |
 MCPGetSessionProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_session_projection_names())) | None  # type: ignore[valid-type]
 
 __all__ = [
-    "MCP_GET_SESSION_PROJECTION_NAMES",
-    "MCP_READ_VIEW_NAMES",
     "MCPGetSessionProjection",
     "MCPReadView",
-    "SESSION_LIST_PROJECTION_NAMES",
     "SESSION_LIST_PROJECTIONS",
     "SessionListProjection",
+    "bind_session_list_projection_contracts",
     "is_mcp_get_session_projection",
     "is_mcp_read_view",
     "mcp_get_session_projection_names",

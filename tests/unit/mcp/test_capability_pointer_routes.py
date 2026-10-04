@@ -276,7 +276,7 @@ async def test_completions_page_against_shared_owner(mcp_server: MCPServerUnderT
 async def test_capability_discovery_includes_messages(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
     """The older list-only vocabulary omitted the runtime messages view."""
     from polylogue import Polylogue
-    from polylogue.operations.session_projections import mcp_read_view_names
+    from polylogue.archive.session_projections import mcp_read_view_names
 
     root = _seeded_archive(tmp_path)
     with patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=root)):
