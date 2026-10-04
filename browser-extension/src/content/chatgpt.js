@@ -143,7 +143,7 @@
       const completedKey = completed
         ? `${lifecycleTurnIdentity(completed.turn) || "active"}:${completed.label}`
         : null;
-      const startedAtMs = previous.started_at_ms || nowMs;
+      const startedAtMs = previous.running ? (previous.started_at_ms || nowMs) : nowMs;
       const state = previous.running ? "in_progress" : "started";
       if (state === "started" || nowMs - (previous.last_progress_at_ms || 0) >= 30_000) {
         observation = {
@@ -1178,10 +1178,15 @@
         }
       }, 750);
     });
-    freshnessObserver.observe(document.documentElement, {
+    const observeFreshness = () => freshnessObserver.observe(document.documentElement, {
       childList: true,
       characterData: true,
       subtree: true,
+    });
+    observeFreshness();
+    window.addEventListener("pageshow", () => {
+      observeGenerationLifecycle("page_restore");
+      observeFreshness();
     });
     window.addEventListener("pagehide", () => {
       freshnessObserver.disconnect();
