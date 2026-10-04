@@ -34,13 +34,13 @@ from polylogue.storage.embeddings.generations import (
     EmbeddingGenerationStore,
 )
 from polylogue.storage.embeddings.identity import (
+    EmbeddingProvenanceError,
     EmbeddingRecipe,
     EmbeddingRequestSpec,
     message_embedding_derivation_key,
 )
 from polylogue.storage.embeddings.materialization import (
     EmbeddingAcquisitionExcludedError,
-    EmbeddingProvenanceError,
     EmbeddingWriteAdmission,
     _should_embed_archive_message,
     archive_embeddable_message_where,
@@ -233,6 +233,11 @@ def reserve_embedding_message(
         payload = _message_input(conn, message_id, recipe, binding, index_generation)
         if payload is not None and not embedding_acquisition_allowed(conn, payload.session_id):
             raise EmbeddingAcquisitionExcludedError("demo_acquisition_excluded")
+        if payload is not None:
+            with contextlib.closing(
+                open_readonly_connection(Path(binding.database_path), validate_schema=False)
+            ) as tier:
+                store.require_recipe_compatible(tier, recipe)
         return payload
 
 
@@ -676,6 +681,7 @@ class EmbeddingDerivationAdapter:
                     archive_root=binding.archive_root,
                 )
                 try:
+                    store.require_recipe_compatible(conn, self._recipe)
                     loaded, error = try_load_sqlite_vec(conn)
                     if not loaded:
                         raise RuntimeError(f"embedding vector publication unavailable: {error}")

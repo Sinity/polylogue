@@ -34,6 +34,7 @@ from polylogue.storage.embeddings.identity import (
     EMBEDDING_DERIVATION_KEY_SQL_FUNCTION,
     EMBEDDING_SOURCE_HASH_SQL_FUNCTION,
     VECTOR_DERIVATION_HASH_SQL_FUNCTION,
+    EmbeddingProvenanceError,
     EmbeddingRecipe,
     EmbeddingRequestSpec,
     EmbeddingSourceDigest,
@@ -977,10 +978,6 @@ def _mark_all_archive_sessions_needs_reindex(
         conn.close()
 
 
-class EmbeddingProvenanceError(RuntimeError):
-    """Purchased output has no exact proven producer contract; acquisition refuses."""
-
-
 class _ProviderRequestError(RuntimeError):
     """Marks an exception raised by the embedding provider call itself."""
 
@@ -1450,6 +1447,7 @@ def _prepare_archive_embedding_attempt(
             # generation's model, for instance) supersedes every attempt and
             # re-queues forever.
             configured_recipe_before = _configured_embedding_recipe()
+            store.require_recipe_compatible(embeddings_conn, recipe)
             # Derived directly from row["text"] -- the exact same string handed
             # to the embedder -- so hash validity equals vector validity by
             # construction (polylogue-q88p). Computed once here, not re-derived
@@ -1625,6 +1623,7 @@ def _publish_archive_embedding_window(
         store.assert_binding(plan.binding)
         conn = _open_bound_embedding_connection(binding)
         try:
+            store.require_recipe_compatible(conn, plan.recipe)
             published = publish_embedding_attempt_window(
                 conn,
                 attempt=plan.attempt,

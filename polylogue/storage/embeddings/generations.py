@@ -26,6 +26,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from polylogue.storage.embeddings.identity import EmbeddingProvenanceError, EmbeddingRecipe
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -34,6 +35,10 @@ from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 class EmbeddingGenerationError(RuntimeError):
     """Raised when embedding generation state is unsafe to mutate."""
+
+
+class EmbeddingContractTransitionRequiredError(EmbeddingGenerationError):
+    """A proven incompatible producer needs a validated replacement generation."""
 
 
 class EmbeddingGenerationBusyError(EmbeddingGenerationError):
@@ -535,6 +540,31 @@ class EmbeddingGenerationStore:
         if self._identity(Path(binding.database_path), label="embedding database") != binding.database_identity:
             raise EmbeddingGenerationError("embedding generation database was replaced during materialization")
 
+    @staticmethod
+    def require_recipe_compatible(conn: sqlite3.Connection, recipe: EmbeddingRecipe) -> None:
+        """Refuse acquisition/publication into an incompatible purchased tier.
+
+        Membership includes unreferenced purchased outputs, not just the
+        selected message. Compatible producer changes keep their actual recipe
+        identities; incompatible changes use the explicit replacement lifecycle.
+        The caller holds the original generation's writer lock.
+        """
+        with contextlib.closing(
+            conn.execute(
+                "SELECT DISTINCT model, dimension, recipe_hash, output_contract_hash FROM message_embeddings_meta"
+            )
+        ) as rows:
+            for model, dimension, recipe_hash, output_hash in rows:
+                producer = recipe.proven_stored_producer(
+                    model=str(model), dimension=int(dimension), recipe_hash=bytes(recipe_hash)
+                )
+                if producer is None or producer.output_contract_hash != bytes(output_hash):
+                    raise EmbeddingProvenanceError("stored embedding producer provenance is unproven")
+                if not recipe.retrieval_compatible(replace(producer, input_schema_version=recipe.input_schema_version)):
+                    raise EmbeddingContractTransitionRequiredError(
+                        "incompatible embedding contract requires a validated replacement generation"
+                    )
+
     def refresh_binding_contract(self, binding: EmbeddingGenerationBinding) -> None:
         """Publish the current sealed membership after an admitted SQLite commit."""
         if self._link_identity(self.active_path, label="embedding active pointer") != binding.active_path_identity:
@@ -998,6 +1028,7 @@ __all__ = [
     "EmbeddingGeneration",
     "EmbeddingGenerationBinding",
     "EmbeddingGenerationError",
+    "EmbeddingContractTransitionRequiredError",
     "EmbeddingGenerationBusyError",
     "EmbeddingGenerationState",
     "EmbeddingGenerationStore",

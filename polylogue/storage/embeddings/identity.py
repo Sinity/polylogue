@@ -61,6 +61,10 @@ _DEFAULT_REQUEST_INPUT_TYPE = "document"
 _DEFAULT_REQUEST_DIMENSIONS = 1024
 
 
+class EmbeddingProvenanceError(RuntimeError):
+    """Purchased output has no exact proven producer contract; acquisition refuses."""
+
+
 @dataclass(frozen=True, slots=True)
 class EmbeddingRecipe:
     """Every declared computational field that can change an embedding result."""
@@ -631,6 +635,7 @@ __all__ = [
     "EMBEDDING_TASK",
     "EMBEDDING_TEXT_CANONICALIZATION",
     "EMBEDDING_TOOL_IMPLEMENTATION",
+    "EmbeddingProvenanceError",
     "EmbeddingRecipe",
     "EmbeddingRequestSpec",
     "EmbeddingSourceDigest",
