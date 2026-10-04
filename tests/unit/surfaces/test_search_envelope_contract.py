@@ -81,6 +81,7 @@ REQUIRED_ENVELOPE_FIELDS: frozenset[str] = frozenset(
         # second cause: the field is part of the published contract and this
         # list had simply not learned about it.
         "total_unit",
+        "snapshot_epoch",
     }
 )
 
@@ -132,7 +133,7 @@ def test_envelope_additive_fields_stay_optional_with_none_default() -> None:
     (it only checks names, not optionality) -- silently breaking every
     surface that doesn't set them.
     """
-    additive_fields = ("query_run_ref", "query_hash", "result_fingerprint", "exactness")
+    additive_fields = ("query_run_ref", "query_hash", "result_fingerprint", "exactness", "snapshot_epoch")
     for name in additive_fields:
         field = SearchEnvelope.model_fields[name]
         assert field.default is None, f"{name} must default to None for byte-compat, got {field.default!r}"
@@ -152,6 +153,8 @@ def test_envelope_ranking_policy_defaults_are_declared() -> None:
     )
     assert envelope.ranking_policy == RANKING_POLICY_MIXED
     assert envelope.ranking_policy_version == RANKING_POLICY_VERSION
+    assert envelope.snapshot_epoch is None
+    assert "snapshot_epoch" not in envelope.model_dump(mode="json", exclude_none=True)
     assert envelope.query == "needle"
     assert envelope.retrieval_lane == "dialogue"
 

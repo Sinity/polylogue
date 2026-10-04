@@ -666,6 +666,7 @@ export type SearchEnvelope = {
   readonly result_fingerprint?: string | null;
   readonly retrieval_lane: string;
   readonly route_state?: RouteReadinessPayload | null;
+  readonly snapshot_epoch?: string | null;
   readonly sort?: string | null;
   readonly total: number | null;
   readonly total_unit?: string | null;
@@ -717,6 +718,7 @@ export type SessionListResponse = {
   readonly outcome: OutcomeEnvelope;
   readonly query_description?: ReadonlyArray<string>;
   readonly route_state?: RouteReadinessPayload | null;
+  readonly snapshot_epoch?: string | null;
   readonly total: number;
 };
 
