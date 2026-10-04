@@ -38,6 +38,7 @@ live file.
 
 from __future__ import annotations
 
+import math
 import sqlite3
 from codecs import getincrementaldecoder
 from collections.abc import Iterator
@@ -572,7 +573,11 @@ def _row_str(row: sqlite3.Row, key: str, default: str = "") -> str:
 
 def _row_int(row: sqlite3.Row, key: str, default: int = 0) -> int:
     value = row[key]
-    return int(value) if isinstance(value, (int, float)) else default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    return int(value) if isinstance(value, float) and math.isfinite(value) and value.is_integer() else default
 
 
 def _row_opt_str(row: sqlite3.Row, key: str) -> str | None:
@@ -582,7 +587,11 @@ def _row_opt_str(row: sqlite3.Row, key: str) -> str | None:
 
 def _row_opt_int(row: sqlite3.Row, key: str) -> int | None:
     value = row[key]
-    return int(value) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return int(value) if isinstance(value, float) and math.isfinite(value) and value.is_integer() else None
 
 
 def parse_codex_state_db(path: Path, *, immutable: bool = False) -> CodexStateSnapshot:

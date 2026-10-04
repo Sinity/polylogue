@@ -425,7 +425,9 @@ def _int_value(payload: Mapping[str, object], *keys: str) -> int | None:
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(value)
+            if math.isfinite(value) and value.is_integer():
+                return int(value)
+            continue
         if isinstance(value, str):
             try:
                 return int(value)
@@ -832,7 +834,7 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     if isinstance(value, str):
         try:
             parsed = int(value)

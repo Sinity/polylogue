@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Iterable, Mapping, MutableSequence, Sequence
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
@@ -744,12 +746,18 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     if isinstance(value, str):
         try:
-            parsed = int(float(value))
+            parsed = int(value)
         except ValueError:
-            return None
+            try:
+                number = Decimal(value)
+                if not number.is_finite() or not math.isfinite(float(number)) or number != number.to_integral_value():
+                    return None
+                parsed = int(number)
+            except (InvalidOperation, ValueError, OverflowError):
+                return None
         return parsed if parsed >= 0 else None
     return None
 
