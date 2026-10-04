@@ -16,7 +16,8 @@ from functools import cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, GetJsonSchemaHandler, ValidationError, model_validator
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import SchemaValidator, core_schema
 
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
@@ -98,6 +99,51 @@ class _OperationPayload(BaseModel):
     """Base for a concrete machine-operation payload type."""
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+class InsightReadRequest(_OperationPayload):
+    """Import-light wire boundary; selected insight owns nested validation."""
+
+    page: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_insight_query(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightListRequest
+
+        InsightListRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightListRequest
+
+        return handler.resolve_ref_schema(handler(InsightListRequest.__pydantic_core_schema__))
+
+
+class InsightReadResult(_OperationPayload):
+    """Validate the exact registry page without loading it on unrelated routes."""
+
+    page: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_insight_page(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightListResult
+
+        _validate_json_result_model(InsightListResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightListResult
+
+        return handler.resolve_ref_schema(handler(InsightListResult.__pydantic_core_schema__))
 
 
 class StatusRequest(_OperationPayload):
@@ -1575,6 +1621,17 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=2.0,
     ),
     DaemonOperationSpec(
+        "insights.list",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.list.request/v1",
+        result_contract="insights.list.result/v1",
+        request_type="InsightReadRequest",
+        result_type="InsightReadResult",
+        request_model=InsightReadRequest,
+        result_model=InsightReadResult,
+    ),
+    DaemonOperationSpec(
         "cli.query",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
@@ -2903,8 +2960,12 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
             # The wire walker admits only arrays (native server tuples are
             # arrays at delivery). Item schemas retain strict scalar checks.
             result["strict"] = False
+        # Named definitions belong to the wrapping validator, so reused refs
+        # keep resolving to the same adapted strict schema.
         elif kind == "dict":
-            return core_schema.no_info_before_validator_function(_json_result_object, result)
+            return core_schema.no_info_before_validator_function(
+                _json_result_object, result, ref=result.pop("ref", None)
+            )
         elif kind == "enum":
             enum_type = result["cls"]
 
@@ -2913,7 +2974,7 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
                     raise ValueError("JSON enum value must be a string")
                 return enum_type(item)
 
-            return core_schema.no_info_before_validator_function(enum_value, result)
+            return core_schema.no_info_before_validator_function(enum_value, result, ref=result.pop("ref", None))
         elif kind == "datetime":
             datetime_validator = SchemaValidator(core_schema.datetime_schema(strict=False))
 
@@ -2922,7 +2983,7 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
                     raise ValueError("JSON datetime value must be a string")
                 return datetime_validator.validate_python(item)
 
-            return core_schema.no_info_before_validator_function(datetime_value, result)
+            return core_schema.no_info_before_validator_function(datetime_value, result, ref=result.pop("ref", None))
         return result
 
     # pydantic_core's rebuild option prevents reuse of the model's original

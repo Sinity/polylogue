@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +27,7 @@ from polylogue.storage.derived.session.runtime import SessionInsightCounts, Sess
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import (
     extract_json_result,
     json_array,
@@ -46,6 +50,36 @@ NID_PRICED_COST = native_session_id_for("chatgpt", "conv-priced-cost")
 NID_UNAVAILABLE_COST = native_session_id_for("chatgpt", "conv-unavailable-cost")
 NID_EPOCH = native_session_id_for("claude-code", "conv-epoch")
 NID_HEAVY = native_session_id_for("codex", "conv-heavy")
+
+
+@pytest.fixture(autouse=True)
+def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Existing materialized insight controls exercise the actual resident route."""
+    if "cli_workspace" not in request.fixturenames:
+        yield
+        return
+    workspace = request.getfixturevalue("cli_workspace")
+    with cli_daemon_archive(workspace["archive_root"], monkeypatch):
+        yield
+
+
+def test_registered_insight_read_refuses_without_daemon(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from polylogue.cli.machine_main import run_machine_entry
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "absent-archive"))
+    argv = ["analyze", "insights", "profiles", "--json"]
+    monkeypatch.setattr(sys, "argv", ["polylogue", *argv])
+    with pytest.raises(SystemExit) as exited:
+        run_machine_entry(cli, argv)
+    assert exited.value.code == 1
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["code"] == "daemon_required", refusal
+    assert refusal["details"]["operation"] == "insights.list"
+    assert not (tmp_path / "absent-archive").exists()
 
 
 def test_fable_packet_is_available_under_ops_insights() -> None:

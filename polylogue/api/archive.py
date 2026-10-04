@@ -20,6 +20,7 @@ from polylogue.analysis.archive import (
 )
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.insight_reads import read_insight_page
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.api.facade_client import submit_facade_product
 from polylogue.archive.actions.actions import Action
@@ -4355,26 +4356,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "tier": request.tier,
                 "query": request.query,
             },
-            work=lambda archive: archive.list_session_profile_insights(
-                origin=request.origin,
-                workflow_shape=request.workflow_shape,
-                terminal_state=request.terminal_state,
-                tag=request.tag,
-                repo=request.repo,
-                since_ms=_archive_query_date_ms("since", request.since),
-                until_ms=_archive_query_date_ms("until", request.until),
-                first_message_since=request.first_message_since,
-                first_message_until=request.first_message_until,
-                session_date_since=request.session_date_since,
-                session_date_until=request.session_date_until,
-                tier=request.tier,
-                query=request.query,
-                limit=request.limit,
-                offset=request.offset,
-                min_wallclock_seconds=request.min_wallclock_seconds,
-                max_wallclock_seconds=request.max_wallclock_seconds,
-                sort=request.sort,
-            ),
+            work=lambda archive: cast(list[SessionProfileInsight], read_insight_page(archive, request)),
             page_size=request.limit,
             offset=request.offset,
             projection="session-profile",

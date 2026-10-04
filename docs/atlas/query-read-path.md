@@ -194,3 +194,14 @@ authority refuses; an absent Index, Source or Audit tier does not withhold
 durable preferences. Reads require the daemon and never fall back to the local
 Python facade. Explicit Index version preconditions still refuse because these
 operations do not observe Index authority.
+
+## Resident insight pages
+
+The eleven registered `analyze insights` list commands call `insights.list`
+through the daemon. Its closed discriminated request and result branches use
+the registry's existing query and item models. The canonical page reader is
+shared with the Python facade and executes on the resident pinned archive
+snapshot: origin tag rollups are merged before paging, and cost estimates are
+enriched and filtered before paging. Missing daemon or unavailable insight
+authority refuses instead of opening a local archive. Special readiness,
+export, health and rigor commands retain their separate existing routes.

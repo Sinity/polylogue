@@ -215,6 +215,9 @@ class TestWantsJsonDetection:
     #: had a green property test over it (polylogue-re6s3 AC4).
     _SPELLINGS: list[tuple[list[str], bool]] = [
         ([], False),
+        (["analyze", "insights", "profiles", "--json"], True),
+        (["status", "--json"], True),
+        (["hooks", "list", "--json"], True),
         (["read", "--all", "--format", "json"], True),
         (["--format=json", "read", "--all"], True),
         (["-f", "json", "read", "--all"], True),
@@ -233,7 +236,7 @@ class TestWantsJsonDetection:
     @given(argv=st.lists(st.text(max_size=30), max_size=10))
     @example(argv=[])
     def test_needs_flag_and_json_value(self, argv: list[str]) -> None:
-        """No argv without both a format flag and the literal ``json`` qualifies.
+        """Machine output requires an explicit JSON option.
 
         The direction the table above cannot cover: a detector that simply
         returned ``True``, or that matched a bare ``json`` argument anywhere,
@@ -241,7 +244,7 @@ class TestWantsJsonDetection:
         """
         if wants_json(argv):
             assert any("json" in arg for arg in argv), argv
-            assert any(arg.startswith(("--format", "--output-format", "-f")) for arg in argv), argv
+            assert any(arg.startswith(("--format", "--output-format", "-f", "--json")) for arg in argv), argv
 
 
 class TestExtractCommand:

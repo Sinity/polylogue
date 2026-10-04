@@ -102,3 +102,34 @@ def test_large_result_validation_does_not_encode_again(monkeypatch: pytest.Monke
     protocol.validate_operation_result(
         "read.dialogue", {"view": "dialogue", "payload": {"text": "λ" * (4 * 1024 * 1024)}}
     )
+
+
+class PairedWireForms(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    first: WireForms
+    second: WireForms
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("choice", "first"),
+        ("choice", "invalid"),
+        ("choice", 1),
+        ("count", True),
+        ("observed", "2026-01-01T00:00:00Z"),
+        ("observed", 1),
+    ],
+)
+def test_reused_named_definitions_keep_the_original_strict_json_contract(field: str, value: object) -> None:
+    first = _payload()
+    first[field] = value
+    payload = {"first": first, "second": _payload()}
+    try:
+        original = PairedWireForms.model_validate_json(json.dumps(payload), strict=True)
+    except ValueError:
+        with pytest.raises(ValueError):
+            protocol._json_result_validator(PairedWireForms).validate_python(payload)
+    else:
+        actual = protocol._json_result_validator(PairedWireForms).validate_python(payload)
+        assert actual.model_dump() == original.model_dump()

@@ -296,6 +296,10 @@ def execute_read_operation(
         from polylogue.operations.user_overlay_reads import execute_user_overlay_read
 
         result = execute_user_overlay_read(name, payload, archive=archive)
+    elif name == "insights.list":
+        from polylogue.operations.insight_reads import execute_insight_read
+
+        result = execute_insight_read(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "completion":
         result = _completion_payload(payload, archive=archive)
     elif name == "facets":
