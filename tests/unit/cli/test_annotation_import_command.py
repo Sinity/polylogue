@@ -163,9 +163,11 @@ def test_daemon_import_and_facade_resolve_evidence_refs_through_one_plan(
     planned: list[str] = []
     original_plan = ref_resolution.plan_ref_resolution
 
-    def recording_plan(ref: str, *, archive_root: Path) -> ref_resolution.RefResolutionPlan:
+    def recording_plan(
+        ref: str, *, archive_root: Path, limit: int = 50, offset: int = 0, continuation: str | None = None
+    ) -> ref_resolution.RefResolutionPlan:
         planned.append(ref)
-        return original_plan(ref, archive_root=archive_root)
+        return original_plan(ref, archive_root=archive_root, limit=limit, offset=offset, continuation=continuation)
 
     monkeypatch.setattr(ref_resolution, "plan_ref_resolution", recording_plan)
 

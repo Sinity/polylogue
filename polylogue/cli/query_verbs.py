@@ -1350,7 +1350,9 @@ def read_verb(
             raise click.UsageError("Direct ref reads currently support --format json only.")
         if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT):
             raise click.UsageError("Direct ref reads write JSON to terminal/stdout only.")
-        payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
+        payload = run_coroutine_sync(
+            env.polylogue.resolve_ref(ref, limit=limit or 50, offset=offset or 0, continuation=continuation)
+        )
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
 

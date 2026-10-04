@@ -29,7 +29,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Sequence
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -98,6 +98,9 @@ def resolve_ref_against_archive(
     ref: str,
     *,
     archive_root: Path | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    continuation: str | None = None,
 ) -> PublicRefResolutionPayload:
     """Resolve ``ref`` against an archive the caller already opened.
 
@@ -107,14 +110,22 @@ def resolve_ref_against_archive(
     (polylogue-j5u2b).
     """
 
-    plan = plan_ref_resolution(ref, archive_root=archive_root or Path(archive.archive_root))
+    plan = plan_ref_resolution(
+        ref,
+        archive_root=archive_root or Path(archive.archive_root),
+        limit=limit,
+        offset=offset,
+        continuation=continuation,
+    )
     if plan.payload is not None:
         return plan.payload
     assert plan.read is not None
     return plan.read(archive)
 
 
-def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
+def plan_ref_resolution(
+    ref: str, *, archive_root: Path, limit: int = 50, offset: int = 0, continuation: str | None = None
+) -> RefResolutionPlan:
     """Classify ``ref`` and name the archive read that resolves it, if any.
 
     Classification is deliberately archive-free: a malformed or oversized ref
@@ -125,6 +136,8 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
     from polylogue.storage.block_anchor import InvalidBlockAnchorError, parse_block_anchor, resolve_block_anchor
     from polylogue.surfaces.payloads import PublicRefResolutionPayload
 
+    if limit < 1 or offset < 0:
+        raise ValueError("ref page limit must be positive and offset nonnegative")
     root = archive_root
 
     invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
@@ -226,7 +239,9 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
         if object_ref.kind == "annotation-batch":
             return _resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "delegation":
-            return _resolve_delegation_object_ref(archive, ref, normalized_ref, object_ref)
+            return _resolve_delegation_object_ref(
+                archive, ref, normalized_ref, object_ref, limit=limit, offset=offset, continuation=continuation
+            )
         if object_ref.kind in {"run", "observed-event", "context-snapshot"}:
             return _resolve_runtime_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind in _PENDING_OBJECT_REF_KINDS:
@@ -245,7 +260,7 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
         ref=ref,
         read=read,
         operation=REF_RESOLUTION_OPERATION,
-        arguments={"ref": normalized_ref},
+        arguments={"ref": normalized_ref, "limit": limit, "offset": offset, "continuation": continuation},
         projection="ref-resolution",
     )
 
@@ -858,6 +873,10 @@ def _resolve_delegation_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    *,
+    limit: int,
+    offset: int,
+    continuation: str | None,
 ) -> PublicRefResolutionPayload:
     """Resolve a ``delegation:`` ref against the polylogue-y964
     `delegation_facts` relation. Two id shapes share one lookup: action-observed refs carry an
@@ -880,7 +899,9 @@ def _resolve_delegation_object_ref(
         return _resolve_delegation_ancestry_object_ref(archive, ref, normalized_ref, ancestry_session_id)
     subtree_session_id = parse_delegation_subtree_object_id(object_ref.object_id)
     if subtree_session_id is not None:
-        return _resolve_delegation_subtree_object_ref(archive, ref, normalized_ref, subtree_session_id)
+        return _resolve_delegation_subtree_object_ref(
+            archive, ref, normalized_ref, subtree_session_id, limit=limit, offset=offset, continuation=continuation
+        )
 
     edge_identity = parse_delegation_edge_object_id(object_ref.object_id)
     if edge_identity is not None:
@@ -966,20 +987,67 @@ def _resolve_delegation_subtree_object_ref(
     ref: str,
     normalized_ref: str,
     session_id: str,
+    *,
+    limit: int,
+    offset: int,
+    continuation: str | None,
 ) -> PublicRefResolutionPayload:
-    """Resolve a ``delegation:subtree:<session_id>`` ref: the full
-    dispatch subtree rooted at ``session_id`` (polylogue-qsb4),
-    depth-annotated, in one recursive-CTE call
-    (``ArchiveStore.get_delegation_subtree``)."""
+    """Resolve one subtree page under its relation-scoped archive frame."""
 
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransactionRequest,
+        archive_snapshot_epoch,
+        validate_continuation_epoch,
+    )
     from polylogue.surfaces.payloads import (
         DelegationSubtreePayload,
         PublicRefResolutionPayload,
         model_json_document,
     )
 
-    rows = archive.get_delegation_subtree(session_id)
-    payload = DelegationSubtreePayload.from_rows(session_id, rows)
+    request = QueryTransactionRequest(
+        operation=REF_RESOLUTION_OPERATION,
+        arguments={"ref": normalized_ref},
+        page_size=limit,
+        offset=offset,
+        projection="delegation-subtree",
+        stable_order="depth-session-path",
+    )
+    after = None
+    if continuation is not None:
+        decoded = QueryContinuation.decode(continuation)
+        issued = decoded.request
+        cursor = (decoded.cursor or {}).get("after")
+        if (
+            issued.operation != request.operation
+            or issued.arguments != request.arguments
+            or issued.projection != request.projection
+            or issued.stable_order != request.stable_order
+            or decoded.result_ref != issued.result_ref
+            or not isinstance(cursor, list)
+            or len(cursor) != 3
+            or not isinstance(cursor[0], int)
+            or isinstance(cursor[0], bool)
+            or cursor[0] < 0
+            or not isinstance(cursor[1], str)
+            or not isinstance(cursor[2], str)
+        ):
+            raise QueryContinuationInvalidError("continuation does not identify this delegation subtree")
+        validate_continuation_epoch(issued, archive=archive)
+        request = issued
+        after = (cursor[0], cursor[1], cursor[2])
+    else:
+        request = replace(request, archive_epoch=archive_snapshot_epoch(archive, relations=("delegation_facts",)))
+    page = archive.get_delegation_subtree(session_id, limit=request.page_size, offset=request.offset, after=after)
+    next_continuation = None
+    if page.next_cursor is not None:
+        advancing = replace(request, offset=page.offset + len(page.rows))
+        next_continuation = QueryContinuation(
+            request=advancing, result_ref=advancing.result_ref, cursor={"after": list(page.next_cursor)}
+        ).encode()
+    payload = DelegationSubtreePayload.from_page(session_id, page, continuation=next_continuation)
     object_refs = tuple(f"session:{node.session_id}" for node in payload.nodes)
     return PublicRefResolutionPayload(
         ref=ref,

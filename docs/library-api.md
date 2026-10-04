@@ -400,3 +400,17 @@ asyncio.run(main())
 ---
 
 **See also:** [CLI Reference](cli-reference.md) · [Data Model](data-model.md) · [Configuration](configuration.md)
+
+Delegation subtree refs are paged through the shared resolver. Call
+`await archive.resolve_ref("delegation:subtree:<session-id>", limit=50)` and
+follow `payload["continuation"]` with the same ref and the `continuation`
+argument until it is null. `node_count` and `max_depth` describe the full
+subtree, while `nodes` and `object_refs` describe the returned page. A change
+to the delegation relation invalidates the continuation.
+
+`await archive.list_context_deliveries(recipient_ref="agent:example", limit=50,
+offset=0)` returns a page with `items`, `total`, `limit`, `offset`, and
+`next_offset`. Items contain receipt metadata and never the delivered context
+image. Count and summaries share one user-tier read snapshot; each subsequent
+offset page observes the current ledger. Use `get_context_delivery` with the
+exact snapshot and recipient references to read the image.

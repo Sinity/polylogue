@@ -112,6 +112,7 @@ if TYPE_CHECKING:
         ArchiveDelegationAncestryRow,
         ArchiveDelegationCard,
         ArchiveDelegationQueryRow,
+        ArchiveDelegationSubtreePage,
         ArchiveDelegationSubtreeRow,
         ArchiveFileQueryRow,
         ArchiveMessageQueryRow,
@@ -3092,22 +3093,33 @@ class DelegationAncestryPayload(SurfacePayloadModel):
 
 
 class DelegationSubtreePayload(SurfacePayloadModel):
-    """Full dispatch subtree rooted at one session (polylogue-qsb4)."""
+    """One page of the dispatch subtree rooted at one session."""
 
     unit: Literal["delegation-subtree"] = "delegation-subtree"
     session_id: str
     max_depth: int
     node_count: int
     nodes: tuple[DelegationSubtreeNodePayload, ...]
+    limit: int
+    offset: int
+    next_offset: int | None
+    continuation: str | None
+    outcome: OutcomeEnvelope
 
     @classmethod
-    def from_rows(cls, session_id: str, rows: Sequence[ArchiveDelegationSubtreeRow]) -> DelegationSubtreePayload:
-        nodes = tuple(DelegationSubtreeNodePayload.from_row(row) for row in rows)
+    def from_page(
+        cls, session_id: str, page: ArchiveDelegationSubtreePage, *, continuation: str | None
+    ) -> DelegationSubtreePayload:
         return cls(
             session_id=session_id,
-            max_depth=max((node.depth for node in nodes), default=0),
-            node_count=len(nodes),
-            nodes=nodes,
+            max_depth=page.max_depth,
+            node_count=page.total,
+            nodes=tuple(DelegationSubtreeNodePayload.from_row(row) for row in page.rows),
+            limit=page.limit,
+            offset=page.offset,
+            next_offset=page.offset + len(page.rows) if page.next_cursor is not None else None,
+            continuation=continuation,
+            outcome=decide_outcome(matched=len(page.rows)),
         )
 
 

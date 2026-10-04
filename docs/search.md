@@ -569,6 +569,13 @@ block, assertion, delegation, and runtime projection refs (`run`, `observed-even
 refs return a bounded unresolved payload with caveats; they never widen into a
 session search.
 
+Delegation subtree refs expose paged `nodes` with whole-subtree `node_count`
+and `max_depth`. CLI `read`, MCP `read`, Python `resolve_ref`, and daemon
+`/api/refs/resolve` accept `limit`, `offset`, and the returned opaque
+`continuation`; follow that continuation to enumerate the remaining nodes.
+A changed delegation frame refuses the continuation rather than combining
+pages from different snapshots.
+
 Delegation refs resolve to an explicit evidence card. The card preserves the
 complete recorded instruction while separately bounding the parent-side
 dispatch result, actual child-session excerpt, parent context, and parent

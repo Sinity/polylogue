@@ -70,6 +70,28 @@ daemon route (`/api/read-view-profiles`). `read_views` remains the distinct
 session-list projection vocabulary. The self-inspection continuity scenario
 compares every profile identity against its fixture oracle.
 
+## Evidence pages and runtime configuration
+
+`read("delegation:subtree:<id>", limit=...)` selects nodes in the canonical
+storage reader. Its nested subtree payload carries the whole `node_count`
+and `max_depth`, page `limit` and `offset`, and `next_offset` plus an opaque
+`continuation`. Follow the continuation to enumerate the full subtree. The
+cursor seeks by depth, session identity and traversal path; its shared query
+frame refuses a changed delegation relation. Object references cover the
+returned nodes only. The Python `resolve_ref` and daemon `/api/refs/resolve`
+routes accept the same page arguments and run the shared resolution plan.
+
+`context(recipient_ref=...)` passes its limit and offset to the durable user
+reader. That reader counts and selects summary columns in one SQLite
+snapshot, without reading or decoding `context_image_json`. The facade
+returns a counted summary page; `get_context_delivery` remains the exact,
+recipient-scoped image read. Receipt pages preserve `next_offset` and observe
+the current ledger on each request.
+
+Both `status(scope="sinex")` and the Sinex section of
+`status(scope="archive")` use `sinex_mode` from the injected runtime config
+projection, together with that projection's source-tier path.
+
 ## Insight projections
 
 Registry-backed projections use the insight descriptor's fetch/payload contract and forward the requested offset to descriptors that declare pagination, after their session filters and before their result window.

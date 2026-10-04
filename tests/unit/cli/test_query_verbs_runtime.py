@@ -173,7 +173,13 @@ def test_read_all_and_analyze_count_update_parent_request() -> None:
 
 def test_read_direct_non_session_ref_emits_shared_resolution_payload(capsys: pytest.CaptureFixture[str]) -> None:
     _, child = _context_pair()
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(resolve_ref=lambda ref: f"resolve:{ref}"))
+    resolved_args: list[tuple[str, dict[str, object]]] = []
+
+    def resolve_ref(ref: str, **page: object) -> str:
+        resolved_args.append((ref, page))
+        return f"resolve:{ref}"
+
+    child.obj = SimpleNamespace(polylogue=SimpleNamespace(resolve_ref=resolve_ref))
     wrapped_read = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped_read)
     payload = PublicRefResolutionPayload(
@@ -188,10 +194,13 @@ def test_read_direct_non_session_ref_emits_shared_resolution_payload(capsys: pyt
     with patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value=payload) as run_sync:
         wrapped_read(
             child,
-            **_read_verb_kwargs(view="summary", output_format="json", ref="message:abc"),
+            **_read_verb_kwargs(
+                view="summary", output_format="json", ref="message:abc", limit=7, offset=3, continuation="page-token"
+            ),
         )
 
     run_sync.assert_called_once()
+    assert resolved_args == [("message:abc", {"limit": 7, "offset": 3, "continuation": "page-token"})]
     emitted = json.loads(capsys.readouterr().out)
     assert emitted["mode"] == "ref-resolution"
     assert emitted["normalized_ref"] == "message:abc"

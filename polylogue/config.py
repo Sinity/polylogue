@@ -109,6 +109,7 @@ class Config:
     embedding_model: str = "voyage-4-lite"
     embedding_dimension: int = 1024
     judgment_automation_interval_s: int = 3600
+    sinex_mode: str = "off"
 
     def __init__(
         self,
@@ -121,6 +122,7 @@ class Config:
         embedding_model: str = "voyage-4-lite",
         embedding_dimension: int = 1024,
         judgment_automation_interval_s: int = 3600,
+        sinex_mode: str = "off",
     ) -> None:
         self.archive_root = archive_root
         self.render_root = render_root
@@ -132,6 +134,7 @@ class Config:
         self.embedding_model = embedding_model
         self.embedding_dimension = embedding_dimension
         self.judgment_automation_interval_s = judgment_automation_interval_s
+        self.sinex_mode = sinex_mode
         for attr in ("archive_root", "render_root", "db_path"):
             value = getattr(self, attr)
             if not isinstance(value, Path):
@@ -161,6 +164,7 @@ class Config:
             and self.embedding_model == other.embedding_model
             and self.embedding_dimension == other.embedding_dimension
             and self.judgment_automation_interval_s == other.judgment_automation_interval_s
+            and self.sinex_mode == other.sinex_mode
         )
 
     def __repr__(self) -> str:
@@ -169,7 +173,7 @@ class Config:
             f"sources={self.sources!r}, db_path={self.db_path!r}, "
             f"drive_config={self.drive_config!r}, index_config={self.index_config!r}, "
             f"embedding_model={self.embedding_model!r}, embedding_dimension={self.embedding_dimension!r}, "
-            f"judgment_automation_interval_s={self.judgment_automation_interval_s!r})"
+            f"judgment_automation_interval_s={self.judgment_automation_interval_s!r}, sinex_mode={self.sinex_mode!r})"
         )
 
     def with_sources(self, sources: list[Source]) -> Config:
@@ -183,6 +187,7 @@ class Config:
             embedding_model=self.embedding_model,
             embedding_dimension=self.embedding_dimension,
             judgment_automation_interval_s=self.judgment_automation_interval_s,
+            sinex_mode=self.sinex_mode,
         )
 
 
@@ -1888,6 +1893,7 @@ class ResolvedRuntimeConfig:
             embedding_model=self.settings.embedding_model,
             embedding_dimension=self.settings.embedding_dimension,
             judgment_automation_interval_s=self.settings.judgment_automation_interval_s,
+            sinex_mode=self.settings.sinex_mode,
         )
 
 

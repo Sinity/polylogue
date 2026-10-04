@@ -119,19 +119,32 @@ def _handle_ref_resolve(self: Any, params: dict[str, list[str]]) -> None:
     if archive_root is None:
         self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_unavailable")
         return
-    plan = plan_ref_resolution(ref, archive_root=archive_root)
-    if plan.payload is not None:
-        payload = plan.payload
-    else:
-        assert plan.read is not None
-        with archive_read_context(
-            archive_root,
-            operation=plan.operation,
-            arguments=plan.arguments,
-            projection=plan.projection,
-            stable_order=plan.stable_order,
-        ) as archive:
-            payload = plan.read(archive)
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError, QueryContinuationStaleError
+
+    try:
+        plan = plan_ref_resolution(
+            ref,
+            archive_root=archive_root,
+            limit=self._get_int(params, "limit", 50),
+            offset=self._get_int(params, "offset", 0),
+            continuation=self._get_param(params, "continuation"),
+        )
+        if plan.payload is not None:
+            payload = plan.payload
+        else:
+            assert plan.read is not None
+            with archive_read_context(
+                archive_root,
+                operation=plan.operation,
+                arguments=plan.arguments,
+                projection=plan.projection,
+                stable_order=plan.stable_order,
+            ) as archive:
+                payload = plan.read(archive)
+    except (QueryContinuationInvalidError, QueryContinuationStaleError) as exc:
+        status = HTTPStatus.CONFLICT if isinstance(exc, QueryContinuationStaleError) else HTTPStatus.BAD_REQUEST
+        self._send_json(status, {"error": exc.code, "message": str(exc)})
+        return
     self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 
 
