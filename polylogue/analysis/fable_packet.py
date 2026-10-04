@@ -8,9 +8,15 @@ claim.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import tempfile
 from collections import Counter, defaultdict
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import closing
+from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 
 from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
 from polylogue.analysis.fable_packet_contracts import (
@@ -21,21 +27,79 @@ from polylogue.analysis.fable_packet_contracts import (
 )
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryFieldRef
 from polylogue.core.refs import ObjectRef, delegation_edge_object_id
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveDelegationQueryRow, ArchiveStore
+
+
+@dataclass(frozen=True)
+class _PopulationCoverage:
+    population_count: int
+    action_observed_count: int
+    edge_only_count: int
+    unresolved_count: int
+    unique_action_count: int
+
+
+def _structural_population(
+    rows: Iterable[DelegationPacketRow], wanted_refs: set[str], checkpoint: Callable[[], None]
+) -> tuple[_PopulationCoverage, dict[str, DelegationPacketRow]]:
+    population = action = edge = unresolved = 0
+    wanted = {}
+    # The public compiler historically counts action identities after last-row
+    # deduplication, while coverage totals describe every supplied row.
+    with (
+        tempfile.TemporaryDirectory(prefix="polylogue-fable-coverage-") as directory,
+        closing(connect_scratch_database(Path(directory) / "coverage.db")) as scratch,
+    ):
+        scratch.execute("CREATE TABLE identities(ref TEXT PRIMARY KEY, action INTEGER NOT NULL)")
+        cancellation: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal cancellation
+            try:
+                checkpoint()
+            except BaseException as exc:
+                cancellation = exc
+                return 1
+            return 0
+
+        scratch.set_progress_handler(progress, 1000)
+        try:
+            for row in rows:
+                checkpoint()
+                population += 1
+                action += row.evidence_basis == "action"
+                edge += row.evidence_basis == "edge"
+                unresolved += row.mapping_state == "unresolved"
+                scratch.execute(
+                    "INSERT INTO identities VALUES(?,?) ON CONFLICT(ref) DO UPDATE SET action=excluded.action",
+                    (json.dumps(row.delegation_ref), row.evidence_basis == "action"),
+                )
+                if row.delegation_ref in wanted_refs:
+                    wanted[row.delegation_ref] = row
+            unique_action = 0
+            for _ in scratch.execute("SELECT action FROM identities WHERE action=1"):
+                checkpoint()
+                unique_action += 1
+        except sqlite3.Error:
+            if cancellation is not None:
+                raise cancellation from None
+            raise
+    return _PopulationCoverage(population, action, edge, unresolved, unique_action), wanted
 
 
 def _unsupported(
     manifest: CohortManifest,
-    rows: Sequence[DelegationPacketRow],
+    coverage: _PopulationCoverage,
     reasons: Sequence[str],
 ) -> FableDelegationPacket:
     return FableDelegationPacket(
         status="not_supported",
         manifest_id=manifest.manifest_id,
-        population_count=len(rows),
-        action_observed_count=sum(row.evidence_basis == "action" for row in rows),
-        edge_only_count=sum(row.evidence_basis == "edge" for row in rows),
-        unresolved_count=sum(row.mapping_state == "unresolved" for row in rows),
+        population_count=coverage.population_count,
+        action_observed_count=coverage.action_observed_count,
+        edge_only_count=coverage.edge_only_count,
+        unresolved_count=coverage.unresolved_count,
         selected_refs=manifest.selected_refs,
         annotation_schema_id=None,
         annotation_batches=(),
@@ -53,7 +117,7 @@ def _unsupported(
 def compile_private_fable_packet(
     *,
     manifest: CohortManifest,
-    rows: Sequence[DelegationPacketRow],
+    rows: Iterable[DelegationPacketRow],
     annotation_schema_id: str | None,
     labels: Sequence[DelegationPacketLabel],
     resolved_evidence_refs: frozenset[str] | None = None,
@@ -69,7 +133,11 @@ def compile_private_fable_packet(
     """
 
     checkpoint()
-    by_ref = {row.delegation_ref: row for row in rows}
+    accepted = [label for label in labels if label.accepted]
+    selected_refs = set(manifest.selected_refs)
+    coverage, by_ref = _structural_population(
+        rows, selected_refs | {label.delegation_ref for label in accepted}, checkpoint
+    )
     reasons: list[str] = []
     if annotation_schema_id is None:
         reasons.append("missing_annotation_schema")
@@ -79,11 +147,9 @@ def compile_private_fable_packet(
     if missing_sample_refs:
         reasons.append("selected_refs_missing_from_structural_population")
     action_rows = {ref: row for ref, row in by_ref.items() if row.evidence_basis == "action"}
-    if not action_rows:
+    if not coverage.unique_action_count:
         reasons.append("no_action_observed_delegation_attempts")
 
-    selected_refs = set(manifest.selected_refs)
-    accepted = [label for label in labels if label.accepted]
     if not accepted:
         reasons.append("no_accepted_labels")
     for label in accepted:
@@ -99,7 +165,7 @@ def compile_private_fable_packet(
             if unresolved:
                 reasons.append("accepted_label_evidence_not_resolved")
     if reasons:
-        return _unsupported(manifest, rows, reasons)
+        return _unsupported(manifest, coverage, reasons)
 
     labels_by_field: dict[str, list[DelegationPacketLabel]] = defaultdict(list)
     for label in accepted:
@@ -143,10 +209,10 @@ def compile_private_fable_packet(
     return FableDelegationPacket(
         status="complete",
         manifest_id=manifest.manifest_id,
-        population_count=len(rows),
-        action_observed_count=len(action_rows),
-        edge_only_count=sum(row.evidence_basis == "edge" for row in rows),
-        unresolved_count=sum(row.mapping_state == "unresolved" for row in rows),
+        population_count=coverage.population_count,
+        action_observed_count=coverage.unique_action_count,
+        edge_only_count=coverage.edge_only_count,
+        unresolved_count=coverage.unresolved_count,
         selected_refs=manifest.selected_refs,
         annotation_schema_id=annotation_schema_id,
         annotation_batches=tuple(sorted({label.batch_id for label in accepted})),
@@ -196,39 +262,43 @@ def regenerate_private_fable_packet(
     from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
 
     checkpoint()
-    packet_rows: list[DelegationPacketRow] = []
-    candidates: list[CohortCandidate] = []
-    after: DelegationPageKey | None = None
-    while True:
-        checkpoint()
-        page = archive.query_delegations(QueryBoolPredicate("and", ()), limit=256, after=after, max_text_bytes=262144)
-        if not page:
-            break
-        for row in page:
+
+    def delegation_rows() -> Iterator[ArchiveDelegationQueryRow]:
+        after: DelegationPageKey | None = None
+        while True:
             checkpoint()
-            ref = _delegation_ref(row)
-            instruction_hash = (
+            page = archive.query_delegations(
+                QueryBoolPredicate("and", ()), limit=256, after=after, max_text_bytes=262144
+            )
+            if not page:
+                return
+            for row in page:
+                checkpoint()
+                yield row
+            after = DelegationPageKey.after_row(page[-1])
+
+    def candidates() -> Iterator[CohortCandidate]:
+        for row in delegation_rows():
+            yield CohortCandidate(
+                object_ref=_delegation_ref(row),
+                dimensions={"origin": row.parent_origin, "dispatch_model": row.dispatch_turn_model},
+                template_key=sha256(row.instruction_payload.encode("utf-8")).hexdigest()
+                if row.instruction_payload
+                else None,
+                exclusion_reason=None if row.instruction_tool_use_block_id is not None else "edge_only",
+            )
+
+    def structural_rows() -> Iterator[DelegationPacketRow]:
+        for row in delegation_rows():
+            yield DelegationPacketRow(
+                _delegation_ref(row),
+                "action" if row.instruction_tool_use_block_id is not None else "edge",
+                row.mapping_state,
                 sha256(row.instruction_payload.encode("utf-8")).hexdigest()
                 if row.instruction_payload is not None
-                else None
+                else None,
             )
-            packet_rows.append(
-                DelegationPacketRow(
-                    ref,
-                    "action" if row.instruction_tool_use_block_id is not None else "edge",
-                    row.mapping_state,
-                    instruction_hash,
-                )
-            )
-            candidates.append(
-                CohortCandidate(
-                    object_ref=ref,
-                    dimensions={"origin": row.parent_origin, "dispatch_model": row.dispatch_turn_model},
-                    template_key=instruction_hash if row.instruction_payload else None,
-                    exclusion_reason=None if row.instruction_tool_use_block_id is not None else "edge_only",
-                )
-            )
-        after = DelegationPageKey.after_row(page[-1])
+
     checkpoint()
     manifest = compile_cohort_manifest(
         CohortSpec(
@@ -239,7 +309,7 @@ def regenerate_private_fable_packet(
             strata=("origin", "dispatch_model"),
             exact_template_cap=exact_template_cap,
         ),
-        candidates,
+        candidates(),
         checkpoint=checkpoint,
     )
     checkpoint()
@@ -303,7 +373,8 @@ def regenerate_private_fable_packet(
         elif batch.schema_id != schema_id or batch.schema_version != schema_version or batch.target_ref not in targets:
             reasons.append("annotation_batch_metadata_mismatch")
     if reasons:
-        return _unsupported(manifest, packet_rows, reasons)
+        coverage, _ = _structural_population(structural_rows(), set(), checkpoint)
+        return _unsupported(manifest, coverage, reasons)
 
     resolved_refs: set[str] = set()
     for ref in evidence_refs:
@@ -314,7 +385,7 @@ def regenerate_private_fable_packet(
     checkpoint()
     return compile_private_fable_packet(
         manifest=manifest,
-        rows=packet_rows,
+        rows=structural_rows(),
         annotation_schema_id=schema.schema.qualified_id if schema is not None else None,
         labels=labels,
         resolved_evidence_refs=resolved_evidence,
