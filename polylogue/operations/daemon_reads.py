@@ -197,6 +197,8 @@ def execute_read_operation(
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)
         if cached is not None:
+            if name == "cli.query":
+                _refresh_query_relative_times(cached)
             return cached
 
     if name == "cli.query":
@@ -305,6 +307,26 @@ def execute_read_operation(
 
         put_cached_result(name, cache_key_payload, result, view=read_view)
     return result
+
+
+def _refresh_query_relative_times(result: dict[str, object]) -> None:
+    """Refresh request-time display fields on the cache's detached answer."""
+    from polylogue.surfaces.query_rows import session_row
+
+    items = result.get("items")
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict) and "relative_time" in row:
+                row["relative_time"] = session_row(row).relative_time
+    hits = result.get("hits")
+    if isinstance(hits, list):
+        for hit in hits:
+            if (
+                isinstance(hit, dict)
+                and isinstance((session := hit.get("session")), dict)
+                and "relative_time" in session
+            ):
+                session["relative_time"] = session_row(session).relative_time
 
 
 def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
