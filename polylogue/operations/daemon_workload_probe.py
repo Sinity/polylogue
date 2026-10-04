@@ -32,6 +32,10 @@ from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
+from polylogue.storage.derived.session.status import (
+    MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL,
+    ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import count_dangling_prefix_branch_points
@@ -1330,6 +1334,10 @@ def _archive_derived_counts(
     else:
         text_block_count = block_count
         messages_fts_count = _readiness_count(conn, "messages_fts_docsize", exact=False)
+    # These are query-time views. Readability, not an estimated cardinality,
+    # establishes that their projection can answer on this snapshot.
+    count(_presence_count(conn, "threads"))
+    count(_presence_count(conn, "thread_sessions"))
     counts: dict[str, Any] = {
         "session_count": _readiness_count(conn, "sessions", exact=exact_counts),
         "raw_link_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")),
@@ -1364,6 +1372,8 @@ def _archive_derived_counts(
             """,
             )
         ),
+        "missing_latency_profile_row_count": count(_scalar_int(conn, MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL)),
+        "orphan_latency_profile_row_count": count(_scalar_int(conn, ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL)),
         "thread_count": _readiness_count(conn, "threads", exact=exact_counts),
         "thread_session_count": _readiness_count(conn, "thread_sessions", exact=exact_counts),
         "session_tag_count": _readiness_count(conn, "session_tags", exact=exact_counts),
@@ -1476,10 +1486,16 @@ def _archive_surface_readiness(
         profile_blockers.append("missing_profile_rows")
     if counts["orphan_profile_row_count"]:
         profile_blockers.append("orphan_profile_rows")
-    thread_blockers: list[str] = []
-    latency_blockers: list[str] = []
-    thread_ready = True
-    latency_ready = True
+    # Threads project through session profiles; latency is the other output
+    # of that session partition. Missing inputs cannot certify either surface.
+    thread_blockers = list(profile_blockers)
+    latency_blockers = list(profile_blockers)
+    if counts["missing_latency_profile_row_count"]:
+        latency_blockers.append("missing_latency_profile_rows")
+    if counts["orphan_latency_profile_row_count"]:
+        latency_blockers.append("orphan_latency_profile_rows")
+    thread_ready = profile_ready
+    latency_ready = not latency_blockers
 
     return {
         "archive_sessions": surface(
@@ -1529,6 +1545,8 @@ def _archive_surface_readiness(
             evidence={
                 "thread_count": counts["thread_count"],
                 "thread_session_count": counts["thread_session_count"],
+                "missing_profile_row_count": counts["missing_profile_row_count"],
+                "orphan_profile_row_count": counts["orphan_profile_row_count"],
             },
         ),
         "tag_rollups": surface(
@@ -1552,7 +1570,12 @@ def _archive_surface_readiness(
         "latency_profiles": surface(
             ready=latency_ready,
             blockers=latency_blockers,
-            evidence={},
+            evidence={
+                "missing_profile_row_count": counts["missing_profile_row_count"],
+                "orphan_profile_row_count": counts["orphan_profile_row_count"],
+                "missing_latency_profile_row_count": counts["missing_latency_profile_row_count"],
+                "orphan_latency_profile_row_count": counts["orphan_latency_profile_row_count"],
+            },
         ),
     }
 
