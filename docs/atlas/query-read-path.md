@@ -127,3 +127,5 @@ Query-unit capability rows include their executable field names from the canonic
 Disconnected archive reads keep admission with the original worker until physical cleanup completes. Their bounded caller drain waits do not cancel that worker, and its eventual exception is observed without creating a second loop-level failure report.
 
 Profile and latency insight readers normalize comma-separated repository and tag scopes through the same canonical CSV and session predicates as session queries. Values within one filter are alternatives; repository and tag filters intersect before ordering and pagination.
+
+Session-list projection rows bind their public names to existing renderer profiles, CLI option and execution metadata, and evidence-family contracts. Adding a name with a declared renderer updates these consumers together; removing a name retires it from their public vocabularies. Unknown renderer families and collisions with another read view refuse at contract construction.

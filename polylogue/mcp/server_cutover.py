@@ -16,6 +16,15 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
+from polylogue.archive.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    MCPReadView,
+    SessionListProjection,
+    is_mcp_get_session_projection,
+    is_mcp_read_view,
+    mcp_get_session_projection_names,
+    mcp_read_view_names,
+)
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -27,15 +36,6 @@ from polylogue.mcp.payloads import (
 )
 from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.operations.session_contracts import SessionOperation
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTIONS,
-    MCPReadView,
-    SessionListProjection,
-    is_mcp_get_session_projection,
-    is_mcp_read_view,
-    mcp_get_session_projection_names,
-    mcp_read_view_names,
-)
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:

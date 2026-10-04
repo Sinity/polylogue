@@ -18,18 +18,18 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from polylogue.archive.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    SessionListProjection,
+    mcp_get_session_projection_names,
+    mcp_read_view_names,
+    session_list_projection_names,
+)
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
 from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
 from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTION_NAMES,
-    SESSION_LIST_PROJECTIONS,
-    SessionListProjection,
-    mcp_get_session_projection_names,
-    mcp_read_view_names,
-)
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
@@ -60,7 +60,7 @@ def test_cli_and_mcp_projection_vocabulary_has_one_source() -> None:
     """
     from polylogue.cli.read_view_handlers import session_list_read_view_handlers
 
-    assert tuple(session_list_read_view_handlers()) == SESSION_LIST_PROJECTION_NAMES
+    assert tuple(session_list_read_view_handlers()) == session_list_projection_names()
     assert set(mcp_read_view_names()) - {"summary", "topology", "messages"} == set(SESSION_LIST_PROJECTIONS)
     assert set(mcp_get_session_projection_names()) - {"orchestration"} == set(SESSION_LIST_PROJECTIONS)
 
