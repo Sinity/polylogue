@@ -1851,6 +1851,15 @@ async function observedProviderTab(provider) {
   return tabs.find((tab) => providerForUrl(tab.url || tab.pendingUrl) === provider) || null;
 }
 
+async function tabIfPresent(tabId) {
+  try { return await runtimeChrome.tabs.get(tabId); }
+  catch (error) {
+    const absent = String(error?.message || error).match(/^No tab with id:\s*(\d+)\.?$/i);
+    if (absent && Number(absent[1]) === tabId) return null;
+    throw error;
+  }
+}
+
 async function acquireProviderTab(provider, { allowCreate = false } = {}) {
   // Passive capture and inventory use a normal provider page only when the
   // operator already has one open. They must never materialize a root tab.
@@ -1867,7 +1876,7 @@ async function acquireProviderTab(provider, { allowCreate = false } = {}) {
   const stored = await runtimeChrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
   const storedTabId = stored[key];
   if (Number.isInteger(storedTabId)) {
-    const existing = await runtimeChrome.tabs.get(storedTabId).catch(() => null);
+    const existing = await tabIfPresent(storedTabId);
     if (!existing) {
       await forgetProviderTransport(provider, storedTabId);
     } else {
@@ -1898,9 +1907,7 @@ async function acquireProviderTab(provider, { allowCreate = false } = {}) {
     const ready = created.status === "complete" ? created : await waitForProviderTab(created.id, provider);
     return { tab: ready, owned: true, cleanupAlarm };
   } catch (error) {
-    await runtimeChrome.tabs.remove(created.id).catch(() => undefined);
-    await runtimeChrome.alarms.clear(cleanupAlarm);
-    await forgetProviderTransport(provider, created.id);
+    await cleanupBackfillTransportTab(cleanupAlarm);
     throw error;
   }
 }
@@ -2075,9 +2082,7 @@ async function providerPageFetch(url, options = {}) {
       result = await runProviderPageScript(transport, request);
     } catch (error) {
       if (transport.owned) {
-        await runtimeChrome.tabs.remove(transport.tab.id).catch(() => undefined);
-        if (transport.cleanupAlarm) await runtimeChrome.alarms.clear(transport.cleanupAlarm);
-        await forgetProviderTransport(request.provider, transport.tab.id);
+        if (transport.cleanupAlarm) await cleanupBackfillTransportTab(transport.cleanupAlarm);
       }
       if (scriptingResultTooLarge(error)) {
         throw new Error("backfill_bridge_projection_too_large:observed_bytes=unavailable;limit_bytes=25165824");
@@ -2126,9 +2131,7 @@ async function providerAccountHandle(provider) {
       return accountHandle;
     } catch (error) {
       if (transport.owned) {
-        await runtimeChrome.tabs.remove(transport.tab.id).catch(() => undefined);
-        if (transport.cleanupAlarm) await runtimeChrome.alarms.clear(transport.cleanupAlarm);
-        await forgetProviderTransport(provider, transport.tab.id);
+        if (transport.cleanupAlarm) await cleanupBackfillTransportTab(transport.cleanupAlarm);
       }
       throw error;
     }
@@ -2140,25 +2143,36 @@ async function cleanupBackfillTransportTab(alarmName) {
   const provider = parts[1];
   const tabId = Number.parseInt(parts[2] || "", 10);
   if (!provider || !Number.isInteger(tabId)) return;
-  const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
-  const stored = await runtimeChrome.storage.session.get({ [operatorTakenKey]: null });
-  if (stored[operatorTakenKey] === tabId) {
-    await runtimeChrome.alarms.clear(alarmName);
-    return;
-  }
   try {
-    const tab = await runtimeChrome.tabs.get(tabId);
+    const key = providerTransportSessionKey(provider);
+    const operatorTakenKey = providerTransportOperatorTakenSessionKey(provider);
+    const stored = await runtimeChrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
+    // An old wake cannot close a tab whose ownership has been relinquished or
+    // replaced. A draft and an operator-adopted tab remain user surfaces.
+    if (stored[key] !== tabId || stored[operatorTakenKey] === tabId) {
+      await runtimeChrome.alarms.clear(alarmName);
+      return;
+    }
+    const tab = await tabIfPresent(tabId);
+    const current = await runtimeChrome.storage.session.get({ [key]: null, [operatorTakenKey]: null });
+    if (current[key] !== tabId || current[operatorTakenKey] === tabId) {
+      await runtimeChrome.alarms.clear(alarmName);
+      return;
+    }
     if (tab?.active === true) {
       await markProviderTransportOperatorTaken(provider, tabId);
       await runtimeChrome.alarms.clear(alarmName);
       return;
     }
-    if (providerForUrl(tab?.url || tab?.pendingUrl) === provider) await runtimeChrome.tabs.remove(tabId);
-  } catch {
-    // The operator or browser already closed the inactive transport tab.
+    if (tab && providerForUrl(tab.url || tab.pendingUrl) === provider) await runtimeChrome.tabs.remove(tabId);
+    await forgetProviderTransport(provider, tabId);
+    await runtimeChrome.alarms.clear(alarmName);
+  } catch (error) {
+    // Failed lookup/removal does not prove physical closure. Preserve the
+    // original persisted owner for a later cleanup or acquisition attempt.
+    await appendDebugLog({ stage: "provider_transport_cleanup_pending", provider, tab_id: tabId,
+      error: String(error.message || error) }).catch(() => undefined);
   }
-  await runtimeChrome.alarms.clear(alarmName);
-  await forgetProviderTransport(provider, tabId);
 }
 
 async function captureTab(tab, reason = "background", expectedConversation = null) {
@@ -2835,9 +2849,8 @@ async function dispatchBrowserAction(action, ownerInstanceId) {
       await cleanupBackfillTransportTab(actionTransport.cleanupAlarm);
     } else if (result.outcome === "drafted" && actionTransport?.tab?.id) {
       // A staged draft is operator-visible provider state, not a reusable
-      // transport. Keep its inactive tab and TTL cleanup, but relinquish
-      // ownership so later captures/actions cannot inherit draft text or
-      // attachments from it.
+      // transport. Keep its inactive tab, but relinquish ownership so later
+      // captures/actions cannot inherit draft text or attachments from it.
       await forgetProviderTransport(action.provider, actionTransport.tab.id);
     }
     await appendCaptureLog({

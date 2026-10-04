@@ -851,6 +851,104 @@ describe("background receiver diagnostics", () => {
     expect(responses[0].job.id).toBe(responses[1].job.id);
   });
 
+  it.each(["lookup", "removal"])("transport cleanup retains original custody after a %s fault", async (fault) => {
+    await loadBackground();
+    const key = "polylogueProviderTransportTab:chatgpt";
+    const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
+    tabs = [{ id: 99, url: "https://chatgpt.com/", active: false, status: "complete" }];
+    sessionStored = { [key]: 99 };
+    const api = fault === "lookup" ? globalThis.chrome.tabs.get : globalThis.chrome.tabs.remove;
+    api.mockRejectedValueOnce(new Error("synthetic_transport_fault"));
+    globalThis.chrome.alarms.clear.mockClear();
+    alarmListener({ name: alarm });
+    await vi.waitFor(() => expect(stored.polylogueDebugLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: "provider_transport_cleanup_pending", tab_id: 99 }),
+    ])));
+    expect(sessionStored[key]).toBe(99);
+    expect(globalThis.chrome.alarms.clear).not.toHaveBeenCalledWith(alarm);
+    expect(tabs.some(tab => tab.id === 99)).toBe(true);
+    alarmListener({ name: alarm });
+    await vi.waitFor(() => expect(sessionStored[key]).toBeUndefined());
+    expect(globalThis.chrome.tabs.remove).toHaveBeenCalledWith(99);
+    expect(tabs.some(tab => tab.id === 99)).toBe(false);
+  });
+
+  it.each([null, 77])("transport cleanup refuses a stale wake after ownership became %s", async (current) => {
+    await loadBackground();
+    const key = "polylogueProviderTransportTab:chatgpt";
+    const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
+    tabs = [{ id: 99, url: "https://chatgpt.com/", active: false, status: "complete" }];
+    sessionStored = current === null ? {} : { [key]: current };
+    globalThis.chrome.alarms.clear.mockClear();
+    alarmListener({ name: alarm });
+    await vi.waitFor(() => expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith(alarm));
+    expect(globalThis.chrome.tabs.remove).not.toHaveBeenCalledWith(99);
+    expect(sessionStored[key]).toBe(current === null ? undefined : current);
+  });
+
+  it("transport cleanup retires custody only after Chrome positively reports the original tab absent", async () => {
+    await loadBackground();
+    const key = "polylogueProviderTransportTab:chatgpt";
+    const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
+    sessionStored = { [key]: 99 };
+    globalThis.chrome.tabs.get.mockRejectedValueOnce(new Error("No tab with id: 99."));
+    alarmListener({ name: alarm });
+    await vi.waitFor(() => expect(sessionStored[key]).toBeUndefined());
+    expect(globalThis.chrome.tabs.remove).not.toHaveBeenCalledWith(99);
+    expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith(alarm);
+  });
+
+  it("transport cleanup rechecks custody after an in-flight lookup", async () => {
+    await loadBackground();
+    const key = "polylogueProviderTransportTab:chatgpt";
+    const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
+    sessionStored = { [key]: 99 };
+    let release;
+    globalThis.chrome.tabs.get.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    alarmListener({ name: alarm });
+    await vi.waitFor(() => expect(release).toBeTypeOf("function"));
+    sessionStored = { [key]: 77 };
+    release({ id: 99, url: "https://chatgpt.com/", active: false });
+    await vi.waitFor(() => expect(globalThis.chrome.alarms.clear).toHaveBeenCalledWith(alarm));
+    expect(globalThis.chrome.tabs.remove).not.toHaveBeenCalledWith(99);
+    expect(sessionStored[key]).toBe(77);
+  });
+
+  it.each(["existing_lookup", "setup_cleanup"])("transport cleanup preserves original setup failure and custody: %s", async (fault) => {
+    await loadBackground({ polylogueReceiverPairing: {
+      state: "online", receiver_id: "rx-transport", api_schema: "polylogue-browser-capture/v1",
+    } });
+    const key = "polylogueProviderTransportTab:chatgpt";
+    const alarm = "polylogueBackfillTransportCleanup:chatgpt:99";
+    const action = { action_id: "transport-fault", receiver_id: "rx-transport", provider: "chatgpt",
+      operation: "conversation.create", target: {}, text: "Neutral transport fixture", attachments: [],
+      presentation: {}, submit_policy: "submit_once", status: "leased" };
+    const updates = [];
+    let claimed = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-transport", api_schema: "polylogue-browser-capture/v1" });
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        const actions = claimed ? [] : [action]; claimed = true; return responseJson({ actions });
+      }
+      if (String(url).endsWith("/events")) { updates.push(JSON.parse(options.body)); return responseJson({ action }); }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    if (fault === "existing_lookup") sessionStored = { [key]: 99 };
+    else {
+      globalThis.chrome.tabs.create.mockResolvedValueOnce({ id: 99, url: "https://chatgpt.com/", active: false, status: "loading" });
+      globalThis.chrome.tabs.remove.mockRejectedValueOnce(new Error("synthetic_removal_fault"));
+    }
+    globalThis.chrome.tabs.get.mockRejectedValue(new Error("synthetic_original_lookup_fault"));
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.phase).toBe("provider_action_failed"));
+    expect(sessionStored[key]).toBe(99);
+    expect(globalThis.chrome.alarms.clear).not.toHaveBeenCalledWith(alarm);
+    if (fault === "existing_lookup") expect(globalThis.chrome.tabs.create).not.toHaveBeenCalled();
+    expect(stored.polylogueCaptureLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: "browser_action_failed", error: "synthetic_original_lookup_fault" }),
+    ]));
+  });
+
   it("does not replace a provider transport tab once the operator activates it", async () => {
     await loadBackground();
     const transportKey = "polylogueProviderTransportTab:chatgpt";
