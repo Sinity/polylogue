@@ -1,14 +1,8 @@
-"""Bounded route-latency observation (polylogue-jtwu / polylogue-20d.17 AC #4).
+"""In-memory route measurements and MCP latency analysis (polylogue-jtwu / polylogue-20d.17 AC #4).
 
-Covers the routes ``mcp_call_log`` (whole MCP tool calls, durably delivered
-via an outbox) does not. Best-effort telemetry, not audit evidence -- a
-caller that cannot reach ``ops.db`` (no archive configured, disposable tier
-missing, locked) drops the observation rather than blocking or retrying the
-operation being observed.
-
-Only the ops tier's owner may persist a receipt. The CLI and MCP processes
-are not that owner and record none (polylogue-k5iaf): they used to write
-``ops.db`` here beside the daemon.
+The synchronous route-observation sink was retired after all production
+callers moved away from client-owned ops writes. The pure measurement and
+receipt contract remains for the shared resident telemetry work.
 
 :class:`RouteObservationSpec` and :class:`RouteObservationReceipt` are the one
 declared contract every latency product derives from
@@ -21,19 +15,13 @@ Dropped observations are counted, not merely logged (polylogue-jtwu.2). A
 percentile over a sample that silently lost an unknown number of members is
 not a measurement of the route, so :func:`compute_latency_percentiles` cannot
 be called without stating the drop disposition and returns a
-:class:`RouteLatencyReport` that carries it beside the p50/p95. The writer's
-drops are recorded in the ops tier's ``route_observation_drops`` -- at once
-when its observation write can carry them, otherwise by its next successful
-write or exit flush. A writer drop that remains unrecorded at exit emits a
-typed ``route_observation.drops_unflushed`` event. Client routes emit
-``route_observation.unobserved`` with reason ``client_not_owner`` and keep
-explicitly incomplete process-local counters; they never persist to a tier.
+:class:`RouteLatencyReport` that carries it beside the p50/p95. Client routes emit ``route_observation.unobserved`` with reason
+``client_not_owner`` and keep incomplete process-local counters.
 """
 
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 import threading
 import time
 import uuid
@@ -42,7 +30,6 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, get_args
 
 from polylogue.core.types import (
@@ -52,11 +39,9 @@ from polylogue.core.types import (
     require_literal,
 )
 from polylogue.logging import get_logger
-from polylogue.storage.sqlite.population_admission import assert_population_admitted
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
-    from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow
     from polylogue.surfaces.outcome import OutcomeEnvelope
 
 logger = get_logger(__name__)
@@ -69,18 +54,6 @@ def _recordable_daemon_path(value: str | None) -> str | None:
     return require_literal(value, RouteDaemonPath, name="route daemon path")
 
 
-_CONNECT_TIMEOUT_S = 2.0
-#: ``ops.db`` is the disposable tier and a route observation is explicitly
-#: best-effort telemetry, not audit evidence. The default ``synchronous=FULL``
-#: made every observation pay a synchronous fsync on the hot path of the route
-#: it was measuring -- 12.88 ms per insert+commit measured against a real
-#: ops.db (polylogue-5lfcr), which is the opposite of this writer's declared
-#: intent and is three orders of magnitude above the pruning work it does per
-#: call. ``OFF`` keeps the row committed and immediately visible to every
-#: reader of the file; what it drops is the durability guarantee across a host
-#: crash, for a tier whose whole contract is that it can be discarded.
-_OBSERVATION_SYNCHRONOUS = "OFF"
-_GIT_HEAD_TIMEOUT_S = 1.0
 LOW_CONFIDENCE_SAMPLE_FLOOR = 5
 
 #: Phase every route observation records, whatever else it declares.
@@ -146,8 +119,7 @@ class RouteObservationDrops:
 
     ``accounting_complete`` is the honesty bit: zero drops and unknown drops
     are different answers and a percentile must not present the second as the
-    first. The ops-tier reader counts the writer's ``route_observation_drops``;
-    a process-local snapshot of unrecorded or client-only drops is incomplete.
+    first. A process-local snapshot cannot establish cross-process completeness.
     """
 
     accounting_complete: bool
@@ -213,15 +185,7 @@ def route_key(surface: str, route: str) -> str:
 
 
 class RouteObservationDropLedger:
-    """Drops this process counted and has not yet recorded in the ops tier.
-
-    The dominant drop causes are "cannot reach ops.db" and "ops.db is locked",
-    so a drop cannot always be written when it happens. It is held here, keyed
-    by the ops tier it belongs to, and written into ``route_observation_drops``
-    by that tier's next successful observation or by the process's exit flush
-    (:func:`flush_route_observation_drops`). A drop with no archive at all
-    belongs to no archive's sample and stays process-local.
-    """
+    """Process-local counters for routes whose receipt was unavailable."""
 
     __slots__ = ("_lock", "_pending")
 
@@ -230,7 +194,7 @@ class RouteObservationDropLedger:
         # reasons and routes, not by lifetime request volume. Routes are
         # observed from many threads; every read-modify-write holds the lock.
         self._lock = threading.RLock()
-        self._pending: dict[tuple[Path | None, str, str, str], list[int]] = {}
+        self._pending: dict[tuple[str, str, str], int] = {}
 
     def record(
         self,
@@ -238,74 +202,21 @@ class RouteObservationDropLedger:
         *,
         surface: str,
         route: str,
-        ops_db: Path | None,
-        observed_at_ms: int,
         count: int = 1,
     ) -> None:
         if count <= 0:
             return
-        key = (ops_db, reason.value, surface, route)
+        key = (reason.value, surface, route)
         with self._lock:
-            entry = self._pending.get(key)
-            if entry is None:
-                self._pending[key] = [count, observed_at_ms, observed_at_ms]
-                _register_exit_flush()
-                return
-            entry[0] += count
-            entry[1] = min(entry[1], observed_at_ms)
-            entry[2] = max(entry[2], observed_at_ms)
-
-    def drain(self, ops_db: Path) -> tuple[RouteObservationDropRow, ...]:
-        """Remove and return the pending drops that belong to ``ops_db``."""
-        from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow
-
-        rows: list[RouteObservationDropRow] = []
-        with self._lock:
-            drained = [(key, self._pending.pop(key)) for key in [key for key in self._pending if key[0] == ops_db]]
-        for key, (count, first_ms, last_ms) in drained:
-            rows.append(
-                RouteObservationDropRow(
-                    surface=key[2],
-                    route=key[3],
-                    reason=key[1],
-                    first_observed_at_ms=first_ms,
-                    last_observed_at_ms=last_ms,
-                    drop_count=count,
-                )
-            )
-        return tuple(rows)
-
-    def restore(self, ops_db: Path, rows: Sequence[RouteObservationDropRow]) -> None:
-        """Put drained drops back after the write that would have recorded them failed."""
-        with self._lock:
-            for row in rows:
-                self.record(
-                    RouteObservationDropReason(row.reason),
-                    surface=row.surface,
-                    route=row.route,
-                    ops_db=ops_db,
-                    observed_at_ms=row.first_observed_at_ms,
-                    count=row.drop_count,
-                )
-                entry = self._pending[(ops_db, row.reason, row.surface, row.route)]
-                entry[2] = max(entry[2], row.last_observed_at_ms)
-
-    def recordable_count(self) -> int:
-        """Pending drops that belong to an ops tier (and so to some archive's sample)."""
-        with self._lock:
-            return sum(entry[0] for key, entry in self._pending.items() if key[0] is not None)
-
-    def pending_tiers(self) -> tuple[Path, ...]:
-        with self._lock:
-            return tuple(sorted({key[0] for key in self._pending if key[0] is not None}))
+            self._pending[key] = self._pending.get(key, 0) + count
 
     def snapshot(self) -> RouteObservationDrops:
         """Return the drops this process holds unrecorded. Never claims completeness."""
         reasons: dict[str, int] = {}
         routes: dict[str, int] = {}
         with self._lock:
-            pending = [(key, entry[0]) for key, entry in self._pending.items()]
-        for (_ops_db, reason, surface, route), count in pending:
+            pending = list(self._pending.items())
+        for (reason, surface, route), count in pending:
             reasons[reason] = reasons.get(reason, 0) + count
             routes[route_key(surface, route)] = routes.get(route_key(surface, route), 0) + count
         return RouteObservationDrops(
@@ -320,72 +231,24 @@ class RouteObservationDropLedger:
 
 
 _DROP_LEDGER = RouteObservationDropLedger()
-_EXIT_FLUSH_REGISTERED = False
-
-
-def _register_exit_flush() -> None:
-    global _EXIT_FLUSH_REGISTERED
-    if _EXIT_FLUSH_REGISTERED:
-        return
-    import atexit
-
-    atexit.register(flush_route_observation_drops)
-    _EXIT_FLUSH_REGISTERED = True
-
-
-def flush_route_observation_drops() -> int:
-    """Record every pending drop in its ops tier; return how many drops remain unrecorded.
-
-    Runs at interpreter exit. A tier that still cannot be written keeps its
-    drops pending and the loss is reported as a typed
-    ``route_observation.drops_unflushed`` event, the one place those drops
-    remain visible once the process is gone.
-    """
-    from polylogue.logging import WARNING, emit
-    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation_drops
-
-    for ops_db in _DROP_LEDGER.pending_tiers():
-        rows = _DROP_LEDGER.drain(ops_db)
-        if not ops_db.exists():
-            _DROP_LEDGER.restore(ops_db, rows)
-            continue
-        try:
-            conn = open_observation_connection(ops_db)
-            try:
-                record_route_observation_drops(conn, drops=rows, now_ms=int(time.time() * 1000))
-            finally:
-                conn.close()
-        except Exception:
-            _DROP_LEDGER.restore(ops_db, rows)
-    remaining = _DROP_LEDGER.recordable_count()
-    if remaining:
-        emit(
-            "route_observation.drops_unflushed",
-            level=WARNING,
-            outcome="degraded",
-            reason="ops_tier_unwritable_at_exit",
-            count=remaining,
-        )
-    return remaining
 
 
 def record_unobserved_client_route(*, surface: str, route: str) -> RouteObservationDropReason:
     """Declare a client route unobserved without opening an archive tier.
 
-    Client-side counters are explicitly incomplete and carry no ops path, so
-    their exit flush cannot create a second writer. The typed event explains
+    Client-side counters are explicitly incomplete and never persist to a tier. The typed event explains
     why the route has no latency receipt in this process.
     """
     from polylogue.logging import INFO, emit
 
     reason = RouteObservationDropReason.CLIENT_NOT_OWNER
-    _DROP_LEDGER.record(reason, surface=surface, route=route, ops_db=None, observed_at_ms=int(time.time() * 1000))
+    _DROP_LEDGER.record(reason, surface=surface, route=route)
     emit("route_observation.unobserved", level=INFO, outcome="skipped", reason=reason.value, route=route)
     return reason
 
 
 def route_observation_drops() -> RouteObservationDrops:
-    """Return the drops this process has counted but not yet recorded in an ops tier."""
+    """Return the incomplete process-local loss counters."""
     return _DROP_LEDGER.snapshot()
 
 
@@ -563,14 +426,7 @@ class RouteObservationReceipt:
         return tuple(sorted(missing))
 
     def to_attributes(self) -> dict[str, object]:
-        """Project the receipt into the ops-tier row's ``attributes`` document.
-
-        ``route_observations`` predates this contract and carries only
-        trace/surface/route/timing columns, so the receipt's scope and
-        correlation fields ride in the row's declared freeform attributes. The
-        correlation refs are what make the persisted row joinable with the
-        workload receipt built from the same invocation.
-        """
+        """Project declared scope and correlation fields into event attributes."""
         payload: dict[str, object] = dict(self.attributes)
         payload[RECEIPT_ATTRIBUTE_KEY] = {
             "spec": self.spec.to_payload(),
@@ -643,7 +499,7 @@ def _workload_status(status: str) -> WorkloadRunStatus:
 
 @dataclass
 class RouteObservationContext:
-    """Mutable handle yielded by :func:`observe_route`.
+    """Mutable handle yielded by :func:`measure_route`.
 
     ``status`` defaults to ``"ok"`` and is set to ``"error"`` automatically
     if the observed block raises; callers may set it explicitly (e.g.
@@ -656,7 +512,7 @@ class RouteObservationContext:
     status: RouteObservationStatus = "ok"
     daemon_path: str | None = None
     """Set explicitly by the caller once known ('daemon' or 'direct'); the
-    ``observe_route`` argument of the same name only seeds the initial
+    ``measure_route`` argument of the same name only seeds the initial
     value for callers that already know it when the block starts."""
     response_bytes: int | None = None
     evidence_refs: tuple[str, ...] = ()
@@ -672,7 +528,7 @@ class RouteObservationContext:
         if name not in self._declared_phases:
             raise ValueError(f"route phase {name!r} is not declared by this route's spec")
         if name == DEFAULT_ROUTE_PHASE:
-            raise ValueError(f"the {DEFAULT_ROUTE_PHASE!r} phase is measured by observe_route itself")
+            raise ValueError(f"the {DEFAULT_ROUTE_PHASE!r} phase is measured by measure_route itself")
         wall_start = time.monotonic()
         cpu_start = time.process_time()
         try:
@@ -687,51 +543,26 @@ class RouteObservationContext:
             )
 
 
-def _current_git_head(cwd: Path) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(cwd), "rev-parse", "--short=12", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=_GIT_HEAD_TIMEOUT_S,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    head = result.stdout.strip()
-    return head or None
-
-
 @contextmanager
-def observe_route(
+def measure_route(
     *,
-    archive_root: Path | None,
     surface: str,
     route: str,
     verb: str | None = None,
     daemon_path: str | None = None,
     trace_id: str | None = None,
-    git_head_cwd: Path | None = None,
+    build_id: str | None = None,
     spec: RouteObservationSpec | None = None,
     run_id: str | None = None,
     parent_run_id: str | None = None,
     archive_id: str | None = None,
     archive_epoch: str | None = None,
 ) -> Iterator[RouteObservationContext]:
-    """Time one route invocation and record a best-effort receipt.
+    """Measure one invocation and return its in-memory receipt.
 
-    Builds a :class:`RouteObservationReceipt` against ``spec`` (or a
-    single-phase spec derived from ``surface``/``route``/``verb``) and persists
-    its projection through the existing ``route_observations`` writer, so
-    ``compute_latency_percentiles`` and ``polylogue analyze latency`` keep
-    reading the same rows.
-
-    Telemetry failures (no archive configured, locked ops.db, disposable
-    tier missing) are logged at debug level, counted on the drop ledger, and
-    swallowed -- they must never surface as an error in, or block, the
-    operation being observed. Re-raises whatever the observed block raises,
-    unchanged.
+    This contract performs no tier writes or repository probes. A future
+    resident telemetry owner must supply artifact identity and consume the
+    receipt through the shared event contract.
     """
     resolved_spec = spec if spec is not None else RouteObservationSpec(surface=surface, route=route, verb=verb)
     if spec is not None and (
@@ -745,7 +576,7 @@ def observe_route(
     started_cpu = time.process_time()
     try:
         yield ctx
-    except Exception:
+    except BaseException:
         ctx.status = "error"
         raise
     finally:
@@ -766,7 +597,6 @@ def observe_route(
                     None if previous.cpu_ms is None or phase.cpu_ms is None else previous.cpu_ms + phase.cpu_ms,
                 )
             )
-        invalid_daemon_path = False
         try:
             recordable_path = _recordable_daemon_path(ctx.daemon_path)
         except Exception:
@@ -774,10 +604,7 @@ def observe_route(
                 RouteObservationDropReason.EMIT_FAILED,
                 surface=resolved_spec.surface,
                 route=resolved_spec.route,
-                ops_db=None if archive_root is None else Path(archive_root) / "ops.db",
-                observed_at_ms=started_at_ms,
             )
-            invalid_daemon_path = True
             recordable_path = None
         receipt = RouteObservationReceipt(
             spec=resolved_spec,
@@ -792,7 +619,7 @@ def observe_route(
             ),
             status=ctx.status,
             daemon_path=recordable_path,
-            build_id=_current_git_head(git_head_cwd) if git_head_cwd is not None else None,
+            build_id=build_id,
             archive_id=archive_id,
             archive_epoch=archive_epoch,
             response_bytes=ctx.response_bytes,
@@ -802,8 +629,6 @@ def observe_route(
             daemon_run_id=_bound_daemon_run_id(),
         )
         ctx.receipt = receipt
-        if not invalid_daemon_path:
-            _emit_best_effort(archive_root=archive_root, receipt=receipt)
 
 
 def _bound_daemon_run_id() -> str | None:
@@ -820,76 +645,6 @@ def _bound_daemon_run_id() -> str | None:
     if context.get("component") == "daemon" and isinstance(run_id, str) and run_id:
         return run_id
     return None
-
-
-def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
-    """Open the best-effort route-observation writer for ``ops_db``."""
-    assert_population_admitted(ops_db)
-    conn = sqlite3.connect(ops_db, timeout=_CONNECT_TIMEOUT_S)
-    try:
-        conn.execute(f"PRAGMA synchronous = {_OBSERVATION_SYNCHRONOUS}")
-    except sqlite3.Error:
-        conn.close()
-        raise
-    return conn
-
-
-def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationReceipt) -> None:
-    """Persist ``receipt``'s projection, counting every path that loses it.
-
-    A successful write also records the drops this process was holding for the
-    same tier, in the same transaction.
-    """
-    spec = receipt.spec
-    ops_db = None if archive_root is None else Path(archive_root) / "ops.db"
-
-    def drop(reason: RouteObservationDropReason) -> None:
-        _DROP_LEDGER.record(
-            reason, surface=spec.surface, route=spec.route, ops_db=ops_db, observed_at_ms=receipt.started_at_ms
-        )
-
-    if not receipt.sampled:
-        drop(RouteObservationDropReason.NOT_SAMPLED)
-        return
-    if ops_db is None:
-        drop(RouteObservationDropReason.NO_ARCHIVE_ROOT)
-        return
-    if not ops_db.exists():
-        drop(RouteObservationDropReason.OPS_DB_MISSING)
-        return
-    pending = _DROP_LEDGER.drain(ops_db)
-    try:
-        from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
-
-        conn = open_observation_connection(ops_db)
-        try:
-            record_route_observation(
-                conn,
-                trace_id=receipt.trace_id,
-                surface=spec.surface,
-                route=spec.route,
-                verb=spec.verb,
-                daemon_path=receipt.daemon_path,
-                started_at_ms=receipt.started_at_ms,
-                duration_ms=receipt.duration_ms,
-                status=receipt.status,
-                git_head=receipt.build_id,
-                archive_epoch=receipt.archive_epoch,
-                attributes=receipt.to_attributes(),
-                sampled=receipt.sampled,
-                drops=pending,
-            )
-        finally:
-            conn.close()
-    except Exception:
-        _DROP_LEDGER.restore(ops_db, pending)
-        drop(RouteObservationDropReason.EMIT_FAILED)
-        logger.debug(
-            "route observation emit failed (best-effort, dropped): surface=%s route=%s",
-            spec.surface,
-            spec.route,
-            exc_info=True,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1035,7 +790,7 @@ def compute_latency_percentiles(
 ) -> RouteLatencyReport:
     """Group ``route_observations`` and ``mcp_calls`` by (surface, route) and compute p50/p95.
 
-    Accepts ``ArchiveRouteObservation``/``ArchiveMcpCallLogEntry`` rows
+    Accepts in-memory route samples and ``ArchiveMcpCallLogEntry`` rows
     (typed as ``object`` here to avoid importing the ops-tier module at
     call sites that only need the pure aggregation); duck-types on the
     attributes each row type actually has.
@@ -1082,15 +837,6 @@ def compute_latency_percentiles(
 
 
 @dataclass(frozen=True, slots=True)
-class _ObservationSample:
-    surface: str
-    route: str
-    duration_ms: int
-    status: str
-    started_at_ms: int
-
-
-@dataclass(frozen=True, slots=True)
 class _McpCallSample:
     tool_name: str
     duration_ms: int
@@ -1105,38 +851,11 @@ def read_latency_report(
     surface: str | None = None,
     now_ms: int | None = None,
 ) -> RouteLatencyReport:
-    """Compute the latency report over every sample in the lookback window.
+    """Read MCP call latency from its live outbox-backed log.
 
-    The sample is the whole window, streamed from the cursor: a reader that
-    kept only the newest N rows reported a p95 over "the newest N of an
-    unknown total", which is not a measurement of the route. The window is
-    bounded by the writers' own retention (``ROUTE_OBSERVATION_RETENTION_MS``
-    and its row cap for observations, ``MCP_CALL_LOG_RETENTION_MS`` for MCP
-    calls), not by this reader.
-
-    Writer drops come from ``route_observation_drops`` (polylogue-jtwu.2), so
-    a reader in another process reports them beside the writer's percentiles
-    and an answer with nothing lost is
-    ``ok``. A window that starts before the retention horizon is ``degraded``:
-    that part of it was retired, observations and drop records alike.
+    Loss accounting is not available from this reader. An empty unsupported
+    surface therefore remains explicitly degraded rather than measured zero.
     """
-    observation_sql = (
-        "SELECT surface, route, duration_ms, status, started_at_ms FROM route_observations WHERE started_at_ms >= ?"
-    )
-    observation_params: tuple[object, ...] = (since_ms,)
-    if surface is not None:
-        observation_sql += " AND surface = ?"
-        observation_params = (since_ms, surface)
-    observations = (
-        _ObservationSample(
-            surface=str(row[0]),
-            route=str(row[1]),
-            duration_ms=int(row[2]),
-            status=str(row[3]),
-            started_at_ms=int(row[4]),
-        )
-        for row in conn.execute(observation_sql, observation_params)
-    )
     report_without_calls = surface not in (None, "mcp")
     calls = (
         ()
@@ -1154,27 +873,13 @@ def read_latency_report(
             )
         )
     )
-    from polylogue.storage.sqlite.archive_tiers.ops_write import ROUTE_OBSERVATION_RETENTION_MS
+    from polylogue.storage.sqlite.archive_tiers.ops_write import MCP_CALL_LOG_RETENTION_MS
 
-    report = compute_latency_percentiles(observations, calls, drops=_recorded_drops(conn, since_ms, surface))
+    report = compute_latency_percentiles((), calls, drops=RouteObservationDrops.unaccounted())
     current_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    if since_ms < current_ms - ROUTE_OBSERVATION_RETENTION_MS:
+    if since_ms < current_ms - MCP_CALL_LOG_RETENTION_MS:
         return RouteLatencyReport(buckets=report.buckets, drops=report.drops, window_exceeds_retention=True)
     return report
-
-
-def _recorded_drops(conn: sqlite3.Connection, since_ms: int, surface: str | None) -> RouteObservationDrops:
-    """Sum the drops every process recorded for the window."""
-    from polylogue.storage.sqlite.archive_tiers.ops_write import route_observation_drop_counts
-
-    rows = route_observation_drop_counts(conn, since_ms=since_ms, surface=surface)
-    reasons: dict[str, int] = {}
-    routes: dict[str, int] = {}
-    for row in rows:
-        reasons[row.reason] = reasons.get(row.reason, 0) + row.drop_count
-        key = route_key(row.surface, row.route)
-        routes[key] = routes.get(key, 0) + row.drop_count
-    return RouteObservationDrops(accounting_complete=True, by_reason=reasons, by_route=routes)
 
 
 __all__ = [
@@ -1195,9 +900,7 @@ __all__ = [
     "RouteObservationSpec",
     "RoutePhaseObservation",
     "compute_latency_percentiles",
-    "flush_route_observation_drops",
-    "observe_route",
-    "open_observation_connection",
+    "measure_route",
     "read_latency_report",
     "reset_route_observation_drops",
     "route_key",

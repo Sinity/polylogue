@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, get_args
 
-from polylogue.core.enums import IngestOutcome, Origin, TelemetrySurface
+from polylogue.core.enums import IngestOutcome, Origin
 from polylogue.core.types import (
     ContextInjectionDecision,
     ConvergenceDebtStatus,
@@ -13,7 +13,6 @@ from polylogue.core.types import (
     JudgmentSchedulerStatus,
     OperationRunStatus,
     RouteDaemonPath,
-    RouteObservationStatus,
 )
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
@@ -74,12 +73,6 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
     "mcp_call_session_refs": OpsTableDisposition(
         "MCP", "session references per tool call", True, "retain pending audit migration"
     ),
-    "route_observations": OpsTableDisposition(
-        "route diagnostics", "one bounded route observation", False, "retain pending map"
-    ),
-    "route_observation_drops": OpsTableDisposition(
-        "route diagnostics", "one counted batch of lost route observations", False, "retain pending map"
-    ),
     "fts_drift_samples": OpsTableDisposition(
         "FTS diagnostics", "one bounded drift sample", False, "retain pending map"
     ),
@@ -102,7 +95,6 @@ _JUDGMENT_SCHEDULER_STATUS_CHECK = literal_check("status", *get_args(JudgmentSch
 _CURSOR_LAG_SEVERITY_CHECK = literal_check("severity", *get_args(CursorLagSeverity))
 _MCP_SESSION_RELATION_CHECK = literal_check("relation", *get_args(McpCallSessionRelation))
 _ROUTE_DAEMON_PATH_CHECK = literal_check("daemon_path", *get_args(RouteDaemonPath))
-_ROUTE_OBSERVATION_STATUS_CHECK = literal_check("status", *get_args(RouteObservationStatus))
 _CONTEXT_INJECTION_DECISION_CHECK = literal_check("decision", *get_args(ContextInjectionDecision))
 SCHEMA_DRIFT_SAMPLES_DDL = f"""
 CREATE TABLE IF NOT EXISTS schema_drift_samples (
@@ -435,64 +427,10 @@ CREATE TABLE IF NOT EXISTS mcp_call_session_refs (
 CREATE INDEX IF NOT EXISTS idx_ops_mcp_call_session_refs_session
 ON mcp_call_session_refs(session_id, call_id);
 
--- Bounded operational latency evidence (polylogue-jtwu / polylogue-20d.17
--- AC #4): one row per observed route invocation, independent of
--- mcp_call_log (whole MCP tool calls specifically) -- this table covers
--- routes that table does not: CLI command invocations and MCP sub-route
--- detail (e.g. per-status-scope timing) that a caller wants to record
--- without going through the durable MCP call-log outbox. A route can
--- carry more than one observation per invocation via `phase` (e.g.
--- 'total' plus a named sub-stage), correlated by trace_id.
-CREATE TABLE IF NOT EXISTS route_observations (
-    observation_id   TEXT PRIMARY KEY,
-    trace_id         TEXT NOT NULL,
-    surface          TEXT NOT NULL CHECK({literal_check("surface", *get_args(TelemetrySurface))}),
-    route            TEXT NOT NULL,
-    verb             TEXT,
-    daemon_path      TEXT CHECK({_ROUTE_DAEMON_PATH_CHECK} OR daemon_path IS NULL),
-    phase            TEXT NOT NULL DEFAULT 'total',
-    started_at_ms    INTEGER NOT NULL,
-    duration_ms      INTEGER NOT NULL CHECK(duration_ms >= 0),
-    status           TEXT NOT NULL CHECK({_ROUTE_OBSERVATION_STATUS_CHECK}),
-    git_head         TEXT,
-    archive_epoch    TEXT,
-    attributes_json  TEXT NOT NULL DEFAULT '{{}}' CHECK(json_valid(attributes_json)),
-    sampled          INTEGER NOT NULL DEFAULT 1 CHECK(sampled IN (0, 1))
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_route_observations_surface_route
-ON route_observations(surface, route, started_at_ms DESC);
-
-CREATE INDEX IF NOT EXISTS idx_route_observations_trace
-ON route_observations(trace_id, started_at_ms);
-
-CREATE INDEX IF NOT EXISTS idx_route_observations_started
-ON route_observations(started_at_ms);
-
--- polylogue-jtwu.2: route observations that never reached route_observations,
--- counted where a reader in any process can see them. One row aggregates the
--- drops one process counted for a (surface, route, reason) between two
--- flushes; the observed span is the lost observations' own start times, and a
--- lookback window counts every row whose span reaches into it (an over-count
--- at the window edge, never an under-count). Pruned with route_observations'
--- age horizon; ``reason`` vocabulary is validated at the write boundary.
-CREATE TABLE IF NOT EXISTS route_observation_drops (
-    drop_id               INTEGER PRIMARY KEY,
-    surface               TEXT NOT NULL,
-    route                 TEXT NOT NULL,
-    reason                TEXT NOT NULL,
-    first_observed_at_ms  INTEGER NOT NULL,
-    last_observed_at_ms   INTEGER NOT NULL CHECK(last_observed_at_ms >= first_observed_at_ms),
-    drop_count            INTEGER NOT NULL CHECK(drop_count > 0)
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_route_observation_drops_observed
-ON route_observation_drops(last_observed_at_ms);
-
 -- polylogue-1xc.12: bounded drift-magnitude history for the fts_freshness_state
 -- ledger (index.db). ops.db is disposable, so this is a plain freeform-
 -- additive table, pruned by time and row count the same shape as
--- route_observations -- a snapshot of the SAME per-surface counters
+-- the MCP call log -- a snapshot of the SAME per-surface counters
 -- fts_freshness_state already carries (source/indexed/missing/excess/
 -- duplicate/identity_mismatch rows), sampled across time so an operator can
 -- see drift MAGNITUDE trend, not just the current boolean ready/stale state.
@@ -518,7 +456,7 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- so "origin X: N% of records since <date> carry unseen shapes" can be
 -- read back as a windowed rate instead of discovered manually. ops.db is
 -- disposable, so this is a plain freeform-additive table (no migration),
--- pruned by time and row count like fts_drift_samples/route_observations.
+-- pruned by time and row count like fts_drift_samples.
 --
 -- polylogue-u6tl: `classification` previously hand-listed only 3 of
 -- DriftClassification's 4 values (schemas/drift_sentinel.py), silently

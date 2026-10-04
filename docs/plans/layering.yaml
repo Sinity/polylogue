@@ -185,7 +185,7 @@ writer_modules:
         record_ingest_attempt, record_schema_drift_sample,
         record_daemon_lifecycle_heartbeat, record_daemon_lifecycle_signal, record_daemon_lifecycle_start,
         record_daemon_lifecycle_stop, record_daemon_termination_receipt, record_judgment_scheduler_receipt,
-        record_mcp_call, record_route_observation, record_route_observation_drops, upsert_embedding_catchup_run,
+        record_mcp_call, upsert_embedding_catchup_run,
         upsert_ingest_cursor]
     - path: polylogue/storage/sqlite/archive_tiers/ingest_precedence.py
       surfaces:
