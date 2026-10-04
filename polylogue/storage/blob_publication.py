@@ -50,11 +50,6 @@ class BlobPublicationInspection:
     blob_present: bool
     liveness: BlobLiveness
 
-    @property
-    def referenced(self) -> bool:
-        """Presentation adapter for receipt listings, never a clear authorization."""
-        return self.liveness.state is LivenessState.LIVE
-
 
 @dataclass(frozen=True, slots=True)
 class BlobPublicationReconciliation:
