@@ -431,6 +431,14 @@ class IndexStatus(TypedDict):
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveSessionIdentity:
+    """Selected session identity without full-summary metadata collections."""
+
+    session_id: str
+    origin: str
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveSessionSummary:
     """archive summary projection over archive sessions."""
 
@@ -6433,8 +6441,12 @@ class ArchiveStore:
         One cursor serves the whole read, fetched in batches of
         :data:`SUMMARY_FETCH_BATCH`; ``limit=None`` streams the matched scope.
         """
-        where, params = _session_filter_clause(
-            "s",
+        where, order_by, params = self._session_selection_query_parts(
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
             origin=origin,
             origins=origins,
             excluded_origins=excluded_origins,
@@ -6465,18 +6477,9 @@ class ArchiveStore:
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
             root=root,
-            tags_relation=self._tags_relation,
+            session_id=session_id,
+            since_session_id=since_session_id,
         )
-        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
-        if session_id is not None:
-            try:
-                resolved_id = self.resolve_session_id(session_id)
-            except KeyError:
-                return
-            where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
-            params.append(resolved_id)
-        order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
-        params.extend([-1 if limit is None else limit, 0 if sample else offset])
         cursor = self._conn.cursor()
         try:
             cursor.execute(
@@ -6882,14 +6885,12 @@ class ArchiveStore:
             params.append(max(int(limit), 0))
         rows = self._conn.execute(
             f"""
-            SELECT b.session_id, MIN(rank) AS best_rank
-            FROM messages_fts
-            JOIN blocks b ON b.rowid = messages_fts.rowid
-            {_sessions_join_if_filtered(where)}
-            WHERE messages_fts MATCH ?
-            {where}
-            GROUP BY b.session_id
-            ORDER BY best_rank, b.session_id
+            SELECT s.session_id
+            FROM sessions s
+            JOIN ({_session_text_match_relation(actions_only=False)}) selected_text
+              ON selected_text.session_id=s.session_id
+            WHERE 1 {where}
+            ORDER BY selected_text.selected_rank,s.session_id
             {limit_clause}
             """,
             params,
@@ -7597,77 +7598,130 @@ class ArchiveStore:
             sort_direction=sort_direction,
         )
 
-    def stats(
+    def _session_selection_query_parts(
+        self, *, limit: int | None, offset: int, sample: bool, sort: str | None, reverse: bool, **filters: Any
+    ) -> tuple[str, str, list[object]]:
+        session_id = filters.pop("session_id", None)
+        since_session_id = filters.pop("since_session_id", None)
+        where, params = _session_filter_clause("s", tags_relation=self._tags_relation, **filters)
+        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        if session_id is not None:
+            try:
+                resolved_id = self.resolve_session_id(session_id)
+            except KeyError:
+                where = f"{where} AND 0" if where else "WHERE 0"
+            else:
+                where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
+                params.append(resolved_id)
+        order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
+        params.extend([-1 if limit is None else limit, 0 if sample else offset])
+        return where, order_by, params
+
+    def iter_session_identities(
         self,
         *,
-        origin: str | None = None,
-        origins: tuple[str, ...] = (),
-        excluded_origins: tuple[str, ...] = (),
-        tags: tuple[str, ...] = (),
-        excluded_tags: tuple[str, ...] = (),
-        repo_names: tuple[str, ...] = (),
-        project_refs: tuple[str, ...] = (),
-        has_types: tuple[str, ...] = (),
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste: bool = False,
-        tool_terms: tuple[str, ...] = (),
-        excluded_tool_terms: tuple[str, ...] = (),
-        action_terms: tuple[str, ...] = (),
-        excluded_action_terms: tuple[str, ...] = (),
-        action_sequence: tuple[str, ...] = (),
-        action_text_terms: tuple[str, ...] = (),
-        referenced_paths: tuple[str, ...] = (),
-        cwd_prefix: str | None = None,
-        typed_only: bool = False,
-        message_type: str | None = None,
-        title: str | None = None,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        since_ms: int | None = None,
-        until_ms: int | None = None,
-        since_session_id: str | None = None,
-        session_ids: tuple[str, ...] = (),
-        root: bool | None = None,
-    ) -> ArchiveStats:
-        """Return archive-level stats from filtered archive index sessions."""
-        where, params = _session_filter_clause(
-            "s",
-            origin=origin,
-            origins=origins,
-            excluded_origins=excluded_origins,
-            tags=tags,
-            excluded_tags=excluded_tags,
-            repo_names=repo_names,
-            project_refs=project_refs,
-            has_types=has_types,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            has_paste=has_paste,
-            tool_terms=tool_terms,
-            excluded_tool_terms=excluded_tool_terms,
-            action_terms=action_terms,
-            excluded_action_terms=excluded_action_terms,
-            action_sequence=action_sequence,
-            action_text_terms=action_text_terms,
-            referenced_paths=referenced_paths,
-            cwd_prefix=cwd_prefix,
-            typed_only=typed_only,
-            message_type=message_type,
-            title=title,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            max_words=max_words,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            root=root,
-            tags_relation=self._tags_relation,
+        query: str = "",
+        actions_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        sample: bool = False,
+        sort: str | None = None,
+        reverse: bool = False,
+        **filters: Any,
+    ) -> Generator[ArchiveSessionIdentity, None, None]:
+        """Stream the canonical selected scope without loading unused metadata.
+
+        The caller owns the read snapshot and cancellation guard. One owned
+        cursor preserves selection order and closes when iteration stops.
+        """
+        relation, params = self._selected_session_relation(
+            query=query,
+            actions_only=actions_only,
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
+            **filters,
         )
-        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
-        where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
+        with closing(self._conn.execute(f"SELECT s.session_id,s.origin {relation}", params)) as cursor:
+            for row in cursor:
+                yield ArchiveSessionIdentity(str(row[0]), str(row[1]))
+
+    def _selected_session_relation(
+        self,
+        *,
+        query: str = "",
+        actions_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        sort: str | None = None,
+        reverse: bool = False,
+        sample: bool = False,
+        **filters: Any,
+    ) -> tuple[str, list[object]]:
+        """Share exact structural/lexical membership, order and caller window."""
+        where, order, params = self._session_selection_query_parts(
+            limit=limit, offset=offset, sample=sample, sort=sort, reverse=reverse, **filters
+        )
+        source = "sessions s"
+        if query:
+            match_query = normalize_fts5_query(query)
+            if match_query is None:
+                where = f"{where} AND 0" if where else "WHERE 0"
+            else:
+                _ensure_messages_fts_ready(self._conn)
+                source += f" JOIN ({_session_text_match_relation(actions_only=actions_only, reverse=reverse)}) selected_text ON selected_text.session_id=s.session_id"
+                params.insert(0, match_query)
+                if sort is None and not sample:
+                    direction = "DESC" if reverse else "ASC"
+                    order = f"ORDER BY selected_text.selected_rank {direction},s.session_id {direction}"
+        return f"FROM {source} {where} {order} LIMIT ? OFFSET ?", params
+
+    def aggregate_sessions(
+        self,
+        mode: str,
+        *,
+        query: str = "",
+        actions_only: bool = False,
+        group_by: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        sort: str | None = None,
+        reverse: bool = False,
+        sample: bool = False,
+        **filters: Any,
+    ) -> ArchiveStats | dict[str, int] | int:
+        """Reduce the same distinct selected relation consumed by scalar reads.
+
+        A requested window belongs to membership, before reduction. An omitted
+        limit remains unbounded; presentation page defaults are not totals.
+        """
+        relation, params = self._selected_session_relation(
+            query=query,
+            actions_only=actions_only,
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
+            **filters,
+        )
+        selected = f"SELECT s.session_id {relation}"
+        selected_where = f"WHERE s.session_id IN ({selected})"
+        if mode == "count":
+            row = self._conn.execute(f"SELECT count(*) FROM sessions s {selected_where}", params).fetchone()
+            return int(row[0])
+        if mode == "stats":
+            return self._stats_for_selection(selected_where, params)
+        if mode == "stats_by":
+            if not group_by:
+                raise ValueError("stats_by requires a group_by field")
+            return self._stats_by_for_selection(group_by, selected_where, params)
+        raise ValueError(f"aggregate mode is not declared: {mode!r}")
+
+    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
+        """Reduce a supplied SQL session relation without reconstructing membership."""
         row = self._conn.execute(
             f"""
             SELECT COUNT(*) AS total_sessions,
@@ -7779,6 +7833,84 @@ class ArchiveStore:
             db_size_bytes=self.index_db_path.stat().st_size if self.index_db_path.exists() else 0,
         )
 
+    def _stats_by_for_selection(self, group_by: str, where: str, params: list[object]) -> dict[str, int]:
+        rows = self._conn.execute(_stats_by_sql(group_by, where, tags_relation=self._tags_relation), params).fetchall()
+        results = {str(row["group_key"]): int(row["count"] or 0) for row in rows if row["group_key"] is not None}
+        return results
+
+    def stats(
+        self,
+        *,
+        origin: str | None = None,
+        origins: tuple[str, ...] = (),
+        excluded_origins: tuple[str, ...] = (),
+        tags: tuple[str, ...] = (),
+        excluded_tags: tuple[str, ...] = (),
+        repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
+        has_types: tuple[str, ...] = (),
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        tool_terms: tuple[str, ...] = (),
+        excluded_tool_terms: tuple[str, ...] = (),
+        action_terms: tuple[str, ...] = (),
+        excluded_action_terms: tuple[str, ...] = (),
+        action_sequence: tuple[str, ...] = (),
+        action_text_terms: tuple[str, ...] = (),
+        referenced_paths: tuple[str, ...] = (),
+        cwd_prefix: str | None = None,
+        typed_only: bool = False,
+        message_type: str | None = None,
+        title: str | None = None,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        max_words: int | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        since_session_id: str | None = None,
+        session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
+    ) -> ArchiveStats:
+        """Return archive-level stats from filtered archive index sessions."""
+        where, params = _session_filter_clause(
+            "s",
+            origin=origin,
+            origins=origins,
+            excluded_origins=excluded_origins,
+            tags=tags,
+            excluded_tags=excluded_tags,
+            repo_names=repo_names,
+            project_refs=project_refs,
+            has_types=has_types,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            has_paste=has_paste,
+            tool_terms=tool_terms,
+            excluded_tool_terms=excluded_tool_terms,
+            action_terms=action_terms,
+            excluded_action_terms=excluded_action_terms,
+            action_sequence=action_sequence,
+            action_text_terms=action_text_terms,
+            referenced_paths=referenced_paths,
+            cwd_prefix=cwd_prefix,
+            typed_only=typed_only,
+            message_type=message_type,
+            title=title,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            max_words=max_words,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            root=root,
+            tags_relation=self._tags_relation,
+        )
+        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
+        return self._stats_for_selection(where, params)
+
     def stats_by(
         self,
         group_by: str,
@@ -7851,9 +7983,7 @@ class ArchiveStore:
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
         where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
-        rows = self._conn.execute(_stats_by_sql(group_by, where, tags_relation=self._tags_relation), params).fetchall()
-        results = {str(row["group_key"]): int(row["count"] or 0) for row in rows if row["group_key"] is not None}
-        return results
+        return self._stats_by_for_selection(group_by, where, params)
 
     def __enter__(self) -> ArchiveStore:
         return self
@@ -8014,6 +8144,18 @@ def _highlight_search_snippet(snippet: str, *, fallback: str, query: str) -> str
         if pattern.search(text):
             return str(pattern.sub(lambda match: f"[{match.group(0)}]", text, count=1))
     return text
+
+
+def _session_text_match_relation(*, actions_only: bool, reverse: bool = False) -> str:
+    """The distinct lexical session relation shared by scope and aggregate reads."""
+    lane = "AND b.block_type IN ('tool_use','tool_result')" if actions_only else ""
+    rank_reduction = "MAX" if reverse else "MIN"
+    return f"""
+        SELECT b.session_id,{rank_reduction}(rank) AS selected_rank
+        FROM messages_fts JOIN blocks b ON b.rowid=messages_fts.rowid
+        WHERE messages_fts MATCH ? {lane}
+        GROUP BY b.session_id
+    """
 
 
 def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:

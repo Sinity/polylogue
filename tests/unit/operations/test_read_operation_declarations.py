@@ -90,6 +90,153 @@ class TestDeclaration:
 
 
 class TestQueryAggregate:
+    @pytest.mark.parametrize("reverse", [False, True])
+    def test_scalar_lexical_scope_preserves_first_ranked_session_without_rich_payloads(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reverse: bool
+    ) -> None:
+        from contextlib import closing
+
+        from polylogue.api.archive import _archive_session_identities_for_spec
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        bootstrap_archive_root(tmp_path)
+        identifiers: list[str] = []
+        for number, repeats in enumerate((1, 8, 3)):
+            builder = SessionBuilder(tmp_path / "index.db", f"ranked-{number}").provider("codex")
+            builder.working_directories([f"/synthetic/project-{part}" for part in range(20)])
+            builder.add_message(text="needle " * repeats)
+            builder.add_message(text="needle " + "other " * (30 - repeats))
+            builder.save()
+            identifiers.append(builder.native_session_id())
+        with ArchiveStore(tmp_path) as writer:
+            writer.add_user_tags(
+                tuple(identifiers),
+                tuple(f"synthetic-tag-{part}" for part in range(20)),
+                author_ref="user:synthetic-scalar-scope",
+                author_kind="user",
+            )
+        with open_operation_read(tmp_path) as pinned:
+            archive = pinned.archive
+            with closing(archive.iter_search_summaries("needle", reverse=reverse)) as hits:
+                expected = list(dict.fromkeys(hit.session_id for hit in hits))
+
+            def no_rich_payload(*_args: Any, **_kwargs: Any) -> Any:
+                raise AssertionError("scalar scope loaded an unused rich payload")
+
+            monkeypatch.setattr(ArchiveStore, "iter_search_summaries", no_rich_payload)
+            monkeypatch.setattr(ArchiveStore, "read_summary", no_rich_payload)
+            selected = _archive_session_identities_for_spec(
+                archive, SessionQuerySpec(query_terms=("needle",), reverse=reverse)
+            )
+            assert [row.session_id for row in selected] == expected
+
+    @pytest.mark.parametrize(
+        ("params", "expected"),
+        [
+            ({"exclude_text": ("absent",)}, 3),
+            ({"exclude_text": ("absent",), "limit": 1}, 1),
+            ({"exclude_text": ("absent",), "limit": 0}, 0),
+            ({"exclude_text": ("absent",), "offset": 2, "limit": 2}, 1),
+            ({"exclude_text": ("needle",)}, 0),
+            ({"exclude_text": ("absent",), "sample": 1}, 1),
+        ],
+    )
+    def test_content_excluded_count_reduces_the_requested_survivor_window(
+        self, tmp_path: Path, params: dict[str, object], expected: int
+    ) -> None:
+        _seed(tmp_path)
+        result = _run(tmp_path, "query.aggregate", {"mode": "count", "params": params})
+        assert result["count"] == expected
+
+    def test_content_excluded_list_total_ignores_the_presentation_window_without_rich_hydration(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polylogue.api.archive import _archive_count_sessions_for_spec
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        _seed(tmp_path)
+
+        def no_summary(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("scalar total hydrated unused summary metadata")
+
+        monkeypatch.setattr(ArchiveStore, "iter_summaries", no_summary)
+        monkeypatch.setattr(ArchiveStore, "read_summary", no_summary)
+        with open_operation_read(tmp_path) as pinned:
+            total = _archive_count_sessions_for_spec(
+                pinned.archive, SessionQuerySpec(exclude_text_terms=("absent",), limit=1, offset=1)
+            )
+        assert total == 3
+
+    @pytest.mark.parametrize("mode", ["count", "stats", "stats_by"])
+    @pytest.mark.parametrize(
+        "params,expected",
+        [
+            ({}, 3),
+            ({"query": ("needle",)}, 3),
+            ({"query": ("absent-term",)}, 0),
+            ({"query": ("needle",), "limit": 1}, 1),
+            ({"query": ("needle",), "limit": 0}, 0),
+            ({"query": ('(title:"Read 0" OR title:"absent")',)}, 1),
+        ],
+    )
+    def test_aggregate_modes_share_actual_compound_selected_membership(
+        self, tmp_path: Path, mode: str, params: dict[str, object], expected: int
+    ) -> None:
+        _seed(tmp_path, count=3)
+        result = _run(tmp_path, "query.aggregate", {"mode": mode, "group_by": "origin", "params": params})
+        if mode == "count":
+            actual = result["count"]
+        elif mode == "stats":
+            stats = cast("dict[str, Any]", result["stats"])
+            actual = stats["total_sessions"]
+            assert stats["total_messages"] == expected * 4
+        else:
+            actual = sum(cast("dict[str, int]", result["groups"]).values())
+        assert actual == expected
+
+    @pytest.mark.parametrize("mode", ["count", "stats", "stats_by"])
+    @pytest.mark.parametrize("term,expected", [("needle", 1), ("absent-term", 0)])
+    def test_explicit_id_does_not_bypass_text_membership(
+        self, tmp_path: Path, mode: str, term: str, expected: int
+    ) -> None:
+        identifiers = _seed(tmp_path, count=2)
+        result = _run(
+            tmp_path,
+            "query.aggregate",
+            {"mode": mode, "group_by": "origin", "params": {"conv_id": identifiers[0], "query": (term,)}},
+        )
+        if mode == "count":
+            actual = result["count"]
+        elif mode == "stats":
+            actual = cast("dict[str, Any]", result["stats"])["total_sessions"]
+        else:
+            actual = sum(cast("dict[str, int]", result["groups"]).values())
+        assert actual == expected
+
+    @pytest.mark.parametrize("mode", ["count", "stats", "stats_by"])
+    def test_explicit_selection_order_and_offset_precede_every_aggregate(self, tmp_path: Path, mode: str) -> None:
+        bootstrap_archive_root(tmp_path)
+        for number in range(3):
+            builder = SessionBuilder(tmp_path / "index.db", f"ordered-{number}").provider("codex")
+            for position in range(number + 1):
+                builder.add_message(text=f"ordered session {number} message {position}")
+            builder.save()
+        result = _run(
+            tmp_path,
+            "query.aggregate",
+            {
+                "mode": mode,
+                "group_by": "origin",
+                "params": {"sort": "messages", "reverse": True, "limit": 1, "offset": 1},
+            },
+        )
+        if mode == "count":
+            assert result["count"] == 1
+        elif mode == "stats":
+            assert cast("dict[str, Any]", result["stats"])["total_messages"] == 2
+        else:
+            assert result["groups"] == {"codex-session": 1}
+
     def test_count_matches_the_archive_count_executor(self, tmp_path: Path) -> None:
         """Mutation: count from the returned page length instead of the count
         executor and a count larger than one page reads as the page size."""
@@ -100,8 +247,7 @@ class TestQueryAggregate:
         assert result["mode"] == "count"
 
     def test_stats_by_groups_through_the_shared_aggregate(self, tmp_path: Path) -> None:
-        """Mutation: drop the stats_filter_kwargs adapter and the aggregate raises
-        on a list-only filter keyword instead of grouping."""
+        """Grouping consumes the complete shared selection instead of narrowing filters."""
 
         _seed(tmp_path, count=2)
         result = _run(tmp_path, "query.aggregate", {"mode": "stats_by", "group_by": "origin", "params": {}})

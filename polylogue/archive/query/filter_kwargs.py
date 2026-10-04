@@ -15,9 +15,8 @@ session scope, for a caller that resolved the scope itself and passes
 ``session_id=`` explicitly.  :class:`ArchiveFilterKwargs` adds the scope for a
 caller that lets the reader resolve it.
 
-``stats``/``stats_by`` aggregate over a resolved session-id set rather than a
-page, so they accept the same keys minus :data:`AGGREGATE_UNSUPPORTED_KEYS`;
-:func:`stats_filter_kwargs` performs that one narrowing.
+``aggregate_sessions`` reduces the canonical selected relation, including
+Boolean predicates and an explicit session scope, before count or grouping.
 """
 
 from __future__ import annotations
@@ -72,10 +71,6 @@ class ArchiveFilterKwargs(SessionFilterKwargs):
     """The complete filter kwarg set shared by every ``ArchiveStore`` reader."""
 
     session_id: str | None
-
-
-#: Keys the paged readers accept that ``stats``/``stats_by`` do not.
-AGGREGATE_UNSUPPORTED_KEYS: frozenset[str] = frozenset({"boolean_predicate", "session_id"})
 
 
 def datetime_to_ms(value: datetime | None) -> int | None:
@@ -145,18 +140,11 @@ def spec_session_filter_kwargs(spec: SessionQuerySpec) -> SessionFilterKwargs:
     return plan_session_filter_kwargs(spec.to_plan())
 
 
-def stats_filter_kwargs(filters: SessionFilterKwargs) -> dict[str, object]:
-    """Narrow the shared set to the keys ``stats``/``stats_by`` accept."""
-    return {key: value for key, value in filters.items() if key not in AGGREGATE_UNSUPPORTED_KEYS}
-
-
 __all__ = [
-    "AGGREGATE_UNSUPPORTED_KEYS",
     "ArchiveFilterKwargs",
     "SessionFilterKwargs",
     "datetime_to_ms",
     "plan_filter_kwargs",
     "plan_session_filter_kwargs",
     "spec_session_filter_kwargs",
-    "stats_filter_kwargs",
 ]

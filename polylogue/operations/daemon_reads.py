@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.core.errors import SessionNotFoundError
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
 from polylogue.operations.session_evidence import (
@@ -475,7 +476,8 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
     """Resolve an explicit session scope to a full session id before filtering.
 
     ``--id`` accepts any reference spelling the archive can resolve — a native
-    id, a prefix, a full ``origin:native`` id.  The SQL filters compare against
+    id, a prefix, a full ``origin:native`` id, or its outer ``session:`` namespace.
+    The SQL filters compare against
     the full ``session_id``, so an unresolved spelling silently scopes the page
     to nothing and reports an empty result instead of the session the operator
     named.  Resolution failure is stated, never rendered as "no rows".
@@ -487,9 +489,9 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
     if not scope:
         return spec
     try:
-        resolved = archive.resolve_session_id(scope)
+        resolved = archive.resolve_session_id(scope.removeprefix("session:"))
     except KeyError as exc:
-        raise ValueError(f"session not found: {scope}") from exc
+        raise SessionNotFoundError(f"session not found: {scope}") from exc
     return spec if resolved == scope else dataclass_replace(spec, session_id=resolved)
 
 
@@ -1136,7 +1138,7 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
 
     from dataclasses import asdict
 
-    from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs, stats_filter_kwargs
+    from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
     from polylogue.surfaces.outcome import decide_outcome
 
     mode = str(payload.get("mode") or "")
@@ -1158,76 +1160,45 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
     query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
     scope_id = spec.session_id
 
-    if mode == "count":
-        if spec.exclude_text_terms:
-            from polylogue.api.archive import _archive_count_sessions_for_spec
+    if spec.exclude_text_terms:
+        from polylogue.api.archive import _archive_selected_session_count_for_spec
 
-            count = _archive_count_sessions_for_spec(archive, spec)
-        else:
-            count = (
-                archive.count_search_sessions(
-                    query,
-                    actions_only=spec.retrieval_lane == "actions",
-                    session_id=scope_id,
-                    **cast("Any", filter_kwargs),
-                )
-                if query
-                else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
-            )
+        count = _archive_selected_session_count_for_spec(archive, spec)
         return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
 
-    session_ids = _matched_session_ids(
-        archive, query=query, session_id=scope_id, limit=spec.limit, filters=filter_kwargs
+    group_by = str(payload.get("group_by") or "")
+    reduced = archive.aggregate_sessions(
+        mode,
+        query=query,
+        actions_only=spec.retrieval_lane == "actions",
+        group_by=group_by or None,
+        session_id=scope_id,
+        limit=spec.sample if spec.sample is not None else spec.limit,
+        offset=spec.offset,
+        sort=spec.sort,
+        reverse=spec.reverse,
+        sample=spec.sample is not None,
+        **cast("Any", filter_kwargs),
     )
-    empty_selection = bool(query) and not session_ids
-    aggregate_kwargs = cast("Any", stats_filter_kwargs(filter_kwargs))
-
+    if mode == "count":
+        count = cast("int", reduced)
+        return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
     if mode == "stats_by":
-        group_by = str(payload.get("group_by") or "")
-        if not group_by:
-            raise ValueError("stats_by requires a group_by field")
-        grouped: dict[str, int] = (
-            {} if empty_selection else dict(archive.stats_by(group_by, **aggregate_kwargs, session_ids=session_ids))
-        )
+        grouped = cast("dict[str, int]", reduced)
         return {
             "outcome": decide_outcome(matched=sum(grouped.values())).to_dict(),
             "mode": "stats_by",
             "group_by": group_by,
             "groups": grouped,
         }
-
     from polylogue.archive.stats import ArchiveStats
 
-    stats = (
-        ArchiveStats(total_sessions=0, total_messages=0)
-        if empty_selection
-        else archive.stats(**aggregate_kwargs, session_ids=session_ids)
-    )
+    stats = cast("ArchiveStats", reduced)
     return {
         "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
         "mode": "stats",
         "stats": asdict(stats),
     }
-
-
-def _matched_session_ids(
-    archive: ArchiveStore,
-    *,
-    query: str,
-    session_id: str | None,
-    limit: int | None,
-    filters: Mapping[str, object],
-) -> tuple[str, ...]:
-    """Scope an aggregate to the sessions a text selection actually matched."""
-
-    if session_id is not None:
-        try:
-            return (archive.resolve_session_id(session_id),)
-        except KeyError:
-            return ()
-    if not query:
-        return ()
-    return tuple(archive.search_session_ids(query, limit=limit, **cast("Any", filters)))
 
 
 def _session_identity_projection(

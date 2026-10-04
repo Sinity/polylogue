@@ -111,3 +111,7 @@ does not change result identity. SQLite reads only bounded field slices on
 resume. Evidence insert/update/delete advances the archive frame so callers
 cannot silently assemble one row from two revisions. CLI, Python API, and MCP
 preserve this contract; MCP supplies its smaller delivery budget to the owner.
+
+## Aggregate selection
+
+`query.aggregate` reduces the same canonical distinct session relation used by scalar scope reads. Explicit IDs, lexical/action matching and structural predicates intersect before order, limit, sample and offset; count, statistics and grouping reduce that selected window. Content-excluded counts use the shared survivor walk and apply the requested window after exclusion. Ordinary list totals continue to count every survivor independently of their presentation page. Statistics with content exclusion remain a typed refusal.

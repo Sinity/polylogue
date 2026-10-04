@@ -21,6 +21,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class ReadPageUnavailableError(ValueError):
+    """A page lacks the physical coordinates needed for truthful continuation."""
+
+    code = "read_page_unavailable"
+
+
 class _ReadRequest(BaseModel):
     """Base for a declared read request payload."""
 

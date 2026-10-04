@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Protocol, TypeVar
 
@@ -18,6 +18,7 @@ from polylogue.archive.query.runtime_matching import (
 from polylogue.archive.query.support import session_has_branches
 
 if TYPE_CHECKING:
+    from polylogue.archive.message.models import Message
     from polylogue.archive.models import Session
     from polylogue.archive.query.plan import SessionQueryPlan
 
@@ -114,7 +115,12 @@ def apply_common_filters(
 
 
 def _has_negative_term(session: Session, negative_terms: list[str]) -> bool:
-    for message in session.messages:
+    return has_negative_message_term(session.messages, negative_terms)
+
+
+def has_negative_message_term(messages: Iterable[Message], negative_terms: Sequence[str]) -> bool:
+    """Apply the shared negative-prose predicate to a supplied record stream."""
+    for message in messages:
         if not message.text:
             continue
         lowered = message.text.lower()
