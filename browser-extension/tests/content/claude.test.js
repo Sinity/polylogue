@@ -133,7 +133,7 @@ describe("claude.js native capture (real source)", () => {
   it("leaves the provider page response available without waiting for its conversation body", async () => {
     let release;
     const body = new Promise(resolve => { release = resolve; });
-    const response = { headers: new Headers({ "content-type": "application/json" }),
+    const response = { headers: new globalThis.Headers({ "content-type": "application/json" }),
       clone: () => ({ text: () => body }) };
     const { dom } = installClaude({ fetch: async () => response });
     let returned = false;
