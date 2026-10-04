@@ -96,6 +96,40 @@ afterEach(() => {
 });
 
 describe("claude.js native capture (real source)", () => {
+  it.each([true, false])("acquires the current Claude revision despite an older intercepted capture: available=%s", async (available) => {
+    const orgId = "11111111-1111-4111-8111-111111111111";
+    const url = `https://claude.ai/api/organizations/${orgId}/chat_conversations/conversation-1`;
+    const old = { uuid: "conversation-1", chat_messages: [
+      { uuid: "u1", sender: "human", text: "Original neutral prompt" },
+      { uuid: "a1", sender: "assistant", text: "Original neutral reply" },
+    ] };
+    const fresh = { ...old, chat_messages: [...old.chat_messages,
+      { uuid: "u2", sender: "human", text: "New neutral follow-up" },
+    ] };
+    const fetch = vi.fn(async () => available ? jsonResponse(fresh) : jsonResponse({ detail: "unavailable" }, 503));
+    const { dom, sendRuntimeMessage } = installClaude({
+      localStorageEntries: { [`claude-mcp-has-connectors:${orgId}`]: "true" }, fetch,
+    });
+    dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+      source: dom.window, origin: dom.window.location.origin,
+      data: { type: "polylogue.claude.nativeCapture", capture: {
+        ok: true, status: 200, contentType: "application/json", url, body: JSON.stringify(old),
+      } },
+    }));
+    const send = vi.spyOn(dom.window.chrome.runtime, "sendMessage");
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_unconverged_provider" });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(String(fetch.mock.calls[0][0])).toBe(`${url}?tree=True&rendering_mode=messages&render_all_tools=true&consistency=strong`);
+    if (available) {
+      expect(result.ok).toBe(true);
+      expect(result.envelope.session.turns.map(turn => turn.provider_turn_id)).toEqual(["u1", "a1", "u2"]);
+      expect(result.envelope.raw_provider_payload).toEqual(fresh);
+    } else {
+      expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
+      expect(send.mock.calls.filter(([message]) => message.type === "polylogue.capture")).toEqual([]);
+    }
+  });
+
   it("extracts native Claude turns, normalizes roles, and skips empty messages", async () => {
     const orgId = "11111111-1111-4111-8111-111111111111";
     const fetch = vi.fn(async (input) => {

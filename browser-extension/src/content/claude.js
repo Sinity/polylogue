@@ -10,11 +10,9 @@
   let messageLayer = null;
 
   const nativeAdapterName = "claude-ai-native-v1";
-  const nativeCaptureMessage = "polylogue.claude.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
   const nativeFetchTimeoutMs = 8000;
-  const nativeCaptures = [];
   const nativeFetchResponses = new Map();
   const nativeAttemptDiagnostics = [];
 
@@ -33,14 +31,6 @@
     const parts = parsed.pathname.split("/").filter(Boolean);
     return parts[0] === "chat" && parts[1] ? parts[1] : null;
   }
-
-  window.addEventListener("message", (event) => {
-    if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
-    if (data.type !== nativeCaptureMessage || !data.capture) return;
-    nativeCaptures.push(data.capture);
-    if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
-  });
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
@@ -240,14 +230,6 @@
     }
   }
 
-  function latestNativePayload() {
-    for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
-      const payload = parseNativeCapture(nativeCaptures[index]);
-      if (payload) return payload;
-    }
-    return null;
-  }
-
   async function requestNativeCaptureFromPage(conversationId) {
     const requestId = `polylogue-claude-native-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const responsePromise = new Promise((resolve) => {
@@ -324,7 +306,9 @@
   }
 
   async function capture(reason = null) {
-    const nativePayload = latestNativePayload() || (await fetchNativePayloadOnDemand());
+    // A captured response predates any turns streamed since that response.
+    // Every explicit capture must acquire the current conversation revision.
+    const nativePayload = await fetchNativePayloadOnDemand();
     const finalEnvelope = nativePayload ? buildNativeEnvelope(nativePayload) : null;
     if (!finalEnvelope) {
       return { ok: false, error: "native_capture_unavailable", native_attempts: nativeAttemptDiagnostics.slice(-6) };
