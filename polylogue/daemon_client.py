@@ -280,6 +280,7 @@ class DaemonClient:
                     "maintenance.restore_verified_backup",
                     "user.settings.get",
                     "user.settings.list",
+                    "insights.hermes_health",
                 }:
                     # These operations read or copy declared tiers without an Index
                     # reader. An explicit Index precondition still reaches the

@@ -228,6 +228,37 @@ class InsightRigorWireResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(InsightRigorResult.__pydantic_core_schema__))
 
 
+class HermesHealthWireRequest(_OperationPayload):
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.hermes_health_contracts import HermesHealthRequest
+
+        return handler.resolve_ref_schema(handler(HermesHealthRequest.__pydantic_core_schema__))
+
+
+class HermesHealthWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_health(cls, value: object) -> object:
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
+
+        _validate_json_result_model(HermesHealthResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.hermes_health_contracts import HermesHealthResult
+
+        return handler.resolve_ref_schema(handler(HermesHealthResult.__pydantic_core_schema__))
+
+
 class StatusRequest(_OperationPayload):
     include_archive_readiness: bool = False
 
@@ -1736,6 +1767,15 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_model=InsightRigorWireResult,
     ),
     DaemonOperationSpec(
+        "insights.hermes_health",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.hermes_health.request/v1",
+        result_contract="insights.hermes_health.result/v1",
+        request_model=HermesHealthWireRequest,
+        result_model=HermesHealthWireResult,
+    ),
+    DaemonOperationSpec(
         "cli.query",
         DaemonAuthority.READ,
         DaemonFallback.NEVER,
@@ -3060,6 +3100,10 @@ def _json_result_validator(model: type[BaseModel]) -> SchemaValidator:
             result["strict"] = True
         if kind == "model":
             result["config"] = {**result.get("config", {}), "strict": True}
+        if kind == "dataclass":
+            # JSON objects fill the declared dataclass fields. Its closed
+            # config and nested strict scalar schemas still govern admission.
+            result["strict"] = False
         if kind in {"tuple", "list"}:
             # The wire walker admits only arrays (native server tuples are
             # arrays at delivery). Item schemas retain strict scalar checks.

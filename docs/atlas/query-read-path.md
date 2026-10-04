@@ -192,8 +192,7 @@ the final typed envelope are refused rather than enlarged.
 and verify archive identity before and after the read. Missing or corrupt User
 authority refuses; an absent Index, Source or Audit tier does not withhold
 durable preferences. Reads require the daemon and never fall back to the local
-Python facade. Explicit Index version preconditions still refuse because these
-operations do not observe Index authority.
+Python facade. An explicitly supplied Index version is observed through the supported read-only tier reader and compared before the User read; wrong versions or a missing Index refuse. Omitting the condition keeps the User-only route.
 
 ## Resident insight pages
 
@@ -206,4 +205,4 @@ enriched and filtered before paging. Missing daemon or unavailable insight
 authority refuses instead of opening a local archive. `ops insights status` also calls the resident `insights.readiness` route on
 the same pinned reader, preserving the canonical selected coverage and convergence
 verdict. Its named pending-convergence outcome remains visible with zero rows.
-The `ops insights audit` command also uses resident `insights.rigor`: every registered product is sampled on that same pinned reader, including explicit uncovered or exempt entries. Per-product read failure remains a named degraded outcome. Export and health commands retain their separate existing routes.
+The `ops insights audit` command also uses resident `insights.rigor`: every registered product is sampled on that same pinned reader, including explicit uncovered or exempt entries. Per-product read failure remains a named degraded outcome. `ops insights hermes-health` uses the resident `insights.hermes_health` diagnostic and the configured Hermes source root. Missing or unreadable derived tiers remain measurement gaps rather than prerequisites for the diagnostic. Python callers share the operations composer. Export commands retain their separate existing routes.

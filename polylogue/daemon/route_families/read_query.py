@@ -145,9 +145,11 @@ def _handle_ref_resolve(self: Any, params: dict[str, list[str]]) -> None:
                 stable_order=plan.stable_order,
             ) as archive:
                 payload = plan.read(archive)
-    except (QueryContinuationInvalidError, QueryContinuationStaleError) as exc:
-        status = HTTPStatus.CONFLICT if isinstance(exc, QueryContinuationStaleError) else HTTPStatus.BAD_REQUEST
-        self._send_json(status, {"error": exc.code, "message": str(exc)})
+    except QueryContinuationInvalidError as exc:
+        self._send_json(HTTPStatus.BAD_REQUEST, {"error": exc.code, "message": str(exc)})
+        return
+    except QueryContinuationStaleError as exc:
+        self._send_json(HTTPStatus.CONFLICT, {"error": exc.code, "message": str(exc)})
         return
     self._send_json(HTTPStatus.OK, payload.model_dump(mode="json", exclude_none=True))
 

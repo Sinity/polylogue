@@ -23,7 +23,7 @@ Hermes coverage. This module adds only the rollup on top, composing:
   — durable post-ingest convergence debt, bucketed to the Hermes source
   family. This module does not import ``polylogue.daemon`` directly
   (``docs/plans/layering.yaml`` forbids insights -> daemon): the caller
-  (a surface adapter, e.g. ``polylogue.api.archive``) computes the
+  (``polylogue.operations.hermes_health``) computes the
   Hermes-scoped debt counts and passes them in.
 - :func:`polylogue.context.hermes_lifecycle_reconciliation.reconcile_hermes_session_lifecycle`
   — per-session lifecycle-event pairing debt (fs1.7).
@@ -39,11 +39,21 @@ refs are ids/hashes, never rendered bytes.
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal
 
+from polylogue.analysis.hermes_health_contracts import (
+    HermesDeliveryCorrelationSummary,
+    HermesFidelityCapabilityStatus,
+    HermesHealthVerdict,
+    HermesIntegrationHealth,
+    HermesLifecycleDebtSummary,
+    HermesMeasurementCoverage,
+    HermesParserFailure,
+    HermesSourceStatus,
+)
 from polylogue.archive.query.source_freshness import project_named_source_freshness
 from polylogue.context.hermes_delivery_correlation import correlate_hermes_context_deliveries
 from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
@@ -54,153 +64,8 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
-HermesHealthVerdict = Literal["disabled", "healthy", "degraded", "unavailable"]
-
 _DEFAULT_SOURCE_LIMIT = 25
 _DEFAULT_SESSION_LIMIT = 10
-
-
-@dataclass(frozen=True, slots=True)
-class HermesSourceStatus:
-    """Freshness/cursor evidence for one discovered Hermes source file."""
-
-    source_ref: str
-    source_class: Literal["state_db", "verification_evidence_db", "atof_stream", "atif_document", "other"]
-    stage: str
-    operational_state: str
-    operational_reason: str
-    parse_state: str
-    byte_lag_bytes: int | None
-    fts_converged: bool
-    insights_converged: bool
-    projection_error_count: int
-    session_ref: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class HermesParserFailure:
-    """One file the dry-run explain pass could not parse or read."""
-
-    source_ref: str
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class HermesFidelityCapabilityStatus:
-    """Aggregated fidelity-capability status across discovered Hermes sources."""
-
-    capability: str
-    status: str
-    observed: int
-    expected: int
-    detail: str
-    source_refs: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class HermesLifecycleDebtSummary:
-    """Lifecycle-event pairing debt (fs1.7) across sampled Hermes sessions."""
-
-    sessions_checked: int
-    total_events: int
-    unpaired_event_count: int
-    unknown_message_reference_count: int
-    caveats: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class HermesDeliveryCorrelationSummary:
-    """Context-delivery correlation state (fs1.11) across sampled Hermes sessions."""
-
-    sessions_checked: int
-    events_checked: int
-    available_count: int
-    unavailable_count: int
-    caveats: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class HermesMeasurementCoverage:
-    """What this rollup actually measured, and what it tried to and could not.
-
-    The verdict is only as good as its inputs, so the inputs are reported
-    beside it. Each probe contributes two distinct counters -- what it
-    measured and what it could not -- rather than one number that folds an
-    unreadable tier into the same zero as a genuinely empty one. This is the
-    same discipline
-    :class:`polylogue.analysis.measurement.outcome_coverage.ToolOutcomeAggregate`
-    applies to tool outcomes, where ``unknown_n`` and ``no_result_n`` stay
-    separate uncounted buckets and are never folded into the numerator.
-
-    ``unmeasured_reasons`` names every probe that was attempted and did not
-    produce a measurement. "Nothing in scope" is not an entry here: a Hermes
-    root with no files and an archive with no Hermes hook events were both
-    fully measured and found empty. Only a failure to look is recorded.
-    """
-
-    sources_projected: int = 0
-    sources_unprojected: int = 0
-    lifecycle_sessions_sampled: int = 0
-    lifecycle_sessions_unsampled: int = 0
-    delivery_sessions_sampled: int = 0
-    delivery_sessions_unsampled: int = 0
-    unmeasured_reasons: tuple[str, ...] = ()
-
-    @property
-    def complete(self) -> bool:
-        """True when every probe the rollup attempted returned a measurement."""
-
-        return not self.unmeasured_reasons
-
-    def merge(self, other: HermesMeasurementCoverage) -> HermesMeasurementCoverage:
-        """Combine two probes' coverage, keeping distinct reasons in order."""
-
-        return HermesMeasurementCoverage(
-            sources_projected=self.sources_projected + other.sources_projected,
-            sources_unprojected=self.sources_unprojected + other.sources_unprojected,
-            lifecycle_sessions_sampled=self.lifecycle_sessions_sampled + other.lifecycle_sessions_sampled,
-            lifecycle_sessions_unsampled=self.lifecycle_sessions_unsampled + other.lifecycle_sessions_unsampled,
-            delivery_sessions_sampled=self.delivery_sessions_sampled + other.delivery_sessions_sampled,
-            delivery_sessions_unsampled=self.delivery_sessions_unsampled + other.delivery_sessions_unsampled,
-            unmeasured_reasons=tuple(dict.fromkeys((*self.unmeasured_reasons, *other.unmeasured_reasons))),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class HermesIntegrationHealth:
-    """One bounded, composed Hermes integration health rollup."""
-
-    checked_at: str
-    enabled: bool
-    enabled_reason: str
-    verdict: HermesHealthVerdict
-    sources: tuple[HermesSourceStatus, ...] = ()
-    parser_failures: tuple[HermesParserFailure, ...] = ()
-    fidelity_capabilities: tuple[HermesFidelityCapabilityStatus, ...] = ()
-    convergence_debt_failed_count: int = 0
-    convergence_debt_deferred_count: int = 0
-    convergence_debt_retry_due_count: int = 0
-    lifecycle_debt: HermesLifecycleDebtSummary = field(
-        default_factory=lambda: HermesLifecycleDebtSummary(0, 0, 0, 0, ())
-    )
-    delivery_correlation: HermesDeliveryCorrelationSummary = field(
-        default_factory=lambda: HermesDeliveryCorrelationSummary(0, 0, 0, 0, ())
-    )
-    measurement_coverage: HermesMeasurementCoverage = field(default_factory=lambda: HermesMeasurementCoverage())
-    caveats: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, object]:
-        return cast("dict[str, object]", _jsonable(self))
-
-
-def _jsonable(value: object) -> object:
-    if hasattr(value, "__dataclass_fields__"):
-        return {f: _jsonable(getattr(value, f)) for f in value.__dataclass_fields__}
-    if isinstance(value, tuple):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (list, set, frozenset)):
-        return [_jsonable(item) for item in value]
-    return value
 
 
 def _classify_source_ref(
@@ -267,6 +132,7 @@ def build_hermes_integration_health(
     convergence_debt_failed_count: int = 0,
     convergence_debt_deferred_count: int = 0,
     convergence_debt_retry_due_count: int = 0,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> HermesIntegrationHealth:
     """Project one bounded Hermes integration health rollup.
 
@@ -283,6 +149,7 @@ def build_hermes_integration_health(
     :func:`polylogue.daemon.convergence_debt_status.convergence_debt_summary_info`)
     because this module may not import ``polylogue.daemon`` directly.
     """
+    checkpoint()
     observed = now or datetime.now(UTC)
     checked_at = observed.isoformat()
 
@@ -319,10 +186,11 @@ def build_hermes_integration_health(
     sources_projected = 0
     sources_unprojected = 0
 
-    explain = explain_import_path(hermes_root, source_name="hermes", limit=source_limit)
+    explain = explain_import_path(hermes_root, source_name="hermes", limit=source_limit, checkpoint=checkpoint)
     sources: list[HermesSourceStatus] = []
     capability_totals: dict[str, HermesFidelityCapabilityStatus] = {}
     for entry in explain.entries:
+        checkpoint()
         source_ref = Path(entry.source_path).name if entry.source_path else "unknown"
         source_class = _classify_source_ref(source_ref)
         session_ref = entry.produced.session_refs[0] if entry.produced.session_refs else None
@@ -347,6 +215,7 @@ def build_hermes_integration_health(
                 projection_error_count = len(freshness.errors)
                 sources_projected += 1
             except Exception as exc:  # defensive: freshness projection must never crash the rollup
+                checkpoint()
                 logger.warning(
                     "hermes health: named-source freshness projection failed for %s: %s",
                     source_ref,
@@ -408,6 +277,7 @@ def build_hermes_integration_health(
             caveats.append(skip.reason)
     caveats.extend(explain.caveats)
 
+    checkpoint()
     session_ids, sample_unmeasured = _recent_hermes_session_native_ids(archive_root / "source.db", limit=session_limit)
     lifecycle_debt = HermesLifecycleDebtSummary(0, 0, 0, 0, ())
     delivery_correlation = HermesDeliveryCorrelationSummary(0, 0, 0, 0, ())
@@ -416,8 +286,11 @@ def build_hermes_integration_health(
         caveats.append(sample_unmeasured)
         unmeasured_reasons.append(sample_unmeasured)
     elif session_ids:
-        lifecycle_debt, delivery_correlation, sample_coverage = _sample_session_debt(archive_root, session_ids)
+        lifecycle_debt, delivery_correlation, sample_coverage = _sample_session_debt(
+            archive_root, session_ids, checkpoint=checkpoint
+        )
 
+    checkpoint()
     coverage = HermesMeasurementCoverage(
         sources_projected=sources_projected,
         sources_unprojected=sources_unprojected,
@@ -457,6 +330,8 @@ def build_hermes_integration_health(
 def _sample_session_debt(
     archive_root: Path,
     session_ids: tuple[str, ...],
+    *,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> tuple[HermesLifecycleDebtSummary, HermesDeliveryCorrelationSummary, HermesMeasurementCoverage]:
     """Reconcile lifecycle debt and delivery correlation for a bounded session sample.
 
@@ -537,6 +412,7 @@ def _sample_session_debt(
         try:
             if index_conn is not None:
                 for session_id in session_ids:
+                    checkpoint()
                     try:
                         reconciliation = reconcile_hermes_session_lifecycle(
                             source_conn, index_conn, hermes_session_native_id=session_id
@@ -580,6 +456,7 @@ def _sample_session_debt(
         try:
             if user_conn is not None:
                 for session_id in session_ids:
+                    checkpoint()
                     try:
                         correlations = correlate_hermes_context_deliveries(
                             source_conn, user_conn, hermes_session_native_id=session_id
@@ -675,14 +552,4 @@ def _aggregate_verdict(
     return "healthy"
 
 
-__all__ = [
-    "HermesDeliveryCorrelationSummary",
-    "HermesFidelityCapabilityStatus",
-    "HermesHealthVerdict",
-    "HermesIntegrationHealth",
-    "HermesLifecycleDebtSummary",
-    "HermesMeasurementCoverage",
-    "HermesParserFailure",
-    "HermesSourceStatus",
-    "build_hermes_integration_health",
-]
+__all__ = ["build_hermes_integration_health"]
