@@ -943,6 +943,13 @@ def test_source_bearing_registry_checkpoint_remains_readable_after_reopen(tmp_pa
     """Job bookkeeping may share a carrier with unique acquired source bytes."""
     fixture = Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-browser-capture-v1.json"
     original = json.loads(fixture.read_text())
+    # This registry's current checkpoint wire admits exact integers. Use the
+    # fixture's existing DOM projection for this source-only carrier; the
+    # ordinary spool control above preserves its full raw payload and assets.
+    original.pop("raw_provider_payload")
+    original["session"]["attachments"] = []
+    original["provider_meta"]["capture_fidelity"] = "dom_fallback"
+    original["session"]["provider_meta"]["capture_fidelity"] = "dom_fallback"
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
