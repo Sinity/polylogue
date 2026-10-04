@@ -1,29 +1,8 @@
 (function () {
-  const nativeCaptureMessage = "polylogue.claude.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.claude.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.claude.nativeFetchResponse";
   const currentOrigin = window.location.origin;
   const nativeFetchTimeoutMs = 8000;
-
-  window.__polylogueClaudeCapturedFetches = Array.isArray(window.__polylogueClaudeCapturedFetches)
-    ? window.__polylogueClaudeCapturedFetches
-    : [];
-
-  function post(capture) {
-    window.postMessage({ type: nativeCaptureMessage, capture }, currentOrigin);
-  }
-
-  function remember(capture) {
-    window.__polylogueClaudeCapturedFetches.push(capture);
-    if (window.__polylogueClaudeCapturedFetches.length > 8) {
-      window.__polylogueClaudeCapturedFetches.splice(0, window.__polylogueClaudeCapturedFetches.length - 8);
-    }
-    post(capture);
-  }
-
-  const existingCaptures = window.__polylogueClaudeCapturedFetches.slice(-8);
-  window.__polylogueClaudeCapturedFetches = existingCaptures;
-  for (const capture of existingCaptures) post(capture);
 
   if (window.__polylogueClaudeFetchHookInstalled) return;
   window.__polylogueClaudeFetchHookInstalled = true;
@@ -138,7 +117,6 @@
     if (data.type !== nativeFetchRequestMessage || !data.requestId || !data.conversationId) return;
     try {
       const capture = await fetchConversation(data.conversationId);
-      if (capture.ok && capture.body) remember(capture);
       window.postMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, currentOrigin);
     } catch (error) {
       window.postMessage(
@@ -152,31 +130,4 @@
     }
   });
 
-  window.fetch = async function polylogueClaudeFetch(input) {
-    const response = await originalFetch.apply(this, arguments);
-    try {
-      const url = typeof input === "string" ? input : input && input.url;
-      const absolute = new URL(url, window.location.href);
-      const isConversation =
-        absolute.origin === currentOrigin &&
-        /\/api\/organizations\/[^/?#]+\/chat_conversations\/[^/?#]+/.test(absolute.pathname);
-      const contentType = response.headers.get("content-type") || "";
-      if (isConversation && contentType.includes("application/json")) {
-        const body = await response.clone().text();
-        if (body.includes('"chat_messages"')) {
-          remember({
-            url: absolute.href,
-            status: response.status,
-            ok: response.ok,
-            contentType,
-            body,
-            capturedAt: new Date().toISOString()
-          });
-        }
-      }
-    } catch {
-      // Capture must never perturb the Claude.ai page's own request path.
-    }
-    return response;
-  };
 })();
