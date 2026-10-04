@@ -167,9 +167,9 @@ def test_promote_cluster_with_samples_honors_privacy_config_through_the_real_ope
     # manifest. Re-promoting one cluster after clearing only its manifest
     # marker would create v4 then v5 for the same family, which the runtime
     # correctly refuses as an incoherent package catalog.
-    protected_properties = promote_in_isolated_registry("protected", {"field_overrides": {"$.region_code": "deny"}})[
-        "properties"
-    ]
+    protected_properties = promote_in_isolated_registry(
+        "protected", {"field_overrides": [{"pattern": "$.region_code", "action": "deny"}]}
+    )["properties"]
     assert isinstance(protected_properties, dict)
     protected_region = protected_properties["region_code"]
     assert "x-polylogue-values" not in protected_region
@@ -289,7 +289,7 @@ def test_infer_schema_normalizes_operator_privacy_configuration(workspace_env: d
     index_db = _seed_chatgpt_raw(workspace_env)
     privacy_payload: JSONDocument = {
         "level": "strict",
-        "field_overrides": {"$.id": "drop", "invalid": 1},
+        "field_overrides": [{"pattern": "$.id", "action": "drop"}],
         "allow_value_patterns": ["safe", 1],
         "deny_value_patterns": ["secret"],
         "safe_enum_max_length": "invalid",

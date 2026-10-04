@@ -20,7 +20,9 @@ from polylogue.cli.shared.schema_command_support import build_schema_privacy_con
 from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.commit import commit_provider_schema
+from polylogue.schemas.operator.inference import privacy_config_from_payload
 from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.privacy_config import PrivacyConfig
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.source_frontier import (
     SchemaFrontierError,
@@ -140,6 +142,9 @@ def main(argv: list[str] | None = None) -> int:
                     "provider": str(args.provider),
                     "success": False,
                     "terminal": "zero_eligible_material",
+                    "inference_configuration": (
+                        privacy_config_from_payload(privacy_config) or PrivacyConfig()
+                    ).to_payload(),
                     "reason": "; ".join(reasons),
                     "sample_count": 0,
                     "versions": [],

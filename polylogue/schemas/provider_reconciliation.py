@@ -555,6 +555,11 @@ def reconcile_provider_matrix(
 ) -> ProviderMatrix:
     """Account for every declared subject exactly once."""
 
+    for token, receipt in receipts.items():
+        result = receipt.get("result")
+        recorded = result.get("inference_configuration") if isinstance(result, Mapping) else None
+        if not isinstance(recorded, Mapping) or hash_payload(recorded) != hash_payload(inference_configuration):
+            raise ValueError(f"{token}: receipt inference configuration does not match the declared policy")
     resolved = denominator if denominator is not None else derive_provider_denominator()
     subjects = tuple(
         _reconcile_subject(

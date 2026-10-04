@@ -4,25 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.schemas.operator.models import JSONDocument
+from polylogue.schemas.operator.models import JSONDocument, operator_json_document
 from polylogue.schemas.privacy_config import PrivacyConfig, PrivacyConfigSection, PrivacyLevel
-
-
-def _privacy_config_payload(config: PrivacyConfig) -> JSONDocument:
-    payload: JSONDocument = {
-        "level": config.level,
-        "safe_enum_max_length": config.safe_enum_max_length,
-        "high_entropy_min_length": config.high_entropy_min_length,
-        "cross_conv_min_count": config.cross_conv_min_count,
-        "cross_conv_proportional": config.cross_conv_proportional,
-    }
-    if config.field_overrides:
-        payload["field_overrides"] = dict(config.field_overrides)
-    if config.allow_value_patterns:
-        payload["allow_value_patterns"] = list(config.allow_value_patterns)
-    if config.deny_value_patterns:
-        payload["deny_value_patterns"] = list(config.deny_value_patterns)
-    return payload
 
 
 def _privacy_level(value: str) -> PrivacyLevel:
@@ -47,14 +30,14 @@ def build_schema_privacy_config(
     if privacy:
         cli_overrides["level"] = privacy
     if privacy_config_path:
-        return _privacy_config_payload(
+        return operator_json_document(
             load_privacy_config(
                 cli_overrides=cli_overrides,
                 project_path=privacy_config_path.parent,
-            )
+            ).to_payload()
         )
     if privacy is not None:
-        return _privacy_config_payload(PrivacyConfig(level=_privacy_level(privacy)))
+        return operator_json_document(PrivacyConfig(level=_privacy_level(privacy)).to_payload())
     return None
 
 

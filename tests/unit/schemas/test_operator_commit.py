@@ -17,7 +17,7 @@ import pytest
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator import commit as commit_module
 from polylogue.schemas.operator.commit import SchemaCommitPrivacyError, commit_provider_schema
-from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.operator.models import SchemaCommitRequest, operator_json_document
 from polylogue.schemas.operator.receipt import (
     SCHEMA_INFERENCE_HANDOFF_FILENAME,
     build_schema_inference_receipt,
@@ -488,3 +488,60 @@ class TestCommitProviderSchemaWritesRealFiles:
         assert not commit_result.success
         assert not commit_result.versions
         assert not (output_dir / "not-a-real-provider-k45pq").exists()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("source_backed", [False, True])
+def test_commit_receipt_records_exact_generation_policy(
+    tmp_path: Path,
+    dry_run: bool,
+    source_backed: bool,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from polylogue.schemas.privacy_config import PrivacyConfig
+
+    policy = PrivacyConfig(
+        level="permissive", field_overrides={"private.*": "deny", "*": "allow"}, deny_value_patterns=["z*", "a*"]
+    )
+    observed: list[object] = []
+
+    def build(*_args: object, **kwargs: object) -> SimpleNamespace:
+        observed.append(kwargs["privacy_config"])
+        return _bundle(
+            version="v1", schema={"type": "object", "properties": {"id": {"type": "string"}}}, sample_count=1
+        )
+
+    request = replace(
+        _request(tmp_path / "providers", dry_run=dry_run), privacy_config=operator_json_document(policy.to_payload())
+    )
+    if source_backed:
+        request = replace(request, source_inputs=(SchemaSourceInput(provider=_PROVIDER, root=tmp_path / "source"),))
+    target = (
+        "polylogue.schemas.operator.commit.build_provider_bundle_from_sources"
+        if source_backed
+        else "polylogue.schemas.generation.workflow._build_provider_bundle"
+    )
+    with patch(target, side_effect=build):
+        result = commit_provider_schema(request)
+    assert result.success
+    assert len(observed) == 1
+    actual = observed[0]
+    assert isinstance(actual, PrivacyConfig)
+    assert result.to_dict()["inference_configuration"] == actual.to_payload() == policy.to_payload()
+
+    from devtools import schema_commit
+    from polylogue.schemas.operator.inference import privacy_config_from_payload
+
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: SimpleNamespace(archive_root=tmp_path / "archive", db_path=tmp_path / "archive" / "index.db"),
+    )
+    monkeypatch.setattr(schema_commit, "commit_provider_schema", lambda _request: result)
+    assert schema_commit.main(["--provider", _PROVIDER, "--json"]) == 0
+    wire = json.loads(capsys.readouterr().out)["inference_configuration"]
+    decoded = privacy_config_from_payload(wire)
+    assert decoded is not None
+    assert decoded.field_override("private.id") == "deny"
+    assert decoded.to_payload() == policy.to_payload()
