@@ -852,6 +852,8 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     # leave a terminal receipt qualified with "promotion": null.
     if "checks" in receipt:
         receipt["checks"]["milestones_recorded"] = promoted is not None
+        if (receipt.get("config") or {}).get("profile"):
+            receipt["checks"]["profile_collected"] = (receipt.get("profile") or {}).get("outcome") == "ok"
     total_mib = receipt["corpus"]["total_bytes"] / 2**20
     timing["derived_after_promotion"] = (
         round(terminal_at - promoted, 3) if terminal_at is not None and promoted is not None else None
@@ -1063,23 +1065,29 @@ def build_receipt(
         "started_at_unix": started_wall,
         "clock_step_s": round(clock_step_s, 3),
     }
-    _derive_dependents(receipt)
     if paths["stacks"].exists():
         document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
         receipt["thread_cpu_s"] = thread_cpu_summary(document)
-    if config.profile and paths["stacks"].exists():
-        from devtools.fresh_build_bench.profile_report import summarise
+    if config.profile:
+        from devtools.fresh_build_bench.profile_report import profile_refusal_reason, summarise
 
-        document = json.loads(paths["stacks"].read_text(encoding="utf-8"))
-        summary = summarise(document, top=25, thread_filter=None)
-        writer_summary = summarise(document, top=25, thread_filter="polylogue-writer:watcher.live_ingest.full")
-        receipt["profile"] = {
-            "sampler_overhead_s": summary["sampler_overhead_s"],
-            "threads_by_cpu_s": summary["threads_by_cpu_s"],
-            "leaf_kind_cpu_s": summary["leaf_kind_cpu_s"],
-            "ingest_writer_leaf_kind_wall_s": writer_summary["leaf_kind_wall_s"],
-            "ingest_writer_leaf_kind_cpu_s": writer_summary["leaf_kind_cpu_s"],
-        }
+        document = json.loads(paths["stacks"].read_text(encoding="utf-8")) if paths["stacks"].exists() else {}
+        refusal = profile_refusal_reason(document)
+        if refusal:
+            receipt["profile"] = {"outcome": "refused", "reason": refusal}
+        else:
+            summary = summarise(document, top=25, thread_filter=None)
+            writer_summary = summarise(document, top=25, thread_filter="polylogue-writer:watcher.live_ingest.full")
+            receipt["profile"] = {
+                "outcome": "ok",
+                "reason": None,
+                "sampler_overhead_s": summary["sampler_overhead_s"],
+                "threads_by_cpu_s": summary["threads_by_cpu_s"],
+                "leaf_kind_cpu_s": summary["leaf_kind_cpu_s"],
+                "ingest_writer_leaf_kind_wall_s": writer_summary["leaf_kind_wall_s"],
+                "ingest_writer_leaf_kind_cpu_s": writer_summary["leaf_kind_cpu_s"],
+            }
+    _derive_dependents(receipt)
     return receipt
 
 
@@ -1122,6 +1130,9 @@ def render(receipt: dict[str, Any]) -> str:
         )
     )
     timing = receipt["timing_s"]
+    profile = receipt.get("profile") or {}
+    if profile.get("outcome") == "refused":
+        lines.append(f"profile outcome=refused reason={profile.get('reason')}")
     lines.append("timing  " + "  ".join(f"{key}={_fmt(value)}" for key, value in timing.items() if key != "shutdown"))
     lines.append("throughput  " + "  ".join(f"{k}={_fmt(v)}" for k, v in receipt["throughput"].items()))
     thread_cpu = receipt.get("thread_cpu_s") or {}
@@ -1224,6 +1235,8 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different host ({key})")
     for side, receipt in (("before", before), ("after", after)):
+        if (receipt.get("profile") or {}).get("outcome") == "refused":
+            problems.append(f"{side} run profile refused ({receipt['profile'].get('reason')})")
         # Integrity failures mean the declared inputs or the measurement
         # evidence are invalid; no waiver makes such a run's numbers or
         # output digests admissible.
