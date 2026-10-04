@@ -221,13 +221,20 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
 def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: Path) -> None:
     captured: dict[str, object] = {}
 
-    async def get_report(query: object) -> InsightReadinessReport:
-        captured["query"] = query
-        return _status_report()
+    def get_report(config: object, operation: object) -> tuple[dict[str, object], str]:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+        from polylogue.surfaces.outcome import decide_outcome
 
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=get_report))
+        assert operation.operation == "insights.readiness"
+        captured["query"] = InsightReadinessRequest.model_validate(operation.payload).query
+        return {
+            "report": _status_report().model_dump(mode="json"),
+            "outcome": decide_outcome(matched=1, degraded=("insight_convergence_pending",)).to_dict(),
+        }, "daemon"
+
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=lambda coro: asyncio.run(coro)):
+    with patch("polylogue.cli.commands.insights.dispatch_read", side_effect=get_report) as dispatch:
         with patch("polylogue.cli.commands.insights.emit_success") as emit_success:
             raw_callback(
                 _status_context(env, output_format="json", origin="codex-session"),
@@ -237,35 +244,37 @@ def test_insights_status_command_emits_json_and_inherits_root_filters(tmp_path: 
                 until=None,
                 output_format=None,
             )
-
+    dispatch.assert_called_once()
+    assert dispatch.call_args.args[0] is env.config
     query = captured["query"]
     assert query.insights == ("profiles",)
     assert query.origin == "codex-session"
     assert query.since == "2026-04-01T00:00:00+00:00"
     assert query.until == "2026-04-30T00:00:00+00:00"
     emit_success.assert_called_once()
+    assert emit_success.call_args.args[0]["outcome"]["state"] == "degraded"
 
 
 def test_insights_status_command_rejects_inherited_provider_csv() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-
-    with pytest.raises(SystemExit, match="insights commands accept one origin"):
-        raw_callback(
-            _status_context(env, origin="codex-session,chatgpt-export"),
-            insights=(),
-            origin=None,
-            since=None,
-            until=None,
-            output_format=None,
-        )
+    with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
+        with pytest.raises(SystemExit, match="insights commands accept one origin"):
+            raw_callback(
+                _status_context(env, origin="codex-session,chatgpt-export"),
+                insights=(),
+                origin=None,
+                since=None,
+                until=None,
+                output_format=None,
+            )
+        dispatch.assert_not_called()
 
 
 def test_insights_status_command_reports_invalid_insight_names() -> None:
-    env = SimpleNamespace(polylogue=SimpleNamespace(insight_readiness_report=MagicMock()))
+    env = SimpleNamespace(config=object())
     raw_callback = _command_callback(insights_module.insights_status_command)
-
-    with patch("polylogue.cli.commands.insights.run_coroutine_sync", side_effect=ValueError("Unknown insight")):
+    with patch("polylogue.cli.commands.insights.dispatch_read") as dispatch:
         with pytest.raises(SystemExit, match="insights status: .*Known insights:"):
             raw_callback(
                 _status_context(env),
@@ -275,6 +284,7 @@ def test_insights_status_command_reports_invalid_insight_names() -> None:
                 until=None,
                 output_format=None,
             )
+        dispatch.assert_not_called()
 
 
 def test_insights_export_command_covers_json_plain_and_error_paths(tmp_path: Path) -> None:

@@ -300,6 +300,10 @@ def execute_read_operation(
         from polylogue.operations.insight_reads import execute_insight_read
 
         result = execute_insight_read(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "insights.readiness":
+        from polylogue.operations.insight_reads import execute_insight_readiness
+
+        result = execute_insight_readiness(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "completion":
         result = _completion_payload(payload, archive=archive)
     elif name == "facets":

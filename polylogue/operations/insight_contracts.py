@@ -25,6 +25,7 @@ from polylogue.analysis.archive import (
     UsageTimelineInsightQuery,
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, normalize_insight_readiness_name
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.surfaces.outcome import OutcomeEnvelope
@@ -203,4 +204,19 @@ class InsightListRequest(_InsightPage):
 
 class InsightListResult(_InsightPage):
     page: InsightPage
+    outcome: OutcomeEnvelope
+
+
+class InsightReadinessRequest(_InsightPage):
+    query: InsightReadinessQuery
+
+    @model_validator(mode="after")
+    def validate_selected_targets(self) -> InsightReadinessRequest:
+        for name in self.query.insights:
+            normalize_insight_readiness_name(name)
+        return self
+
+
+class InsightReadinessResult(_InsightPage):
+    report: InsightReadinessReport
     outcome: OutcomeEnvelope

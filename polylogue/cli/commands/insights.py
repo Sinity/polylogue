@@ -28,7 +28,12 @@ from polylogue.analysis.export_bundles import (
     InsightExportBundleResult,
     InsightExportFormat,
 )
-from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
+from polylogue.analysis.readiness import (
+    InsightReadinessQuery,
+    InsightReadinessReport,
+    known_insight_readiness_names,
+    normalize_insight_readiness_name,
+)
 from polylogue.analysis.registry import (
     INSIGHT_REGISTRY,
     InsightQueryError,
@@ -308,12 +313,20 @@ def insights_status_command(
             since=filters["since"] if isinstance(filters["since"], str) else None,
             until=filters["until"] if isinstance(filters["until"], str) else None,
         )
-        report = run_coroutine_sync(env.polylogue.insight_readiness_report(query))
+        for name in query.insights:
+            normalize_insight_readiness_name(name)
+        result, _served_by = dispatch_read(
+            env.config, OperationRequest("insights.readiness", {"query": query.model_dump(mode="json")})
+        )
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        selected = InsightReadinessResult.model_validate(result)
+        report = selected.report
     except (InsightCommandInputError, ValueError) as exc:
         valid = ", ".join(known_insight_readiness_names())
         fail("insights status", f"{exc}. Known insights: {valid}")
     if _status_wants_json(ctx, output_format=output_format):
-        emit_success(cast(dict[str, object], report.model_dump(mode="json")))
+        emit_success({**report.model_dump(mode="json"), "outcome": selected.outcome.to_dict()})
         return
     _render_status_plain(report)
 

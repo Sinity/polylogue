@@ -63,22 +63,31 @@ def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.
         yield
 
 
+@pytest.mark.parametrize(
+    ("command", "operation"),
+    [
+        (["analyze", "insights", "profiles"], "insights.list"),
+        (["ops", "insights", "status"], "insights.readiness"),
+    ],
+)
 def test_registered_insight_read_refuses_without_daemon(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    command: list[str],
+    operation: str,
 ) -> None:
     from polylogue.cli.machine_main import run_machine_entry
 
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "absent-archive"))
-    argv = ["analyze", "insights", "profiles", "--json"]
+    argv = [*command, "--json"]
     monkeypatch.setattr(sys, "argv", ["polylogue", *argv])
     with pytest.raises(SystemExit) as exited:
         run_machine_entry(cli, argv)
     assert exited.value.code == 1
     refusal = json.loads(capsys.readouterr().out)
     assert refusal["code"] == "daemon_required", refusal
-    assert refusal["details"]["operation"] == "insights.list"
+    assert refusal["details"]["operation"] == operation
     assert not (tmp_path / "absent-archive").exists()
 
 

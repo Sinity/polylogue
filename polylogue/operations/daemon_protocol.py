@@ -146,6 +146,47 @@ class InsightReadResult(_OperationPayload):
         return handler.resolve_ref_schema(handler(InsightListResult.__pydantic_core_schema__))
 
 
+class InsightReadinessWireRequest(_OperationPayload):
+    query: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_selected_readiness(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+
+        InsightReadinessRequest.model_validate(value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightReadinessRequest
+
+        return handler.resolve_ref_schema(handler(InsightReadinessRequest.__pydantic_core_schema__))
+
+
+class InsightReadinessWireResult(_OperationPayload):
+    report: dict[str, object]
+    outcome: dict[str, object]
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_readiness_report(cls, value: object) -> object:
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        _validate_json_result_model(InsightReadinessResult, value)
+        return value
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core: core_schema.CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        from polylogue.operations.insight_contracts import InsightReadinessResult
+
+        return handler.resolve_ref_schema(handler(InsightReadinessResult.__pydantic_core_schema__))
+
+
 class StatusRequest(_OperationPayload):
     include_archive_readiness: bool = False
 
@@ -1630,6 +1671,17 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="InsightReadResult",
         request_model=InsightReadRequest,
         result_model=InsightReadResult,
+    ),
+    DaemonOperationSpec(
+        "insights.readiness",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_contract="insights.readiness.request/v1",
+        result_contract="insights.readiness.result/v1",
+        request_type="InsightReadinessWireRequest",
+        result_type="InsightReadinessWireResult",
+        request_model=InsightReadinessWireRequest,
+        result_model=InsightReadinessWireResult,
     ),
     DaemonOperationSpec(
         "cli.query",
