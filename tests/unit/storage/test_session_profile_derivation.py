@@ -1112,3 +1112,76 @@ def test_recipe_seed_includes_orphaned_profile_partitions(
             "SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)
         ).fetchone()
     assert demand is not None
+
+
+@pytest.mark.parametrize("intervening_demand", (False, True))
+def test_profile_resume_retains_shrinking_required_page_suffix(tmp_path: Path, intervening_demand: bool) -> None:
+    """Re-querying and offsetting the shortened demand page skips c and d."""
+    from polylogue.daemon.derivation import Budget, DerivationRegistry, converge
+    from polylogue.operations.session_profile_convergence import (
+        make_session_profile_derivation,
+        make_session_profile_frame,
+        make_session_summary_derivation,
+        make_session_usage_rollup_derivation,
+    )
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    index_db = root / "index.db"
+
+    def seed(name: str) -> str:
+        builder = SessionBuilder(index_db, name)
+        builder.add_message(role="user", text="synthetic profile input")
+        builder.save()
+        return builder.native_session_id()
+
+    ids = [seed(name) for name in "abcdef"]
+    profile = make_session_profile_derivation(index_db, archive_root=root, now=lambda: 0.0)
+    registry = DerivationRegistry(
+        (
+            make_session_summary_derivation(index_db, archive_root=root),
+            make_session_usage_rollup_derivation(index_db, archive_root=root, now=lambda: 0.0),
+            profile,
+        )
+    )
+    frame = make_session_profile_frame(index_db, archive_root=root, scope=None)
+    prerequisites = (SESSION_SUMMARY_DOMAIN, SESSION_USAGE_ROLLUP_DOMAIN)
+    with write_lease("test.profile-resume"):
+        converge(registry, frame, domains=prerequisites)
+        assert profile.required_page(frame, cursor=None, limit=4)[0] == tuple(ids[:4])
+        first = converge(registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2))
+    assert first.done == 2 and first.failed == 0
+    assert first.cursor.position(SESSION_PROFILE_DOMAIN).pending_keys == tuple(ids[2:4])
+    assert profile.required_page(frame, cursor=None, limit=4)[0] == tuple(ids[2:6])
+
+    if intervening_demand:
+        # Another publication removes c from demand; a new key follows the page,
+        # and changed input behind its cursor must be revisited on wraparound.
+        assert _materialize(index_db, ids[2])
+        ids.append(seed("g"))
+        _mutate(index_db, ids[0], "word_count", "word_count + 1")
+        with write_lease("test.profile-prerequisites"):
+            converge(registry, frame, domains=prerequisites)
+
+    with write_lease("test.profile-resume"):
+        second = converge(
+            registry,
+            frame,
+            domains=(SESSION_PROFILE_DOMAIN,),
+            budget=Budget(page=1, publication=1),
+            cursor=first.cursor,
+        )
+    assert second.failed == 0
+    assert _status(index_db, ids[2]) == "valid"
+    cursor = second.cursor
+    with write_lease("test.profile-resume"):
+        while not cursor.position(SESSION_PROFILE_DOMAIN).swept:
+            report = converge(
+                registry, frame, domains=(SESSION_PROFILE_DOMAIN,), budget=Budget(page=4, publication=2), cursor=cursor
+            )
+            assert report.failed == 0
+            cursor = report.cursor
+        wrapped = converge(registry, frame, domains=(SESSION_PROFILE_DOMAIN,), cursor=cursor)
+    assert wrapped.failed == 0
+    assert all(_status(index_db, session_id) == "valid" for session_id in ids)
+    assert profile.required_page(frame, cursor=None, limit=4) == ((), None)
