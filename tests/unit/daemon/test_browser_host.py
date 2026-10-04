@@ -14,7 +14,11 @@ from polylogue.daemon.browser_host import create_browser_app
 
 
 @pytest.mark.asyncio
-async def test_browser_host_forwards_auth_query_and_cookie_without_leaking_backend_origin() -> None:
+@pytest.mark.parametrize("peer_owned", [True, False])
+async def test_browser_host_forwards_auth_query_and_owned_cookie_without_leaking_backend_origin(
+    peer_owned: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("polylogue.daemon.browser_host.peer_socket_owned_by_current_uid", lambda **_kwargs: peer_owned)
     observed: list[httpx.Request] = []
 
     async def upstream(request: httpx.Request) -> httpx.Response:
@@ -47,7 +51,10 @@ async def test_browser_host_forwards_auth_query_and_cookie_without_leaking_backe
     assert observed[0].headers["origin"] == "http://127.0.0.1:8766"
     assert observed[1].url.query == b"continuation=q2.opaque%2Ftoken"
     assert observed[1].headers["authorization"] == "Bearer caller-token"
-    assert observed[1].headers["cookie"] == "polylogue_web=secret"
+    if peer_owned:
+        assert observed[1].headers["cookie"] == "polylogue_web=secret"
+    else:
+        assert "cookie" not in observed[1].headers
     assert page.json()["continuation"] == "opaque-next"
 
 
