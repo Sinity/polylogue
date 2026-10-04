@@ -9,8 +9,8 @@ sources use that digest as ``raw_id`` too; sources whose identity requires
 additional provenance retain it separately as ``blob_hash``.
 
 Writes are atomic (tempfile + ``os.replace``). Files are never modified
-after creation. Deduplication is free: identical content produces the
-same hash, so the second write is a no-op.
+after creation. Identical content reuses the same hash path, but publication
+still persists its directory: visibility alone does not prove durability.
 
 The primary motivation is to avoid loading multi-GB files into Python
 memory. ``write_from_path`` streams the file in 1 MiB chunks, hashing
@@ -27,7 +27,7 @@ import stat
 import tempfile
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Collection, Iterable, Iterator
 from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import dataclass
@@ -127,6 +127,10 @@ class BlobStore:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        # At most 256 hash shards. Only a completed root barrier certifies a
+        # shard entry; a new instance starts without that process-local proof.
+        self._persisted_shards: set[Path] = set()
+        self._publication_directory_lock = threading.Lock()
         self._read_verification_lock = threading.Lock()
         self._read_verified: OrderedDict[tuple[str, int, int, int, int, int], None] = OrderedDict()
         self._read_verifying: dict[tuple[str, int, int, int, int, int], Future[bool]] = {}
@@ -375,22 +379,21 @@ class BlobStore:
         finally:
             os.close(directory_fd)
 
-    def _place_prepared(self, prepared: PreparedBlob) -> tuple[tuple[str, int], Path | None, bool]:
+    def _place_prepared(self, prepared: PreparedBlob) -> tuple[tuple[str, int], Path, bool]:
         """Move one prepared blob into place without persisting the directory.
 
-        Returns the publication outcome, the shard directory that still needs an
-        fsync (``None`` when the blob deduplicated away and nothing changed),
-        and whether this call created the shard directory itself. The caller
-        owns the durability boundary, so a batch can persist one shard once
-        instead of once per member.
+        Returns the outcome, the shard to persist, and whether its root entry
+        still needs a barrier. A deduplicated file can be an interrupted
+        publication, so it requires the same shard barrier as a new file.
+        The caller groups those barriers for batch publication.
         """
         dest = self.blob_path(prepared.hash_hex)
+        shard_created = not dest.parent.is_dir()
+        with self._publication_directory_lock:
+            root_needs_fsync = shard_created or dest.parent not in self._persisted_shards
         if dest.exists():
             self.discard_prepared(prepared)
-            return (prepared.hash_hex, prepared.size_bytes), None, False
-        # Publishing the first blob under a hash prefix creates the shard
-        # directory itself, so record that before mkdir makes it exist.
-        shard_created = not dest.parent.is_dir()
+            return (prepared.hash_hex, prepared.size_bytes), dest.parent, root_needs_fsync
         dest.parent.mkdir(parents=True, exist_ok=True)
         # The parent fsync is the caller's, and it is not optional: this method
         # is private, both of its callers persist every directory it reports
@@ -401,19 +404,23 @@ class BlobStore:
         # requires (polylogue-rk0it AC5).
         # ast-grep-ignore: replace-without-parent-fsync
         os.replace(prepared.temporary_path, dest)
-        return (prepared.hash_hex, prepared.size_bytes), dest.parent, shard_created
+        return (prepared.hash_hex, prepared.size_bytes), dest.parent, root_needs_fsync
+
+    def _persist_publication(self, shards: Collection[Path], *, root_needs_fsync: bool) -> None:
+        """Settle shard entries before certifying their names in the blob root."""
+        for shard in shards:
+            self._fsync_directory(shard)
+        if root_needs_fsync:
+            self._fsync_directory(self.root)
+            # Record proof only after every barrier succeeds. A failed barrier
+            # leaves retries, including deduplication, responsible for it.
+            with self._publication_directory_lock:
+                self._persisted_shards.update(shards)
 
     def publish_prepared(self, prepared: PreparedBlob) -> tuple[str, int]:
         """Atomically expose one prepared blob, preserving deduplication."""
-        outcome, shard_directory, shard_created = self._place_prepared(prepared)
-        if shard_directory is not None:
-            self._fsync_directory(shard_directory)
-        if shard_created:
-            # Fsyncing the shard persists the entries *inside* it, never the
-            # shard's own entry in the blob root. A power loss after the durable
-            # source-db receipt/reference commit could therefore take the whole
-            # new shard with it while this method had already reported success.
-            self._fsync_directory(self.root)
+        outcome, shard_directory, root_needs_fsync = self._place_prepared(prepared)
+        self._persist_publication((shard_directory,), root_needs_fsync=root_needs_fsync)
         return outcome
 
     def publish_prepared_renewing(self, prepared: PreparedBlob) -> tuple[str, int]:
@@ -430,15 +437,15 @@ class BlobStore:
             os.utime(self.blob_path(prepared.hash_hex))
         except FileNotFoundError:
             return self.publish_prepared(prepared)
-        self.discard_prepared(prepared)
-        return prepared.hash_hex, prepared.size_bytes
+        return self.publish_prepared(prepared)
 
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
         """Publish a prepared batch in input order, persisting each directory once.
 
         The durability boundary is the batch, not its members: this returns only
-        after every shard that received a blob -- and the blob root, when the
-        batch created a shard -- has been fsynced. Publishing member-by-member
+        after every touched shard, including deduplicated blobs, has been
+        fsynced. The root is persisted when a shard entry lacks a completed
+        barrier in this store instance. Publishing member-by-member
         fsynced the same shard once per member, so a page whose blobs share a
         hash prefix paid one directory fsync per blob for one directory's worth
         of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
@@ -454,23 +461,16 @@ class BlobStore:
         root_needs_fsync = False
         try:
             for item in prepared:
-                outcome, shard_directory, shard_created = self._place_prepared(item)
+                outcome, shard_directory, shard_needs_root_fsync = self._place_prepared(item)
                 results.append(outcome)
-                if shard_directory is not None:
-                    shard_directories[shard_directory] = None
-                root_needs_fsync = root_needs_fsync or shard_created
-            for shard_directory in shard_directories:
-                self._fsync_directory(shard_directory)
-            if root_needs_fsync:
-                self._fsync_directory(self.root)
+                shard_directories[shard_directory] = None
+                root_needs_fsync = root_needs_fsync or shard_needs_root_fsync
+            self._persist_publication(shard_directories, root_needs_fsync=root_needs_fsync)
         except BaseException:
             # Earlier renames are already visible. Persist their names before
             # returning the error, or a retry could deduplicate them and lose
             # the only opportunity to make those names durable.
-            for shard_directory in shard_directories:
-                self._fsync_directory(shard_directory)
-            if root_needs_fsync:
-                self._fsync_directory(self.root)
+            self._persist_publication(shard_directories, root_needs_fsync=root_needs_fsync)
             raise
         return tuple(results)
 

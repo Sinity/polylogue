@@ -703,3 +703,65 @@ def test_publish_many_existing_shards_leave_root_alone(tmp_path: Path, monkeypat
 
     assert (root / "d4").resolve() in fsynced
     assert root not in fsynced, f"an existing-shard batch re-persisted the root; fsynced={fsynced}"
+
+
+@pytest.mark.parametrize("method", ["single", "batch", "renewing"])
+@pytest.mark.parametrize("failed_directory", ["shard", "root"])
+@pytest.mark.parametrize("reopen", [False, True])
+def test_publication_retry_persists_visible_blob_after_failed_barrier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    failed_directory: str,
+    reopen: bool,
+) -> None:
+    """A visible rename is not a durability receipt, even after reopening.
+
+    Fail the actual directory fsync after replacement, then retry the consumed
+    prepared object through each public publication route. Returning from the
+    old deduplication shortcut omits both required directory barriers.
+    """
+    root = tmp_path / "blob"
+    store = BlobStore(root)
+    payload = b"publication whose directory barrier must survive retry"
+    prepared = store.prepare_from_bytes(payload)
+    shard = store.blob_path(prepared.hash_hex).parent
+    target = shard if failed_directory == "shard" else root
+    real_fsync = os.fsync
+    failing = True
+    persisted: list[Path] = []
+
+    def sync(fd: int) -> None:
+        path = Path(os.readlink(f"/proc/self/fd/{fd}"))
+        if path.is_dir():
+            if failing and path == target:
+                raise OSError("injected directory fsync failure")
+            persisted.append(path)
+        real_fsync(fd)
+
+    def publish(active: BlobStore) -> tuple[str, int]:
+        if method == "batch":
+            return active.publish_many([prepared])[0]
+        if method == "renewing":
+            return active.publish_prepared_renewing(prepared)
+        return active.publish_prepared(prepared)
+
+    monkeypatch.setattr(os, "fsync", sync)
+    with pytest.raises(OSError, match="injected directory fsync failure"):
+        publish(store)
+    assert store.blob_path(prepared.hash_hex).read_bytes() == payload
+    assert not prepared.temporary_path.exists()
+
+    failing = False
+    persisted.clear()
+    if reopen:
+        store = BlobStore(root)
+    assert publish(store) == (prepared.hash_hex, len(payload))
+    assert persisted == [shard, root]
+    assert store.blob_path(prepared.hash_hex).read_bytes() == payload
+
+    # Once this instance actually settles the root entry, repeated successful
+    # publication retains the shard barrier without repeating the root barrier.
+    persisted.clear()
+    assert publish(store) == (prepared.hash_hex, len(payload))
+    assert persisted == [shard]
