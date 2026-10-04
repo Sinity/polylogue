@@ -7,11 +7,9 @@ profiles`` works without re-specifying the filter on the subcommand.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
-from dataclasses import asdict
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import click
 
@@ -477,19 +475,21 @@ def insights_fable_packet_command(
 ) -> None:
     """Cold-regenerate the private, descriptive Fable delegation packet."""
     env: AppEnv = ctx.obj
-    try:
-        packet = run_coroutine_sync(
-            env.polylogue.regenerate_private_fable_packet(
-                seed=seed,
-                requested_size=requested_size,
-                schema_id=schema_id,
-                schema_version=schema_version,
-                exact_template_cap=exact_template_cap,
-            )
-        )
-    except ValueError as exc:
-        fail("insights fable-packet", str(exc))
-    payload = _packet_json_document(packet)
+    from polylogue.operations.fable_packet_contracts import FablePacketRequest, decode_fable_packet_result
+
+    request = FablePacketRequest(
+        seed=seed,
+        requested_size=requested_size,
+        schema_id=schema_id,
+        schema_version=schema_version,
+        exact_template_cap=exact_template_cap,
+    )
+    result_payload, _served_by = dispatch_read(
+        env.config, OperationRequest(operation="insights.fable_packet", payload=request.model_dump(mode="json"))
+    )
+    result = decode_fable_packet_result(result_payload)
+    packet = result.packet
+    payload = {**result.model_dump(mode="json")["packet"], "outcome": result.outcome.to_dict()}
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
         emit_success(payload)
         return
@@ -510,14 +510,6 @@ def _format_pct(count: int, sample: int) -> str:
     if sample <= 0:
         return "-"
     return f"{(count * 100) // sample}%"
-
-
-def _packet_json_document(packet: Any) -> dict[str, object]:
-    """Lower the packet dataclass's tuples to JSON-native arrays."""
-    payload = json.loads(json.dumps(asdict(packet)))
-    if not isinstance(payload, dict):
-        raise TypeError("Fable packet did not lower to a JSON object")
-    return cast(dict[str, object], payload)
 
 
 def _render_audit_plain(report: InsightRigorAuditReport) -> None:

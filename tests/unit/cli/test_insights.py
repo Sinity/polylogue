@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -70,6 +69,7 @@ def resident_insight_reader(request: pytest.FixtureRequest, monkeypatch: pytest.
         (["ops", "insights", "status"], "insights.readiness"),
         (["ops", "insights", "audit"], "insights.rigor"),
         (["ops", "insights", "hermes-health"], "insights.hermes_health"),
+        (["ops", "insights", "fable-packet", "--seed", "neutral", "--requested-size", "1"], "insights.fable_packet"),
     ],
 )
 def test_registered_insight_read_refuses_without_daemon(
@@ -101,18 +101,28 @@ def test_fable_packet_is_available_under_ops_insights() -> None:
     assert "--seed TEXT" in result.output
 
 
-def test_packet_json_projection_converts_nested_tuples_to_lists() -> None:
-    from polylogue.cli.commands.insights import _packet_json_document
+def test_packet_json_projection_converts_declared_nested_tuples_to_lists() -> None:
+    from polylogue.analysis.cohorts import CohortCandidate, CohortSpec, compile_cohort_manifest
+    from polylogue.analysis.fable_packet import compile_private_fable_packet
+    from polylogue.analysis.fable_packet_contracts import DelegationPacketRow
+    from polylogue.operations.fable_packet_contracts import FablePacketResult
+    from polylogue.surfaces.outcome import decide_outcome
 
-    @dataclass
-    class Packet:
-        selected_refs: tuple[str, ...]
-        manifest: tuple[tuple[str, int], ...]
-
-    assert _packet_json_document(Packet(("session:x",), (("count", 1),))) == {
-        "selected_refs": ["session:x"],
-        "manifest": [["count", 1]],
-    }
+    manifest = compile_cohort_manifest(
+        CohortSpec("neutral", "original-frame", "seed", 1, strata=("origin",)), [CohortCandidate("delegation:neutral")]
+    )
+    packet = compile_private_fable_packet(
+        manifest=manifest,
+        rows=[DelegationPacketRow("delegation:neutral", "action", "resolved", None)],
+        annotation_schema_id=None,
+        labels=[],
+    )
+    payload = FablePacketResult(
+        packet=packet, outcome=decide_outcome(matched=1, degraded=packet.not_supported_reasons)
+    ).model_dump(mode="json")["packet"]
+    assert payload["selected_refs"] == ["delegation:neutral"]
+    assert payload["manifest"]["spec"]["strata"] == ["origin"]
+    assert payload["manifest"]["stratum_counts"][0]["key"] == [["origin", "unknown"]]
 
 
 def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
@@ -1192,3 +1202,27 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
     assert status.profile_row_count == 1
     assert status.missing_profile_row_count == 1
+
+
+def test_fable_packet_json_uses_resident_not_supported_verdict(cli_workspace: CliWorkspace) -> None:
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "ops",
+            "insights",
+            "fable-packet",
+            "--seed",
+            "neutral",
+            "--requested-size",
+            "1",
+            "--schema-id",
+            "neutral.absent",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = extract_json_result(result.output)
+    assert payload["status"] == "not_supported"
+    assert "missing_annotation_schema" in json_array(payload["not_supported_reasons"])
+    assert json_object(payload["outcome"])["state"] == "degraded"

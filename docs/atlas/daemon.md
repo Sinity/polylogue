@@ -136,3 +136,6 @@ authority refuses instead of opening a local archive. `ops insights status` also
 the same pinned reader, preserving the canonical selected coverage and convergence
 verdict. Its named pending-convergence outcome remains visible with zero rows.
 The `ops insights audit` command also uses resident `insights.rigor`: every registered product is sampled on that same pinned reader, including explicit uncovered or exempt entries. Per-product read failure remains a named degraded outcome. `ops insights hermes-health` uses resident `insights.hermes_health`, composing the existing read-only probes against the configured Hermes root. Missing derived tiers remain explicit measurement gaps; this diagnostic binds daemon and archive identity without requiring an Index precondition. A supplied Index version is observed through the supported read-only tier reader, then compared; a missing tier or wrong version refuses. The same explicit-only observation applies to User setting get/list. Python callers share the operations composer. Export commands retain their separate existing routes.
+
+
+`ops insights fable-packet` uses resident `insights.fable_packet` with normal pinned Index/User authority and cancellation. Its exhaustive evidence paging and named unsupported outcomes are documented in [the query/read atlas](query-read-path.md).

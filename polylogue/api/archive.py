@@ -105,7 +105,7 @@ from polylogue.surfaces.temporal_evidence import (
 if TYPE_CHECKING:
     from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport
     from polylogue.analysis.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
-    from polylogue.analysis.fable_packet import FableDelegationPacket
+    from polylogue.analysis.fable_packet_contracts import FableDelegationPacket
     from polylogue.analysis.hermes_health_contracts import HermesIntegrationHealth
     from polylogue.analysis.judgment.types import ComparativeJudgment
     from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence

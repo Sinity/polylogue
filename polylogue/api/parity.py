@@ -167,6 +167,14 @@ class _ExtraOperationRow:
 
 _EXTRA_OPERATION_ROWS: Final[tuple[_ExtraOperationRow, ...]] = (
     _ExtraOperationRow(
+        "insights.fable_packet",
+        "Compile a private descriptive delegation packet or name unsupported evidence.",
+        f"{FACADE_SYMBOL}.regenerate_private_fable_packet",
+        SurfaceBinding("cli", target="ops insights fable-packet"),
+        SurfaceBinding("mcp", absence_reason="private packet regeneration has no dedicated MCP tool"),
+        kernel_owner="polylogue/operations/fable_packet.py",
+    ),
+    _ExtraOperationRow(
         "api.embedding_preflight",
         "Report whether the embedding backend is usable before a semantic read.",
         f"{FACADE_SYMBOL}.embedding_preflight",
@@ -303,7 +311,6 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "compact_lineage",
             "reconcile_codex_spawn_edges",
             "reconcile_hermes_session_lifecycle",
-            "regenerate_private_fable_packet",
         ),
     ),
     _ExclusionCategory(

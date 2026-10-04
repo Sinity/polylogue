@@ -103,3 +103,20 @@ def test_manifest_drift_is_explicit_for_population_and_cursor_changes() -> None:
     assert cursor_drift.changed is True
     assert cursor_drift.cursor_changed is True
     assert changed_cursor.manifest_id != initial.manifest_id
+
+
+def test_cohort_cancellation_reaches_population_and_rank_work() -> None:
+    import pytest
+
+    candidates = [CohortCandidate(f"session:neutral-{index}") for index in range(100)]
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 150:
+            raise InterruptedError("cancelled")
+
+    with pytest.raises(InterruptedError):
+        compile_cohort_manifest(CohortSpec("neutral", "original-frame", "seed", 1), candidates, checkpoint=checkpoint)
+    assert calls == 150

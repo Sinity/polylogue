@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
-from polylogue.analysis.fable_packet import (
-    DelegationPacketLabel,
-    DelegationPacketRow,
-    compile_private_fable_packet,
-)
+from polylogue.analysis.fable_packet import compile_private_fable_packet
+from polylogue.analysis.fable_packet_contracts import DelegationPacketLabel, DelegationPacketRow
 
 
 def _manifest() -> CohortManifest:
