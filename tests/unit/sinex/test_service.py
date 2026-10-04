@@ -7,6 +7,8 @@ import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
+
 from polylogue.sinex.models import PublicationMode, PublicationReceipt, ReceiptState
 from polylogue.sinex.service import (
     PublicationService,
@@ -211,3 +213,33 @@ def test_status_payload_reads_durable_ledger_without_transport(workspace_env: di
     assert payload["active_lag"] == 1
     assert payload["pending"] == 1
     assert payload["retry_due"] == 1
+
+
+def test_status_preserves_invalid_config_diagnostic_without_reading_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.config import config_diagnostics, resolve_runtime_config
+
+    runtime = resolve_runtime_config(
+        environment={
+            "HOME": str(tmp_path),
+            "POLYLOGUE_SITE_CONFIG": "",
+            "POLYLOGUE_SINEX_MODE": "bogus",
+        }
+    )
+    mode = runtime.as_config().sinex_mode
+    assert mode == "bogus"
+    assert any(d["code"] == "sinex_mode_unrecognized" for d in config_diagnostics(runtime))
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("invalid status mode must not read the ledger")
+
+    monkeypatch.setattr(sqlite3, "connect", forbidden)
+    payload = publication_status_payload(tmp_path / "source.db", mode)
+    assert payload["mode"] == mode
+    assert payload["state"] == "unavailable"
+    assert payload["code"] == "sinex_mode_unrecognized"
+    assert "active_lag" not in payload and "blocking" not in payload
+    with pytest.raises(ValueError):
+        PublicationMode.from_string(mode)

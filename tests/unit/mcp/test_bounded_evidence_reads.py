@@ -106,3 +106,28 @@ async def test_status_uses_injected_runtime_sinex_mode(
     section = "sinex" if scope == "sinex" else "sinex_publication"
     assert result[section]["mode"] == "primary"
     assert services.get_config().with_sources([]).sinex_mode == "primary"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["sinex", "archive"])
+async def test_status_returns_invalid_config_mode_evidence_instead_of_tool_error(
+    mcp_server: MCPServerUnderTest,
+    tmp_path: Path,
+    scope: str,
+) -> None:
+    root = tmp_path / "archive"
+    seed_evidence_pages(root, children=0)
+    runtime = resolve_runtime_config(
+        environment={"HOME": str(tmp_path), "POLYLOGUE_SITE_CONFIG": "", "POLYLOGUE_SINEX_MODE": "bogus"},
+        cli_overrides={"archive_root": str(root)},
+    )
+    services = RuntimeServices(runtime=runtime)
+    with patch.object(server_support, "_get_runtime_services", return_value=services):
+        result = json.loads(await invoke_surface_async(mcp_server._tool_manager._tools["status"].fn, scope=scope))
+    section = "sinex" if scope == "sinex" else "sinex_publication"
+    assert result["scope"] == scope
+    assert result[section]["mode"] == "bogus"
+    assert result[section]["state"] == "unavailable"
+    assert result[section]["code"] == "sinex_mode_unrecognized"
+    assert "active_lag" not in result[section]
+    assert "error" not in result
