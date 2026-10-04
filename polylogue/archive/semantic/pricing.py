@@ -289,7 +289,7 @@ def _load_litellm_catalog(
     catalog: dict[str, ModelPricing] = {}
     for key, entry in raw.items():
         # Skip the meta spec row and any blank key. Resolution uses an exact
-        # final path segment, so a blank key must never become a catch-all.
+        # routed key or final path segment; blank keys cannot become a catch-all.
         if not key or not key.strip() or key == "sample_spec":
             continue
         if not isinstance(entry, dict):
@@ -393,9 +393,9 @@ def _lookup_stem(model: str) -> str:
 def _normalize_model(model: str) -> str:
     """Resolve a provider model name to its LiteLLM catalog pricing key.
 
-    Provider routes may prefix a model with arbitrary path segments; pricing
-    identifies the model by its final path segment only. That segment is tried
-    against the catalog **exactly first**, because the vendored catalog carries
+    An exact routed catalog key takes precedence over a bare alias, since
+    routes can publish different rates for the same model. If the full key is
+    absent, its final path segment is tried exactly, because the catalog carries
     dated snapshot keys (``claude-sonnet-4-20250514``) alongside bare keys of
     the same name owned by an unrelated router. Only when the exact key is
     absent is a dated snapshot suffix removed, so a snapshot whose own rates
@@ -408,6 +408,9 @@ def _normalize_model(model: str) -> str:
     not fragment by release date uses :func:`model_cohort_key`.
     """
 
+    exact = model.strip().casefold()
+    if exact in PRICING:
+        return exact
     lowered = _lookup_stem(model)
     if not lowered:
         return lowered
@@ -638,8 +641,7 @@ def estimate_cost(
 ) -> float:
     """Estimate cost from token counts using the curated price catalog."""
 
-    exact_model = model.strip().casefold()
-    normalized_model = exact_model if exact_model in PRICING else _normalize_model(model)
+    normalized_model = _normalize_model(model)
     pricing = PRICING.get(normalized_model)
     if pricing is None:
         return 0.0
