@@ -72,6 +72,20 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "Budget.coerce composes an in-memory pass budget from the caller's Budget and an outer deadline: it keeps the tighter of the two deadlines via dataclasses.replace. The substituted member is a value this call computed, not a stored producer output, and the function touches no database."
+  - file: "polylogue/daemon_client.py"
+    function: "DaemonClient.operation.bound_body"
+    subject: "daemon_version"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Composes an absent request precondition from the installed client's canonical code version or Index DDL version before transmission; explicit caller operands remain unchanged. These are client expectations, not substituted stored archive values. The daemon still compares them against its own current identity and refuses a mismatch."
+  - file: "polylogue/daemon_client.py"
+    function: "DaemonClient.operation.bound_body"
+    subject: "index_schema_version"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "Composes an absent request precondition from the installed client's canonical code version or Index DDL version before transmission; explicit caller operands remain unchanged. These are client expectations, not substituted stored archive values. The daemon still compares them against its own current identity and refuses a mismatch."
   - file: "polylogue/daemon/session_profile_composition.py"
     function: "_merge_reports"
     subject: "truncated"
