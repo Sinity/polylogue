@@ -176,7 +176,7 @@ def test_reconciled_abandoned_run_joins_the_durable_lane(monkeypatch: pytest.Mon
     ``runs_root.parent`` (as #5720 did) and the durable lane stays empty.
     """
     from devtools import verify_runs
-    from devtools.verify_runs import reconcile_and_record_abandoned_verify_runs
+    from devtools.verify_runs import reconcile_and_record_verify_runs
 
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
@@ -197,7 +197,7 @@ def test_reconciled_abandoned_run_joins_the_durable_lane(monkeypatch: pytest.Mon
     }
     (runs_root / run_id / "run.json").write_text(json.dumps(stranded), encoding="utf-8")
 
-    reconciled = reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
+    reconciled = reconcile_and_record_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
 
     assert [entry["run_id"] for entry in reconciled] == [run_id]
     rows = read_verification_evidence(verification_evidence_path())
@@ -215,7 +215,7 @@ def test_relocated_cache_reconciles_into_its_own_evidence(monkeypatch: pytest.Mo
     Anti-vacuity: send every reconciled run to the durable lane and this
     foreign cache's run appears in the operator's lane.
     """
-    from devtools.verify_runs import reconcile_and_record_abandoned_verify_runs
+    from devtools.verify_runs import reconcile_and_record_verify_runs
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.delenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", raising=False)
@@ -235,7 +235,7 @@ def test_relocated_cache_reconciles_into_its_own_evidence(monkeypatch: pytest.Mo
         encoding="utf-8",
     )
 
-    reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
+    reconcile_and_record_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
 
     assert read_verification_evidence(verification_evidence_path()) == []
     local = read_verification_evidence(runs_root.parent / "evidence.jsonl")

@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -889,14 +889,18 @@ def append_verify_history(entry: Mapping[str, Any], *, path: Path | None = None)
 
 
 def _append_jsonl(entry: Mapping[str, Any], *, path: Path) -> None:
+    _append_jsonl_batch((entry,), path=path)
+
+
+def _append_jsonl_batch(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
     # flock is process-scoped on some Unix implementations and is therefore
-    # insufficient to serialize threads in one verifier process.  Keep the
-    # OS lock for cross-process writers and add this small in-process guard.
+    # insufficient to serialize threads in one verifier process. Keep both
+    # guards around the identity scan and every append in this batch.
     with _APPEND_LOCK:
-        _append_jsonl_locked(entry, path=path)
+        _append_jsonl_batch_locked(entries, path=path)
 
 
-def _append_jsonl_locked(entry: Mapping[str, Any], *, path: Path) -> None:
+def _append_jsonl_batch_locked(entries: Iterable[Mapping[str, Any]], *, path: Path) -> None:
     path = _absolute_path(path)
     _mkdir_pinned(path.parent)
     lock_fd = _open_retention_lock(path.parent, nonblocking=False)
@@ -904,19 +908,32 @@ def _append_jsonl_locked(entry: Mapping[str, Any], *, path: Path) -> None:
         raise RuntimeError("verification retention lock is busy")
     parent_fd = _open_pinned_dir(path.parent)
     try:
-        fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
-        try:
-            with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            # The history record is the authority that permits detail
-            # pruning. Persist its directory entry before returning to the
-            # caller that immediately starts pruning.
-            os.fsync(parent_fd)
-        finally:
-            with contextlib.suppress(OSError):
-                os.close(fd)
+        # One scan per batch: a recovery backlog must not rescan the growing
+        # lane for every missing receipt. Full receipt payloads stay streamed.
+        published = {
+            (row["run_id"], row.get("kind"))
+            for row in _iter_history_pinned(path)
+            if isinstance(row.get("run_id"), str) and (row.get("kind") is None or isinstance(row.get("kind"), str))
+        }
+        for entry in entries:
+            run_id = entry.get("run_id")
+            identity = (run_id, entry.get("kind"))
+            if isinstance(run_id, str) and identity in published:
+                continue
+            fd = os.open(path.name, os.O_WRONLY | os.O_CREAT | os.O_APPEND | _O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+            try:
+                with os.fdopen(fd, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(dict(entry), ensure_ascii=False, sort_keys=True) + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                # Persist every row and directory entry before advancing the
+                # batch: interruption leaves a durable prefix for recovery.
+                os.fsync(parent_fd)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+            if isinstance(run_id, str):
+                published.add(identity)
     finally:
         os.close(parent_fd)
         _close_retention_lock(lock_fd)
@@ -1619,24 +1636,20 @@ def _checkout_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def reconcile_and_record_abandoned_verify_runs(
+def reconcile_and_record_verify_runs(
     *,
     runs_root: Path,
     state_root: Path | None = None,
     evidence_path: Path | None = None,
     history_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Reconcile stranded receipts and give each one a durable history row.
+    """Close abandoned runs and recover interrupted terminal publication.
 
-    ``finish`` is what normally appends history, so an abandoned run has none:
-    without a row it is invisible to ``devtools why --history`` and outside
-    what ``prune_successful_verify_runs`` may bound. Appending here is what
-    turns the reconciliation into evidence rather than a local file edit.
-
-    A relocated cache uses its own history and evidence unless the operator
-    configured a shared path. The normal checkout uses the shared XDG history
-    and the durable evidence lane ``finish`` publishes to, so a reconciled
-    run lands where every finished run does.
+    Terminal run receipts remain authoritative while their details exist.
+    History retains their canonical receipt after pruning, so evidence
+    publication can also resume when those details have gone. Running receipts
+    whose owner remains live are never published. Existing append locks make
+    concurrent finish/recovery publication idempotent by run identity.
     """
     reconciled = reconcile_abandoned_verify_runs(runs_root=runs_root, state_root=state_root)
     cache = runs_root.parent
@@ -1653,16 +1666,44 @@ def reconcile_and_record_abandoned_verify_runs(
             evidence_path = verification_evidence_path()
         else:
             evidence_path = cache / VERIFY_EVIDENCE_PATH.name
-    evidence_target = evidence_path
-    if not reconciled:
-        return reconciled
-    history_ids = {str(row.get("run_id")) for row in _iter_history_pinned(history_path)}
-    evidence_ids = {str(row.get("run_id")) for row in read_verification_evidence(evidence_target)}
-    for payload in reconciled:
-        with contextlib.suppress(OSError, ValueError):
-            if str(payload.get("run_id")) not in history_ids:
-                append_verify_history(payload, path=history_path)
-        with contextlib.suppress(OSError, ValueError):
-            if str(payload.get("run_id")) not in evidence_ids:
-                append_verification_evidence(payload, path=evidence_target)
+
+    def terminal_payloads() -> Iterator[dict[str, Any]]:
+        try:
+            for run_dir in runs_root.iterdir():
+                with contextlib.suppress(OSError):
+                    if not run_dir.is_dir() or run_dir.is_symlink():
+                        continue
+                    payload = _read_json(run_dir / "run.json")
+                    if payload is None:
+                        continue
+                    run_id = payload.get("run_id")
+                    if (
+                        isinstance(run_id, str)
+                        and run_id == run_dir.name
+                        and payload.get("status") in {"success", "failed"}
+                    ):
+                        yield payload
+        except OSError:
+            return
+
+    def evidence_receipts() -> Iterator[dict[str, Any]]:
+        # History preserves the exact canonical receipt after detail pruning.
+        for row in _iter_history_pinned(history_path):
+            receipt = row.get("semantic_receipt")
+            if (
+                isinstance(receipt, dict)
+                and receipt.get("kind") == "polylogue.verification-receipt"
+                and receipt.get("schema_version") == 1
+                and receipt.get("run_id") == row.get("run_id")
+                and receipt.get("semantic_status") in {"success", "failed"}
+            ):
+                yield receipt
+        # A failed history append must not block independent evidence recovery.
+        for payload in terminal_payloads():
+            yield canonical_verification_receipt(payload)
+
+    with contextlib.suppress(OSError, ValueError):
+        _append_jsonl_batch((_semantic_history_row(payload) for payload in terminal_payloads()), path=history_path)
+    with contextlib.suppress(OSError, ValueError):
+        _append_jsonl_batch(evidence_receipts(), path=evidence_path)
     return reconciled
