@@ -33,6 +33,12 @@ presence. Its `state`/`lifecycle` field is one of:
 | `stale` | The receiver spool artifact is newer than the indexed archive row for the same provider session. Keep the daemon running; convergence should advance this without a manual repair command. |
 | `failed` | The receiver artifact is unreadable or raw validation/parsing recorded a failure. |
 
+For a ChatGPT temporary chat, archive checks and mission control use the
+ephemeral identity in the current document's observed native payload. The URL
+sentinel only admits capture; it is never an archive query key. An unavailable
+or mismatched document identity stays unknown rather than borrowing a prior
+conversation's stored status.
+
 The payload includes bounded archive evidence (`raw_row_exists`, `raw_id`,
 `indexed_session_exists`, `indexed_session_id`, `indexed_message_count`) and a
 relative `artifact_ref`. It must not expose absolute paths. Deployment smoke

@@ -60,7 +60,7 @@ function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch, r
     },
   };
   Object.defineProperty(dom.window, "crypto", { configurable: true, value: cryptoAdapter });
-  Object.defineProperty(dom.window, "fetch", { configurable: true, value: fetch || (async () => notFoundResponse()) });
+  Object.defineProperty(dom.window, "fetch", { configurable: true, writable: true, value: fetch || (async () => notFoundResponse()) });
   const runtimeListeners = [];
   const chrome = {
     runtime: {
@@ -105,6 +105,33 @@ afterEach(() => {
 });
 
 describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
+  it("reads a temporary capture identity from the original document without another provider fetch", async () => {
+    const url = "https://chatgpt.com/?temporary-chat=true";
+    const fetch = vi.fn(async () => jsonResponse({ id: "temp-1", is_temporary: true, mapping: {} }));
+    const { dom, sendRuntimeMessage } = installChatgpt({ url, fetch });
+    expect(await sendRuntimeMessage({ type: "polylogue.captureIdentity", expectedUrl: url })).toEqual({ provider_session_id: null });
+    await dom.window.fetch("/backend-api/conversation/temp-1");
+    expect(dom.window.__polylogueCapturedFetches).toMatchObject([{ ok: true, body: expect.stringContaining('"temp-1"') }]);
+    await vi.waitFor(async () => expect(await sendRuntimeMessage({ type: "polylogue.captureIdentity", expectedUrl: url })).toEqual({ provider_session_id: "temp-1" }));
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(await sendRuntimeMessage({ type: "polylogue.captureIdentity", expectedUrl: "https://chatgpt.com/c/other" })).toEqual({ provider_session_id: null });
+    dom.reconfigure({ url: "https://chatgpt.com/c/other" });
+    expect(await sendRuntimeMessage({ type: "polylogue.captureIdentity", expectedUrl: "https://chatgpt.com/c/other" })).toEqual({ provider_session_id: null });
+  });
+
+  it.each([
+    { id: "ordinary-1", is_temporary: false, mapping: {} },
+    { id: "bad/id", is_temporary: true, mapping: {} },
+    { id: "missing-mapping", is_temporary: true },
+  ])("refuses unrelated or malformed temporary capture identity %#", async (payload) => {
+    const url = "https://chatgpt.com/?temporary-chat=true";
+    const { dom, sendRuntimeMessage } = installChatgpt({ url, fetch: async () => jsonResponse(payload) });
+    await dom.window.fetch("/backend-api/conversation/neutral-id");
+    expect(dom.window.__polylogueCapturedFetches.length).toBe(1);
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 0));
+    expect(await sendRuntimeMessage({ type: "polylogue.captureIdentity", expectedUrl: url })).toEqual({ provider_session_id: null });
+  });
+
   it("fetches the current conversation JSON with credentials for an exact capture", async () => {
     const calls = [];
     const fetch = vi.fn(async (input, options = {}) => {
