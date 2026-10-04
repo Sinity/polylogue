@@ -12,7 +12,7 @@ intentional; shared read behavior belongs in the query store."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, aclosing
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -232,7 +232,7 @@ class SQLiteArchiveMixin:
         chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
-    ) -> AsyncIterator[MessageRecord]:
+    ) -> AsyncGenerator[MessageRecord, None]:
         """Stream messages in chunks instead of loading all at once."""
         async with aclosing(
             self.queries.iter_messages(

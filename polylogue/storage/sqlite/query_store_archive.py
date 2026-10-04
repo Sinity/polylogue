@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, aclosing
 from typing import TYPE_CHECKING
 
@@ -375,7 +375,7 @@ class SQLiteQueryStoreArchiveMixin:
         chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
-    ) -> AsyncIterator[MessageRecord]:
+    ) -> AsyncGenerator[MessageRecord, None]:
         if chunk_size <= 0:
             raise ValueError("chunk_size must be positive")
         # Hydrate one bounded page before yielding, using the same held

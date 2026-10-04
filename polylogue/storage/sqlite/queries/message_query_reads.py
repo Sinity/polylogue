@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -753,7 +753,7 @@ async def iter_messages(
     chunk_size: int = 100,
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
-) -> AsyncIterator[MessageRecord]:
+) -> AsyncGenerator[MessageRecord, None]:
     """Stream a session's messages in transcript order, chunked.
 
     Pagination is keyset, not ``LIMIT/OFFSET``: each chunk is seeded by the

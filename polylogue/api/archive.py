@@ -7,7 +7,7 @@ import itertools
 import json
 import random
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -4681,8 +4681,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
-    ) -> AsyncIterator[Message]:
-        async def _iter() -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
+        async def _iter() -> AsyncGenerator[Message, None]:
             if not material_origin:
                 async with aclosing(
                     self.repository.iter_messages(

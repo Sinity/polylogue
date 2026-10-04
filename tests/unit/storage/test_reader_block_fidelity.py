@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import aiosqlite
 import pytest
 
 from polylogue.api import Polylogue
+from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.runtime import BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.queries import attachments
@@ -42,7 +46,7 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
             acquired_at_ms=1_767_000_000_000,
         ).session_id
 
-    def check(messages: list[object]) -> None:
+    def check(messages: Sequence[Message]) -> None:
         for message in messages:
             blocks = message.blocks
             assert [(block["type"], block["language"], block["media_type"]) for block in blocks] == [
@@ -58,13 +62,15 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
         check(list(batch[0].messages))
         context = await api.get_effective_context(session_id)
         assert context is not None
-        assert context[0]["blocks"][0]["language"] == "python"
-        assert context[0]["blocks"][1]["media_type"] == "image/png"
+        context_blocks = context[0]["blocks"]
+        assert isinstance(context_blocks, list)
+        assert context_blocks[0]["language"] == "python"
+        assert context_blocks[1]["media_type"] == "image/png"
 
         batches: list[int] = []
         original_blocks = attachments.get_blocks
 
-        async def count_blocks(conn, ids):
+        async def count_blocks(conn: aiosqlite.Connection, ids: list[str]) -> dict[str, list[BlockRecord]]:
             batches.append(len(ids))
             return await original_blocks(conn, ids)
 
@@ -80,7 +86,7 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
         active = 0
 
         @asynccontextmanager
-        async def held_connection():
+        async def held_connection() -> AsyncIterator[aiosqlite.Connection]:
             nonlocal active
             async with original_connection() as conn:
                 active += 1
