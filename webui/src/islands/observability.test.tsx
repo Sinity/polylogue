@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { PolylogueClient } from '../api/generated';
 import type { ClientRequest, ClientTransport, RequestOptions } from '../api/runtime';
+import { parseObservabilityPayload } from '../contracts/observability';
 import type { InsightPanel, ObservabilityPayload } from '../contracts/observability';
 import { FreshnessLadder, InsightBrowser, ObservabilityIsland } from './observability';
 
@@ -11,7 +12,7 @@ const payload: ObservabilityPayload = {
   status: {
     adapter: 'status-component-snapshot',
     components: [{ name: 'fts', state: 'timed_out', detail: 'deadline exceeded', age_s: 42, last_good: { indexed: 12 } }],
-    snapshot: { state: 'fresh', age_s: 0, captured_at: '2026-09-27T10:00:00Z', frame: 'frame-a', current_frame: 'frame-a', frame_changed: false, refresh_error: null },
+    snapshot: { state: 'fresh', age_s: 0, captured_at: '2026-09-27T10:00:00Z', frame: 'frame-a', current_frame: 'frame-a', frame_changed: false, refresh_error: null, frame_error: null },
     catchup: { mode: 'idle', current_phase: 'idle' },
   },
   insights: [{ name: 'session_profiles', display_name: 'Session Profiles', state: 'available', error: null, readiness: { state: 'fresh', reason: null }, items: [{ fields: [{ label: 'sessions', value: '12' }], json: {}, provenance: { materializer_version: 7 } }] }],
@@ -19,6 +20,33 @@ const payload: ObservabilityPayload = {
 };
 
 describe('ObservabilityIsland', () => {
+  it('preserves frame refusal evidence and idle mode through the status poll', async () => {
+    const transport: ClientTransport = {
+      request: <TResponse,>(): Promise<TResponse> => Promise.resolve({
+        status_snapshot: { state: 'stale', frame_error: 'snapshot-frame-changed', refresh_error: null },
+        status_components: [],
+        catchup: { mode: 'idle', current_phase: 'full_parse' },
+      } as TResponse),
+    };
+    render(<ObservabilityIsland initial={payload} client={new PolylogueClient(transport)} ensureCredential={async () => undefined} />);
+    expect(await screen.findByText('snapshot-frame-changed')).toBeInTheDocument();
+    expect(screen.getByText('Build monitor online; phase idle.')).toBeInTheDocument();
+    expect(screen.queryByText(/Phase: full_parse/)).not.toBeInTheDocument();
+    const frameError = screen.getByText('Frame error').parentElement;
+    expect(frameError).toHaveTextContent('snapshot-frame-changed');
+    expect(screen.getByText('Refresh error').parentElement).toHaveTextContent('None reported');
+  });
+
+  it('preserves separate frame and refresh errors in the bootstrap parser', () => {
+    const parsed = parseObservabilityPayload({
+      ...payload,
+      status: { ...payload.status, snapshot: { ...payload.status.snapshot, frame_error: 'snapshot-frame-changed', refresh_error: 'rich-status-refresh-failed' } },
+    });
+    expect(parsed.status.snapshot.frame_error).toBe('snapshot-frame-changed');
+    expect(parsed.status.snapshot.refresh_error).toBe('rich-status-refresh-failed');
+    expect(() => parseObservabilityPayload({ ...payload, status: { ...payload.status, snapshot: { frame_error: 3 } } })).toThrow(TypeError);
+  });
+
   it('retains the current status on a not-modified response', async () => {
     const transport: ClientTransport = {
       request: <TResponse,>(): Promise<TResponse> => Promise.resolve(null as TResponse),

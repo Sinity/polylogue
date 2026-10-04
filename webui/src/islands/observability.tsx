@@ -57,7 +57,7 @@ function progressText(catchup: Record<string, unknown>): string {
 function LiveBuildMonitor({ observation }: { readonly observation: MonitorObservation }) {
   const catchup = record(observation.status.catchup);
   const snapshot = observation.status.snapshot;
-  const phase = typeof catchup.current_phase === 'string'
+  const phase = catchup.mode === 'idle' ? 'idle' : typeof catchup.current_phase === 'string'
     ? catchup.current_phase
     : typeof catchup.mode === 'string' ? catchup.mode : 'unknown';
   const source = typeof catchup.current_source === 'string' && catchup.current_source
@@ -115,6 +115,7 @@ function LiveBuildMonitor({ observation }: { readonly observation: MonitorObserv
       <div><dt>Observed frame</dt><dd>{snapshot.frame ?? 'Unknown'}</dd></div>
       <div><dt>Current frame</dt><dd>{snapshot.current_frame ?? 'Unknown'}</dd></div>
       <div><dt>Frame changed</dt><dd>{snapshot.frame_changed === null ? 'Unknown' : String(snapshot.frame_changed)}</dd></div>
+      <div><dt>Frame error</dt><dd>{snapshot.frame_error ?? 'None reported'}</dd></div>
       <div><dt>Refresh error</dt><dd>{snapshot.refresh_error ?? 'None reported'}</dd></div>
     </dl></details>
     <p class="island-status" role="status" aria-live="polite">Build monitor {observation.connection}; phase {phase}.</p>

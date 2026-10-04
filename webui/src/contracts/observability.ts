@@ -28,6 +28,7 @@ export interface StatusSnapshotEvidence {
   readonly current_frame: string | null;
   readonly frame_changed: boolean | null;
   readonly refresh_error: string | null;
+  readonly frame_error: string | null;
 }
 
 export interface ObservabilityStatus {
@@ -69,6 +70,7 @@ function parseSnapshot(value: unknown): StatusSnapshotEvidence {
     current_frame: nullableString({ current_frame: snapshot.current_frame ?? null }, 'current_frame'),
     frame_changed: typeof snapshot.frame_changed === 'boolean' ? snapshot.frame_changed : null,
     refresh_error: nullableString({ refresh_error: snapshot.refresh_error ?? null }, 'refresh_error'),
+    frame_error: nullableString({ frame_error: snapshot.frame_error ?? null }, 'frame_error'),
   };
 }
 
