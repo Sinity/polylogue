@@ -169,7 +169,6 @@ _READ_FAILURE_REMEDIES: dict[str, str] = {
     "QueryTimeoutError": "the read hit its deadline; narrow the selection (--limit/--since) and retry",
     "deadline_exceeded": "narrow the selection (--limit/--since) or raise the deadline, then retry",
     "cancelled": "the read was cancelled before it produced an answer; re-run it to get one",
-    "result_too_large": "narrow the window with --limit/--offset, or read a smaller view",
     "stale_generation": "the archive advanced under the read; re-run to read the current generation",
     "invalid_request": "check the option values named above against `--help`",
 }

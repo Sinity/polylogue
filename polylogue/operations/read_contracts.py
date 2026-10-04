@@ -138,16 +138,9 @@ _WHOLE_EVIDENCE_KINDS: frozenset[str] = frozenset({"hooks", "agent-policies"})
 #: :class:`EvidenceWindowBody` refuses any combination of the three that
 #: would let a clipped body read as a whole one (polylogue-r3cuz).
 #:
-#: ``file-edits`` and ``web-content`` joined for the opposite reason: they
-#: accepted no bound at all.  Their rows carry unbounded payloads
-#: (``original_file`` is the pre-edit contents of whatever a tool call touched;
-#: ``text`` is a fetched page body), so a single large edit or enough web
-#: evidence crossed the 8 MiB operation-result bound.  Classified whole, such a
-#: session was materialized in full, refused by ``_require_deliverable_window``
-#: and told to "retry with a smaller limit" -- advice a whole kind rejects,
-#: since it refuses window coordinates.  There was no successful retry and the
-#: session was unreadable through the view.  A relation larger than one answer
-#: needs a bounded transport, not a whole-body classification.
+#: ``file-edits`` and ``web-content`` also page their rows and original
+#: payload bytes. This bounds ordinary evidence reads without forbidding a
+#: permitted individual value in a complete operation response.
 WINDOWED_EVIDENCE_KINDS: frozenset[str] = frozenset({"events", "raw", "file-edits", "web-content", "materials"})
 
 #: Kinds that issue and accept a continuation.  Two families mint tokens here
@@ -283,9 +276,9 @@ class SessionReadRequest(_ReadRequest):
     """One bounded read for an exact session reference.
 
     For a windowed kind, ``limit`` is a hard window, not a hint: a full
-    transcript can exceed the 8 MiB bound on a single operation result, so the
-    caller loops windows and the handler refuses a window it cannot deliver
-    whole. File edits and web content also page within oversized rows;
+    transcript is traversed by the caller through complete, pinned windows.
+    Response transport does not impose a value-size refusal. File edits and
+    web content also page within oversized rows;
     their fragment cursor advances even before a full row is completed.
     """
 

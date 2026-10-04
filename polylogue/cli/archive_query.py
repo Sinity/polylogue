@@ -282,20 +282,11 @@ def _read_session_windows(
                 break
             window_limit = min(remaining, window_ceiling)
         payload: Mapping[str, object]
-        while True:
-            try:
-                payload, _ = dispatch_read(
-                    config,
-                    lower_session_read(ref, limit=window_limit, continuation=continuation),
-                    daemon_disabled=daemon_disabled,
-                )
-                break
-            except Exception as exc:
-                from polylogue.cli.operation_kernel import OperationFailedError
-
-                if not isinstance(exc, OperationFailedError) or exc.code != "result_too_large" or window_limit <= 1:
-                    raise
-                window_limit = max(1, window_limit // 2)
+        payload, _ = dispatch_read(
+            config,
+            lower_session_read(ref, limit=window_limit, continuation=continuation),
+            daemon_disabled=daemon_disabled,
+        )
         window_ceiling = window_limit
         window = payload.get("session")
         if not isinstance(window, Mapping):

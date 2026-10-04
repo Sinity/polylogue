@@ -65,3 +65,20 @@ def test_read_compact_builds_a_pack_from_the_pinned_archive(tmp_path: Path) -> N
     assert pack.manifest.drop_counts == {"successful_tool_spam": 1}
     declaration = daemon_operation_spec("read.compact")
     assert declaration is not None and declaration.fallback.value == "never"
+
+
+def test_compact_keeps_a_large_permitted_projection(monkeypatch: Any) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from polylogue.operations import read_view_compact
+
+    value = "λ" * (9 * 1024 * 1024)
+    monkeypatch.setattr(read_view_compact, "_select_summaries", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        read_view_compact,
+        "compact_sessions",
+        lambda *args, **kwargs: SimpleNamespace(model_dump=lambda mode: {"large": value}),
+    )
+    result = read_view_compact.execute_compact_read({"params": {}}, archive=Mock())
+    assert result["payload"] == {"large": value}

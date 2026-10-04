@@ -27,7 +27,7 @@ def _read_selected_session(
     """Hydrate bounded resident pages of the exact selected view."""
     from polylogue.archive.message.messages import MessageCollection
     from polylogue.archive.message.models import Message
-    from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationFailedError, OperationRequest
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationRequest
     from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
     from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes
 
@@ -39,28 +39,22 @@ def _read_selected_session(
     total = None
     outcome = None
     while True:
-        try:
-            result, _authority = dispatch_read(
-                env.config,
-                OperationRequest(
-                    "session.read",
-                    {
-                        "ref": session_id,
-                        "kind": "transcript",
-                        "session_projection": "domain",
-                        "selection_epoch": epoch,
-                        "limit": page_limit,
-                        "offset": offset,
-                        "continuation": continuation,
-                    },
-                ),
-                daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
-            )
-        except OperationFailedError as exc:
-            if exc.code != "result_too_large" or page_limit == 1:
-                raise
-            page_limit = max(1, page_limit // 2)
-            continue
+        result, _authority = dispatch_read(
+            env.config,
+            OperationRequest(
+                "session.read",
+                {
+                    "ref": session_id,
+                    "kind": "transcript",
+                    "session_projection": "domain",
+                    "selection_epoch": epoch,
+                    "limit": page_limit,
+                    "offset": offset,
+                    "continuation": continuation,
+                },
+            ),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+        )
         if result.get("selection_epoch") != epoch or result.get("session_id") != session_id:
             raise OperationEnvelopeError("session.read changed the selected view")
         body = result.get("session")

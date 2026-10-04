@@ -372,12 +372,13 @@ def test_large_file_edits_are_losslessly_delivered(tmp_path: Path, row_count: in
     import json
 
     from polylogue.archive.query.transaction import QueryContinuation
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+
+    large_fixture_bytes = 8 * 1024 * 1024
     from polylogue.operations.daemon_reads import execute_read_operation
     from polylogue.operations.session_evidence import read_file_edits_page
 
     root = tmp_path / "archive"
-    row_bytes = MAX_OPERATION_RESULT_BYTES // 2 if row_count == 3 else MAX_OPERATION_RESULT_BYTES + 4096
+    row_bytes = large_fixture_bytes // 2 if row_count == 3 else large_fixture_bytes + 4096
     session_id = _seed_large_file_edits(root, rows=row_count, original_file_bytes=row_bytes)
     windows: list[dict[str, Any]] = []
     token: str | None = None
@@ -390,7 +391,7 @@ def test_large_file_edits_are_losslessly_delivered(tmp_path: Path, row_count: in
             request: dict[str, object] = {"ref": f"session:{session_id}", "kind": "file-edits"}
             request.update({"continuation": token} if token is not None else {"limit": 1})
             result = execute_read_operation("session.read", request, archive=archive, serving_identity="test")
-            assert len(json.dumps(result).encode("utf-8")) <= MAX_OPERATION_RESULT_BYTES
+            assert len(json.dumps(result).encode("utf-8")) <= large_fixture_bytes
             window = cast("dict[str, Any]", result["evidence_window"])
             assert window["total"] == row_count
             windows.append(window)
@@ -570,12 +571,13 @@ async def test_oversized_web_construct_resumes_from_daemon_on_api(tmp_path: Path
     import json
 
     from polylogue.api import Polylogue
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+
+    large_fixture_bytes = 8 * 1024 * 1024
     from polylogue.operations.daemon_reads import execute_read_operation
     from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
 
     root = tmp_path / "archive"
-    _seed_fragment_evidence(root, "web-content", "x" * (MAX_OPERATION_RESULT_BYTES + 4096))
+    _seed_fragment_evidence(root, "web-content", "x" * (large_fixture_bytes + 4096))
     ref = f"session:{_SESSION_ID}"
     with ArchiveStore.open_existing(root) as store:
         expected, _ = SESSION_EVIDENCE_PAGE_READERS["web-content"](store, _SESSION_ID, 1, 0)
@@ -585,7 +587,7 @@ async def test_oversized_web_construct_resumes_from_daemon_on_api(tmp_path: Path
             archive=store,
             serving_identity="test",
         )
-    assert len(json.dumps(result).encode("utf-8")) <= MAX_OPERATION_RESULT_BYTES
+    assert len(json.dumps(result).encode("utf-8")) <= large_fixture_bytes
     windows = [cast("dict[str, Any]", result["evidence_window"])]
     assert windows[0]["row_fragment"] is not None
     token = windows[0]["continuation"]

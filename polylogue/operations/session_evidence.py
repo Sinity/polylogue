@@ -22,13 +22,9 @@ continuation.
 
 Everything else is *windowed*.  ``events`` and ``raw`` graduated first,
 because both already accepted a row bound and one of them reported the
-truncated count as its total.  ``file-edits`` and ``web-content`` followed for
-a different reason: their rows carry unbounded payloads -- ``original_file``
-is the pre-edit contents of whatever a tool call touched, ``text`` is a
-fetched page body -- so a real session could exceed the 8 MiB operation-result
-bound, be refused by ``_require_deliverable_window``, and have no retry
-available, because a whole-evidence kind rejects window coordinates outright.
-Being unreadable is not a bound.
+truncated count as its total.  ``file-edits`` and ``web-content`` carry original file and fetched text
+payloads. They page both rows and original bytes to bound ordinary reads.
+Operation transport can also deliver a permitted individual large value.
 
 Windowed readers answer ``(rows, total)`` where ``total`` is the **relation's
 own** row count, never the returned count; ``operations/evidence_window.py``
@@ -76,14 +72,8 @@ def read_file_edits_page(
 ) -> tuple[list[dict[str, object]], int]:
     """Project one page of ``file_edits`` as ``read --view file-edits`` renders them.
 
-    Paged rather than answered whole because a single row is not bounded: a
-    file edit carries ``original_file``, the pre-edit contents of whatever the
-    tool call touched, so one edit of a large file can exceed the 8 MiB
-    operation-result bound on its own. Answered whole, such a session was
-    materialized in full and then refused by ``_require_deliverable_window``
-    with "retry with a smaller limit" -- advice a whole-evidence kind could not
-    take, because it rejects window coordinates outright. There was no
-    successful retry, so the session was simply unreadable through this view.
+    Pages preserve original file bytes while avoiding whole-relation hydration.
+    Individual large fields use the declared byte-fragment cursor.
 
     The relation is read whole and sliced here, like ``session_events``: the
     order that must be preserved is the repository's own
@@ -160,10 +150,8 @@ def read_web_content_constructs_page(
 ) -> tuple[list[dict[str, object]], int]:
     """Project one page of ``web_content_constructs`` as ``read --view web-content`` renders them.
 
-    Paged for the same reason as ``file_edits``: each construct carries
-    ``text``, the fetched page or search result body, so a session with enough
-    web evidence crossed the 8 MiB operation-result bound and became
-    unreadable with no retry that could succeed.
+    Pages preserve fetched text while avoiding whole-relation hydration.
+    Individual large fields use the declared byte-fragment cursor.
 
     Sliced from the repository's own order
     (``ORDER BY message_id, block_id, position``); the reported total is the

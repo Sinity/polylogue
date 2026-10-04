@@ -11,7 +11,7 @@ import threading
 import uuid
 from collections import deque
 from collections.abc import Callable, Coroutine, Mapping
-from concurrent.futures import Future
+from concurrent.futures import CancelledError, Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1093,6 +1093,15 @@ class DaemonOperationRuntime:
                 if exchange.future.done():
                     try:
                         envelope = exchange.future.result().to_dict()
+                    except CancelledError:
+                        # The staged task cancels its proxy only after its own
+                        # cleanup finishes. That proves settlement, not absence
+                        # of effects once acceptance may have started.
+                        envelope = self._pending_envelope(
+                            exchange,
+                            outcome="indeterminate" if exchange.acceptance_started else "cancelled",
+                            record=record,
+                        )
                     except BeforeAcceptanceCancelledError:
                         envelope = self._pending_envelope(exchange, outcome="cancelled")
                     except DaemonOperationCancelled:

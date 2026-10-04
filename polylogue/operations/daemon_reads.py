@@ -1477,7 +1477,6 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
         "continuation": window.continuation,
         "complete": window.complete,
     }
-    _require_deliverable_window(result, limit=window.limit)
     return result
 
 
@@ -1592,7 +1591,6 @@ def _session_messages_payload(
         "continuation": window.continuation,
         "complete": window.complete,
     }
-    _require_deliverable_window(result, limit=window.limit)
     return result
 
 
@@ -1669,7 +1667,6 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
         "continuation": None,
         "complete": True,
     }
-    _require_deliverable_window(result, limit=total)
     return result
 
 
@@ -1737,44 +1734,7 @@ def _session_evidence_window_payload(
         "continuation": window["continuation"],
         "complete": window["complete"],
     }
-    _require_deliverable_window(result, limit=int(cast(int, window["limit"])))
     return result
-
-
-def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> None:
-    """Refuse a window the transport cannot carry, naming the way out.
-
-    Silently truncating would make ``complete``/``next_offset`` lie about what
-    the caller received.
-
-    File edits and web content are byte-paged by the evidence owner before
-    reaching this boundary, including within a single oversized row. This
-    final transport guard remains necessary for other projections: narrowing
-    a row window helps only when the window contains more than one row.
-    """
-
-    import json
-
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-
-    size = len(json.dumps(result, separators=(",", ":"), default=str).encode())
-    if size <= MAX_OPERATION_RESULT_BYTES:
-        return
-    from polylogue.operations.read_contracts import _WHOLE_EVIDENCE_KINDS
-
-    kind = str(result.get("kind") or "transcript")
-    over = f"is {size} bytes, above the {MAX_OPERATION_RESULT_BYTES}-byte operation result bound"
-    if kind in _WHOLE_EVIDENCE_KINDS:
-        raise ValueError(
-            f"session.read {kind} evidence {over}. This kind is answered whole and takes no window "
-            "coordinates, so there is no smaller request; the relation needs a bounded transport"
-        )
-    if limit <= 1:
-        raise ValueError(
-            f"session.read {kind} window of one row {over}. A single row is already the smallest "
-            "window, so no retry can deliver it; the row itself is larger than one operation result"
-        )
-    raise ValueError(f"session.read {kind} window of {limit} rows {over}; retry with a smaller limit")
 
 
 def _session_reference_payload(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
@@ -1846,8 +1806,7 @@ def _session_window_request(ref: str, payload: Mapping[str, object], *, limit: i
     narrow the next page, and ``frame_request`` refuses a wider one; an
     explicit nonzero ``offset`` is checked against the token's and refused on
     conflict. Dropping either would serve a window the caller did not ask for:
-    the CLI narrows a resumed page to its remaining bound and to recover from
-    ``result_too_large``.
+    the CLI narrows a resumed page to its remaining requested bound.
     """
 
     from polylogue.operations.session_contracts import SessionRead
