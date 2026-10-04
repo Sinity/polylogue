@@ -132,5 +132,7 @@ the registry's existing query and item models. The canonical page reader is
 shared with the Python facade and executes on the resident pinned archive
 snapshot: origin tag rollups are merged before paging, and cost estimates are
 enriched and filtered before paging. Missing daemon or unavailable insight
-authority refuses instead of opening a local archive. Special readiness,
-export, health and rigor commands retain their separate existing routes.
+authority refuses instead of opening a local archive. `ops insights status` also calls the resident `insights.readiness` route on
+the same pinned reader, preserving the canonical selected coverage and convergence
+verdict. Its named pending-convergence outcome remains visible with zero rows.
+Export, health and rigor commands retain their separate existing routes.

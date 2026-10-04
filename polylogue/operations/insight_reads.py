@@ -6,7 +6,7 @@ from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 from polylogue.analysis.insight_reads import read_insight_page
-from polylogue.operations.insight_contracts import InsightListRequest
+from polylogue.operations.insight_contracts import InsightListRequest, InsightReadinessRequest
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
@@ -28,3 +28,22 @@ def execute_insight_read(
         },
         "outcome": decide_outcome(matched=len(items)).to_dict(),
     }
+
+
+def execute_insight_readiness(
+    payload: Mapping[str, object], *, archive: ArchiveStore, checkpoint: Callable[[], None]
+) -> dict[str, object]:
+    request = InsightReadinessRequest.model_validate(payload)
+    checkpoint()
+    report = archive.insight_readiness_report(request.query)
+    checkpoint()
+    gaps = [] if report.converged else ["insight_convergence_pending"]
+    for entry in report.insights:
+        if entry.diverged:
+            gaps.append("insight_output_diverged")
+        if entry.incomplete:
+            gaps.append("insight_output_incomplete")
+        if entry.degraded_count or entry.schema_contract_issues:
+            gaps.append("insight_evidence_degraded")
+    outcome = decide_outcome(matched=len(report.insights), degraded=gaps)
+    return {"report": report.model_dump(mode="json"), "outcome": outcome.to_dict()}

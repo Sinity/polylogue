@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 
 from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
 
@@ -12,6 +12,8 @@ _REPAIR_HINT = "Run `polylogued run`."
 
 
 class InsightReadinessQuery(ArchiveInsightModel):
+    model_config = ConfigDict(extra="forbid")
+
     insights: tuple[str, ...] = ()
     origin: str | None = None
     since: str | None = None
