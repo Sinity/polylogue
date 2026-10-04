@@ -1700,7 +1700,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 evidence = await hooks.get_polylogue().get_session_orchestration(session_id)
                 if evidence is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
+                from polylogue.surfaces.outcome import OutcomeEnvelope
+
+                payload = evidence.model_dump(mode="json")
+                payload["outcome"] = OutcomeEnvelope(
+                    state=evidence.outcome,
+                    reason=evidence.gaps[0] if evidence.outcome == "degraded" and evidence.gaps else None,
+                    detail={"gaps": evidence.gaps} if evidence.outcome == "degraded" else {},
+                ).to_dict()
+                return hooks.json_payload(MCPRootPayload(root=payload))
             list_projection = SESSION_LIST_PROJECTIONS.get(projection) if projection is not None else None
             if list_projection is not None and session_id is not None:
                 return await _session_list_projection_payload(list_projection, session_id, tool="get")
@@ -2893,7 +2901,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         return await _daemon_operation(
             hooks,
             "maintenance.insights.rebuild",
-            {"session_ids": list(session_ids) if session_ids else None},
+            {"session_ids": list(session_ids) if session_ids is not None else None},
         )
 
     return hooks.error_json(f"unknown maintenance operation: {operation!r}", code="invalid_argument")
@@ -3179,17 +3187,19 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
         async def maintenance(
             operation: Literal["rebuild_insights"],
             confirm: bool = False,
+            session_ids: list[str] | None = None,
         ) -> str:
             """Rebuild session insights.
 
             ``rebuild_insights`` requires ``confirm=True`` and fails closed without it.
+            ``session_ids=None`` selects all sessions; an explicit list preserves that scope.
             """
 
             async def run() -> str:
                 return await _dispatch_maintenance(
                     hooks,
                     operation=operation,
-                    kwargs={"confirm": confirm},
+                    kwargs={"confirm": confirm, "session_ids": session_ids},
                 )
 
             return await hooks.async_safe_call("maintenance", run)
