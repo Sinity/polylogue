@@ -7,8 +7,8 @@ import itertools
 import json
 import random
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncGenerator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from contextlib import aclosing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -4681,15 +4681,18 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
-    ) -> AsyncIterator[Message]:
-        async def _iter() -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
+        async def _iter() -> AsyncGenerator[Message, None]:
             if not material_origin:
-                async for message in self.repository.iter_messages(
-                    session_id,
-                    message_roles=message_roles,
-                    limit=limit,
-                ):
-                    yield message
+                async with aclosing(
+                    self.repository.iter_messages(
+                        session_id,
+                        message_roles=message_roles,
+                        limit=limit,
+                    )
+                ) as messages:
+                    async for message in messages:
+                        yield message
                 return
 
             session = await self.get_session(session_id)

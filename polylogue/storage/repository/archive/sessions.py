@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.models import Message
@@ -399,15 +400,18 @@ class RepositoryArchiveSessionMixin:
         *,
         message_roles: MessageRoleFilter = (),
         limit: int | None = None,
-    ) -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
         conv_record = await self.queries.get_session(session_id)
         origin = conv_record.origin if conv_record else None
-        async for record in self.queries.iter_messages(
-            session_id,
-            message_roles=message_roles,
-            limit=limit,
-        ):
-            yield message_from_record(record, attachments=[], origin=origin)
+        async with aclosing(
+            self.queries.iter_messages(
+                session_id,
+                message_roles=message_roles,
+                limit=limit,
+            )
+        ) as records:
+            async for record in records:
+                yield message_from_record(record, attachments=[], origin=origin)
 
     async def aggregate_facet_families(
         self,
