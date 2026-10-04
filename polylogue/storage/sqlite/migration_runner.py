@@ -30,7 +30,11 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.backup_blob_closure import package_blob_closure
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import (
+    ARCHIVE_BASELINE_DDL_BY_TIER,
+    ARCHIVE_DDL_BY_TIER,
+    ARCHIVE_VERSION_BY_TIER,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
@@ -1223,6 +1227,36 @@ def _pending_migration_steps(
     return steps
 
 
+def _require_pristine_source_attachment_baseline(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
+    """Prove this replacement has no acquired Source evidence to put at risk.
+
+    This authority belongs only to Source slot 003. Existing literal row and
+    schema proofs include canonical seed rows and every unrelated Source table;
+    an empty blob ledger alone cannot authorize a populated archive.
+    """
+    version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    installed = next((step for step in _load_migrations(tier) if step.version == 3), None)
+    expected_sql = (
+        resources.files("polylogue.storage.sqlite.migrations.source")
+        .joinpath("003_attachment_coordinate_identity.sql")
+        .read_text(encoding="utf-8")
+    )
+    if installed is None or installed.name != "003_attachment_coordinate_identity.sql" or installed.sql != expected_sql:
+        raise MigrationError("pristine Source authority requires the attachment identity migration")
+    if tier is not ArchiveTier.SOURCE or version != 2:
+        raise MigrationError("pristine attachment baseline authority requires Source v2")
+    with closing(sqlite3.connect(":memory:")) as expected:
+        expected.executescript(ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE])
+        for step in _load_migrations(ArchiveTier.SOURCE):
+            if step.version <= version:
+                expected.executescript(step.sql)
+        expected.commit()
+        if capture_durable_schema_inventory(conn).sha256 != capture_durable_schema_inventory(
+            expected
+        ).sha256 or _durable_literal_rows_digest(conn) != _durable_literal_rows_digest(expected):
+            raise MigrationError("Source differs from its pristine attachment baseline; verified backup required")
+
+
 def migrate_archive_tier(
     conn: sqlite3.Connection,
     tier: ArchiveTier,
@@ -1230,6 +1264,7 @@ def migrate_archive_tier(
     backup_manifest: Path | None,
     target_version: int | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
+    allow_pristine_source_baseline: bool = False,
 ) -> MigrationResult:
     """Apply additive migrations for one durable tier."""
     if tier not in DURABLE_MIGRATION_TIERS:
@@ -1285,9 +1320,14 @@ def migrate_archive_tier(
         ):
             raise MigrationError("durable migration replay proof does not match the live starting version")
     precheck_requires_backup = any(step.requires_backup for step in precheck_steps)
-    if precheck_requires_backup and backup_manifest is None:
+    pristine_authority = precheck_requires_backup and backup_manifest is None and allow_pristine_source_baseline
+    if pristine_authority:
+        _require_pristine_source_attachment_baseline(conn, tier)
+        if target_version != 3:
+            raise MigrationError("pristine attachment baseline authority only admits Source slot 003")
+    if precheck_requires_backup and backup_manifest is None and not pristine_authority:
         raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
-    if precheck_requires_backup:
+    if precheck_requires_backup and not pristine_authority:
         # Baseline validation before acquiring the write lock. The paired
         # post-lock call below re-validates with the same connection;
         # _validate_live_source_fingerprint rejects a nonempty WAL, so a
@@ -1342,7 +1382,9 @@ def migrate_archive_tier(
         pending_versions = {step.version for step in steps}
         sidecars = tuple(sidecar for sidecar in all_sidecars if sidecar.slot in pending_versions)
         requires_backup = any(step.requires_backup for step in steps)
-        if requires_backup and backup_manifest is None:
+        if pristine_authority:
+            _require_pristine_source_attachment_baseline(conn, tier)
+        if requires_backup and backup_manifest is None and not pristine_authority:
             raise MigrationError(f"{tier.value} migration requires a verified backup manifest")
         backup_receipt = (
             validate_migration_backup_manifest(backup_manifest, tier, connection=conn)
@@ -2727,6 +2769,7 @@ def authorize_durable_change_train_backup(
     backup_manifest: Path | None,
     evidence_ref: str,
     authorized_at_ms: int | None = None,
+    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrain:
     """Bind the exact live bytes and authenticated backup receipt before apply."""
     if train.state is not DurableChangeTrainState.RESERVED:
@@ -2747,7 +2790,12 @@ def authorize_durable_change_train_backup(
     manifest_path: Path | None = None
     receipt_path: Path | None = None
     mode = "additive-no-backup"
-    if train.migration.requires_backup:
+    if train.migration.requires_backup and backup_manifest is None and allow_pristine_source_baseline:
+        _require_pristine_source_attachment_baseline(conn, train.tier)
+        if train.target_version != 3:
+            raise DurableChangeTrainError("pristine Source authority only admits slot 003")
+        mode = "pristine-source-attachment-baseline"
+    elif train.migration.requires_backup:
         if backup_manifest is None:
             raise DurableChangeTrainError(
                 f"{train.tier.value} train {train.train_id} requires an authenticated backup before apply"
@@ -2809,6 +2857,9 @@ def _revalidate_backup_authorization(conn: sqlite3.Connection, train: DurableCha
         raise DurableChangeTrainError(
             f"authorized live tier version changed: authorized v{authorization.live_user_version}, observed v{version}"
         )
+    if authorization.mode == "pristine-source-attachment-baseline":
+        _require_pristine_source_attachment_baseline(conn, train.tier)
+        return None
     if authorization.mode == "additive-no-backup":
         if train.migration.requires_backup:
             raise DurableChangeTrainError("backup-required migration cannot apply under additive-no-backup authority")
@@ -2933,6 +2984,10 @@ def apply_durable_change_train(
             backup_manifest=backup_manifest,
             target_version=train.target_version,
             schema_replay_proof=train.schema_replay_proof,
+            allow_pristine_source_baseline=(
+                train.backup_authorization is not None
+                and train.backup_authorization.mode == "pristine-source-attachment-baseline"
+            ),
         )
         if (
             result.from_version != train.current_version
@@ -3427,7 +3482,20 @@ def _validate_backup_authorization(train: DurableChangeTrain) -> None:
     live_path = Path(_require_nonempty(authorization.live_tier_path, label="authorized live tier path"))
     if live_path.resolve(strict=False) != Path(reservation.tier_path).resolve(strict=False):
         raise DurableChangeTrainError("backup authorization live path differs from the writer reservation")
-    if authorization.mode == "additive-no-backup":
+    if authorization.mode == "pristine-source-attachment-baseline":
+        if train.tier is not ArchiveTier.SOURCE or train.current_version != 2 or train.target_version != 3:
+            raise DurableChangeTrainError("pristine Source authority must bind attachment slot 003")
+        if any(
+            value is not None
+            for value in (
+                authorization.manifest_path,
+                authorization.manifest_sha256,
+                authorization.receipt_path,
+                authorization.receipt_sha256,
+            )
+        ):
+            raise DurableChangeTrainError("pristine Source authority cannot claim backup artifacts")
+    elif authorization.mode == "additive-no-backup":
         if train.migration.requires_backup:
             raise DurableChangeTrainError("backup-required migration has additive-no-backup authority")
         if any(

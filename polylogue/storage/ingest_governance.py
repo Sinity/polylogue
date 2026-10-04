@@ -28,6 +28,7 @@ from polylogue.archive.session_revision_membership import (
     classify_membership_revisions,
 )
 from polylogue.core.enums import Provider
+from polylogue.core.identity_law import attachment_acquisition_coordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -790,7 +791,6 @@ def _writer_preacquired_attachments(
         raise RuntimeError("membership publication requires a writable blob publisher")
     accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
     accepted_session = prepared.parsed_by_raw_id[accepted_raw_id]
-    binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
     from polylogue.storage.blob_publication import refuse_excised_attachment_blobs
     from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
 
@@ -816,7 +816,9 @@ def _writer_preacquired_attachments(
             ArchiveSourceBlobRef(
                 blob_hash=bytes.fromhex(hash_hex),
                 ref_type="attachment",
-                source_path=binding.source_path,
+                source_path=attachment_acquisition_coordinate(
+                    attachment.provider_file_id, attachment.provider_attachment_id
+                ),
                 size_bytes=size,
                 acquired_at_ms=prepared.acquired_at_ms,
                 publication_receipt_id=publisher.receipt_id(hash_hex),

@@ -1328,7 +1328,7 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path) -
     initialize_active_archive_root(tmp_path)
     receipt = tmp_path / ".maintenance-state/durable-change-trains/source-002.json"
     assert receipt.is_file()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, receipt.with_name("source-003.json"))
     initialize_active_archive_root(tmp_path)
 
 
@@ -1435,7 +1435,7 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
     assert receipt.is_file()
     assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt,)
+    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, receipt.with_name("source-003.json"))
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(

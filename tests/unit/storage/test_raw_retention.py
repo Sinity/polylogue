@@ -2999,6 +2999,24 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
         blob_size=current_size,
         acquired_at_ms=1_790_000_060_000,
     )
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, write_source_blob_refs
+
+    attachment_hash, attachment_size = blob_store.write_from_bytes(b"equal attachment payload")
+    write_source_blob_refs(
+        conn,
+        "raw-old-not-a-blob-hash",
+        tuple(
+            ArchiveSourceBlobRef(
+                blob_hash=bytes.fromhex(attachment_hash),
+                ref_type="attachment",
+                source_path=f"attachment:{file_id}",
+                size_bytes=attachment_size,
+                acquired_at_ms=1,
+            )
+            for file_id in ("retired-a", "retired-b")
+        ),
+    )
+    assert conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type='attachment'").fetchone()[0] == 2
     conn.commit()
 
     candidates = superseded_raw_snapshot_candidates(conn, limit=100)

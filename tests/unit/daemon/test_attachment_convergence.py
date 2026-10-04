@@ -796,7 +796,8 @@ def _multi_attachment_session(session_id: str, file_ids: tuple[str, ...]) -> Par
     )
 
 
-def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path: Path) -> None:
+@pytest.mark.parametrize("equal_content", (False, True))
+def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path: Path, equal_content: bool) -> None:
     """Retained bytes stay reachable when a raw carries several attachments.
 
     A Drive session with two live-fetched attachments writes two durable
@@ -826,7 +827,7 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
 
     payloads = {
         "drive-file-a": b"first retained document",
-        "drive-file-b": b"second retained document",
+        "drive-file-b": b"first retained document" if equal_content else b"second retained document",
     }
     first = converge_drive_attachments(
         index,
@@ -837,9 +838,14 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
     assert first.acquired == 2
     assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone()[0] == 2
 
-    # Rebuild the derived tier; the durable source ledger and blob bytes survive.
-    with index:
-        index.execute("UPDATE attachments SET blob_hash = NULL, byte_count = 0, acquisition_status = 'unfetched'")
+    # Destroy and recreate the derived database, keeping only durable bytes/evidence.
+    index.close()
+    (tmp_path / "index.db").unlink()
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(
+        index, _multi_attachment_session("two-docs", ("drive-file-a", "drive-file-b")), raw_id="two-docs-raw"
+    )
+    index.commit()
 
     attempted: list[str] = []
 
@@ -858,6 +864,11 @@ def test_polylogue_ck5v_every_retained_attachment_of_one_raw_is_rebound(tmp_path
         bytes(row["blob_hash"]).hex() if row["blob_hash"] is not None else None: row["acquisition_status"]
         for row in index.execute("SELECT blob_hash, acquisition_status FROM attachments")
     }
+    assert [
+        tuple(row)
+        for row in source.execute("SELECT source_path FROM blob_refs WHERE ref_type='attachment' ORDER BY source_path")
+    ] == [("attachment:drive-file-a",), ("attachment:drive-file-b",)]
+    assert index.execute("SELECT COUNT(*) FROM attachments WHERE acquisition_status='acquired'").fetchone()[0] == 2
     assert attempted == []
     assert second.acquired == 2
     assert second.terminal == 0
