@@ -109,3 +109,13 @@ def test_webui_client_generator_fails_closed_for_unknown_coverage_qualification(
 
     with pytest.raises(ContractGenerationError, match="unsupported qualifications"):
         generate(schema)
+
+
+def test_conditional_status_generates_nullable_result_and_transport_admission() -> None:
+    rendered = generate(COMMITTED_SCHEMA)
+    response = rendered.split("export type GetStatusResponse =", 1)[1].split("export type GetStatusError", 1)[0]
+    assert "readonly [key: string]: unknown;" in response
+    assert ") | null;" in response
+    status_method = rendered.split("  getStatus(", 1)[1].split("\n  }", 1)[0]
+    assert "allowNotModified: true," in status_method
+    assert rendered.count("allowNotModified: true,") == 1
