@@ -1172,3 +1172,38 @@ def materialize_session_insights(
             session_ids=None if session_ids is None else list(session_ids),
             progress_callback=progress_callback,
         )
+
+
+def seed_insight_scope_archive(root: Path) -> None:
+    """Neutral profile/latency rows with distinct repository and auto-tag scopes."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    index_path = root / "index.db"
+    for name, month in (("alpha", 1), ("beta", 2), ("other", 3)):
+        (
+            SessionBuilder(index_path, name)
+            .provider("claude-code")
+            .title(name)
+            .git_repository_url(f"https://example.test/org/{name}.git")
+            .created_at(f"2026-0{month}-01T00:00:00+00:00")
+            .updated_at(f"2026-0{month}-01T00:00:00+00:00")
+            .add_message("m-0", role="user", text="neutral request", timestamp=f"2026-0{month}-01T00:00:00+00:00")
+            .save()
+        )
+    materialize_session_insights(index_path)
+    with sqlite3.connect(index_path) as conn:
+        for name in ("alpha", "beta", "other"):
+            session_id = f"claude-code-session:ext-{name}"
+            conn.execute(
+                "INSERT INTO session_tags (session_id, tag, tag_source, method) VALUES (?, ?, 'auto', 'parser')",
+                (session_id, name),
+            )
+            conn.execute(
+                """INSERT INTO session_latency_profiles (
+                    session_id, source_name, median_tool_call_ms, p90_tool_call_ms,
+                    max_tool_call_ms, stuck_tool_count, materialized_at
+                ) VALUES (?, 'claude-code-session', 1, 2, 3, 1, '2026-03-01T00:00:00+00:00')
+                ON CONFLICT(session_id) DO UPDATE SET stuck_tool_count = 1""",
+                (session_id,),
+            )

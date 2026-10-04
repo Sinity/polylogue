@@ -92,6 +92,7 @@ from polylogue.archive.query.predicate import (
     QueryPredicate,
     QuerySequencePredicate,
 )
+from polylogue.archive.query.spec import split_csv
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionEnvelope,
@@ -3910,21 +3911,12 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        if tag is not None:
-            where.append(
-                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
-            )
-            params.append(tag)
-        if repo is not None:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM session_repos filter_session_repos "
-                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
-                "WHERE filter_session_repos.session_id = s.session_id "
-                "AND filter_repos.repo_name = ?"
-                ")"
-            )
-            params.append(repo)
+        scope, scope_params = _session_filter_clause(
+            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+        )
+        if scope:
+            where.append(scope)
+            params.extend(scope_params)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -4106,21 +4098,12 @@ class ArchiveStore:
             }.get(tier, "search_text")
             where.append(f"sp.{search_column} LIKE ?")
             params.append(f"%{query}%")
-        if tag is not None:
-            where.append(
-                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
-            )
-            params.append(tag)
-        if repo is not None:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM session_repos filter_session_repos "
-                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
-                "WHERE filter_session_repos.session_id = s.session_id "
-                "AND filter_repos.repo_name = ?"
-                ")"
-            )
-            params.append(repo)
+        scope, scope_params = _session_filter_clause(
+            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+        )
+        if scope:
+            where.append(scope)
+            params.extend(scope_params)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
