@@ -415,3 +415,31 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     assert payload["ok"] is True, [
         (name, component.get("state"), component.get("summary")) for name, component in components.items()
     ]
+
+
+def test_pinned_workload_counts_partial_batch_raw_files_and_sessions(tmp_path: Path) -> None:
+    from polylogue.operations.status_workload import ops_workload_status_from_connection
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+
+    bootstrap_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        for status, raw, sessions in (("completed_with_failures", 1, 3), ("failed", 99, 99), ("interrupted", 99, 99)):
+            record_ingest_attempt(
+                conn,
+                attempt_id=status,
+                status=status,
+                started_at_ms=1000,
+                finished_at_ms=3000,
+                parsed_raw_count=raw,
+                materialized_count=sessions,
+            )
+    with open_operation_read(tmp_path) as pinned:
+        result = ops_workload_status_from_connection(pinned.archive.index_connection, now_ms=4000)
+    assert result["available"] is True
+    assert result["throughput"] == {
+        "window_minutes": 5,
+        "batches": 1,
+        "files": 1,
+        "materialized": 3,
+        "files_per_second": 0.0,
+    }

@@ -103,10 +103,11 @@ import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, get_args
 
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.types import COMPLETED_OPERATION_RUN_STATUSES, OperationRunStatus
 from polylogue.daemon.process_start import uptime_seconds
 from polylogue.logging import WARNING, diagnostic_snapshot, emit
 from polylogue.operations.storage_io_observation import IoPhaseObservation, storage_io_observation
@@ -425,7 +426,7 @@ def _ops_attempt_counts(ops_db: Path) -> dict[str, int]:
                 error_detail=str(exc),
             )
             raise
-        counts = {"running": 0, "completed": 0, "failed": 0}
+        counts = dict.fromkeys(get_args(OperationRunStatus), 0)
         for row in rows:
             status = str(row[0])
             if status in counts:
@@ -451,13 +452,13 @@ def _ops_recent_attempt_durations(ops_db: Path, *, limit: int = 50) -> list[floa
                     """
                     SELECT started_at_ms, finished_at_ms
                     FROM ingest_attempts
-                    WHERE status = 'completed'
+                    WHERE status IN (?, ?)
                       AND started_at_ms IS NOT NULL
                       AND finished_at_ms IS NOT NULL
                     ORDER BY finished_at_ms DESC, started_at_ms DESC
                     LIMIT ?
                     """,
-                    (limit,),
+                    (*COMPLETED_OPERATION_RUN_STATUSES, limit),
                 ).fetchall()
             finally:
                 conn.close()
@@ -1322,7 +1323,7 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
             ("polylogue_live_ingest_storage_route_total", "Live ingest attempts grouped by storage route."),
             (
                 "polylogue_live_ingest_attempt_duration_seconds",
-                "Convergence time (seconds) of recent completed ingest attempts.",
+                "Convergence time (seconds) of recent finished ingest batches, including partial completions.",
             ),
             ("polylogue_convergence_debt_count", "Unresolved convergence-debt rows by stage."),
             (
@@ -1473,11 +1474,7 @@ def _emit_ops_current_metrics(lines: list[str], ops_db: Path) -> None:
         name="polylogue_live_ingest_attempts_total",
         help_text="Total live ingest attempts by status.",
         metric_type="counter",
-        samples=[
-            ({"status": "completed"}, attempts["completed"]),
-            ({"status": "failed"}, attempts["failed"]),
-            ({"status": "running"}, attempts["running"]),
-        ],
+        samples=[({"status": status}, count) for status, count in sorted(attempts.items())],
     )
     _emit_metric(
         lines,
@@ -1499,7 +1496,7 @@ def _emit_ops_current_metrics(lines: list[str], ops_db: Path) -> None:
     _emit_metric(
         lines,
         name="polylogue_live_ingest_attempt_duration_seconds",
-        help_text="Convergence time (seconds) of recent completed ingest attempts.",
+        help_text="Convergence time (seconds) of recent finished ingest batches, including partial completions.",
         metric_type="gauge",
         samples=[
             ({"quantile": "min"}, min(durations)),
@@ -1704,13 +1701,13 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
                     """
                     SELECT parsed_raw_count, materialized_count, started_at_ms, finished_at_ms
                     FROM ingest_attempts
-                    WHERE status = 'completed'
+                    WHERE status IN (?, ?)
                       AND finished_at_ms IS NOT NULL
                       AND finished_at_ms > started_at_ms
-                      AND (parsed_raw_count > 0 OR materialized_count > 0)
                     ORDER BY finished_at_ms DESC, started_at_ms DESC
                     LIMIT 1
-                    """
+                    """,
+                    COMPLETED_OPERATION_RUN_STATUSES,
                 ).fetchone()
             finally:
                 conn.close()
@@ -1737,14 +1734,14 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
         _emit_metric(
             lines,
             name="polylogue_ingest_throughput_raw_rows_per_second",
-            help_text="Source raw-row throughput rate from the most recent completed archive ingest attempt.",
+            help_text="Source raw-row throughput rate from the most recent finished archive ingest batch, including partial completion.",
             metric_type="gauge",
             samples=[(None, parsed_raw_count / duration)],
         )
         _emit_metric(
             lines,
             name="polylogue_ingest_throughput_sessions_per_second",
-            help_text="Materialized session throughput rate from the most recent completed archive ingest attempt.",
+            help_text="Materialized session throughput rate from the most recent finished archive ingest batch, including partial completion.",
             metric_type="gauge",
             samples=[(None, materialized_count / duration)],
         )

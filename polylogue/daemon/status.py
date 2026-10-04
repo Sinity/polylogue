@@ -1462,6 +1462,9 @@ def _archive_live_ingest_attempt_state_from_row(
     source_payload_read_bytes = _payload_int(payload, "source_payload_read_bytes")
     cursor_fingerprint_read_bytes = _payload_int(payload, "cursor_fingerprint_read_bytes")
     total_read_bytes = source_payload_read_bytes + cursor_fingerprint_read_bytes
+    # The receipt counts parsed raw files separately from materialized sessions.
+    # Zero is a measured file count and must not fall back to an older stage event.
+    succeeded_files = _row_int(row[8])
     return LiveIngestAttemptState(
         attempt_id=_required_str(row[0]),
         started_at=started_at,
@@ -1469,20 +1472,16 @@ def _archive_live_ingest_attempt_state_from_row(
         completed_at=completed_at,
         status=status_value,
         phase=_optional_str(row[4]) or _payload_str(payload, "phase", default="") or "",
-        queued_file_count=_row_int(row[8]) or _payload_int(payload, "queued_file_count"),
-        needed_file_count=_row_int(row[8]) or _payload_int(payload, "needed_file_count"),
-        succeeded_file_count=_row_int(row[9]) or _payload_int(payload, "succeeded_file_count"),
+        queued_file_count=_payload_int(payload, "queued_file_count", default=_row_int(row[8])),
+        needed_file_count=_payload_int(payload, "needed_file_count", default=_row_int(row[8])),
+        succeeded_file_count=succeeded_files,
         failed_file_count=_payload_int(payload, "failed_file_count", default=1 if status_value == "failed" else 0),
         input_bytes=input_bytes,
         source_payload_read_bytes=source_payload_read_bytes,
         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
         total_read_bytes=total_read_bytes,
         read_amplification=round(total_read_bytes / input_bytes, 3) if input_bytes > 0 else 0.0,
-        files_per_second=(
-            round((_row_int(row[9]) or _payload_int(payload, "succeeded_file_count")) / total_time_s, 3)
-            if total_time_s > 0
-            else 0.0
-        ),
+        files_per_second=(round(succeeded_files / total_time_s, 3) if total_time_s > 0 else 0.0),
         source_mb_per_second=(
             round((source_payload_read_bytes / (1024 * 1024)) / total_time_s, 3) if total_time_s > 0 else 0.0
         ),

@@ -1211,3 +1211,66 @@ class TestMetricsEndpoint:
         parsed = _parse_exposition(body)
         missing = EXPECTED_SERIES - set(parsed.keys())
         assert not missing, f"missing series in /metrics response: {sorted(missing)}"
+
+
+@pytest.mark.parametrize("parsed_files", [0, 1])
+def test_partial_ingest_is_counted_and_contributes_only_its_measured_units(
+    tmp_path: Path,
+    parsed_files: int,
+) -> None:
+    from polylogue.operations import daemon_metrics
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+
+    db = TestFormatMetricsReadsArchiveState()._make_db(tmp_path)
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for attempt_id, status, started, finished, raw, sessions in (
+            ("partial", "completed_with_failures", 1000, 3000, parsed_files, 3),
+            ("failed", "failed", 4000, 5000, 99, 99),
+            ("interrupted", "interrupted", 6000, 7000, 99, 99),
+        ):
+            record_ingest_attempt(
+                conn,
+                attempt_id=attempt_id,
+                status=status,
+                started_at_ms=started,
+                finished_at_ms=finished,
+                parsed_raw_count=raw,
+                materialized_count=sessions,
+            )
+    body = daemon_metrics.render_metrics(db)
+    assert 'polylogue_live_ingest_attempts_total{status="completed_with_failures"} 1' in body
+    assert 'polylogue_live_ingest_attempts_total{status="interrupted"} 1' in body
+    assert 'polylogue_live_ingest_attempts_total{status="failed"} 1' in body
+    assert 'polylogue_live_ingest_attempt_duration_seconds{quantile="mean"} 2.0' in body
+    assert f"polylogue_ingest_throughput_raw_rows_per_second {parsed_files / 2}" in body
+    assert "polylogue_ingest_throughput_sessions_per_second 1.5" in body
+
+
+def test_newest_zero_partial_batch_replaces_older_positive_throughput(tmp_path: Path) -> None:
+    from polylogue.operations import daemon_metrics
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
+
+    db = TestFormatMetricsReadsArchiveState()._make_db(tmp_path)
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    with sqlite3.connect(ops_db) as conn:
+        for attempt_id, status, started, finished, count in (
+            ("older", "completed", 1000, 3000, 8),
+            ("zero", "completed_with_failures", 4000, 6000, 0),
+            ("failed", "failed", 7000, 8000, 99),
+            ("interrupted", "interrupted", 9000, 10000, 99),
+        ):
+            record_ingest_attempt(
+                conn,
+                attempt_id=attempt_id,
+                status=status,
+                started_at_ms=started,
+                finished_at_ms=finished,
+                parsed_raw_count=count,
+                materialized_count=count,
+            )
+    body = daemon_metrics.render_metrics(db)
+    assert "polylogue_ingest_throughput_raw_rows_per_second 0.0" in body
+    assert "polylogue_ingest_throughput_sessions_per_second 0.0" in body
