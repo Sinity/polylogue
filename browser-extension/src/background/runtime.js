@@ -2209,7 +2209,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       !currentTab
       || currentUrl !== expectedConversation.url
       || archiveProviderForUrl(currentUrl) !== expectedConversation.provider
-      || conversationIdForUrl(currentUrl) !== expectedConversation.providerSessionId
+      || await capturedConversationIdForTab(currentTab) !== expectedConversation.providerSessionId
     ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
     tab = currentTab;
   }
