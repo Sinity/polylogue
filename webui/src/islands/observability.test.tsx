@@ -19,6 +19,19 @@ const payload: ObservabilityPayload = {
 };
 
 describe('ObservabilityIsland', () => {
+  it('retains the current status on a not-modified response', async () => {
+    const transport: ClientTransport = {
+      request: <TResponse,>(): Promise<TResponse> => Promise.resolve(null as TResponse),
+    };
+    const ensureCredential = vi.fn(async () => undefined);
+    render(<ObservabilityIsland initial={payload} client={new PolylogueClient(transport)} ensureCredential={ensureCredential} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText('Last known good value')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Session Profiles' })).toBeInTheDocument();
+    expect(await screen.findByText('Build monitor online; phase idle.')).toBeInTheDocument();
+    expect(screen.queryByText('status response is not an object')).not.toBeInTheDocument();
+  });
+
   it('renders a descriptor injected into the registry projection without web-code changes', () => {
     const fakeDescriptorPanel: InsightPanel = {
       name: 'fake_descriptor', display_name: 'Fake descriptor', state: 'available', error: null,

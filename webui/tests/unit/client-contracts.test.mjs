@@ -273,3 +273,28 @@ test("fetch transport refuses absolute and protocol-relative request paths", asy
     SameOriginViolationError,
   );
 });
+
+
+test("generated conditional status returns null for a declared not-modified response", async () => {
+  const transport = new FetchTransport({
+    baseUrl: "https://polylogue.test",
+    fetch: async (_url, init) => {
+      assert.equal(new Headers(init.headers).get("If-None-Match"), '"status-a"');
+      return new Response(null, { status: 304, headers: { ETag: '"status-a"' } });
+    },
+  });
+  const client = new PolylogueClient(transport);
+  assert.equal(await client.getStatus({}, { headers: { "If-None-Match": '"status-a"' } }), null);
+  await assert.rejects(
+    () => transport.request({ method: "GET", path: "/api/sessions" }, { headers: { "If-None-Match": '"status-a"' } }),
+    (error) => error instanceof DaemonHttpError && error.status === 304,
+  );
+});
+
+test("an unsolicited status304 remains a protocol refusal", async () => {
+  const client = new PolylogueClient(new FetchTransport({
+    baseUrl: "https://polylogue.test",
+    fetch: async () => new Response(null, { status: 304 }),
+  }));
+  await assert.rejects(() => client.getStatus(), (error) => error instanceof DaemonHttpError && error.status === 304);
+});

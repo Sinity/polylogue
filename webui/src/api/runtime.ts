@@ -29,6 +29,8 @@ export type ClientRequest = {
   readonly path: string;
   readonly query?: QueryParameters;
   readonly body?: unknown;
+  /** A declared bodyless 304 response is returned as null. */
+  readonly allowNotModified?: boolean;
 };
 
 export type RequestOptions = {
@@ -324,6 +326,15 @@ export class FetchTransport implements ClientTransport {
         referrerPolicy: "no-referrer",
       });
       const responseText = await response.text();
+      if (response.status === 304 && request.allowNotModified && headers.has("If-None-Match")) {
+        if (responseText !== "") {
+          throw new DaemonProtocolError("Daemon returned a body with not-modified status", {
+            status: response.status,
+            responseText,
+          });
+        }
+        return null as TResponse;
+      }
       let payload: unknown = undefined;
       if (responseText !== "") {
         try {

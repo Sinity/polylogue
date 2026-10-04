@@ -831,9 +831,9 @@ export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
 export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetStatusParameters = Record<string, never>;
-export type GetStatusResponse = {
+export type GetStatusResponse = ({
   readonly [key: string]: unknown;
-};
+}) | null;
 export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetWebuiFreshnessParameters = {
@@ -999,6 +999,7 @@ export class PolylogueClient {
       {
         method: "GET",
         path: "/api/status",
+        allowNotModified: true,
       },
       options,
     );

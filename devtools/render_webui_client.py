@@ -51,6 +51,7 @@ class Operation:
     success_schema: Mapping[str, Any] | None
     error_schemas: tuple[Mapping[str, Any], ...]
     page: Mapping[str, Any] | None
+    allows_not_modified: bool
 
     @property
     def type_stem(self) -> str:
@@ -168,6 +169,7 @@ class TypeScriptRenderer:
                         success_schema=success_schema,
                         error_schemas=errors,
                         page=page,
+                        allows_not_modified="304" in responses,
                     )
                 )
         return tuple(sorted(operations, key=lambda item: item.operation_id))
@@ -213,7 +215,7 @@ class TypeScriptRenderer:
     def _error_schemas(self, responses: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
         schemas: list[Mapping[str, Any]] = []
         for status in sorted(responses):
-            if str(status).startswith("2"):
+            if str(status).startswith("2") or str(status) == "304":
                 continue
             response = _mapping(responses[status], f"response {status}")
             schema = self._response_schema(response)
@@ -241,6 +243,8 @@ class TypeScriptRenderer:
         parameters_name = f"{operation.type_stem}Parameters"
         lines = [f"export type {parameters_name} = {self._parameter_object(operation.parameters)};"]
         success = self._type(operation.success_schema, location=f"{operation.operation_id}.success")
+        if operation.allows_not_modified:
+            success = _union([success, "null"])
         lines.append(f"export type {operation.type_stem}Response = {success};")
         errors = [self._type(schema, location=f"{operation.operation_id}.error") for schema in operation.error_schemas]
         lines.append(f"export type {operation.type_stem}Error = {_union(errors) if errors else 'unknown'};")
@@ -402,6 +406,8 @@ class TypeScriptRenderer:
         lines.append("      {")
         lines.append(f"        method: {_literal(operation.method)},")
         lines.append(f"        path: {path_expression},")
+        if operation.allows_not_modified:
+            lines.append("        allowNotModified: true,")
         if query_parameters:
             lines.append("        query: {")
             for parameter in query_parameters:
