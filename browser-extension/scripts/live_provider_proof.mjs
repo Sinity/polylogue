@@ -354,24 +354,25 @@ async function runLiveProviderProof() {
     primaryFailure = error;
     throw error;
   } finally {
-    let restorationFailure;
+    const cleanupFailures = [];
     try {
       if (pendingReceiverRestore) await pendingReceiverRestore();
     } catch (error) {
-      restorationFailure = error;
+      cleanupFailures.push(error);
     }
     pendingReceiverRestore = null;
     try {
       if (activeBrowserClient) await closeProofTargets(activeBrowserClient, createdTargetIds);
+    } catch (error) {
+      cleanupFailures.push(error);
     } finally {
       if (workerClient) workerClient.close();
       if (activeBrowserClient) activeBrowserClient.close();
       activeBrowserClient = null;
       createdTargetIds = [];
     }
-    if (restorationFailure) {
-      if (primaryFailure) throw new AggregateError([primaryFailure, restorationFailure], "proof_receiver_cleanup_failed");
-      throw restorationFailure;
+    if (cleanupFailures.length) {
+      throw new AggregateError(primaryFailure ? [primaryFailure, ...cleanupFailures] : cleanupFailures, "proof_receiver_cleanup_failed");
     }
   }
 }

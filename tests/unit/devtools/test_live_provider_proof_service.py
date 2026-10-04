@@ -67,7 +67,7 @@ def test_live_provider_timeout_terminates_group_and_becomes_typed_failure(
     assert bound == [0]
 
 
-@pytest.mark.parametrize("cleanup_route", ["finally", "signal", "foreign"])
+@pytest.mark.parametrize("cleanup_route", ["finally", "signal", "foreign", "target_refusal"])
 def test_primary_proof_restoration_uses_receiver_mutation_owner(cleanup_route: str) -> None:
     script = r"""
 import assert from "node:assert/strict";
@@ -99,11 +99,11 @@ const context = createContext({
   _CONTROL_TIMEOUT_MS:10000,_CDP_PORT:9222,
   Date, Promise, Object, JSON, Error, AggregateError, Math, configureReceiver, receiverConfiguration, restoreProofReceiverAfterConfiguration,
   requireExpectedServiceContext() {},
-  fixedInputs: () => ({extensionRoot:"neutral",receiverBaseUrl:"http://127.0.0.1:41234",receiverToken:"neutral-proof",providers:process.env.CLEANUP_ROUTE === "foreign" ? ["neutral"] : [],timeoutMs:90000,startupTimeoutMs:30000,interactiveWaitMs:0}),
+  fixedInputs: () => ({extensionRoot:"neutral",receiverBaseUrl:"http://127.0.0.1:41234",receiverToken:"neutral-proof",providers:["foreign","target_refusal"].includes(process.env.CLEANUP_ROUTE) ? ["neutral"] : [],timeoutMs:90000,startupTimeoutMs:30000,interactiveWaitMs:0}),
   PROVIDERS:{neutral:{url:"https://example.invalid"}},
-  openAgentWindow:async()=>{storage.receiverAuthToken="neutral-independent";throw new Error("neutral_primary_failure");},
+  openAgentWindow:async()=>{if(process.env.CLEANUP_ROUTE === "foreign")storage.receiverAuthToken="neutral-independent";throw new Error("neutral_primary_failure");},
   path:{join:()=>"neutral"}, readFileSync:()=>"{}", runChromeControl:async()=>({}), waitJson:async()=>({webSocketDebuggerUrl:"neutral"}), connectCdp:async()=>browser,
-  waitForExtensionWorker:async()=>worker,unpackedExtensionId:()=>"neutral",closeProofTargets:async()=>{closed=true;},
+  waitForExtensionWorker:async()=>worker,unpackedExtensionId:()=>"neutral",closeProofTargets:async()=>{closed=true;if(process.env.CLEANUP_ROUTE === "target_refusal")throw new Error("neutral_target_refusal");},
   process:{once:(signal,callback)=>handlers.set(signal,callback),exit:()=>{closed=true;}},
   activeBrowserClient:null,createdTargetIds:[],shutdownRequested:false,pendingReceiverRestore:null
 });
@@ -118,6 +118,8 @@ assert.equal(storage.receiverAuthToken,"neutral-original");
 release();
 if(process.env.CLEANUP_ROUTE === "foreign") {
   await assert.rejects(running, error => error.message === "proof_receiver_cleanup_failed" && error.errors[0].message === "neutral_primary_failure" && error.errors[1].message === "proof_receiver_configuration_changed");
+} else if(process.env.CLEANUP_ROUTE === "target_refusal") {
+  await assert.rejects(running, error => error.message === "proof_receiver_cleanup_failed" && error.errors[0].message === "neutral_primary_failure" && error.errors[1].message === "neutral_target_refusal");
 } else await running;
 for(let i=0;i<30&&!closed;i++) await new Promise(resolve=>setImmediate(resolve));
 assert.equal(closed,true);

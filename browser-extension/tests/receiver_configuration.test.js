@@ -82,7 +82,7 @@ for(const mutation of ['configure','reset']){
    let result;await f.context.dispatch({type:'polylogue.configureReceiver',restore},value=>{result=value;});
    assert.equal(result.ok,false);assert.equal(result.error,'proof_receiver_configuration_changed');assert.equal(JSON.stringify(f.storage),before);
  }
- 
+
 }
 // Delayed code exchange is bound to the original captured configuration.
 for (const mutation of ['restore','configure','reset']) {
