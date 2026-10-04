@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -572,7 +573,9 @@ def _tool_outcome(
     )
     if isinstance(exit_code, bool):
         exit_code = None
-    if isinstance(exit_code, (int, float)):
+    if isinstance(exit_code, int) or (
+        isinstance(exit_code, float) and math.isfinite(exit_code) and exit_code.is_integer()
+    ):
         code = int(exit_code)
         return code != 0, code, None
     if isinstance(error, bool):

@@ -9,6 +9,7 @@ the authoritative live state shape.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -895,7 +896,15 @@ def _usage_and_lifecycle_events(
     }
     has_cost_evidence = any(field in session_columns for field in _COST_FIELDS)
     if total_usage or has_cost_evidence:
-        cost_payload = {field: _row_value(row, field) for field in _COST_FIELDS if field in session_columns}
+        cost_payload = {
+            field: (
+                _optional_float(_row_value(row, field))
+                if field in {"estimated_cost_usd", "actual_cost_usd"}
+                else _row_value(row, field)
+            )
+            for field in _COST_FIELDS
+            if field in session_columns
+        }
         events.append(
             ParsedSessionEvent(
                 event_type="token_count",
@@ -1147,8 +1156,7 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     return None
 
 
@@ -1156,8 +1164,11 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        parsed = float(value)
-        return parsed if parsed >= 0 else None
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+        return parsed if math.isfinite(parsed) and parsed >= 0 else None
     return None
 
 

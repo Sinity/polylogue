@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import cast
 
 from pydantic import ValidationError
@@ -167,12 +169,22 @@ def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
         if isinstance(value, int):
             return value if value >= 0 else None
         if isinstance(value, float):
-            return int(value) if value >= 0 else None
+            return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
         if isinstance(value, str):
             try:
-                parsed = int(float(value))
+                parsed = int(value)
             except ValueError:
-                continue
+                try:
+                    number = Decimal(value)
+                    if (
+                        not number.is_finite()
+                        or not math.isfinite(float(number))
+                        or number != number.to_integral_value()
+                    ):
+                        continue
+                    parsed = int(number)
+                except (InvalidOperation, ValueError, OverflowError):
+                    continue
             return parsed if parsed >= 0 else None
     return None
 
