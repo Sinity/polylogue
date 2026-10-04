@@ -289,7 +289,7 @@ def _attach_units_to_domain(
             outcome="degraded",
             reason=gap,
             sessions=len(session_ids),
-            units=list(with_units),
+            domain=",".join(with_units),
         )
     updated: builtins.list[_AttachableT] = []
     for item in items:
