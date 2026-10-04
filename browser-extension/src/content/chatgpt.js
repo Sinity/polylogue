@@ -1195,6 +1195,12 @@
     });
   }
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "polylogue.captureIdentity") {
+      const payload = message.expectedUrl === window.location.href ? latestNativePayload() : null;
+      const id = payload?.conversation_id || payload?.id;
+      sendResponse({ provider_session_id: typeof id === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(id) ? id : null });
+      return true;
+    }
     if (message.type !== "polylogue.capturePage") return false;
     capture(
       message.reason || null,

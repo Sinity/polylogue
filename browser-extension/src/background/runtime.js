@@ -2209,7 +2209,7 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       !currentTab
       || currentUrl !== expectedConversation.url
       || archiveProviderForUrl(currentUrl) !== expectedConversation.provider
-      || conversationIdForUrl(currentUrl) !== expectedConversation.providerSessionId
+      || await capturedConversationIdForTab(currentTab) !== expectedConversation.providerSessionId
     ) return { ok: false, skipped: true, reason: "tab_navigation_changed" };
     tab = currentTab;
   }
@@ -3031,26 +3031,35 @@ function conversationIdForUrl(url) {
   return null;
 }
 
-// Known limitation for a ChatGPT temporary chat: providerSessionId below is
-// TEMPORARY_CHAT_SENTINEL, not the conversation's real ephemeral id (there is
-// no per-tab "last known real captured id" cache to consult instead), so the
-// /v1/archive-state query it drives always reports state:"missing" even
-// after a real capture landed under the true id. This does not lose data --
-// it just makes captureTab's "auto_capture_missing" branch below re-fire
-// (throttled to once per BACKGROUND_CAPTURE_MIN_INTERVAL_MS) instead of
-// confirming "already archived", and the UI's captured badge stays
-// inaccurate for that tab. Ref polylogue-upbv.
+async function capturedConversationIdForTab(tab) {
+  const url = tab?.url || tab?.pendingUrl || "";
+  const id = conversationIdForUrl(url);
+  if (id !== TEMPORARY_CHAT_SENTINEL) return id;
+  // Ask the original document's existing native capture reader. The URL
+  // sentinel admits capture, but cannot name an archived conversation.
+  await ensureCaptureScripts(tab);
+  const identity = await runtimeChrome.tabs.sendMessage(tab.id, { type: "polylogue.captureIdentity", expectedUrl: url });
+  const capturedId = identity?.provider_session_id;
+  return typeof capturedId === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(capturedId)
+    && capturedId !== TEMPORARY_CHAT_SENTINEL ? capturedId : null;
+}
+
 async function refreshActiveTabArchiveState(tab, reason = "tab_state", allowRecovery = true) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
-  const providerSessionId = conversationIdForUrl(url);
-  const throttleKey = `${tab?.id || "active"}:${provider || "unsupported"}:${providerSessionId || "none"}`;
-  const now = Date.now();
-  const lastCheckedAt = recentActiveTabStateChecks.get(throttleKey) || 0;
-  if (now - lastCheckedAt < ACTIVE_TAB_STATE_MIN_INTERVAL_MS) return;
-  recentActiveTabStateChecks.set(throttleKey, now);
+  let providerSessionId = null;
+  let throttleKey = null;
 
   try {
+    providerSessionId = await capturedConversationIdForTab(tab);
+    throttleKey = `${tab?.id || "active"}:${provider || "unsupported"}:${providerSessionId || "none"}`;
+    const now = Date.now();
+    const lastCheckedAt = recentActiveTabStateChecks.get(throttleKey) || 0;
+    if (now - lastCheckedAt < ACTIVE_TAB_STATE_MIN_INTERVAL_MS) return;
+    recentActiveTabStateChecks.set(throttleKey, now);
+    if (provider && !providerSessionId && conversationIdForUrl(url) === TEMPORARY_CHAT_SENTINEL) {
+      return captureTab(tab, "auto_capture_missing");
+    }
     if (provider && providerSessionId) {
       const query = new URLSearchParams({ provider, provider_session_id: providerSessionId });
       const state = await getJson(`/v1/archive-state?${query.toString()}`);
@@ -3217,11 +3226,11 @@ async function refreshCurrentActiveTab(reason = "active_tab") {
   await refreshActiveTabArchiveState(tab, reason);
 }
 
-function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
+function stateSnapshotForTab(tab, globalState, ledger, pairing, health, capturedSessionId) {
   const url = tab?.url || tab?.pendingUrl || "";
   const provider = archiveProviderForUrl(url);
-  const providerSessionId = conversationIdForUrl(url);
-  const sameGlobalSession = globalState?.provider === provider
+  const providerSessionId = capturedSessionId;
+  const sameGlobalSession = Boolean(providerSessionId) && globalState?.provider === provider
     && globalState?.provider_session_id === providerSessionId;
   const ledgerItem = provider && providerSessionId
     ? ledger?.[sessionKey(provider, providerSessionId)] || {}
@@ -3299,12 +3308,14 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
     ambientSettings(hostnameForUrl(tabUrl)),
   ]);
   const pairing = health.pairing || stored[RECEIVER_PAIRING_KEY] || null;
+  const capturedSessionId = await capturedConversationIdForTab(resolvedTab).catch(() => null);
   const baseState = stateSnapshotForTab(
     resolvedTab,
     stored.polylogueState,
     stored.polylogueSessionLedger || {},
     pairing,
     health,
+    capturedSessionId,
   );
   const freshnessQueue = normalizeFreshnessQueue(stored[CAPTURE_FRESHNESS_QUEUE_KEY]);
   const freshnessEntry = baseState.provider && baseState.provider_session_id

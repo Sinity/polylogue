@@ -2254,6 +2254,57 @@ describe("background receiver diagnostics", () => {
     expect(timeline[0]).toMatchObject({ reason: "auto_capture_missing", detail: "spooled_only" });
   });
 
+  it("reconciles a temporary native identity across archive state and mission control without recapture", async () => {
+    const url = "https://chatgpt.com/?temporary-chat=true";
+    tabs = [{ id: 42, url }];
+    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_id, message) => message.type === "polylogue.captureIdentity" ? { provider_session_id: "temp-1" } : null);
+    globalThis.fetch = vi.fn(async (input) => {
+      fetchCalls.push({ url: String(input) });
+      if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
+      if (new URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "archived", captured: true });
+      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+    });
+    activatedListener({ tabId: 42 });
+    await vi.waitFor(() => expect(stored.polylogueState).toMatchObject({ provider_session_id: "temp-1", captured: true }));
+    const snapshot = await sendRuntimeMessage({ type: "polylogue.missionControl.status", refresh: false }, { tab: tabs[0] });
+    expect(snapshot.state).toMatchObject({ provider_session_id: "temp-1", captured: true, archive_state: { state: "archived" } });
+    expect(snapshot.timeline.some((entry) => entry.detail === "already_safe")).toBe(true);
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(42, { type: "polylogue.captureIdentity", expectedUrl: url });
+    expect(globalThis.chrome.tabs.sendMessage.mock.calls.some(([, message]) => message.type === "polylogue.capturePage")).toBe(false);
+    const queries = fetchCalls.filter((call) => new URL(call.url).pathname === "/v1/archive-state");
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every((call) => new URL(call.url).searchParams.get("provider_session_id") === "temp-1")).toBe(true);
+  });
+
+  it.each([null, "bad/id", "__polylogue_temporary_chat__"])("keeps missing or invalid temporary identity unknown in mission control: %s", async (id) => {
+    stored.polylogueState = { provider: "chatgpt", provider_session_id: null, captured: true };
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({ provider_session_id: id }));
+    const snapshot = await sendRuntimeMessage({ type: "polylogue.missionControl.status", refresh: false }, { tab: tabs[0] });
+    expect(snapshot.state).toMatchObject({ provider_session_id: null, captured: false });
+    expect(fetchCalls.some((call) => new URL(call.url).pathname === "/v1/archive-state")).toBe(false);
+  });
+
+  it.each(["temp-1", "temp-2"])("rechecks temporary document identity before capturing a missing archive: %s", async (currentId) => {
+    stored.polylogueReceiverPairing = { state: "online", receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1", endpoint: "http://127.0.0.1:8875" };
+    let identityReads = 0;
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_id, message) => {
+      if (message.type === "polylogue.captureIdentity") return { provider_session_id: ++identityReads === 1 ? "temp-1" : currentId };
+      return { ok: false, error: "fixture_capture_stop" };
+    });
+    globalThis.fetch = vi.fn(async (input) => {
+      fetchCalls.push({ url: String(input) });
+      if (String(input).endsWith("/v1/status")) return responseJson({ ok: true, receiver_id: "rx-temporary", api_schema: "polylogue-browser-capture/v1" });
+      if (new URL(input).pathname === "/v1/archive-state") return responseJson({ provider: "chatgpt", provider_session_id: "temp-1", state: "missing", captured: false });
+      return captureJobFixtureResponse(input) || responseJson({ ok: true });
+    });
+    await sendRuntimeMessage({ type: "polylogue.missionControl.status" }, { tab: tabs[0] });
+    expect(identityReads).toBeGreaterThanOrEqual(2);
+    const captures = globalThis.chrome.tabs.sendMessage.mock.calls.filter(([, message]) => message.type === "polylogue.capturePage");
+    expect(captures).toHaveLength(currentId === "temp-1" ? 1 : 0);
+    if (currentId !== "temp-1") expect(stored.polylogueConversationTimeline["chatgpt:temp-1"]).toContainEqual(expect.objectContaining({ event: "held_with_reason", detail: "tab_navigation_changed" }));
+  });
+
   it("captures a ChatGPT temporary chat instead of silently skipping it (background.js conversationIdForUrl asymmetry)", async () => {
     // background.js's own conversationIdForUrl used to return null for a
     // temporary-chat URL (?temporary-chat=true), which made captureTab's
