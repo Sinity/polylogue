@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
+import pytest
+
+from polylogue.archive.hydration import archive_envelope_to_session
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, Origin, Provider, TitleSource
+from polylogue.archive.message.types import MessageType
+from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider, TitleSource
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.ids import session_id, session_revision_projection
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.parsers import grok
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 def _nested_conversation() -> dict[str, Any]:
@@ -351,3 +358,44 @@ def test_parse_payload_skips_malformed_entries_in_mixed_validity_export() -> Non
         grok.parse_conversation(_nested_conversation(), "x").provider_session_id,
         grok.parse_conversation(_flat_conversation(), "y").provider_session_id,
     }
+
+
+@pytest.mark.parametrize("sender", ["human", "user"])
+@pytest.mark.parametrize("nested", [False, True])
+def test_export_human_sender_preserves_authorship_of_context_looking_prose(
+    workspace_env: dict[str, Path], sender: str, nested: bool
+) -> None:
+    archive_root = workspace_env["archive_root"]
+    payload = _nested_conversation() if nested else _flat_conversation()
+    entry = payload["responses"][0]
+    response = entry["response"] if nested else entry
+    response["sender"] = sender
+    response["message"] = "# AGENTS.md instructions for a sample project\nPlease explain this document."
+    session = grok.parse_conversation(payload, "human-context")
+    assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+    assert session.messages[0].message_type is MessageType.CONTEXT
+    with ArchiveStore(archive_root) as archive:
+        _, stored_id = archive.write_raw_and_parsed(
+            session,
+            payload=json.dumps(payload).encode(),
+            source_path="/example/grok.json",
+            acquired_at_ms=1735689600000,
+        )
+        hydrated = archive_envelope_to_session(archive.read_session(stored_id))
+        message = next(iter(hydrated.messages))
+        assert message.material_origin is MaterialOrigin.HUMAN_AUTHORED
+        assert message.message_type is MessageType.CONTEXT
+        assert message.is_human_authored
+        summary = archive.read_summary(stored_id)
+        assert summary.authored_user_message_count == 1
+        assert summary.authored_user_word_count > 0
+
+
+@pytest.mark.parametrize("sender", ["assistant", "system", "unknown"])
+def test_export_context_marker_without_human_sender_keeps_runtime_origin(sender: str) -> None:
+    payload = _flat_conversation()
+    payload["responses"][0]["sender"] = sender
+    payload["responses"][0]["message"] = "# AGENTS.md instructions for a sample project"
+    message = grok.parse_conversation(payload, "context").messages[0]
+    assert message.message_type is MessageType.CONTEXT
+    assert message.material_origin is MaterialOrigin.RUNTIME_CONTEXT

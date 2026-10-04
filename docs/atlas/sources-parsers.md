@@ -74,6 +74,10 @@ provider (`docs/provider-origin-identity.md:15-30`;
   with matching native role/text to produce private owner coordinates. The
   parser refuses absent or conflicting evidence instead of inventing an ID.
 
+- Grok native and export human/user sender records establish human authorship,
+  including prose that resembles runtime instructions. Textual message type
+  stays independently classified; native tool and reasoning blocks retain
+  their structural classification.
 - Detection is shape-based and ordered by declared tightness, per payload mode.
 - Parsing preserves structured tool-result outcome and exit-code fields;
   prose is not an outcome oracle.
