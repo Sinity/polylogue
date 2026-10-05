@@ -334,13 +334,16 @@ def promote_result_set(
     return result
 
 
-def get_query(conn: sqlite3.Connection, query_hash: str) -> QueryObject | None:
+def get_query(conn: sqlite3.Connection, query_hash: str, *, schema: str | None = None) -> QueryObject | None:
     """Read one immutable query definition without decoding it as executable syntax."""
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "queries" if schema is None else f"{schema}.queries"
     row = conn.execute(
-        """
+        f"""
         SELECT query_hash, canonical_plan_json, grain, lane, rank_policy, definition_protocol_version,
                privacy_class, retention_policy_json, excision_link
-        FROM queries WHERE query_hash = ?
+        FROM {table} WHERE query_hash = ?
         """,
         (query_hash,),
     ).fetchone()
@@ -391,13 +394,18 @@ def list_watched_queries(conn: sqlite3.Connection) -> tuple[QueryObject, ...]:
     )
 
 
-def get_result_set(conn: sqlite3.Connection, result_set_id: str) -> ResultSetManifest | None:
+def get_result_set(
+    conn: sqlite3.Connection, result_set_id: str, *, schema: str | None = None
+) -> ResultSetManifest | None:
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError("invalid SQLite schema")
+    table = "result_sets" if schema is None else f"{schema}.result_sets"
     row = conn.execute(
-        """
+        f"""
         SELECT result_set_id, query_hash, grain, corpus_epoch, member_count,
                membership_merkle_root, ordered_rank_hash, exactness, persistence_class,
                privacy_class, retention_policy_json, excision_link
-        FROM result_sets WHERE result_set_id = ?
+        FROM {table} WHERE result_set_id = ?
         """,
         (result_set_id,),
     ).fetchone()

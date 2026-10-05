@@ -5335,15 +5335,15 @@ class ArchiveStore:
             user_conn.close()
 
     def get_annotation_batch_page(self, batch_id: str, *, limit: int, offset: int) -> AnnotationBatchReadPage | None:
-        """Read one exact batch evidence window on a single User snapshot."""
-        if not self.user_db_path.exists():
+        """Read exact batch evidence from the original pinned User snapshot."""
+        self.check_operation_read()
+        if self.index_connection is None or not any(
+            row[1] == "user_tier" for row in self.index_connection.execute("PRAGMA database_list")
+        ):
             return None
-        user_conn = open_readonly_connection(self.user_db_path)
-        try:
-            user_conn.execute("BEGIN")
-            return read_annotation_batch_page(user_conn, batch_id, limit=limit, offset=offset)
-        finally:
-            user_conn.close()
+        return read_annotation_batch_page(
+            self.index_connection, batch_id, limit=limit, offset=offset, schema="user_tier"
+        )
 
     def list_annotation_batches(
         self,

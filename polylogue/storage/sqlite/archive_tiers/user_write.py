@@ -2004,13 +2004,18 @@ def list_assertion_candidate_reviews(
 def _latest_candidate_judgment(
     conn: sqlite3.Connection,
     candidate_assertion_id: str,
+    *,
+    schema: str | None = None,
 ) -> ArchiveAssertionEnvelope | None:
-    if not _table_exists(conn, "assertions"):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    if not _table_exists(conn, "assertions", schema=schema or "main"):
         return None
     row = conn.execute(
         f"""
         SELECT {_ASSERTION_COLUMNS}
-        FROM assertions
+        FROM {table}
         WHERE target_ref = ?
           AND kind = ?
           AND COALESCE(status, ?) != ?
@@ -2032,10 +2037,12 @@ def _latest_candidate_judgment(
 def read_latest_candidate_judgment(
     conn: sqlite3.Connection,
     candidate_assertion_id: str,
+    *,
+    schema: str | None = None,
 ) -> ArchiveAssertionEnvelope | None:
     """Return the durable latest judgment attached to one candidate."""
 
-    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id))
+    return _latest_candidate_judgment(conn, _assertion_id_from_ref(candidate_assertion_id), schema=schema)
 
 
 def _candidate_evidence_digests(candidate: ArchiveAssertionEnvelope) -> tuple[str | None, str | None]:
@@ -2497,10 +2504,15 @@ _ASSERTION_COLUMNS = (
 )
 
 
-def read_assertion_envelope(conn: sqlite3.Connection, assertion_id: str) -> ArchiveAssertionEnvelope | None:
+def read_assertion_envelope(
+    conn: sqlite3.Connection, assertion_id: str, *, schema: str | None = None
+) -> ArchiveAssertionEnvelope | None:
     """Read one assertion by id, or ``None`` when absent."""
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
     row = conn.execute(
-        f"SELECT {_ASSERTION_COLUMNS} FROM assertions WHERE assertion_id = ?",
+        f"SELECT {_ASSERTION_COLUMNS} FROM {table} WHERE assertion_id = ?",
         (assertion_id,),
     ).fetchone()
     if row is None:
@@ -2772,6 +2784,7 @@ def list_assertion_claims(
 def count_assertion_claims(
     conn: sqlite3.Connection,
     *,
+    schema: str | None = None,
     kinds: Sequence[str | AssertionKind],
     statuses: Sequence[str | AssertionStatus] | None,
     target_ref: str | None = None,
@@ -2782,7 +2795,14 @@ def count_assertion_claims(
 ) -> int:
     """Count a typed assertion selection without materializing claim rows."""
 
-    if not _table_exists(conn, "assertions") or not kinds or (statuses is not None and not statuses):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    if (
+        not _table_exists(conn, "assertions", schema=schema or "main")
+        or not kinds
+        or (statuses is not None and not statuses)
+    ):
         return 0
     normalized_kinds = tuple(_normalize_assertion_kind(kind).value for kind in kinds)
     kind_placeholders = ", ".join("?" for _ in normalized_kinds)
@@ -2809,7 +2829,7 @@ def count_assertion_claims(
         target_prefix = f"{annotation_target_kind}:"
         where.append("substr(target_ref, 1, length(?)) = ?")
         params.extend((target_prefix, target_prefix))
-    row = conn.execute(f"SELECT count(*) FROM assertions WHERE {' AND '.join(where)}", tuple(params)).fetchone()
+    row = conn.execute(f"SELECT count(*) FROM {table} WHERE {' AND '.join(where)}", tuple(params)).fetchone()
     return int(row[0]) if row is not None else 0
 
 

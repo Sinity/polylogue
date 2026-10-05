@@ -306,6 +306,10 @@ def execute_read_operation(
         from polylogue.operations.insight_reads import execute_insight_readiness
 
         result = execute_insight_readiness(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
+    elif name == "annotation.join":
+        from polylogue.operations.annotation_join import execute_annotation_join
+
+        result = execute_annotation_join(payload, archive=archive, checkpoint=dependencies.raise_if_aborted)
     elif name == "insights.rigor":
         from polylogue.operations.insight_reads import execute_insight_rigor
 

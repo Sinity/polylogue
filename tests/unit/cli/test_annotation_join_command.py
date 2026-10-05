@@ -3,21 +3,14 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
-from polylogue.annotations.join import AnnotationStructuralJoinRequest, AnnotationStructuralJoinResult
+from polylogue.annotations.join_contracts import AnnotationStructuralJoinRequest, AnnotationStructuralJoinResult
 from polylogue.cli.click_app import cli
 from polylogue.core.enums import AssertionStatus
-
-
-class _PolylogueContext:
-    async def __aenter__(self) -> _PolylogueContext:
-        return self
-
-    async def __aexit__(self, *args: object) -> None:
-        return None
 
 
 def _result() -> AnnotationStructuralJoinResult:
@@ -43,13 +36,10 @@ def _result() -> AnnotationStructuralJoinResult:
 
 
 def test_cli_annotation_join_maps_the_complete_request() -> None:
-    with (
-        patch("polylogue.cli.commands.annotations.Polylogue", return_value=_PolylogueContext()),
-        patch(
-            "polylogue.cli.commands.annotations.join_typed_annotations",
-            new=AsyncMock(return_value=_result()),
-        ) as operation,
-    ):
+    with patch(
+        "polylogue.cli.commands.annotations.dispatch_read",
+        return_value=({"result": _result().model_dump(mode="json"), "outcome": {"state": "empty"}}, None),
+    ) as operation:
         result = CliRunner().invoke(
             cli,
             [
@@ -76,9 +66,11 @@ def test_cli_annotation_join_maps_the_complete_request() -> None:
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["joined_count"] == 0
-    operation.assert_awaited_once()
-    assert operation.await_args is not None
-    _, request = operation.await_args.args
+    operation.assert_called_once()
+    assert operation.call_args is not None
+    _, lowered = operation.call_args.args
+    assert lowered.operation == "annotation.join"
+    request = AnnotationStructuralJoinRequest.model_validate(lowered.payload)
     assert request == AnnotationStructuralJoinRequest(
         schema_id="delegation.discourse",
         schema_version=1,
@@ -105,3 +97,27 @@ def test_cli_annotation_join_requires_explicit_status() -> None:
 
     assert result.exit_code == 2
     assert "Missing option '--status'" in result.output
+
+
+def test_cli_annotation_join_requires_the_resident_without_local_fallback(tmp_path: Path) -> None:
+    from polylogue.cli.operation_kernel import OperationUnavailableError
+
+    with patch(
+        "polylogue.cli.commands.annotations.dispatch_read",
+        side_effect=OperationUnavailableError(operation="annotation.join", archive_root=str(tmp_path)),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "annotations",
+                "join",
+                "--schema-id",
+                "delegation.discourse",
+                "--schema-version",
+                "1",
+                "--status",
+                "active",
+            ],
+        )
+    assert result.exit_code != 0
+    assert isinstance(result.exception, (OperationUnavailableError, SystemExit))

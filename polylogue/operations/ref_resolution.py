@@ -26,9 +26,7 @@ composition for a caller that already holds an open archive.
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable, Sequence
-from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -43,7 +41,6 @@ from polylogue.core.refs import (
     parse_delegation_subtree_object_id,
     parse_public_ref,
 )
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.operator_commands import is_shell_quote_canonical, quote_ref_argument
 
 if TYPE_CHECKING:
@@ -138,7 +135,6 @@ def plan_ref_resolution(
 
     if limit < 1 or offset < 0:
         raise ValueError("ref page limit must be positive and offset nonnegative")
-    root = archive_root
 
     invalid_unicode_ref = _invalid_unicode_ref_payload(ref)
     if invalid_unicode_ref is not None:
@@ -233,9 +229,9 @@ def plan_ref_resolution(
                 evidence_ref,
             )
         if object_ref.kind == "assertion":
-            return _resolve_assertion_object_ref(root, ref, normalized_ref, object_ref)
+            return _resolve_assertion_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "finding":
-            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref, archive.index_connection)
+            return _resolve_finding_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "annotation-batch":
             return _resolve_annotation_batch_object_ref(
                 archive, ref, normalized_ref, object_ref, limit=limit, offset=offset
@@ -593,7 +589,7 @@ def _resolve_block_object_ref(
 
 
 def _resolve_assertion_object_ref(
-    archive_root: Path,
+    archive: ArchiveStore,
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
@@ -601,15 +597,14 @@ def _resolve_assertion_object_ref(
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
     from polylogue.surfaces.payloads import AssertionClaimPayload, PublicRefResolutionPayload, model_json_document
 
-    user_db = archive_root / "user.db"
-    if not user_db.exists():
+    conn = archive.index_connection
+    if conn is None or not any(row[1] == "user_tier" for row in conn.execute("PRAGMA database_list")):
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "assertion not found", normalized_ref=normalized_ref, kind="assertion"),
         )
-    with closing(open_readonly_connection(user_db)) as conn:
-        conn.row_factory = sqlite3.Row
-        envelope = read_assertion_envelope(conn, object_ref.object_id)
+    archive.check_operation_read()
+    envelope = read_assertion_envelope(conn, object_ref.object_id, schema="user_tier")
     if envelope is None:
         return cast(
             PublicRefResolutionPayload,
@@ -634,11 +629,10 @@ def _resolve_assertion_object_ref(
 
 
 def _resolve_finding_object_ref(
-    archive_root: Path,
+    archive: ArchiveStore,
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
-    index_conn: sqlite3.Connection | None,
 ) -> PublicRefResolutionPayload:
     from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
@@ -649,17 +643,18 @@ def _resolve_finding_object_ref(
         model_json_document,
     )
 
-    user_db = archive_root / "user.db"
-    if not user_db.exists():
+    conn = archive.index_connection
+    if conn is None or not any(row[1] == "user_tier" for row in conn.execute("PRAGMA database_list")):
         return cast(
             PublicRefResolutionPayload,
             _unresolved_ref_payload(ref, "finding not found", normalized_ref=normalized_ref, kind="finding"),
         )
-    with closing(open_readonly_connection(user_db)) as conn:
-        conn.row_factory = sqlite3.Row
-        provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=index_conn)
-        controls_document = _finding_controls_document(conn, object_ref.object_id)
-        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=index_conn)
+    archive.check_operation_read()
+    provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=conn, schema="user_tier")
+    controls_document = _finding_controls_document(conn, object_ref.object_id, schema="user_tier")
+    integrity = (
+        None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=conn, schema="user_tier")
+    )
     if provenance is None or integrity is None:
         return cast(
             PublicRefResolutionPayload,
@@ -757,7 +752,7 @@ def _resolve_finding_object_ref(
     )
 
 
-def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] | None:
+def _finding_controls_document(conn: Any, assertion_id: str, *, schema: str | None = None) -> dict[str, Any] | None:
     """Render claim-vs-control together when the finding declared controls (rxdo.9.7).
 
     Reuses :class:`~polylogue.analysis.judgment.controls.ClaimWithControls`
@@ -767,7 +762,7 @@ def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] |
     from polylogue.analysis.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
     from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
 
-    envelope = read_assertion_envelope(conn, assertion_id)
+    envelope = read_assertion_envelope(conn, assertion_id, schema=schema)
     if envelope is None or not isinstance(envelope.value, dict):
         return None
     raw_controls = envelope.value.get("controls")

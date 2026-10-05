@@ -115,7 +115,7 @@ if TYPE_CHECKING:
     from polylogue.analysis.resume import ResumeBrief, ResumeCandidate
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
-    from polylogue.annotations.join import AnnotationStructuralJoinResult
+    from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
     from polylogue.api import Polylogue
     from polylogue.archive.filter.filters import SessionFilter
@@ -3271,11 +3271,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> AnnotationStructuralJoinResult:
         """Join selected typed annotations to exact structural targets."""
 
-        from polylogue.annotations.join import (
-            AnnotationStructuralJoinRequest,
-            StructuralJoinArchive,
-            join_typed_annotations,
-        )
+        from polylogue.annotations.join_contracts import AnnotationJoinOperationResult, AnnotationStructuralJoinRequest
+        from polylogue.operations.annotation_join import execute_annotation_join
 
         request = AnnotationStructuralJoinRequest(
             schema_id=schema_id,
@@ -3286,7 +3283,22 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             limit=limit,
             offset=offset,
         )
-        return await join_typed_annotations(cast(StructuralJoinArchive, self), request)
+        payload = request.model_dump(mode="json")
+
+        def read_join(archive: ArchiveStore) -> dict[str, object]:
+            archive.pin_operation_snapshot()
+            return execute_annotation_join(payload, archive=archive, checkpoint=archive.check_operation_read)
+
+        response = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="annotation.join",
+            arguments=payload,
+            work=read_join,
+            page_size=limit,
+            offset=offset,
+            projection="annotation-join",
+        )
+        return AnnotationJoinOperationResult.model_validate(response).result
 
     async def _compile_context_seed_query(
         self,

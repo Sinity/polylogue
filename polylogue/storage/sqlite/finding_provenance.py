@@ -65,7 +65,11 @@ class FindingProvenance:
 
 
 def compute_finding_provenance(
-    conn: sqlite3.Connection, assertion_id: str, *, index_conn: sqlite3.Connection | None = None
+    conn: sqlite3.Connection,
+    assertion_id: str,
+    *,
+    index_conn: sqlite3.Connection | None = None,
+    schema: str | None = None,
 ) -> FindingProvenance | None:
     """Return the provenance projection for one finding, or ``None`` if absent/not-a-finding.
 
@@ -74,14 +78,18 @@ def compute_finding_provenance(
     unresolvable rather than being assumed present.
     """
 
-    envelope = read_assertion_envelope(conn, assertion_id)
+    envelope = read_assertion_envelope(conn, assertion_id, schema=schema)
     if envelope is None or envelope.kind != AssertionKind.FINDING.value:
         return None
-    return _provenance_from_envelope(conn, envelope, index_conn=index_conn)
+    return _provenance_from_envelope(conn, envelope, index_conn=index_conn, schema=schema)
 
 
 def _provenance_from_envelope(
-    conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope, *, index_conn: sqlite3.Connection | None
+    conn: sqlite3.Connection,
+    envelope: ArchiveAssertionEnvelope,
+    *,
+    index_conn: sqlite3.Connection | None,
+    schema: str | None = None,
 ) -> FindingProvenance:
     value = envelope.value if isinstance(envelope.value, dict) else {}
     query_ref = _str_or_none(value.get("query_ref"))
@@ -92,7 +100,7 @@ def _provenance_from_envelope(
 
     declared_refs = [ref for ref in (query_ref, result_set_ref, baseline_ref, current_ref) if ref is not None]
     all_refs = list(dict.fromkeys([*declared_refs, *envelope.evidence_refs]))
-    resolutions = tuple(resolve_evidence_ref(conn, ref, index_conn=index_conn) for ref in all_refs)
+    resolutions = tuple(resolve_evidence_ref(conn, ref, index_conn=index_conn, schema=schema) for ref in all_refs)
     resolved_by_ref = {resolution.ref: resolution.resolvable for resolution in resolutions}
 
     if not declared_refs:
@@ -133,7 +141,7 @@ _INDEX_EXISTENCE_QUERIES: dict[str, str] = {
 
 
 def resolve_evidence_ref(
-    conn: sqlite3.Connection, ref: str, *, index_conn: sqlite3.Connection | None = None
+    conn: sqlite3.Connection, ref: str, *, index_conn: sqlite3.Connection | None = None, schema: str | None = None
 ) -> FindingEvidenceResolution:
     """Resolve one evidence ref fail-closed: unknown kinds are unresolvable.
 
@@ -145,13 +153,13 @@ def resolve_evidence_ref(
     except ValueError:
         return FindingEvidenceResolution(ref=ref, resolvable=False, reason="unparseable ref")
     if parsed.kind == "query":
-        found = get_query(conn, parsed.object_id) is not None
+        found = get_query(conn, parsed.object_id, schema=schema) is not None
         return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "query not found")
     if parsed.kind == "result-set":
-        found = get_result_set(conn, parsed.object_id) is not None
+        found = get_result_set(conn, parsed.object_id, schema=schema) is not None
         return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "result set not found")
     if parsed.kind in {"assertion", "finding"}:
-        found = read_assertion_envelope(conn, parsed.object_id) is not None
+        found = read_assertion_envelope(conn, parsed.object_id, schema=schema) is not None
         return FindingEvidenceResolution(
             ref=ref, resolvable=found, reason=None if found else f"{parsed.kind} not found"
         )
