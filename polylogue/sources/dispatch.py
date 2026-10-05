@@ -1590,8 +1590,9 @@ def _lower_drive_like_payload(
     record = _payload_record(shaped_payload)
     if record is None:
         return []
-    if local_agent.looks_like_gemini_cli(record):
-        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id, source_path=source_path)]
+    # A bare document is validated by the same registry as a wrapped one: a
+    # Drive location admits only its own origin, never a Gemini CLI document.
+    _validate_sequence_document_origins((record,), provider)
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
     # This handles one already-lowered record, not a whole document/list, so
