@@ -173,6 +173,8 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
         "tool_id",
         "tool_input",
         "semantic_type",
+        "media_type",
+        "language",
         "name",
         "tool_result_is_error",
         "tool_result_exit_code",

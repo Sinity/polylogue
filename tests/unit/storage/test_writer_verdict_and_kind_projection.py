@@ -16,17 +16,16 @@ from pathlib import Path
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider, SessionKind
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import _coalesce_block_row, _refresh_session_projection
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 

@@ -19,6 +19,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop, seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
@@ -31,6 +32,7 @@ pytestmark = [
 SCALE_COUNT = 200
 
 
+@seeds_off_event_loop
 def _seed_archive(
     workspace_env: dict[str, Path],
     count: int,
@@ -100,17 +102,21 @@ class TestBatchReadScale:
         msg_counts = [1, 5, 10]
         ids: list[str] = []
         expected: dict[str, int] = {}
-        with ArchiveStore(workspace_env["archive_root"]) as archive:
-            for msgs in msg_counts:
-                for i in range(20):
-                    builder = SessionBuilder(db_path, f"var-{msgs}msg-{i:03d}").provider("chatgpt")
-                    for j in range(msgs):
-                        builder.add_message(role="user", text=f"msg {j}")
-                    parsed = _record_to_parsed_session(builder.conv, builder.messages, builder.attachments)
-                    write_index_session(archive, parsed)
-                    sid = builder.native_session_id()
-                    ids.append(sid)
-                    expected[sid] = msgs
+
+        def _seed_0() -> None:
+            with ArchiveStore(workspace_env["archive_root"]) as archive:
+                for msgs in msg_counts:
+                    for i in range(20):
+                        builder = SessionBuilder(db_path, f"var-{msgs}msg-{i:03d}").provider("chatgpt")
+                        for j in range(msgs):
+                            builder.add_message(role="user", text=f"msg {j}")
+                        parsed = _record_to_parsed_session(builder.conv, builder.messages, builder.attachments)
+                        write_index_session(archive, parsed)
+                        sid = builder.native_session_id()
+                        ids.append(sid)
+                        expected[sid] = msgs
+
+        run_off_event_loop(_seed_0)
 
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as archive:
             convos = await archive.get_sessions(ids)

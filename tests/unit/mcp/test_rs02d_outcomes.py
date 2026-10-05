@@ -15,6 +15,7 @@ from polylogue.api import Polylogue
 from polylogue.daemon_client import DaemonClient
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
@@ -209,22 +210,27 @@ async def test_real_archive_no_match_projections_are_empty(tmp_path: Path) -> No
     from tests.infra.live_ingest import write_index_session
 
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CHATGPT,
-                provider_session_id="synthetic-outcome",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        text="synthetic outcome evidence",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="synthetic outcome evidence")],
-                    )
-                ],
-            ),
-        )
+
+    def seed() -> None:
+        with ArchiveStore(root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CHATGPT,
+                    provider_session_id="synthetic-outcome",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="synthetic outcome evidence",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="synthetic outcome evidence")],
+                        )
+                    ],
+                ),
+            )
+
+    run_off_event_loop(seed)
+
     tools = build_tools()
     with installed_runtime_services(root):
         for projection in ("postmortem", "pathologies"):
