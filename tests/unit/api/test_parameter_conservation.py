@@ -142,7 +142,11 @@ def _sentinel_for(field_name: str, annotation: object) -> object:
     if field_name == "sort":
         return "source"
     if field_name == "insights":
-        return ("sentinel-insight",)
+        # The request validates names against the registry; any real product
+        # is still a distinguishable value for the conservation check.
+        from polylogue.analysis.registry import INSIGHT_REGISTRY
+
+        return (sorted(INSIGHT_REGISTRY)[0],)
     if field_name == "offset":
         return 17
     if field_name == "limit":

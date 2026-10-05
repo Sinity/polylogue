@@ -23,6 +23,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import run_off_event_loop
@@ -46,7 +47,7 @@ def _message(native_id: str, role: Role, text: str) -> ParsedMessage:
 
 
 def _seed_on_writer(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -156,7 +157,7 @@ async def test_effective_context_ignores_a_partial_stored_boundary(
 
 def _seed_with_fork_on_writer(db_path: Path) -> None:
     """Parent carrying a compaction boundary plus a fork that replays its prefix."""
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -364,7 +365,9 @@ async def test_effective_context_reads_boundary_in_the_message_snapshot(
 async def test_effective_context_hydrates_structured_tool_blocks(workspace_env: dict[str, Path]) -> None:
     """The previous direct query return serialized an empty block list."""
     db_path = workspace_env["archive_root"] / "index.db"
-    with sqlite3.connect(db_path) as conn:
+
+    def seed() -> None:
+        conn = connect_measured(db_path)
         conn.row_factory = sqlite3.Row
         initialize_archive_tier(conn, ArchiveTier.INDEX)
         write_fixture_index_session(
@@ -388,6 +391,10 @@ async def test_effective_context_hydrates_structured_tool_blocks(workspace_env: 
                 ],
             ),
         )
+        conn.commit()
+        conn.close()
+
+    run_off_event_loop(seed)
     poly = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     try:
         result = await poly.get_effective_context("codex-session:effective-tool-blocks")
