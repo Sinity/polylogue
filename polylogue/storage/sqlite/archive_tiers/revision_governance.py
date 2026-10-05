@@ -4987,6 +4987,14 @@ def prepared_raw_native_id(seal: PreparedIndexMutation, raw_id: str) -> str | No
         return _raw_native_id_from_row(rows.fetchone())
 
 
+def prepared_raw_typed_logical_key(seal: PreparedIndexMutation, raw_id: str) -> str | None:
+    """The logical key the raw is typed under on the original Source state."""
+    _load_raw_session_input(seal, raw_id)
+    with seal.source_rows("SELECT logical_source_key FROM raw_sessions WHERE raw_id=?", (raw_id,)) as rows:
+        row = rows.fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
 def _raw_revision_rebuild_logical_keys(
     reader: RawMembershipSelectionRead,
     raw_ids: Sequence[str],

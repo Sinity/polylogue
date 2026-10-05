@@ -470,6 +470,9 @@ def parser_census_identity_measurement(
 #: previously-ambiguous sibling evidence before ever accepting a
 #: later-discovered raw as an unconditional singleton byte-proven baseline.
 HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL = "historical non-prefix full revision governance"
+#: A typed full revision whose stored identity the current parser no longer
+#: derives retires to membership governance under the parsed identity.
+SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL = "superseded full revision identity"
 
 
 @dataclass(frozen=True)

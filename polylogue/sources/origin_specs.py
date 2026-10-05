@@ -272,6 +272,7 @@ def _invalidate_source_signatures() -> None:
     _source_signature.cache_clear()
     _local_import_paths.cache_clear()
     _semantic_source_closure.cache_clear()
+    _normalized_source_digest.cache_clear()
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -459,7 +460,8 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 5
+#: Version 6 folds each file's normalized AST digest instead of its dump.
+_FINGERPRINT_ALGORITHM_VERSION = 6
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -499,25 +501,47 @@ def _observed_source_bytes(signature: tuple[str, str, int]) -> bytes:
     return source
 
 
+@lru_cache(maxsize=4096)
+def _normalized_source_digest(signature: tuple[str, str, int]) -> str:
+    """Digest one file's normalized AST, once per source revision.
+
+    Namespaces share most of their closures, so each file is parsed once per
+    revision instead of once per namespace that reaches it. The memo is keyed
+    by the file's label and content signature, so an edit always misses.
+    """
+    root = _source_memo_root()
+    memo = None
+    if root is not None:
+        key = _source_memo_key((signature,), "normalized-ast", _FINGERPRINT_ALGORITHM_VERSION)
+        memo = root / f"normalized-{key}.txt"
+        try:
+            cached = memo.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError):
+            cached = ""
+        if re.fullmatch(r"[0-9a-f]{64}", cached):
+            return cached
+    path_string = signature[0]
+    source = _observed_source_bytes(signature)
+    tree = ast.parse(source.decode("utf-8"))
+    normalized = _DocstringStripper().visit(tree)
+    if (
+        Path(path_string).name == "origin_specs.py"
+        and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
+    ):
+        normalized = _ProjectionFingerprintStripper().visit(normalized)
+    normalized = _SchemaDdlFingerprintStripper().visit(normalized)
+    dumped = ast.dump(normalized, annotate_fields=True, include_attributes=False)
+    digest = hashlib.sha256(dumped.encode("utf-8")).hexdigest()
+    if memo is not None:
+        _publish_source_memo(memo, digest)
+    return digest
+
+
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
-    fragments: list[dict[str, str]] = []
-    for signature in signatures:
-        path_string = signature[0]
-        source = _observed_source_bytes(signature)
-        tree = ast.parse(source.decode("utf-8"))
-        normalized = _DocstringStripper().visit(tree)
-        if (
-            Path(path_string).name == "origin_specs.py"
-            and _fingerprint_path_label(Path(path_string)) == "polylogue/sources/origin_specs.py"
-        ):
-            normalized = _ProjectionFingerprintStripper().visit(normalized)
-        normalized = _SchemaDdlFingerprintStripper().visit(normalized)
-        fragments.append(
-            {
-                "path": _fingerprint_path_label(Path(path_string)),
-                "ast": ast.dump(normalized, annotate_fields=True, include_attributes=False),
-            }
-        )
+    fragments = [
+        {"path": _fingerprint_path_label(Path(signature[0])), "ast_sha256": _normalized_source_digest(signature)}
+        for signature in signatures
+    ]
     payload = {"namespace": namespace, "sources": fragments}
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
