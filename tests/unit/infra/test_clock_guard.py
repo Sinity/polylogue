@@ -18,6 +18,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import IO
 from uuid import uuid4
 
 import pytest
@@ -120,6 +121,23 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
     failure details.
     """
     history = state / "history.jsonl"
+    # The nested run's diagnostics land beside its state, so a failed run's
+    # retained tree shows what the nested devtools was doing.
+    with open(state / "nested-devtools.stderr", "w", encoding="utf-8") as nested_stderr:
+        result = _run_nested_collection(module, root=root, state=state, history=history, stderr=nested_stderr)
+    receipt = json.loads(result.stdout)
+    run_id = str(receipt["run_id"])
+    shutil.rmtree(root / ".cache" / "verify" / "runs" / run_id)
+    # Anti-vacuity: without the overrides the row lands in the operator's
+    # shared history and this file does not exist.
+    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
+    assert [row["run_id"] for row in rows] == [run_id]
+    return result
+
+
+def _run_nested_collection(
+    module: Path, *, root: Path, state: Path, history: Path, stderr: IO[str]
+) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [
             str(root / ".venv" / "bin" / "python"),
@@ -133,7 +151,8 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
             "--json",
         ],
         cwd=root,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=stderr,
         text=True,
         env={
             **os.environ,
@@ -143,13 +162,6 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
         },
         check=False,
     )
-    receipt = json.loads(result.stdout)
-    run_id = str(receipt["run_id"])
-    shutil.rmtree(root / ".cache" / "verify" / "runs" / run_id)
-    # Anti-vacuity: without the overrides the row lands in the operator's
-    # shared history and this file does not exist.
-    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
-    assert [row["run_id"] for row in rows] == [run_id]
     return result
 
 
