@@ -1176,7 +1176,7 @@ def test_owned_inactive_scope_without_store_parent_preserves_reader_custody(tmp_
     "lifecycle", [None, AssertionKind.SUPPRESSION, AssertionKind.EXCISION_RECORD, AssertionKind.EXCISION_REQUEST]
 )
 @pytest.mark.parametrize("ordinary_anchor", [False, True])
-def test_bound_deletion_preserves_audit_identity_and_protects_ordinary_user_anchors(
+def test_bound_deletion_preserves_audit_identity_and_keeps_ordinary_user_anchors(
     tmp_path: Path, lifecycle: AssertionKind | None, ordinary_anchor: bool
 ) -> None:
     from polylogue.operations.bindings import runtime_operation_binding
@@ -1219,14 +1219,17 @@ def test_bound_deletion_preserves_audit_identity_and_protects_ordinary_user_anch
                 ).fetchall()
             current = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
             authorization = executor.authorize_bound(binding, current, principal)
+            # An ordinary User anchor (an annotation) survives the authorized
+            # delete unchanged and resolves again if the session is re-imported.
+            receipt = executor.execute_bound(binding, current, authorization, args)
+            assert receipt.status == "applied" and receipt.affected_count == 1
+            assert archive.stored_session_ids((target,)) == ()
             if ordinary_anchor:
-                with pytest.raises(ReferenceSealError):
-                    executor.execute_bound(binding, current, authorization, args)
-                assert archive.stored_session_ids((target,)) == (target,)
-            else:
-                receipt = executor.execute_bound(binding, current, authorization, args)
-                assert receipt.status == "applied" and receipt.affected_count == 1
-                assert archive.stored_session_ids((target,)) == ()
+                with closing(sqlite3.connect(tmp_path / "user.db")) as user:
+                    assert user.execute(
+                        "SELECT COUNT(*) FROM assertions WHERE target_ref = ? AND kind = 'annotation'",
+                        (f"session:{target}",),
+                    ).fetchone() == (1,)
             assert archive.stored_session_ids((survivor,)) == (survivor,)
             assert permitted_session_removals(archive_root=tmp_path) == frozenset()
             with closing(sqlite3.connect(tmp_path / "audit.db")) as audit:
@@ -1762,7 +1765,7 @@ def test_archive_settlement_callback_waits_for_all_original_read_children(tmp_pa
 
 
 @pytest.mark.parametrize("surviving_anchor", [False, True])
-def test_original_excision_projection_survives_source_commit_and_protects_other_rows(
+def test_original_excision_projection_survives_source_commit_and_keeps_other_rows(
     tmp_path: Path, surviving_anchor: bool
 ) -> None:
     from dataclasses import replace
@@ -1888,9 +1891,9 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                 with seal.mutation_scope(index) as scope:
                     scope.authorize_session_removal((target,))
                     assert stage_index_session_deletions(index, scope, (target,)) == (target,)
-                    # Projected removal never changes the verified live proof.
-                    with pytest.raises(ReferenceSealError):
-                        scope.validate_reachability(index)
+                    # An authorized removal may leave User anchors naming the
+                    # removed session, live or projected.
+                    scope.validate_reachability(index)
                     scope.preflight_reachability()
                     with source_permit.hold_authority(), source_permit.mutation_connection() as source:
                         source.execute("BEGIN IMMEDIATE")
@@ -1908,36 +1911,33 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                         writer.commit()
                         seal.accept_known_tier_commit(user_permit.committed())
 
+            apply_staged()
             if surviving_anchor:
-                with pytest.raises(ReferenceSealError):
-                    apply_staged()
-                assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone()
-                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone()
-                assert (
-                    seal.observer("source").execute("SELECT value FROM authority_control").fetchone()[0] == "original"
+                # A surviving row's references to the excised session stay,
+                # unchanged, beside the removal (user.db is durable).
+                assert user.execute("SELECT scope_ref FROM assertions WHERE assertion_id='retained'").fetchone()[0] == (
+                    f"session:{target}"
                 )
-            else:
-                apply_staged()
-                assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone() is None
-                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone() is None
-                assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='request-history'").fetchone()
-                for message_id in target_messages:
-                    with closing(index.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,))) as cursor:
-                        assert cursor.fetchone() is None
-                for block_id in target_blocks:
-                    with closing(index.execute("SELECT 1 FROM blocks WHERE block_id=?", (block_id,))) as cursor:
-                        assert cursor.fetchone() is None
-                with closing(index.execute("SELECT * FROM messages WHERE session_id=?", (survivor,))) as cursor:
-                    assert tuple(cursor) == survivor_messages
-                with closing(
-                    index.execute(
-                        "SELECT b.* FROM blocks b JOIN messages m ON m.message_id=b.message_id WHERE m.session_id=?",
-                        (survivor,),
-                    )
-                ) as cursor:
-                    assert tuple(cursor) == survivor_blocks
-                with closing(index.execute("PRAGMA foreign_key_check")) as cursor:
+            assert index.execute("SELECT 1 FROM sessions WHERE session_id=?", (target,)).fetchone() is None
+            assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='removable'").fetchone() is None
+            assert user.execute("SELECT 1 FROM assertions WHERE assertion_id='request-history'").fetchone()
+            for message_id in target_messages:
+                with closing(index.execute("SELECT 1 FROM messages WHERE message_id=?", (message_id,))) as cursor:
                     assert cursor.fetchone() is None
+            for block_id in target_blocks:
+                with closing(index.execute("SELECT 1 FROM blocks WHERE block_id=?", (block_id,))) as cursor:
+                    assert cursor.fetchone() is None
+            with closing(index.execute("SELECT * FROM messages WHERE session_id=?", (survivor,))) as cursor:
+                assert tuple(cursor) == survivor_messages
+            with closing(
+                index.execute(
+                    "SELECT b.* FROM blocks b JOIN messages m ON m.message_id=b.message_id WHERE m.session_id=?",
+                    (survivor,),
+                )
+            ) as cursor:
+                assert tuple(cursor) == survivor_blocks
+            with closing(index.execute("PRAGMA foreign_key_check")) as cursor:
+                assert cursor.fetchone() is None
 
 
 @pytest.mark.parametrize("include_replace_delete", [False, True])

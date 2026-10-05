@@ -32,7 +32,7 @@ def _session_matches(
     *,
     limit: int,
     before_input: Callable[[str, tuple[str, ...], str, tuple[object, ...]], None] | None,
-) -> list[sqlite3.Row]:
+) -> list[tuple[object, ...]]:
     # Select physical identities once. Prefix/suffix ambiguity has no stable
     # representative beyond its declared ORDER BY; payload hydration uses
     # these exact selected rows, never an independent competing LIMIT query.
@@ -40,7 +40,7 @@ def _session_matches(
         conn, f"SELECT rowid FROM sessions WHERE {predicate} ORDER BY session_id LIMIT ?", (*parameters, limit)
     ) as cursor:
         rowids = [row[0] for row in cursor]
-    result: list[sqlite3.Row] = []
+    result: list[tuple[object, ...]] = []
     for rowid in rowids:
         if before_input is not None:
             before_input("sessions", ("session_id",), "SELECT rowid FROM sessions WHERE rowid=?", (rowid,))
@@ -48,7 +48,7 @@ def _session_matches(
             row = cursor.fetchone()
         if row is None:
             raise KeyError("selected session identity disappeared during its owned read")
-        result.append(row)
+        result.append(tuple(row))
     return result
 
 
@@ -69,13 +69,13 @@ def resolve_session_id_in_index(
                 pass
     exact = _session_matches(conn, "session_id=?", (token,), limit=1, before_input=before_input)
     if exact:
-        return str(exact[0]["session_id"])
+        return str(exact[0][0])
     if ":" in token:
         provider_token, native_id = token.split(":", 1)
         origin_id = f"{origin_from_provider(Provider.from_string(provider_token)).value}:{native_id}"
         exact = _session_matches(conn, "session_id=?", (origin_id,), limit=1, before_input=before_input)
         if exact:
-            return str(exact[0]["session_id"])
+            return str(exact[0][0])
     lower_bound, upper_bound = session_id_prefix_bounds(token)
     where = "session_id >= ?"
     params: tuple[object, ...] = (lower_bound,)
@@ -94,7 +94,7 @@ def resolve_session_id_in_index(
                 before_input=before_input,
             )
             if len(exact_suffix_rows) == 1:
-                return str(exact_suffix_rows[0]["session_id"])
+                return str(exact_suffix_rows[0][0])
             if len(exact_suffix_rows) > 1:
                 raise ValueError(f"session id suffix {token!r} is ambiguous")
             suffix_rows = _session_matches(
@@ -105,10 +105,10 @@ def resolve_session_id_in_index(
                 before_input=before_input,
             )
             if len(suffix_rows) == 1:
-                return str(suffix_rows[0]["session_id"])
+                return str(suffix_rows[0][0])
             if len(suffix_rows) > 1:
                 raise ValueError(f"session id prefix {token!r} is ambiguous")
         raise KeyError(token)
     if len(rows) > 1:
         raise ValueError(f"session id prefix {token!r} is ambiguous")
-    return str(rows[0]["session_id"])
+    return str(rows[0][0])

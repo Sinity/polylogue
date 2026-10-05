@@ -2649,6 +2649,12 @@ class PreparedIndexMutation:
             with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
                 if cursor.fetchone():
                     return False
+        if ref.kind == "session" and ref.wire_ref == ObjectRef("session", ref.object_id).format():
+            # A stored canonical session id names exactly that row; user-tier
+            # reads join it exactly. Its public-token prefix law could now
+            # match a surviving session whose id extends the removed one (a
+            # subagent child), which is not where this reference points.
+            return True
         parsed = _relevant_ref(ref.wire_ref)
         return parsed is not None and _resolve_target(conn, parsed) is None
 
