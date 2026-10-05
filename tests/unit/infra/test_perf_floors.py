@@ -2,7 +2,7 @@
 
 Covers the pure comparison/serialization logic exhaustively (fast, no I/O)
 plus one end-to-end smoke run of the full curated measurement pipeline in
-``--quick`` shape. The smoke run exercises revision-backfill census/replay
+``--quick`` shape. The smoke run exercises canonical retained replay
 and route latency through ``compute_latency_percentiles``.
 """
 
@@ -195,8 +195,6 @@ def test_run_perf_floor_set_quick_measures_every_curated_metric(tmp_path: Path) 
     assert report["machine"]["cpu_count"]
 
     expected_metrics = {
-        "census_small_raws_per_s",
-        "census_chain_revisions_per_s",
         "replay_sessions_per_min",
         "query_search_summaries_p50_ms",
         "query_search_summaries_p95_ms",

@@ -158,3 +158,22 @@ async def bootstrap_ready_archive_root_async(root: Path) -> Path:
             input_demand=owner._compute_adapter.amend_current_input_demand,
         )
     return root
+
+
+def run_off_event_loop(operation: Callable[[], _T]) -> _T:
+    """Run synchronous archive setup where a synchronous write lease may block.
+
+    A synchronous write lease refuses to block a running event loop. Fixture
+    setup called from an async test therefore runs on a dedicated thread with
+    no loop and is joined before the test continues; a caller without a loop
+    runs it directly.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return operation()
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fixture-off-loop") as executor:
+        return executor.submit(operation).result()

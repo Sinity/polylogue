@@ -22,7 +22,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.archive_templates import run_archive_fixture_prepare
+from tests.infra.archive_templates import run_archive_fixture_prepare, run_off_event_loop
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.live_ingest import write_index_session
@@ -86,7 +86,7 @@ LIST_CONV_FILTERS: list[ListSessionsCase] = [
 
 
 def _archive(tmp_path: Path) -> Polylogue:
-    initialize_active_archive_root(tmp_path)
+    run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
