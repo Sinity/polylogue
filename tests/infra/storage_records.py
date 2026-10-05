@@ -1303,3 +1303,42 @@ def seed_thread_search_archive(root: Path) -> dict[str, str]:
     )
     child.save()
     return {"older": older.native_session_id(), "newer": newer.native_session_id(), "child": child.native_session_id()}
+
+
+def seed_attachment_library_lineage_archive(root: Path) -> dict[str, str]:
+    """Physical refs before/after an inherited cut, plus child and foreign refs."""
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with ArchiveStore(root):
+        pass
+    index = root / "index.db"
+    parent = SessionBuilder(index, "attachment-parent").created_at("2026-01-01T00:00:00+00:00")
+    parent.add_message(message_id="prefix", text="inherited prefix")
+    parent.add_message(message_id="later", text="outside inherited cut")
+    parent.add_attachment("prefix", message_id="prefix", display_name="prefix.txt")
+    parent.add_attachment("later", message_id="later", display_name="post-cut.txt")
+    parent.save()
+    child = SessionBuilder(index, "attachment-child").created_at("2026-02-01T00:00:00+00:00")
+    child.add_message(message_id="own", text="child tail")
+    child.add_attachment("own", message_id="own", display_name="own.txt")
+    child.save()
+    foreign = SessionBuilder(index, "attachment-foreign").created_at("2026-03-01T00:00:00+00:00")
+    foreign.add_message(message_id="foreign", text="foreign session")
+    foreign.add_attachment("foreign", message_id="foreign", display_name="foreign.txt")
+    foreign.save()
+    parent_id, child_id = parent.native_session_id(), child.native_session_id()
+    with write_lease("test.attachment-library-lineage"), ArchiveStore.open_existing(root, read_only=False) as archive:
+        message = archive._conn.execute(
+            "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+        assert message is not None
+        archive._conn.execute(
+            "INSERT INTO session_links(src_session_id,dst_origin,dst_native_id,link_type,resolved_dst_session_id,"
+            "branch_point_message_id,branch_point_content_address,inheritance,status,confidence,evidence_json,observed_at_ms) "
+            "VALUES (?, 'codex-session', ?, 'fork', ?, ?, ?, 'prefix-sharing', NULL, 1.0, '[]', 0)",
+            (child_id, parent.conv.native_id, parent_id, message[0], message[1]),
+        )
+        archive._conn.commit()
+    return {"parent": parent_id, "child": child_id, "foreign": foreign.native_session_id()}

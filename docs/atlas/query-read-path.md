@@ -217,3 +217,8 @@ Annotation imports return a committed immutable batch/count summary through CLI,
 ## Thread search
 
 The public thread insight route searches session identity, title, repository URL, branch, support level, and the payload's thread/member support signals before the requested result window. API, MCP registry projection, and insight exports share `ArchiveStore.iter_thread_insights`. Strong and moderate threads remain distinct; a root without a materialized profile remains readable from the same session evidence as an exact public thread read. Profile absence does not silently consume a page slot. Search does not hydrate all threads before selecting a page. The former async thread-list adapter and its row-only mapper are retired with their unused query DTO; exact retained thread-record reads still use their existing profile owner.
+
+
+## Attachment library session scope
+
+The attachment library applies a session filter to its canonical composed transcript before selecting the requested page. Parent-message references through the inherited branch cut are included; references after the cut and foreign messages are excluded. Rows retain their physical owning session, message and provider reference attribution. Both the pinned HTTP reader and asynchronous repository use one shared SQL selection and the existing snapshot/lineage owners. Incomplete lineage refuses the read instead of claiming a complete child-only library; an absent materialized session profile is not a lineage fault. Pages use the same newest-session, transcript-position, attachment-ID and reference-ID order. Planning retains segment metadata, without hydrating all messages or collecting every message ID. Existing offset and SQL relation scans can still scale with the selected relation.
