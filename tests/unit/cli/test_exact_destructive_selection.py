@@ -147,7 +147,8 @@ def test_latest_selects_exactly_the_newest_session_for_preview_and_delete(archiv
 
     preview = _json_document(_invoke(["--latest", "find", TOKEN, "then", "delete", "--dry-run"]))
     assert preview["status"] == "preview"
-    assert preview["session_ids"] == [archive.newest]
+    assert preview["session_count"] == 1
+    assert preview["session_ids_sample"] == [archive.newest]
 
     deleted = _json_document(_invoke(["--latest", "find", TOKEN, "then", "delete", "--yes"]))
 
@@ -165,7 +166,8 @@ def test_preview_count_equals_applied_count_and_spares_prefix_siblings(archive: 
 
     preview = _json_document(_invoke(["find", TOKEN, "then", "delete", "--dry-run", "--all"]))
     assert preview["session_count"] == len(archive.selected)
-    previewed = preview["session_ids"]
+    # Three matches fit inside the preview's bounded sample.
+    previewed = preview["session_ids_sample"]
     assert isinstance(previewed, list)
     assert set(previewed) == set(archive.selected)
 
@@ -188,3 +190,18 @@ def test_root_mutation_on_an_unknown_ref_is_refused_not_widened_to_a_text_search
     assert result.exit_code == 1, result.output
     assert f"Session not found: {ABSENT_REF}" in result.output
     assert archive.user_tags() == {}
+
+
+def test_root_mutation_on_a_resolving_ref_tags_exactly_that_session(archive: _Archive) -> None:
+    """A ref-shaped token that names a session mutates that session alone.
+
+    Anti-vacuity: lower the token into the page selection as text instead and
+    no session's text mentions its own id, so nothing is tagged; resolve it by
+    prefix and the unselected sibling sharing the prefix is tagged too.
+    """
+
+    target = archive.selected[0]
+    result = _invoke(["--add-tag", "exact", "find", target])
+
+    assert result.exit_code == 0, result.output
+    assert archive.user_tags() == {target: {"exact"}}
