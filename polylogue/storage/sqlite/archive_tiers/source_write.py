@@ -1005,68 +1005,144 @@ def write_source_hook_event_batch(
     _assert_excision_policy(carrier_blob_hash, source_path=carrier_source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, carrier_blob_hash):
         raise ContentExcisedError(blob_hash=carrier_blob_hash, source_path=carrier_source_path)
-    written = 0
+    from polylogue.storage.blob_publication import consume_blob_publication_receipt
+
+    coordinates = [hook_carrier_coordinate(carrier_relative_path, carried.byte_offset) for carried in events]
     with conn if manage_transaction else nullcontext():
-        for carried in events:
-            coordinate = hook_carrier_coordinate(carrier_relative_path, carried.byte_offset)
+        # Every read and write is one statement per page or per batch, not per
+        # event: Source statements are re-authorized at every prepare, so a
+        # per-event statement family made the authorizer the route's cost.
+        recorded_events = _recorded_hook_events(conn, [carried.event.hook_event_id for carried in events])
+        recorded_carriers = _recorded_hook_carriers(conn, carrier_source_id, coordinates)
+        event_rows: list[tuple[object, ...]] = []
+        ref_rows: list[tuple[object, ...]] = []
+        carrier_rows: list[tuple[object, ...]] = []
+        for carried, coordinate in zip(events, coordinates, strict=True):
+            event = carried.event
             # A carrier grows, so a later revision retains a superset of an
             # earlier one's bytes under a different blob hash. The event is the
             # same evidence either way, and its FIRST-observed carrier blob is
             # what the archive already recorded -- exactly the convention
             # source-tier v36 set when it added this relation. Re-materializing
             # therefore keeps the recorded blob rather than conflicting on it;
-            # a genuine disagreement about the event's own content still raises
-            # from _insert_hook_event.
-            observed_blob_hash = _first_observed_hook_blob_hash(
-                conn,
-                hook_event_id=carried.event.hook_event_id,
-                source_id=carrier_source_id,
-                relative_path=coordinate,
+            # a genuine disagreement about the event's own content still raises.
+            recorded_event = recorded_events.get(event.hook_event_id)
+            recorded_carrier = recorded_carriers.get(coordinate)
+            observed_blob_hash = (
+                recorded_event[6]
+                if recorded_event is not None and recorded_event[6] is not None
+                else (recorded_carrier[1] if recorded_carrier is not None else None)
             )
             blob_hash = observed_blob_hash or carrier_blob_hash
-            _insert_hook_event(conn, carried.event, blob_hash=blob_hash)
-            _insert_blob_ref(
-                conn,
-                ArchiveSourceBlobRef(
-                    blob_hash=blob_hash,
-                    raw_id=carried.event.hook_event_id,
-                    ref_type="hook_payload",
-                    source_path=carrier_source_path,
-                    size_bytes=carried.line_bytes,
-                    acquired_at_ms=acquired_at_ms,
-                    publication_receipt_id=blob_publication_receipt_id,
-                ),
+            payload_json = _json_dumps(event.payload)
+            incoming_event = (
+                require_vocabulary(event.origin, Origin, field="hook_event.origin"),
+                event.native_id,
+                event.session_native_id,
+                event.event_type,
+                payload_json,
+                event.observed_at_ms,
+                blob_hash,
             )
-            _insert_hook_event_carrier(
-                conn,
-                source_id=carrier_source_id,
-                relative_path=coordinate,
-                hook_event=carried.event,
-                blob_hash=blob_hash,
-                role=carrier_role_value,
-                admitted_at_ms=acquired_at_ms,
+            if recorded_event is not None:
+                if recorded_event != incoming_event:
+                    raise HookEventConflictError(f"hook event conflict for {event.hook_event_id}")
+            else:
+                recorded_events[event.hook_event_id] = incoming_event
+                event_rows.append((event.hook_event_id, *incoming_event[:3], event.source_path, *incoming_event[3:]))
+            ref_rows.append(
+                (
+                    blob_hash,
+                    event.hook_event_id,
+                    "hook_payload",
+                    carrier_source_path,
+                    carried.line_bytes,
+                    acquired_at_ms,
+                )
             )
-            written += 1
-    return written
+            incoming_carrier = (
+                event.hook_event_id,
+                blob_hash,
+                hashlib.sha256(payload_json.encode()).digest(),
+                carrier_role_value,
+            )
+            if recorded_carrier is not None:
+                if recorded_carrier != incoming_carrier:
+                    raise HookEventConflictError(f"hook carrier conflict for {carrier_source_id}:{coordinate}")
+            else:
+                recorded_carriers[coordinate] = incoming_carrier
+                carrier_rows.append((carrier_source_id, coordinate, *incoming_carrier, acquired_at_ms))
+        conn.executemany(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id, source_path, event_type,
+                payload_json, observed_at_ms, blob_hash
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            event_rows,
+        )
+        # Hook coordinates keep their first observation.
+        conn.executemany(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            ref_rows,
+        )
+        for consumed_blob_hash in dict.fromkeys(row[0] for row in ref_rows):
+            consume_blob_publication_receipt(conn, blob_publication_receipt_id, cast(bytes, consumed_blob_hash))
+        conn.executemany(
+            "INSERT INTO hook_event_carriers "
+            "(source_id, relative_path, hook_event_id, blob_hash, payload_digest, carrier_role, admitted_at_ms) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            carrier_rows,
+        )
+    return len(events)
 
 
-def _first_observed_hook_blob_hash(
-    conn: sqlite3.Connection,
-    *,
-    hook_event_id: str,
-    source_id: str,
-    relative_path: str,
-) -> bytes | None:
-    """The carrier blob this event was first recorded against, if it was."""
+#: Page size of one recorded-identity read; paging bounds the statement's
+#: variable count, never the batch it reads.
+_HOOK_IDENTITY_PAGE = 500
 
-    row = conn.execute("SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?", (hook_event_id,)).fetchone()
-    if row is not None and row[0] is not None:
-        return bytes(row[0])
-    carrier = conn.execute(
-        "SELECT blob_hash FROM hook_event_carriers WHERE source_id = ? AND relative_path = ?",
-        (source_id, relative_path),
-    ).fetchone()
-    return bytes(carrier[0]) if carrier is not None else None
+
+def _recorded_hook_events(conn: sqlite3.Connection, hook_event_ids: Sequence[str]) -> dict[str, tuple[object, ...]]:
+    """The recorded semantics of every listed hook event that already exists."""
+    recorded: dict[str, tuple[object, ...]] = {}
+    distinct = tuple(dict.fromkeys(hook_event_ids))
+    for offset in range(0, len(distinct), _HOOK_IDENTITY_PAGE):
+        page = distinct[offset : offset + _HOOK_IDENTITY_PAGE]
+        placeholders = ",".join("?" for _ in page)
+        for row in conn.execute(
+            "SELECT hook_event_id, origin, native_id, session_native_id, event_type, payload_json, "
+            f"observed_at_ms, blob_hash FROM raw_hook_events WHERE hook_event_id IN ({placeholders})",
+            page,
+        ):
+            recorded[str(row[0])] = (
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+                row[5],
+                row[6],
+                None if row[7] is None else bytes(row[7]),
+            )
+    return recorded
+
+
+def _recorded_hook_carriers(
+    conn: sqlite3.Connection, source_id: str, relative_paths: Sequence[str]
+) -> dict[str, tuple[object, ...]]:
+    """The recorded carrier coordinate of every listed path that already exists."""
+    recorded: dict[str, tuple[object, ...]] = {}
+    distinct = tuple(dict.fromkeys(relative_paths))
+    for offset in range(0, len(distinct), _HOOK_IDENTITY_PAGE):
+        page = distinct[offset : offset + _HOOK_IDENTITY_PAGE]
+        placeholders = ",".join("?" for _ in page)
+        for row in conn.execute(
+            "SELECT relative_path, hook_event_id, blob_hash, payload_digest, carrier_role FROM hook_event_carriers "
+            f"WHERE source_id = ? AND relative_path IN ({placeholders})",
+            (source_id, *page),
+        ):
+            recorded[str(row[0])] = (row[1], bytes(row[2]), bytes(row[3]), row[4])
+    return recorded
 
 
 def delete_source_hook_event(
