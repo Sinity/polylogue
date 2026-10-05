@@ -1261,3 +1261,45 @@ def seed_topology_star(db_path: Path, count: int) -> tuple[str, ...]:
         builder.add_message(text=f"sibling {index}").save()
         ids.append(builder.native_session_id())
     return tuple(ids)
+
+
+def seed_thread_search_archive(root: Path) -> dict[str, str]:
+    """A profiled older singleton and newer unprofiled parent/child thread."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    index_path = root / "index.db"
+    older = (
+        SessionBuilder(index_path, "thread-old")
+        .provider("claude-code")
+        .title("older lookup title")
+        .git_repository_url("https://example.test/org/old-repo.git")
+        .git_branch("old-branch")
+        .created_at("2026-01-01T00:00:00+00:00")
+        .updated_at("2026-01-01T00:00:00+00:00")
+        .add_message(text="older request")
+    )
+    older.save()
+    materialize_session_insights(index_path)
+    newer = (
+        SessionBuilder(index_path, "thread-new")
+        .provider("claude-code")
+        .title("newer lookup title")
+        .git_repository_url("https://example.test/org/new-repo.git")
+        .git_branch("new-branch")
+        .created_at("2026-03-01T00:00:00+00:00")
+        .updated_at("2026-03-01T00:00:00+00:00")
+        .add_message(text="newer request")
+    )
+    newer.save()
+    child = (
+        SessionBuilder(index_path, "thread-child")
+        .provider("claude-code")
+        .parent_session("ext-thread-new")
+        .branch_type("continuation")
+        .created_at("2026-03-02T00:00:00+00:00")
+        .updated_at("2026-03-02T00:00:00+00:00")
+        .add_message(text="continued reply")
+    )
+    child.save()
+    return {"older": older.native_session_id(), "newer": newer.native_session_id(), "child": child.native_session_id()}

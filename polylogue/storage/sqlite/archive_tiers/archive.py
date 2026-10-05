@@ -3060,12 +3060,30 @@ class ArchiveStore:
                             OR lower(COALESCE(qs.title, '')) LIKE ?
                             OR lower(COALESCE(qs.git_repository_url, '')) LIKE ?
                             OR lower(COALESCE(qs.git_branch, '')) LIKE ?
+                            OR (qs.parent_session_id IS NOT NULL AND lower(?) LIKE ?)
                           )
                     )
+                    OR lower(?) LIKE ?
+                    OR lower(CASE WHEN t.session_count > 1 THEN ? ELSE ? END) LIKE ?
                 )
                 """.strip()
             )
-            params.extend([like, like, like, like, like])
+            params.extend(
+                [
+                    like,
+                    like,
+                    like,
+                    like,
+                    like,
+                    "\n".join((_ARCHIVE_THREAD_LINEAGE_SIGNAL, _ARCHIVE_THREAD_PARENT_SIGNAL)),
+                    like,
+                    "\n".join(_ARCHIVE_THREAD_SUPPORT_SIGNALS),
+                    like,
+                    ConfidenceBand.STRONG.value,
+                    ConfidenceBand.MODERATE.value,
+                    like,
+                ]
+            )
         if since_ms is not None:
             where.append("t.created_at_ms >= ?")
             params.append(since_ms)
@@ -3169,9 +3187,9 @@ class ArchiveStore:
             )
             for index, session in enumerate(session_rows)
         )
-        lineage_signals: tuple[str, ...] = ("archive_threads", "archive_thread_sessions")
+        lineage_signals: tuple[str, ...] = _ARCHIVE_THREAD_SUPPORT_SIGNALS
         if any(session["parent_session_id"] is not None for session in session_rows):
-            lineage_signals = (*lineage_signals, "explicit_lineage")
+            lineage_signals = (*lineage_signals, _ARCHIVE_THREAD_LINEAGE_SIGNAL)
         payload = ThreadPayload(
             start_time=_iso_from_ms(start_ms),
             end_time=_iso_from_ms(end_ms),
@@ -9435,6 +9453,13 @@ def _thread_member_depth(rows: list[sqlite3.Row], session_id: str) -> int:
     return depth
 
 
+# These are the public archive thread payload's signal vocabulary. SQL search
+# lowers the same declarations before paging; it does not hydrate all roots.
+_ARCHIVE_THREAD_SUPPORT_SIGNALS = ("archive_threads", "archive_thread_sessions")
+_ARCHIVE_THREAD_LINEAGE_SIGNAL = "explicit_lineage"
+_ARCHIVE_THREAD_PARENT_SIGNAL = "parent_session_id"
+
+
 def _archive_thread_member_role(row: sqlite3.Row, thread_id: str) -> str:
     if str(row["session_id"]) == thread_id:
         return "root"
@@ -9444,9 +9469,9 @@ def _archive_thread_member_role(row: sqlite3.Row, thread_id: str) -> str:
 
 
 def _archive_thread_member_support_signals(row: sqlite3.Row) -> tuple[str, ...]:
-    signals = ["archive_thread_sessions"]
+    signals = [_ARCHIVE_THREAD_SUPPORT_SIGNALS[1]]
     if row["parent_session_id"] is not None:
-        signals.append("parent_session_id")
+        signals.append(_ARCHIVE_THREAD_PARENT_SIGNAL)
     return tuple(signals)
 
 

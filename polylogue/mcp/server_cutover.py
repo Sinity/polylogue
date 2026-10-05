@@ -930,6 +930,7 @@ async def _query_registry_insight(
     hooks: ServerCallbacks,
     descriptor: Any,
     *,
+    expression: str | None,
     limit: int | None,
     offset: int | None,
     origin: str | None,
@@ -957,6 +958,8 @@ async def _query_registry_insight(
         )
     fields = set(query_model.model_fields)
     kwargs: dict[str, object] = {}
+    if expression is not None and "query" in fields:
+        kwargs["query"] = expression
     if "limit" in fields:
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
@@ -967,7 +970,17 @@ async def _query_registry_insight(
 
     with hooks.response_context(
         "query",
-        {"projection": descriptor.resolved_cli_command_name, "origin": origin, "tag": tag, "repo": repo},
+        {
+            "projection": descriptor.resolved_cli_command_name,
+            "expression": expression,
+            "limit": kwargs.get("limit"),
+            "offset": kwargs.get("offset"),
+            "origin": origin,
+            "tag": tag,
+            "repo": repo,
+            "since": since,
+            "until": until,
+        },
     ):
         try:
             items = await fetch_insights_async(descriptor, hooks.get_polylogue(), **kwargs)
@@ -982,6 +995,7 @@ async def _query_insight_projection(
     hooks: ServerCallbacks,
     projection: str,
     *,
+    expression: str | None,
     limit: int | None,
     offset: int | None,
     origin: str | None,
@@ -1010,6 +1024,7 @@ async def _query_insight_projection(
         return await _query_registry_insight(
             hooks,
             descriptor,
+            expression=expression,
             limit=limit,
             offset=offset,
             origin=origin,
@@ -1278,6 +1293,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
         by the same origin/tag/repo/since/until filters.
 
+        Registry insight projections pass ``expression`` to their declared
+        text-search field before paging; for example, ``projection="threads"``
+        with ``expression="strong"`` selects strongly supported threads.
+        Existing reference expressions resolve before registry text search.
+
         Personal-state continuations are decimal offsets, matching the
         ``next_offset`` returned in each page.
         """
@@ -1393,6 +1413,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return await _query_insight_projection(
                     hooks,
                     projection,
+                    expression=expression,
                     limit=limit,
                     offset=offset,
                     origin=origin,
