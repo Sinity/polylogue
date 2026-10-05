@@ -2125,7 +2125,11 @@ def _census_historical_revision_evidence(
                 else None
             )
             shard_transport.add_raw(raw_id, sessions, prepared_artifact=prepared_artifact)
-        if len(sessions) == 1 and revision_kind is RawRevisionKind.UNKNOWN:
+        if (
+            len(sessions) == 1
+            and revision_kind is RawRevisionKind.UNKNOWN
+            and archive.raw_native_id(raw_id) is not None
+        ):
             session = sessions[0]
             logical_key = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
             archive.bind_raw_revision(
@@ -2145,12 +2149,17 @@ def _census_historical_revision_evidence(
         elif revision_kind is RawRevisionKind.UNKNOWN or (
             _raw_has_pending_envelope(archive, raw_id)
             and (
-                len(sessions) > 1 or raw_has_membership_governed_pending_envelope(archive._ensure_source_conn(), raw_id)
+                archive.raw_native_id(raw_id) is None
+                or len(sessions) > 1
+                or raw_has_membership_governed_pending_envelope(archive._ensure_source_conn(), raw_id)
             )
         ):
-            # A pending-raw envelope names bytes, not a session. One session
-            # rebinds it to that session's key (the parser census below); a raw
-            # holding several is governed per session, exactly as live ingest
+            # A grouped acquisition retains native_id=NULL even when its
+            # parser currently yields one session. Its original membership
+            # governs that session, just as for a raw holding several.
+            # A native singleton pending envelope instead learns its own key
+            # through the parser census below. Grouped raws are governed per
+            # session, exactly as live ingest
             # records a multi-session file. A raw already governed that way
             # replaces its memberships whatever the current session count, so
             # a parser that now yields one session cannot leave stale members.

@@ -5046,7 +5046,11 @@ class LiveBatchProcessor:
                             self._source_name_for(Path(record.source_path)) == "browser-capture"
                             or frontier_kind_for_origin(origin_from_provider(provider)) == "whole-snapshot"
                         )
-                        if is_browser_capture_snapshot or archive.raw_membership_raw_ids(logical_source_key):
+                        if (
+                            archive.raw_native_id(source_raw_id) is None
+                            or is_browser_capture_snapshot
+                            or archive.raw_membership_raw_ids(logical_source_key)
+                        ):
                             archive.replace_raw_membership_census(
                                 source_raw_id,
                                 sessions,
