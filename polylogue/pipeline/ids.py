@@ -455,6 +455,11 @@ class _DiskRevisionStore:
             del self.conn
             raise
         try:
+            # Disposable: the database lives in its own temporary directory and
+            # is removed with it. Durable journaling cost an fsync per CREATE,
+            # for every projected session.
+            self.conn.execute("PRAGMA journal_mode = MEMORY")
+            self.conn.execute("PRAGMA synchronous = OFF")
             self.conn.execute("CREATE TABLE message_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
             self.conn.execute("CREATE TABLE event_hash (ordinal INTEGER PRIMARY KEY, digest BLOB NOT NULL)")
             self.conn.execute(

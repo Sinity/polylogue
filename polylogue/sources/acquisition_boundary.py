@@ -53,6 +53,7 @@ from .dispatch import (
 if TYPE_CHECKING:
     from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
     from polylogue.sources.source_staging import SourceInputBinding
+    from polylogue.sources.sqlite_export import SourceBytePage
     from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 _READ_CHUNK_BYTES = 1 << 20
@@ -577,17 +578,22 @@ def capture_bound_path(
     *,
     heartbeat: Heartbeat | None = None,
     source_binding: SourceInputBinding | None = None,
+    byte_page: SourceBytePage | None = None,
 ) -> BoundPathCapture:
     """Retain accepted bytes without closing source descriptors in this process.
 
     The fresh reader owns the source descriptor through final proof. The
     parent's sink validates bytes before its private blob writer can complete.
+    A caller capturing a page of inputs lends its own ``byte_page`` so the
+    whole page shares one reader process; otherwise one is lent per capture.
     """
     from polylogue.sources.source_staging import bind_source_input, write_bound_input
 
     if source_binding is None:
         with bind_source_input(Path(path)) as binding:
-            return capture_bound_path(blob_store, path, location, heartbeat=heartbeat, source_binding=binding)
+            return capture_bound_path(
+                blob_store, path, location, heartbeat=heartbeat, source_binding=binding, byte_page=byte_page
+            )
     refuse_declared_foreign(str(source_binding.source_path), location)
     validator = BoundRecordValidator(str(source_binding.source_path), location)
     settlement: dict[str, object] = {}
@@ -602,8 +608,11 @@ def capture_bound_path(
 
         from polylogue.sources.sqlite_export import source_byte_page
 
-        with source_byte_page() as reader:
-            settlement.update(write_bound_input(source_binding, ValidatingSink(), reader=reader))
+        if byte_page is not None:
+            settlement.update(write_bound_input(source_binding, ValidatingSink(), reader=byte_page))
+        else:
+            with source_byte_page() as reader:
+                settlement.update(write_bound_input(source_binding, ValidatingSink(), reader=reader))
         validator.finish()
 
     try:
