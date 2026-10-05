@@ -141,8 +141,10 @@ def _status_operation_result(
             polylogue_config.api_auth_token, allow_no_auth=polylogue_config.api_allow_no_auth
         )
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
         try:
+            # A malformed configured URL is refused while building the request;
+            # it is the same transport failure as an unreachable one.
+            request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
             with urllib.request.urlopen(request, timeout=probe_timeout_s) as response:
                 status = json.loads(response.read())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
