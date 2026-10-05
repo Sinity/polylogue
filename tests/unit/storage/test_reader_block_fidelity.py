@@ -16,6 +16,7 @@ from polylogue.storage.runtime import AttachmentRecord, BlockRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.queries import attachments
+from tests.infra.prepared_replay import write_fixture_raw_session
 
 
 @pytest.mark.asyncio
@@ -53,7 +54,8 @@ async def test_stored_block_fields_survive_ordinary_readers_and_bounded_streams(
         ],
     )
     with ArchiveStore(tmp_path) as archive:
-        session_id = archive.write_raw_and_parsed_result(
+        session_id = write_fixture_raw_session(
+            archive,
             parsed,
             payload=b"neutral reader blocks",
             source_path="reader-blocks.json",

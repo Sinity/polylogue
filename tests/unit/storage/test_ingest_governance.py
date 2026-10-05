@@ -7,7 +7,7 @@ from collections.abc import Callable
 from contextlib import closing
 from functools import partial
 from pathlib import Path
-from typing import Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 import pytest
 
@@ -32,44 +32,15 @@ from polylogue.sources.revision_backfill import (
 from polylogue.storage.blob_publication import PreparedBlobPublicationClaim
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.raw import RawObservationReplacement
-from polylogue.storage.ingest_governance import (
-    _census_binding,
-    prepare_ingest_cohort,
-    prepare_raw_census,
-    publish_ingest_cohort,
-    publish_raw_census,
-)
 from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
-ParseFunction: TypeAlias = Callable[[ArchiveStore, str], list[ParsedSession]]
 _Publish: TypeAlias = Callable[[], bool]
 _CarrierAssertion: TypeAlias = Callable[[ParsedSession, ParsedSession, RawObservationReplacement, _Publish], None]
 _PhaseReceipt: TypeAlias = tuple[
     Literal["census", "classification", "replay"], RevisionCensusResult | PreparedRevisionReplayResult
 ]
-
-
-def test_prepared_census_binding_includes_revision_authority(tmp_path: Path) -> None:
-    """Authority-only census changes stale prepared descriptors.
-
-    Anti-vacuity: remove ``revision_authority`` from ``_census_binding``'s
-    SELECT/value and these two prepared-work snapshots become equal.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        (raw_id,) = _write_raws(archive, 1)
-        conn = archive._ensure_source_conn()
-        conn.execute(
-            "INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority) "
-            "VALUES (?, 'parser', 'complete', 0, 1, '', 'semantic')",
-            (raw_id,),
-        )
-        before = _census_binding(archive, raw_id)
-        conn.execute("UPDATE raw_membership_census SET revision_authority='byte' WHERE raw_id=?", (raw_id,))
-        after = _census_binding(archive, raw_id)
-        assert before != after
 
 
 def _session(
@@ -115,13 +86,6 @@ def _session(
     )
 
 
-def _parse_from(sessions_by_raw_id: dict[str, ParsedSession]) -> ParseFunction:
-    def parse(_archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-        return [sessions_by_raw_id[raw_id]]
-
-    return parse
-
-
 def _write_raws(archive: ArchiveStore, count: int) -> tuple[str, ...]:
     return tuple(
         archive.write_raw_payload(
@@ -132,60 +96,6 @@ def _write_raws(archive: ArchiveStore, count: int) -> tuple[str, ...]:
         )
         for index in range(count)
     )
-
-
-def _publish_census(archive: ArchiveStore, raw_id: str, parse: ParseFunction, *, at_ms: int) -> None:
-    prepared = prepare_raw_census(
-        archive,
-        raw_id,
-        parser_fingerprint="prepared-test-parser",
-        parse_retained_raw=parse,
-        censused_at_ms=at_ms,
-    )
-    assert publish_raw_census(archive, prepared).published
-
-
-def test_prepared_census_reuses_projection_and_does_not_terminalize_parse(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Publishing must use the compute projection and remain source-census-only.
-
-    Anti-vacuity: if publication reprojects the session or marks a raw parsed,
-    the patched projector or the final source-row assertion makes this fail.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        (raw_id,) = _write_raws(archive, 1)
-    sessions = {raw_id: _session("one", "two")}
-    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
-        _provider, blob_hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
-        assert reader.blob_path_for_hash(blob_hash) == tmp_path / "blob" / blob_hash[:2] / blob_hash[2:]
-        prepared = prepare_raw_census(
-            reader,
-            raw_id,
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=_parse_from(sessions),
-            censused_at_ms=7,
-        )
-
-    monkeypatch.setattr(
-        revision_governance,
-        "session_revision_projection",
-        lambda _session: (_ for _ in ()).throw(AssertionError("writer recomputed prepared projection")),
-    )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        assert publish_raw_census(archive, prepared).published
-
-        source = archive._ensure_source_conn()
-        assert source.execute(
-            "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == ("complete", 1)
-        assert source.execute(
-            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (
-            None,
-            None,
-        )
 
 
 @pytest.mark.asyncio
@@ -277,316 +187,6 @@ async def test_canonical_preparation_rejects_changed_source_binding(
             assert index.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
 
     await _run_original_raw_carrier_case(tmp_path, monkeypatch, check)
-
-
-def test_prepared_cohort_revalidates_head_and_descriptor_before_writer_mutation(tmp_path: Path) -> None:
-    """A later eligible head and an equal-count descriptor change both defer.
-
-    Anti-vacuity: removing either frontier/descriptor binding lets the stale
-    prepared cohort call the index writer after durable source evidence moved.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first_raw, second_raw, third_raw = _write_raws(archive, 3)
-        sessions = {
-            first_raw: _session("one"),
-            second_raw: _session("one", "two"),
-            third_raw: _session("one", "two", "three"),
-        }
-        parse = _parse_from(sessions)
-        _publish_census(archive, first_raw, parse, at_ms=1)
-        _publish_census(archive, second_raw, parse, at_ms=2)
-        initial = prepare_ingest_cohort(
-            archive,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(first_raw, second_raw),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=3,
-        )
-        assert publish_ingest_cohort(archive, initial).published
-
-        stale_head = prepare_ingest_cohort(
-            archive,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(first_raw, second_raw),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=4,
-        )
-        _publish_census(archive, third_raw, parse, at_ms=5)
-        advancing = prepare_ingest_cohort(
-            archive,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(third_raw,),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=6,
-        )
-        assert publish_ingest_cohort(archive, advancing).published
-        head_result = publish_ingest_cohort(archive, stale_head)
-        assert not head_result.published
-        assert head_result.reprepare_required
-        assert head_result.reason in {
-            "eligible membership selector changed",
-            "accepted head or persisted session frontier changed",
-        }
-
-        stale_descriptor = prepare_ingest_cohort(
-            archive,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(third_raw,),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=7,
-        )
-        with archive._ensure_source_conn():
-            archive._ensure_source_conn().execute(
-                "UPDATE raw_sessions SET source_path = ? WHERE raw_id = ?",
-                ("equal-count-but-new-descriptor.jsonl", third_raw),
-            )
-        descriptor_result = publish_ingest_cohort(archive, stale_descriptor)
-        assert not descriptor_result.published
-        assert descriptor_result.reprepare_required
-        assert descriptor_result.reason == "raw descriptor, membership, or census changed"
-
-
-def test_membership_that_becomes_eligible_after_preparation_defers_publication(tmp_path: Path) -> None:
-    """Revalidation rereads current membership, and request ownership still bounds it.
-
-    Two facts at once: a request-owned raw whose complete census lands
-    between preparation and publication must be seen by revalidation, and a
-    complete, undecided member of the same logical key that the request never
-    accepted must stay quarantined in both reads.
-
-    Anti-vacuity: answer revalidation from the prepared cohort's own selector
-    snapshot instead of rereading current membership and the first assertion
-    goes green while a stale cohort publishes over evidence that moved; drop
-    request ownership from the membership read and the unaccepted member is
-    pulled into the selector by preparation itself.
-    """
-    bootstrap_archive_root(tmp_path)
-    logical_source_key = "codex-session:prepared-membership"
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first_raw, second_raw, late_raw, unaccepted_raw = _write_raws(archive, 4)
-        sessions = {
-            first_raw: _session("one"),
-            second_raw: _session("one", "two"),
-            late_raw: _session("one", "two", "three"),
-            unaccepted_raw: _session("one", "two", "three", "four"),
-        }
-        parse = _parse_from(sessions)
-        _publish_census(archive, first_raw, parse, at_ms=1)
-        _publish_census(archive, second_raw, parse, at_ms=2)
-        # Complete and undecided on the same logical key, but never accepted by
-        # this request: an unrelated quarantined candidate.
-        _publish_census(archive, unaccepted_raw, parse, at_ms=3)
-
-        accepted = (first_raw, second_raw, late_raw)
-        stale = prepare_ingest_cohort(
-            archive,
-            logical_source_key=logical_source_key,
-            accepted_raw_ids=accepted,
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=4,
-        )
-        # late_raw carries no census yet, so it holds no membership row to select.
-        assert late_raw not in stale.selector_raw_ids
-        assert unaccepted_raw not in stale.selector_raw_ids
-        assert {first_raw, second_raw} <= set(stale.selector_raw_ids)
-
-        # The accepted raw becomes an eligible member after preparation.
-        _publish_census(archive, late_raw, parse, at_ms=5)
-
-        result = publish_ingest_cohort(archive, stale)
-        assert not result.published
-        assert result.reprepare_required
-        assert result.reason == "eligible membership selector changed"
-
-        fresh = prepare_ingest_cohort(
-            archive,
-            logical_source_key=logical_source_key,
-            accepted_raw_ids=accepted,
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=6,
-        )
-        assert late_raw in fresh.selector_raw_ids
-        assert unaccepted_raw not in fresh.selector_raw_ids
-        assert publish_ingest_cohort(archive, fresh).published
-
-
-@pytest.mark.parametrize("retired", [False, True])
-def test_only_explicit_census_retirement_selects_an_unaccepted_sibling(tmp_path: Path, retired: bool) -> None:
-    """Default raw quarantine is not request authority; actual retirement is."""
-    bootstrap_archive_root(tmp_path)
-    key = "codex-session:prepared-membership"
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        accepted, sibling = _write_raws(archive, 2)
-        parse = _parse_from({accepted: _session("one"), sibling: _session("other")})
-        _publish_census(archive, accepted, parse, at_ms=1)
-        _publish_census(archive, sibling, parse, at_ms=2)
-        source = archive._ensure_source_conn()
-        assert source.execute(
-            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?", (sibling,)
-        ).fetchone() == ("quarantined",)
-        if retired:
-            # This is the typed producer's durable retirement result: the
-            # complete census keeps the parsed identity after byte governance
-            # relinquishes its raw logical-source key.
-            source.execute(
-                "UPDATE raw_membership_census SET revision_authority = 'quarantined' WHERE raw_id = ?", (sibling,)
-            )
-            source.execute("UPDATE raw_sessions SET logical_source_key = NULL WHERE raw_id = ?", (sibling,))
-            source.commit()
-        prepared = prepare_ingest_cohort(
-            archive,
-            logical_source_key=key,
-            accepted_raw_ids=(accepted,),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=3,
-        )
-        assert accepted in prepared.selector_raw_ids
-        assert (sibling in prepared.selector_raw_ids) is retired
-
-
-def test_read_only_compute_defers_attachment_publication_until_writer_revalidation(tmp_path: Path) -> None:
-    """Read-only compute carries attachment evidence; only the writer publishes it.
-
-    Anti-vacuity: a compute-side publisher rejects under a read-only archive,
-    while a stale prepared attachment must leave both index attachments and
-    source blob references absent before a fresh writer-admitted publication.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first_raw, second_raw = _write_raws(archive, 2)
-        sessions = {
-            first_raw: _session("one"),
-            second_raw: _session("one", "two", attachment_bytes=b"prepared-attachment-bytes"),
-        }
-        parse = _parse_from(sessions)
-        _publish_census(archive, first_raw, parse, at_ms=1)
-        _publish_census(archive, second_raw, parse, at_ms=2)
-
-    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
-        prepared = prepare_ingest_cohort(
-            reader,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(first_raw, second_raw),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=3,
-        )
-        assert prepared.prepared_rows_by_raw_id
-        assert prepared.prepared_artifact is not None
-        prepared_claim = next(prepared.prepared_artifact.iter_attachment_claims())[2]
-        stale_staged_path = prepared_claim.prepared_path
-        assert stale_staged_path.is_file()
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
-        with writer._ensure_source_conn():
-            writer._ensure_source_conn().execute(
-                "UPDATE raw_sessions SET source_path = ? WHERE raw_id = ?",
-                ("changed-before-writer-admission.jsonl", second_raw),
-            )
-        stale = publish_ingest_cohort(writer, prepared)
-        assert not stale.published
-        assert stale.reprepare_required
-        assert not stale_staged_path.exists()
-        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
-        assert writer._ensure_source_conn().execute(
-            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'"
-        ).fetchone() == (0,)
-
-    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
-        fresh = prepare_ingest_cohort(
-            reader,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(first_raw, second_raw),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=4,
-        )
-        assert fresh.prepared_artifact is not None
-        fresh_claim = next(fresh.prepared_artifact.iter_attachment_claims())[2]
-        fresh_staged_path = fresh_claim.prepared_path
-        assert fresh_staged_path.is_file()
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
-        result = publish_ingest_cohort(writer, fresh)
-        assert result.published
-        assert result.session_id == "codex-session:prepared-membership"
-        assert not fresh_staged_path.exists()
-        assert writer._conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 1
-        assert writer._ensure_source_conn().execute(
-            "SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'"
-        ).fetchone() == (1,)
-
-
-def test_convertible_multi_session_retirement_preserves_complete_census(tmp_path: Path) -> None:
-    """Retiring one full export must retain every logical member it contained.
-
-    Anti-vacuity: passing only the target session to replacement would delete
-    the sibling membership, so the complete two-key assertion becomes red.
-    """
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first_raw, second_raw = _write_raws(archive, 2)
-        archive.bind_raw_revision(
-            first_raw,
-            RawRevisionEnvelope(
-                logical_source_key="codex-session:prepared-membership",
-                kind=RawRevisionKind.FULL,
-                source_revision="prepared-full-v1",
-                acquisition_generation=0,
-            ),
-        )
-        archive.bind_raw_revision(
-            second_raw,
-            RawRevisionEnvelope(
-                logical_source_key="codex-session:prepared-membership",
-                kind=RawRevisionKind.FULL,
-                source_revision="prepared-full-v2",
-                acquisition_generation=1,
-                predecessor_raw_id=first_raw,
-                baseline_raw_id=first_raw,
-            ),
-        )
-        sessions = {
-            first_raw: _session("one", session_id="prepared-membership").model_copy(
-                update={"messages": [ParsedMessage(provider_message_id="m0", role=Role.USER, text="one")]}
-            ),
-            second_raw: _session("two", session_id="prepared-membership"),
-        }
-
-        def parse(_archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-            return [sessions[raw_id], _session("other", session_id="prepared-sibling")]
-
-        prepared = prepare_ingest_cohort(
-            archive,
-            logical_source_key="codex-session:prepared-membership",
-            accepted_raw_ids=(),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=3,
-        )
-        result = publish_ingest_cohort(archive, prepared)
-        assert not result.published
-        assert result.reprepare_required
-        assert set(result.retired_raw_ids) == {first_raw, second_raw}
-        assert result.reprepare_logical_source_keys == (
-            "codex-session:prepared-membership",
-            "codex-session:prepared-sibling",
-        )
-        for raw_id in (first_raw, second_raw):
-            assert archive._ensure_source_conn().execute(
-                "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
-                (raw_id,),
-            ).fetchall() == [
-                ("codex-session:prepared-membership",),
-                ("codex-session:prepared-sibling",),
-            ]
 
 
 async def _run_precomputed_raw_case(
@@ -1262,3 +862,254 @@ async def test_canonical_retained_attachment_claims_keep_equal_content_coordinat
             assert index.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash=?", (blob_hash,)).fetchone() == (2,)
 
     await _run_original_raw_carrier_case(tmp_path, monkeypatch, check, session_factory=session, seed_setup=seed)
+
+
+def _move_source(root: Path, sql: str, parameters: tuple[object, ...]) -> Callable[[], None]:
+    # An independent Source process moves durable evidence; it is not a
+    # participant in the prepared publication's admitted writer custody.
+    def move() -> None:
+        with closing(sqlite3.connect(root / "source.db")) as source:
+            source.execute(sql, parameters)
+            source.commit()
+
+    return move
+
+
+def _membership_census(raw_id: str, sessions: list[ParsedSession], **census: Any) -> Callable[[Any], None]:
+    def prepare(seal: Any) -> None:
+        revision_governance.replace_raw_membership_census(
+            seal,
+            raw_id,
+            sessions,
+            parser_fingerprint=census.pop("parser_fingerprint", "prepared-test-parser"),
+            censused_at_ms=census.pop("censused_at_ms", 1),
+            revision_authority=census.pop("revision_authority", None),
+            **census,
+        )
+
+    return prepare
+
+
+def test_prepared_census_binding_includes_revision_authority(tmp_path: Path) -> None:
+    """An authority-only census change makes a prepared parser census stale.
+
+    The canonical parser census reads the membership census authority on its
+    original Source seal. Anti-vacuity: drop ``revision_authority`` from that
+    read and the intervening authority change publishes over moved evidence.
+    """
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+    _move_source(
+        tmp_path,
+        "INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms, "
+        "detail, revision_authority) VALUES (?, 'parser', 'complete', 0, 1, '', 'semantic')",
+        (raw_id,),
+    )()
+    with pytest.raises(ReferenceSealStaleError):
+        publish_prepared_source(
+            tmp_path,
+            "test.census.authority-binding",
+            lambda seal: revision_governance.record_current_parser_source_census(seal, raw_id),
+            after_prepare=_move_source(
+                tmp_path, "UPDATE raw_membership_census SET revision_authority='byte' WHERE raw_id=?", (raw_id,)
+            ),
+        )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone() == (0,)
+
+
+def test_prepared_census_reuses_projection_and_does_not_terminalize_parse(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Publication applies the prepared membership tape and stays census-only.
+
+    Anti-vacuity: if publication reprojects the session the patched projector
+    raises; if it marks the raw parsed the final source-row assertion fails.
+    """
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+
+    def forbid_projection() -> None:
+        monkeypatch.setattr(
+            revision_governance,
+            "session_revision_projection",
+            lambda _session: (_ for _ in ()).throw(AssertionError("writer recomputed prepared projection")),
+        )
+
+    publish_prepared_source(
+        tmp_path,
+        "test.census.prepared-projection",
+        _membership_census(raw_id, [_session("one", "two")], censused_at_ms=7),
+        after_prepare=forbid_projection,
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT status, member_count FROM raw_membership_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == ("complete", 1)
+        assert source.execute(
+            "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (None, None)
+
+
+def test_membership_that_becomes_eligible_after_preparation_defers_publication(tmp_path: Path) -> None:
+    """A membership census landing after preparation makes the prepared census stale.
+
+    Revalidation must reread current membership for the logical key rather
+    than trust its preparation snapshot. Anti-vacuity: answer publication from
+    the preparation snapshot and the stale census publishes over moved evidence.
+    """
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first_raw, late_raw = _write_raws(archive, 2)
+    publish_prepared_source(tmp_path, "test.membership.first", _membership_census(first_raw, [_session("one")]))
+
+    late_membership = _move_source(
+        tmp_path,
+        "INSERT INTO raw_session_memberships(raw_id, logical_source_key, provider_session_id, "
+        "source_revision, normalized_content_hash, message_count) VALUES (?, ?, ?, ?, ?, ?)",
+        (late_raw, "codex-session:prepared-membership", "prepared-membership", "late", bytes(32), 2),
+    )
+
+    with pytest.raises(ReferenceSealStaleError):
+        publish_prepared_source(
+            tmp_path,
+            "test.membership.stale",
+            _membership_census(first_raw, [_session("one", "two")], censused_at_ms=2),
+            after_prepare=late_membership,
+        )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT censused_at_ms FROM raw_membership_census WHERE raw_id=?", (first_raw,)
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("retired", [False, True])
+def test_only_explicit_census_retirement_selects_an_unaccepted_sibling(tmp_path: Path, retired: bool) -> None:
+    """Default raw quarantine is not request authority; explicit retirement is.
+
+    A sibling raw of the same logical key keeps its byte logical key under
+    ordinary quarantine; only the typed retirement census relinquishes it while
+    retaining the parsed identity as membership.
+    """
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        accepted, sibling = _write_raws(archive, 2)
+    publish_prepared_source(tmp_path, "test.retirement.accepted", _membership_census(accepted, [_session("one")]))
+    publish_prepared_source(
+        tmp_path,
+        "test.retirement.sibling",
+        _membership_census(
+            sibling,
+            [_session("other")],
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+            retire_full_revision_governance=retired,
+        ),
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?", (sibling,)
+        ).fetchone() == ("quarantined",)
+        membership = source.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ?", (sibling,)
+        ).fetchall()
+        assert membership == [("codex-session:prepared-membership",)]
+        raw_key = source.execute("SELECT logical_source_key FROM raw_sessions WHERE raw_id = ?", (sibling,)).fetchone()
+        assert (raw_key == (None,)) is retired
+
+
+@pytest.mark.asyncio
+async def test_read_only_compute_defers_attachment_publication_until_writer_revalidation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale prepared attachment publishes neither Index attachments nor Source refs.
+
+    Compute prepares the attachment claim off-writer; a descriptor change
+    before writer admission refuses publication and leaves no attachment row
+    or attachment blob reference. Anti-vacuity: publish attachments during
+    compute and the stale refusal leaves them behind.
+    """
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    def check(
+        _unbound: ParsedSession,
+        _carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        publish: _Publish,
+    ) -> None:
+        admit_stage_write(
+            "fixture.raw.attachment-descriptor",
+            _move_source(
+                tmp_path,
+                "UPDATE raw_sessions SET source_path=? WHERE raw_id=?",
+                ("changed-before-writer-admission.jsonl", replacement.key),
+            ),
+        )
+        with pytest.raises(ReferenceSealStaleError):
+            publish()
+        with closing(sqlite3.connect(tmp_path / "index.db")) as index:
+            assert index.execute("SELECT COUNT(*) FROM attachments").fetchone() == (0,)
+        with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+            assert source.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_type = 'attachment'").fetchone() == (0,)
+
+    await _run_original_raw_carrier_case(
+        tmp_path,
+        monkeypatch,
+        check,
+        session_factory=lambda: _session("one", "two", attachment_bytes=b"prepared-attachment-bytes"),
+    )
+
+
+def test_convertible_multi_session_retirement_preserves_complete_census(tmp_path: Path) -> None:
+    """Retiring one full export retains every logical member it contained.
+
+    Anti-vacuity: replacing with only the target session would delete the
+    sibling membership, so the complete two-key assertion becomes red.
+    """
+    from tests.infra.prepared_replay import publish_prepared_source
+
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+        archive.bind_raw_revision(
+            raw_id,
+            RawRevisionEnvelope(
+                logical_source_key="codex-session:prepared-membership",
+                kind=RawRevisionKind.FULL,
+                source_revision="prepared-full-v1",
+                acquisition_generation=0,
+            ),
+        )
+        archive.commit()
+    publish_prepared_source(
+        tmp_path,
+        "test.retirement.multi-session",
+        _membership_census(
+            raw_id,
+            [_session("one"), _session("other", session_id="prepared-sibling")],
+            revision_authority=RawRevisionAuthority.QUARANTINED,
+            retire_full_revision_governance=True,
+        ),
+    )
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        assert source.execute(
+            "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ? ORDER BY logical_source_key",
+            (raw_id,),
+        ).fetchall() == [
+            ("codex-session:prepared-membership",),
+            ("codex-session:prepared-sibling",),
+        ]
