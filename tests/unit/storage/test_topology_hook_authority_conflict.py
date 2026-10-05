@@ -471,7 +471,7 @@ def _project_state_export(
         blob_hash=f"blob-{raw_id}",
         observed_at_ms=observed_at_ms,
         observation_order=observed_at_ms,
-        source_conn=None,
+        source_read=None,
     )
     conn.commit()
 
@@ -634,7 +634,7 @@ def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monk
         ),
     )
     write_thread_state_projection(
-        index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000, source_conn=None
+        index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000, source_read=None
     )
     index.commit()
 
@@ -680,7 +680,7 @@ def _project_both_roots(index: sqlite3.Connection, source: sqlite3.Connection) -
             blob_hash=f"blob-{order}",
             observed_at_ms=order * 1_000,
             source_scope=root,
-            source_conn=source,
+            source_read=ConnectionSessionSourceRead(source),
         )
         index.commit()
 

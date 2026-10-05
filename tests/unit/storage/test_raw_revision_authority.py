@@ -6,7 +6,7 @@ from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO
 
 import pytest
 
@@ -22,7 +22,6 @@ from polylogue.archive.revision_authority import (
     classify_historical_full_revisions,
 )
 from polylogue.core.enums import Origin, Provider
-from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -35,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session,
     write_source_raw_session_blob_ref,
 )
+from tests.infra.prepared_replay import ingest_append_plans_on_owner
 
 
 def _payload_opener(payload: bytes) -> Callable[[], BinaryIO]:
@@ -706,7 +706,7 @@ def test_live_append_acquisition_binds_exact_offsets_to_authoritative_baseline(t
         _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
     )
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
     assert result.succeeded == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -798,7 +798,7 @@ def test_live_append_admits_declared_non_session_artifact(tmp_path: Path) -> Non
         _polylogue=SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path)),
     )
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
     assert result.succeeded == [plan]
     assert result.failed == []
@@ -863,7 +863,7 @@ def test_live_append_retains_cursor_identity_until_baseline_arrives(
     monkeypatch.setattr(ArchiveStore, "bind_raw_revision", recording_bind)
     monkeypatch.setattr(ArchiveStore, "write_parsed_for_retained_raw", recording_index)
 
-    result = ingest_append_plans(cast(Any, owner), [plan])
+    result = ingest_append_plans_on_owner(tmp_path, owner, [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]

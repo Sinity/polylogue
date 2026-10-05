@@ -1,11 +1,14 @@
 """Exact original Index commit acceptance on an admitted physical writer."""
 
 import asyncio
+import sqlite3
 import threading
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -21,6 +24,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_isolated_write_connection,
 )
 from polylogue.storage.sqlite.reference_seal import (
+    IndexCommitReceipt,
     PreparedIndexMutation,
     ReferenceSealError,
     ReferenceSealStaleError,
@@ -43,6 +47,7 @@ async def test_handed_off_index_writer_is_captured_once_and_physically_closed(tm
                     _update(writer)
                     scope.commit()
                     owner = native_sql_owner_for_connection(writer)
+                    assert owner is not None
                     assert owner is scope._writer_owner and owner._terminal_parent is None
                     assert owner.connection is writer and not owner._settled
                 seal.require_index_commit_receipt(scope.commit_receipt)
@@ -78,12 +83,13 @@ def _seed(root: Path) -> None:
     SessionBuilder(root / "index.db", "index-acceptance").provider("codex").add_message(text="Neutral").save()
 
 
-def _title(connection) -> str | None:
+def _title(connection: sqlite3.Connection) -> str | None:
     with connection_cursor(connection, "SELECT title FROM sessions") as rows:
-        return rows.fetchone()[0]
+        title: str | None = rows.fetchone()[0]
+        return title
 
 
-def _update(connection) -> None:
+def _update(connection: sqlite3.Connection) -> None:
     with connection_cursor(connection, "UPDATE sessions SET title='accepted-index'") as rows:
         assert rows.rowcount == 1
 
@@ -205,7 +211,7 @@ async def test_index_receipt_refuses_wrong_binding_before_exact_acceptance(
                         actual_accept = seal.accept_index_commit
                         refused = []
 
-                        def check_binding(receipt) -> None:
+                        def check_binding(receipt: IndexCommitReceipt) -> None:
                             prior = seal._versions["index"]
                             if binding == "writer":
                                 altered = replace(receipt, _writer=seal.observer("index"))
@@ -305,6 +311,7 @@ async def test_index_failed_close_retains_original_writer_and_refuses_source_con
                             assert seal in owner._lifetime_dependencies and scope in owner._lifetime_dependencies
                             with pytest.raises(ReferenceSealError):
                                 seal.require_index_commit_receipt(receipt)
+                            assert seal._scratch_directory is not None
                             witness = Path(seal._scratch_directory.name)
                             with pytest.raises(NativeConnectionSettlementError) as retained:
                                 seal.close()
@@ -330,7 +337,7 @@ async def test_index_reservation_checks_every_original_observer(
             _seed(tmp_path)
             with closing(ArchiveStore.open_existing(tmp_path, read_only=False)) as store:
                 with PreparedIndexMutation(store.index_db_path, archive_root=tmp_path) as seal:
-                    actual_cursor = reference_seal.connection_cursor
+                    actual_cursor = connection_cursor
                     actual_commit = store._conn.commit
                     changed = []
 
@@ -350,7 +357,9 @@ async def test_index_reservation_checks_every_original_observer(
                             changed.append(True)
 
                     @contextmanager
-                    def reserve_after_foreign(connection, sql, *args, **kwargs):
+                    def reserve_after_foreign(
+                        connection: sqlite3.Connection, sql: str, *args: Any, **kwargs: Any
+                    ) -> Iterator[sqlite3.Cursor]:
                         if connection is store._conn and sql == "BEGIN IMMEDIATE" and not changed:
                             assert not connection.in_transaction
                             change_user()

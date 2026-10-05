@@ -14,6 +14,7 @@ import itertools
 import sqlite3
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -28,6 +29,7 @@ from polylogue.storage.sqlite.agent_thread_state import (
     write_thread_state_graph,
 )
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 
 
 @pytest.fixture(params=["plain", "measured"])
@@ -60,7 +62,8 @@ def _write(conn: sqlite3.Connection, **kwargs: object) -> bool:
         "export_order": lambda _raw_id: None,
     }
     defaults.update(kwargs)
-    return write_thread_state_graph(conn, **defaults)
+    arguments: dict[str, Any] = defaults
+    return write_thread_state_graph(conn, **arguments)
 
 
 def test_graph_carries_titles_spawns_and_provenance(index_conn: sqlite3.Connection) -> None:
@@ -394,7 +397,7 @@ def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_pa
 
     for raw_id in ("raw-3", "raw-2", "raw-1"):
         export = _EXPORTS[raw_id]
-        order = codex_state_projection.retained_export_order(source)(raw_id)
+        order = codex_state_projection.retained_export_order(ConnectionSessionSourceRead(source))(raw_id)
         assert order is not None
         snapshot = codex_state.CodexStateSnapshot(
             threads=tuple(
@@ -425,7 +428,7 @@ def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_pa
             observed_at_ms=int(export["observed_at_ms"]),  # type: ignore[call-overload]
             observation_order=order,
             source_scope="/install",
-            source_conn=source,
+            source_read=ConnectionSessionSourceRead(source),
         )
 
     assert read_thread_titles(index, thread_ids=["kept-thread"]) == {"kept-thread": "Revised title"}

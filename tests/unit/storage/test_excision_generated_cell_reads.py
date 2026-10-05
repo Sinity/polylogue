@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
+from typing import Any, Self
 
 import pytest
 
-from polylogue.storage.io_phase_metrics import connection_cursor
+from polylogue.storage.io_phase_metrics import _MeasuredConnection, connection_cursor
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     native_sql_children,
@@ -45,12 +45,13 @@ def test_generated_table_exact_original_cells_have_bounded_transfers(
     session_id = _seed(tmp_path, title)
     with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
         index = seal.observer("index")
+        assert isinstance(index, _MeasuredConnection)
         original_cursor = index.cursor
         transfers: list[int] = []
 
         class GuardedCursor(sqlite3.Cursor):
             def fetchone(self) -> sqlite3.Row | None:
-                row = super().fetchone()
+                row: sqlite3.Row | None = super().fetchone()
                 if row is not None:
                     for value in row:
                         assert not isinstance(value, str) or len(value.encode("utf-8")) <= 65536
@@ -85,6 +86,7 @@ def test_generated_cell_failed_cursor_settlement_retains_original_creator(
     session_id = _seed(tmp_path, "λ" * 40000)
     seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
     index = seal.observer("index")
+    assert isinstance(index, _MeasuredConnection)
     owner = next(child for child in native_sql_children(seal) if child.connection is index)
     original_cursor = index.cursor
     blocked: list[ControlledCursor] = []
@@ -93,7 +95,7 @@ def test_generated_cell_failed_cursor_settlement_retains_original_creator(
     owner.retain_settlement_callback(lambda: completed.append(True))
 
     class FaultCursor(ControlledCursor):
-        def execute(self, sql: str, parameters: Sequence[object] = ()) -> sqlite3.Cursor:
+        def execute(self, sql: str, parameters: Any = (), /) -> Self:
             result = super().execute(sql, parameters)
             if sql.startswith('SELECT substr(CAST("title" AS BLOB)'):
                 self.allow_cleanup.clear()

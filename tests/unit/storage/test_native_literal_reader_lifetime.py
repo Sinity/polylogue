@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 from builtins import BaseExceptionGroup
+from collections.abc import Generator
 from contextlib import closing
 from pathlib import Path
 
@@ -25,7 +26,7 @@ def test_canonical_native_text_token_matches_full_serializer_at_every_byte_split
     expected = json.dumps(text, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     for split in range(len(payload) + 1):
 
-        def chunks(split: int = split):
+        def chunks(split: int = split) -> Generator[bytes, None, None]:
             yield payload[:split]
             yield payload[split:]
 
@@ -34,9 +35,9 @@ def test_canonical_native_text_token_matches_full_serializer_at_every_byte_split
 
 @pytest.mark.parametrize("payload", [b"\xff", b"\xed\xa0\x80", b"\xf0\x9f\x8c"])
 def test_canonical_native_text_token_preserves_strict_utf8_refusal(payload: bytes) -> None:
-    closed = []
+    closed: list[bool] = []
 
-    def chunks():
+    def chunks() -> Generator[bytes, None, None]:
         try:
             for byte in payload:
                 yield bytes([byte])
@@ -49,9 +50,9 @@ def test_canonical_native_text_token_preserves_strict_utf8_refusal(payload: byte
 
 
 def test_canonical_native_text_token_cancellation_closes_original_stream() -> None:
-    closed = []
+    closed: list[bool] = []
 
-    def chunks():
+    def chunks() -> Generator[bytes, None, None]:
         try:
             yield b"original"
             raise asyncio.CancelledError

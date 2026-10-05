@@ -364,9 +364,16 @@ def test_raw_materialization_snapshot_streams_parser_census_rows(
 
 def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> None:
     """Exact readiness consumes source parser debt from its real SQLite projection."""
+    from functools import partial
+
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.core.enums import Provider
-    from polylogue.sources.revision_backfill import census_historical_revision_evidence
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+    from polylogue.storage.derived.raw import RawObservationDerivation
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.prepared_replay import run_on_convergence_owner
 
     initialize_active_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -385,8 +392,31 @@ def test_exact_archive_readiness_blocks_parser_census_debt(tmp_path: Path) -> No
     assert blocked["surfaces"]["raw_artifacts"]["ready"] is False
     assert "parser_census_incomplete" in blocked["surfaces"]["raw_artifacts"]["blockers"]
 
-    census = census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
-    assert census.scanned == 1
+    def census_phase(
+        compute: BoundedComputeAdapter,
+    ) -> list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]]:
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute)
+        frame = raw_observation_frame(tmp_path)
+        replacement = adapter.compute(frame, raw_id)
+        receipts: list[tuple[str, RevisionCensusResult | PreparedRevisionReplayResult]] = []
+        try:
+            assert replacement.needs_source_census
+            admit_stage_write(
+                "test.readiness.census",
+                partial(
+                    adapter.publish,
+                    frame,
+                    replacement,
+                    phase_receipt=lambda kind, receipt: receipts.append((kind, receipt)),
+                ),
+            )
+        finally:
+            replacement.close()
+        return receipts
+
+    receipts = run_on_convergence_owner(tmp_path, "test.readiness.census", census_phase)
+    assert [kind for kind, _receipt in receipts] == ["census"]
+    assert receipts[0][1].scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
             "SELECT status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
@@ -505,7 +535,7 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
             """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT);
             CREATE TABLE raw_revision_applications (raw_id TEXT, decision TEXT, detail TEXT);
             INSERT INTO raw_revision_applications VALUES ('terminal-application', 'superseded', 'test');
             INSERT INTO raw_revision_applications VALUES ('terminal-application-error', 'superseded', 'test');
@@ -626,7 +656,7 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
@@ -675,7 +705,7 @@ def test_raw_materialization_snapshot_counts_raw_artifacts_once(tmp_path: Path) 
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
         conn.executemany(
             "INSERT INTO sessions(session_id, raw_id) VALUES (?, ?)",
             [
@@ -721,7 +751,7 @@ def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: 
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)

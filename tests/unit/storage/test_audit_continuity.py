@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable, Generator, Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 import pytest
 
@@ -20,6 +22,12 @@ from polylogue.storage.sqlite.audit_continuity import (
     CanonicalAuditLiteral,
     audit_semantic_sha256,
 )
+
+if TYPE_CHECKING:
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+
+_SourceCompletionControl: TypeAlias = tuple[Path, "AuditRepository", dict[str, Any], Callable[..., Any]]
 
 
 def _mutation(number: int) -> AuditMutation:
@@ -337,15 +345,16 @@ def test_continuity_mutation_commits_under_a_held_lease(tmp_path: Path) -> None:
 
 
 @pytest.fixture
-def source_completion_control(tmp_path: Path):
+def source_completion_control(tmp_path: Path) -> _SourceCompletionControl:
     from tests.infra.audit_completion import make_source_completion_control
 
-    return make_source_completion_control(tmp_path)
+    control: _SourceCompletionControl = make_source_completion_control(tmp_path)
+    return control
 
 
 @pytest.mark.parametrize("audit_committed", [False, True])
 def test_native_completion_recovery_preserves_exact_receipts_once(
-    source_completion_control, audit_committed: bool, monkeypatch: pytest.MonkeyPatch
+    source_completion_control: _SourceCompletionControl, audit_committed: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A committed Source command survives both remaining continuity windows."""
     from polylogue.storage.sqlite.write_lease import write_lease
@@ -354,8 +363,8 @@ def test_native_completion_recovery_preserves_exact_receipts_once(
     prepared = install(payload)
     original_loads = json.loads
 
-    def scalar_only(value, *args, **kwargs):
-        assert not (isinstance(value, (bytes, str)) and value[:1] in (b"{", "{")), "whole completion hydrated"
+    def scalar_only(value: str | bytes, *args: Any, **kwargs: Any) -> Any:
+        assert value[:1] not in (b"{", "{"), "whole completion hydrated"
         return original_loads(value, *args, **kwargs)
 
     monkeypatch.setattr(json, "loads", scalar_only)
@@ -380,7 +389,7 @@ def test_native_completion_recovery_preserves_exact_receipts_once(
 
 @pytest.mark.parametrize("wrong", ["operation", "attempt", "plan", "missing", "extra", "duplicate", "overlap", "stale"])
 def test_native_completion_rejects_wrong_closure_and_keeps_source_command(
-    source_completion_control, wrong: str
+    source_completion_control: _SourceCompletionControl, wrong: str
 ) -> None:
     from polylogue.storage.sqlite.write_lease import write_lease
 
@@ -415,7 +424,9 @@ def test_native_completion_rejects_wrong_closure_and_keeps_source_command(
         ).fetchone() == (0,)
 
 
-def test_native_completion_rollback_leaves_no_receipt_or_command(source_completion_control) -> None:
+def test_native_completion_rollback_leaves_no_receipt_or_command(
+    source_completion_control: _SourceCompletionControl,
+) -> None:
     from polylogue.storage.sqlite.write_lease import write_lease
 
     root, repository, payload, install = source_completion_control
@@ -432,7 +443,7 @@ def test_native_completion_rollback_leaves_no_receipt_or_command(source_completi
 
 @pytest.mark.parametrize("corruption", ["space", "escape", "hash", "count", "head"])
 def test_native_pending_refuses_rehashed_noncanonical_or_malformed_command(
-    source_completion_control, corruption: str
+    source_completion_control: _SourceCompletionControl, corruption: str
 ) -> None:
     from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_write_connection
     from polylogue.storage.sqlite.write_lease import write_lease
@@ -467,7 +478,7 @@ def test_native_pending_refuses_rehashed_noncanonical_or_malformed_command(
 @pytest.mark.parametrize("native_completion", [False, True])
 @pytest.mark.parametrize("replacement_point", ["after_fetch", "before_audit_commit"])
 def test_pending_replacement_cannot_publish_audit_from_retired_source(
-    source_completion_control,
+    source_completion_control: _SourceCompletionControl,
     native_completion: bool,
     replacement_point: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -476,7 +487,6 @@ def test_pending_replacement_cannot_publish_audit_from_retired_source(
     import shutil
     from contextlib import contextmanager
 
-    from polylogue.storage.sqlite import audit_continuity
     from polylogue.storage.sqlite.write_lease import write_lease
 
     root, repository, payload, install = source_completion_control
@@ -490,9 +500,9 @@ def test_pending_replacement_cannot_publish_audit_from_retired_source(
         prior_head = audit.execute("SELECT generation,head_sha256,mutation_id FROM audit_continuity_head").fetchone()
         prior_events = audit.execute("SELECT count(*) FROM operation_events").fetchone()
         prior_authorities = audit.execute("SELECT count(*) FROM archive_authority").fetchone()
-    replacements = []
+    replacements: list[int] = []
 
-    def replace_source():
+    def replace_source() -> None:
         assert not replacements
         source_path = root / "source.db"
         original_inode = source_path.stat().st_ino
@@ -504,15 +514,15 @@ def test_pending_replacement_cannot_publish_audit_from_retired_source(
         assert source_path.stat().st_ino != original_inode
         replacements.append(original_inode)
 
-    original_cursor = audit_continuity.connection_cursor
+    from polylogue.storage.io_phase_metrics import connection_cursor as original_cursor
 
     @contextmanager
-    def replace_after_fetch(*args, **kwargs):
+    def replace_after_fetch(*args: Any, **kwargs: Any) -> Iterator[object]:
         with original_cursor(*args, **kwargs) as cursor:
             if replacement_point == "after_fetch" and args[1].startswith("SELECT rowid,committed_generation,"):
 
                 class FetchedPending:
-                    def fetchone(self):
+                    def fetchone(self) -> object:
                         row = cursor.fetchone()
                         assert row is not None and row[3] is not None
                         replace_source()
@@ -522,9 +532,9 @@ def test_pending_replacement_cannot_publish_audit_from_retired_source(
             else:
                 yield cursor
 
-    monkeypatch.setattr(audit_continuity, "connection_cursor", replace_after_fetch)
+    monkeypatch.setattr("polylogue.storage.sqlite.audit_continuity.connection_cursor", replace_after_fetch)
 
-    def apply(connection, mutation):
+    def apply(connection: sqlite3.Connection, mutation: AuditMutation) -> object:
         result = (
             repository._replay_pending_mutation(connection, mutation)
             if native_completion
@@ -547,7 +557,9 @@ def test_pending_replacement_cannot_publish_audit_from_retired_source(
         assert audit.execute("SELECT count(*) FROM archive_authority").fetchone() == prior_authorities
 
 
-def test_native_pending_literal_cannot_outlive_its_original_snapshot(source_completion_control) -> None:
+def test_native_pending_literal_cannot_outlive_its_original_snapshot(
+    source_completion_control: _SourceCompletionControl,
+) -> None:
     root, repository, payload, install = source_completion_control
     install(payload)
     with repository._continuity._pending() as pending:
@@ -560,7 +572,7 @@ def test_native_pending_literal_cannot_outlive_its_original_snapshot(source_comp
 
 
 def test_native_pending_blob_close_failure_retains_the_actual_creator(
-    source_completion_control, monkeypatch: pytest.MonkeyPatch
+    source_completion_control: _SourceCompletionControl, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.storage.sqlite.connection_profile import (
         NativeConnectionSettlementError,
@@ -571,9 +583,9 @@ def test_native_pending_blob_close_failure_retains_the_actual_creator(
     _root, repository, payload, install = source_completion_control
     install(payload)
     close = NativeSQLCustodyOwner.close_incremental_blob
-    captured = []
+    captured: list[NativeSQLCustodyOwner] = []
 
-    def fail_close(owner, blob):
+    def fail_close(owner: NativeSQLCustodyOwner, blob: sqlite3.Blob) -> None:
         if not captured:
             captured.append(owner)
         if owner is captured[0]:
@@ -596,7 +608,7 @@ def test_native_pending_blob_close_failure_retains_the_actual_creator(
 
 
 def test_native_receipt_visitor_streams_exact_large_session_literal(
-    source_completion_control, monkeypatch: pytest.MonkeyPatch
+    source_completion_control: _SourceCompletionControl, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.storage.sqlite.audit_continuity import scan_excision_source_completion
     from polylogue.storage.sqlite.literal_cells import LITERAL_CHUNK_BYTES
@@ -606,7 +618,7 @@ def test_native_receipt_visitor_streams_exact_large_session_literal(
     target["session_id"] = "synthetic:" + "x" * (LITERAL_CHUNK_BYTES + 1) + 'é\\"\x00'
     original_loads = json.loads
 
-    def bounded_scalar(value, *args, **kwargs):
+    def bounded_scalar(value: str | bytes, *args: Any, **kwargs: Any) -> Any:
         assert len(value) < LITERAL_CHUNK_BYTES, "session literal materialized"
         return original_loads(value, *args, **kwargs)
 
@@ -614,73 +626,73 @@ def test_native_receipt_visitor_streams_exact_large_session_literal(
     prepared = install(payload)
 
     class Visitor:
-        def __init__(self):
-            self.ordinals = []
-            self.counts = {}
-            self.hashes = []
+        def __init__(self) -> None:
+            self.ordinals: list[int] = []
+            self.counts: dict[str, int] = {}
+            self.hashes: list[tuple[str, bool]] = []
             self.session_digest = hashlib.sha256()
             self.max_transfer = 0
             self.ended = 0
 
-        def begin_embedding_intent(self):
+        def begin_embedding_intent(self) -> None:
             pass
 
-        def embedding_incarnation(self, value):
+        def embedding_incarnation(self, value: tuple[int, int] | None) -> None:
             assert value is None
 
-        def embedding_namespace_header(self, value):
+        def embedding_namespace_header(self, value: tuple[int, int, int] | None) -> None:
             assert value is None
 
-        def embedding_namespace_link_chunk(self, chunk):
+        def embedding_namespace_link_chunk(self, chunk: bytes) -> None:
             pytest.fail("absent namespace carried a link")
 
-        def embedding_output(self, meta_present, retire, vector_hash, vector_present):
+        def embedding_output(self, meta_present: bool, retire: bool, vector_hash: str, vector_present: bool) -> None:
             pytest.fail("absent tier carried an output")
 
-        def embedding_presence(self, present):
+        def embedding_presence(self, present: bool) -> None:
             assert not present
 
-        def begin_embedding_row(self, ordinal):
+        def begin_embedding_row(self, ordinal: int) -> None:
             pytest.fail("absent tier carried a row")
 
-        def begin_embedding_cell(self, byte_length):
+        def begin_embedding_cell(self, byte_length: int) -> None:
             pytest.fail("absent tier carried a cell")
 
-        def embedding_literal_hex_chunk(self, chunk):
+        def embedding_literal_hex_chunk(self, chunk: bytes) -> None:
             pytest.fail("absent tier carried literal bytes")
 
-        def embedding_cell_storage_class(self, storage_class):
+        def embedding_cell_storage_class(self, storage_class: str) -> None:
             pytest.fail("absent tier carried a storage class")
 
-        def end_embedding_cell(self):
+        def end_embedding_cell(self) -> None:
             pytest.fail("absent tier ended a cell")
 
-        def embedding_row_identity(self, table, rowid):
+        def embedding_row_identity(self, table: str, row_address: int | str) -> None:
             pytest.fail("absent tier carried a row identity")
 
-        def end_embedding_row(self):
+        def end_embedding_row(self) -> None:
             pytest.fail("absent tier ended a row")
 
-        def embedding_schema_version(self, version):
+        def embedding_schema_version(self, version: int | None) -> None:
             assert version is None
 
-        def end_embedding_intent(self):
+        def end_embedding_intent(self) -> None:
             pass
 
-        def begin_target(self, ordinal):
+        def begin_target(self, ordinal: int) -> None:
             self.ordinals.append(ordinal)
 
-        def source_count(self, key, value):
+        def source_count(self, key: str, value: int) -> None:
             self.counts[key] = value
 
-        def blob_hash(self, value, *, removed):
+        def blob_hash(self, value: str, *, removed: bool) -> None:
             self.hashes.append((value, removed))
 
-        def session_literal_chunk(self, chunk):
+        def session_literal_chunk(self, chunk: bytes) -> None:
             self.max_transfer = max(self.max_transfer, len(chunk))
             self.session_digest.update(chunk)
 
-        def end_target(self):
+        def end_target(self) -> None:
             self.ended += 1
 
     visitor = Visitor()
@@ -722,11 +734,13 @@ def test_native_receipt_visitor_streams_exact_large_session_literal(
         "vector_address_duplicate",
     ],
 )
-def test_native_embedding_intent_refuses_malformed_original_literal_rows(source_completion_control, wrong: str) -> None:
+def test_native_embedding_intent_refuses_malformed_original_literal_rows(
+    source_completion_control: _SourceCompletionControl, wrong: str
+) -> None:
     from tests.infra.audit_completion import present_embeddings_intent_example
 
     _root, _repository, payload, install = source_completion_control
-    intent = present_embeddings_intent_example()
+    intent: dict[str, Any] = present_embeddings_intent_example()
     row = intent["rows"][0]
     first = row["cells"][0]
     if wrong == "hex_length":
@@ -773,7 +787,7 @@ def test_native_embedding_intent_refuses_malformed_original_literal_rows(source_
             .replace(b'"physical_rowid":0', b'"physical_rowid":-0')
         )
 
-        def chunks():
+        def chunks() -> Generator[bytes, None, None]:
             yield raw
 
         literal = CanonicalAuditLiteral(len(raw), hashlib.sha256(raw).hexdigest(), chunks)
@@ -784,7 +798,9 @@ def test_native_embedding_intent_refuses_malformed_original_literal_rows(source_
             install(payload)
 
 
-def test_native_embedding_intent_preserves_present_typed_bytes_and_signed_rowid(source_completion_control) -> None:
+def test_native_embedding_intent_preserves_present_typed_bytes_and_signed_rowid(
+    source_completion_control: _SourceCompletionControl,
+) -> None:
     from tests.infra.audit_completion import present_embeddings_intent_example
 
     _root, _repository, payload, install = source_completion_control

@@ -199,7 +199,7 @@ def test_retained_artifact_inspection_propagates_mid_read_compute_cancellation(
 
         def read(self, size: int = -1) -> bytes:
             nonlocal reads
-            data = self.source.read(size)
+            data: bytes = self.source.read(size)
             if len(data) >= 65536:
                 reads += 1
                 cancelled.set()
