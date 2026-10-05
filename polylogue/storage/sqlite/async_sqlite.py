@@ -451,6 +451,13 @@ async def _backend_write_lease(backend: SQLiteBackend, actor: str) -> AsyncItera
 
 async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
     for statement in statements:
+        if statement.startswith("PRAGMA journal_mode="):
+            # A mode pragma rewrites the header even when nothing changes;
+            # bootstrap established the mode (see execute_pragma_statement).
+            async with conn.execute("PRAGMA journal_mode") as cursor:
+                row = await cursor.fetchone()
+            if row is not None and str(row[0]).lower() == statement.split("=", 1)[1].strip().lower():
+                continue
         await conn.execute(statement)
 
 
