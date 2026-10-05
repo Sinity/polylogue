@@ -45,14 +45,15 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.write import (
-    PreparedSessionWriteRefusedError,
     prepare_session_rows,
     prepare_session_write,
 )
-from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import (
+    close_fixture_index_connection,
     write_fixture_index_session,
     write_fixture_ingest_payload,
 )
@@ -92,7 +93,10 @@ def _payload(*texts: str, append_only: bool) -> SessionWritePayload:
 
 
 def _seeded(tmp_path: Path) -> sqlite3.Connection:
-    conn = open_connection(tmp_path / "index.db").__enter__()
+    """A lease-free measured Index connection holding the first write; the caller closes it."""
+    bootstrap_archive_root(tmp_path)
+    conn = connect_measured(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
     write_fixture_ingest_payload(conn, _payload("first", append_only=False))
     conn.commit()
     return conn
@@ -119,7 +123,7 @@ def test_delta_digest_covers_only_delta_rows(tmp_path: Path) -> None:
         assert prepared.session_content_hash == bytes.fromhex(str(session_content_hash(delta)))
         assert prepared.session_content_hash != bytes.fromhex(payload.content_hash)
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_append_carrier_admitted_and_reused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,11 +167,11 @@ def test_append_carrier_admitted_and_reused(tmp_path: Path, monkeypatch: pytest.
         ).fetchall()
         assert [row[0] for row in stored] == ["m0", "m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
-def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
-    """A carrier describing the merged session is refused, naming the cause."""
+def test_merged_carrier_is_never_published_on_append(tmp_path: Path) -> None:
+    """A carrier describing the merged session is declined; only the delta is appended."""
     conn = _seeded(tmp_path)
     try:
         payload = _payload("first", "second", append_only=True)
@@ -175,17 +179,27 @@ def test_merged_carrier_refused_on_append(tmp_path: Path) -> None:
         assert delta is not None
         merged_carrier = prepare_session_rows(payload.parsed_session)
 
-        with pytest.raises(PreparedSessionWriteRefusedError, match="merged session"):
-            write_fixture_index_session(
-                conn,
-                delta,
-                content_hash=payload.content_hash,
-                pending_input_content_hash=bound_session_content_hash(delta),
-                merge_append=True,
-                prepared_rows=merged_carrier,
+        # A merge-append declines a prepared carrier: the merged session's
+        # rows are never published in place of the delta. Admitting them
+        # would re-append ``m0`` beside the stored one.
+        write_fixture_index_session(
+            conn,
+            delta,
+            content_hash=payload.content_hash,
+            pending_input_content_hash=bound_session_content_hash(delta),
+            merge_append=True,
+            prepared_rows=merged_carrier,
+        )
+        conn.commit()
+        native_ids = [
+            row[0]
+            for row in conn.execute(
+                "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position", (_SESSION_ID,)
             )
+        ]
+        assert native_ids == ["m0", "m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
@@ -209,7 +223,7 @@ def test_stored_hash_stays_merged_digest(tmp_path: Path) -> None:
         assert replay_counts["skipped_sessions"] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (_SESSION_ID,)).fetchone()[0] == 2
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_tail_only_append_that_repeats_earlier_content_is_kept(tmp_path: Path) -> None:
@@ -243,4 +257,4 @@ def test_tail_only_append_that_repeats_earlier_content_is_kept(tmp_path: Path) -
         assert skipped == 0
         assert [message.provider_message_id for message in delta.messages] == ["m1"]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
