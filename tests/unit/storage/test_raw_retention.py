@@ -2654,7 +2654,7 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     # The archive-wide selection gate reads the published inspection certificate.
     outcome = _inspect_frontier(tmp_path)
     assert outcome.cursor_ahead_count == 0
-    assert outcome.healthy is True
+    assert outcome.healthy is True, outcome
     assert raw_frontier_source_selection_block_reason(tmp_path) is None
 
 
