@@ -592,11 +592,16 @@ def test_canonical_reset_index_replays_only_when_parse_is_newer_than_validation_
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
+    # The reset Index takes its writer profile before any preparation records
+    # its file identity, as the daemon's retained destination does; opening it
+    # first inside publication would change the incarnation the seal bound.
+    with ArchiveStore.open_existing(tmp_path, read_only=False):
+        pass
 
     expected_state = "missing" if expected_materialized else "valid"
     assert _inspect(tmp_path, raw_id) == expected_state
     report = _derive(tmp_path)
-    assert report.failed == 0
+    assert report.failed == 0, [(o.outcome.value, o.error) for o in report.outcomes]
     with sqlite3.connect(active_index) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
             expected_materialized,
