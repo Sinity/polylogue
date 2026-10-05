@@ -40,7 +40,7 @@ PARENT = "codex-session:s00"
 
 def _index(root: Path) -> sqlite3.Connection:
     # Index capture binds its seal to the connection's original measured creator.
-    conn = connect_measured(root / "index.db")
+    conn = connect_measured(root / "index.db", uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

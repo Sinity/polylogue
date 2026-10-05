@@ -58,7 +58,7 @@ def _session(
 
 def _open_index(path: Path) -> sqlite3.Connection:
     # Index capture binds its seal to the connection's original measured creator.
-    conn = connect_measured(path)
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
