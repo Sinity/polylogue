@@ -3175,6 +3175,7 @@ def prepare_revision_source_census(
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
         _PreparedSourceProducer,
         prepare_raw_state_update,
+        prepared_parser_census_is_current,
         replace_raw_membership_census,
     )
 
@@ -3376,6 +3377,13 @@ def prepare_revision_source_census(
         ):
             check_compute_cancelled()
             if raw_id in state.censused:
+                continue
+            if prepared_parser_census_is_current(seal, raw_id):
+                # A current receipt already decides this raw for this parser.
+                # Censusing it again can only restate that decision, or, when
+                # this parse differs, overwrite accepted authority with an
+                # outcome the receipt does not describe.
+                state.censused.add(raw_id)
                 continue
             prepared = prepared_inputs.get(raw_id)
             artifact = prepared.prepared_artifact if prepared is not None else None
