@@ -19,7 +19,7 @@ from polylogue.daemon.write_coordinator import (
 )
 from polylogue.storage.derived.raw import RawFrame, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 
 
 def _admit(root: Path, native_id: str = "owner") -> str:
@@ -76,7 +76,7 @@ async def _shutdown(compute: BoundedComputeAdapter, coordinator: DaemonWriteCoor
 @pytest.mark.asyncio
 async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authority(tmp_path: Path) -> None:
     """The owner materializes an exact raw through the canonical derivation."""
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     raw_id = _admit(tmp_path)
     owner, compute, coordinator = await _owner(tmp_path)
     try:
@@ -94,7 +94,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
 
     The merge spy fails if this route reconstructs a whole session inline.
     """
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     payload = (
         b'{"type":"session_meta","payload":{"id":"above-cache-budget"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"m1",'
@@ -142,7 +142,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
 
 @pytest.mark.asyncio
 async def test_owner_refuses_a_preheld_writer_lease_before_preparation(tmp_path: Path) -> None:
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     raw_id = _admit(tmp_path, "preheld")
     owner, compute, coordinator = await _owner(tmp_path)
 
@@ -261,7 +261,7 @@ async def test_multi_session_claude_code_raw_settles_every_session(
     checking the member applications against that envelope's chain columns
     reports the settled raw stale forever.
     """
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     records = [
         {
             "type": "user",
@@ -372,7 +372,7 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
     retry); a membership yield to a chain-governed head that the receipt
     validator cannot certify reports the settled raw stale forever.
     """
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         first = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
@@ -417,7 +417,7 @@ async def test_raw_parse_reserves_its_retained_payload_bytes(tmp_path: Path, mon
 
     Anti-vacuity: submitting without ``estimated_bytes`` records 0 here.
     """
-    bootstrap_archive_root(tmp_path)
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
     raw_id = _admit(tmp_path)
     owner, compute, coordinator = await _owner(tmp_path)
     reserved: list[int] = []
