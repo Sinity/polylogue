@@ -321,9 +321,12 @@ async def test_drive_stale_preparation_never_marks_success(
                     conn.execute(f"INSERT INTO raw_sessions VALUES ({','.join('?' for _ in row)})", row)
 
     monkeypatch.setattr(RawObservationDerivation, "publish", publish_after_mutation)
-    with arm_write_lease_enforcement(process_wide=True):
-        result = await parser.parse_from_raw(raw_ids=[raw_id])
-    assert not result.processed_ids
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
+
+    # The publication's seal refuses the moved input with a typed, retryable
+    # refusal; nothing is marked parsed and no session is written.
+    with arm_write_lease_enforcement(process_wide=True), pytest.raises(ReferenceSealStaleError):
+        await parser.parse_from_raw(raw_ids=[raw_id])
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
