@@ -27,6 +27,12 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     _browser_snapshot_fidelity,
@@ -34,7 +40,7 @@ from polylogue.sources.revision_backfill import (
 )
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.raw_authority import iter_parser_census_logical_keys, raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
@@ -44,7 +50,7 @@ from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection_profile import StaleContinuationError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
-from tests.infra.raw_owner_routes import seed_parser_census
+from tests.infra.raw_owner_routes import replay_retained_raws, seed_parser_census
 from tests.infra.retained_parser_payloads import (
     _chatgpt_session,
 )
@@ -313,7 +319,8 @@ def test_source_census_preserves_acquired_grouped_identity(
         assert tuple(iter_parser_census_logical_keys(receipt[1])) == tuple(
             f"chatgpt-export:{native_id or f'grouped-{index}'}" for index in range(session_count)
         )
-        assert archive.count_sessions() == 0
+        # One pass settles the census and publishes every grouped member.
+        assert archive.count_sessions() == session_count
 
 
 def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_path: Path) -> None:
@@ -343,10 +350,13 @@ def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_pat
         archive.classify_raw_revision_cohort_for_rebuild_repair("chatgpt-export:sealed-shard")
     replay_retained_components(root)
     source_before = (root / "source.db").read_bytes()
+    # The owned candidate is the registered cold-build destination; retained
+    # replay refuses any other generation.
     with write_lease("test.owned-shard.generation", archive_root=root):
-        generation = IndexGenerationStore.for_archive_root(root).create(
-            owner_id="owned-shard-replay", source_snapshot=source_revision_snapshot(root)
+        cold_build = ColdBuildGeneration.begin(
+            root, reason="test-owned-shard", sources=(WatchSource("fixture", root / "absent"),)
         )
+    register_cold_build_generation(cold_build)
     copies = 0
     original_copy = archive_tier_write.copy_shard_session_rows
 
@@ -355,16 +365,22 @@ def test_owned_inactive_generation_replays_through_sealed_session_shards(tmp_pat
         copies += 1
         return original_copy(*args, **kwargs)
 
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
-        result = replay_retained_components(root, owned_generation=generation)
+    try:
+        generation = cold_build.generation
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
+            receipts = replay_retained_raws(root)
 
-    assert result.replayed_logical_sources == 1
-    assert copies == 1
-    assert (root / "source.db").read_bytes() == source_before
-    with sqlite3.connect(generation.index_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
-        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+        assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
+        assert (root / "source.db").read_bytes() == source_before
+        with sqlite3.connect(generation.index_path) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+            assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] > 0
+        assert copies == 1
+    finally:
+        clear_cold_build_generation()
+        with write_lease("test.owned-shard.discard", archive_root=root):
+            cold_build.discard()
 
 
 def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:
