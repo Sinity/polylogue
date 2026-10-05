@@ -485,9 +485,11 @@ def test_census_batching_reduces_commit_count(tmp_path: Path, monkeypatch: pytes
     original_apply = raw_module.apply_prepared_revision_census
     publications = 0
 
-    def record_publication(seal: PreparedIndexMutation, prepared: PreparedRevisionSourceCensus) -> RevisionCensusResult:
+    def record_publication(
+        seal: PreparedIndexMutation, prepared: PreparedRevisionSourceCensus, *, payload_store: BlobStore
+    ) -> RevisionCensusResult:
         nonlocal publications
-        result = original_apply(seal, prepared)
+        result = original_apply(seal, prepared, payload_store=payload_store)
         publications += 1
         return result
 

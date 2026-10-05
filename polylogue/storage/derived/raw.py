@@ -1221,6 +1221,11 @@ class RawObservationDerivation(RawObservationInspection):
         carry.raw_ids = replacement.raw_ids
         after = self._artifact_dependency_digests(seal, inputs, carry.zip_coordinates)
         moved = {artifact_id for artifact_id, digest in before.items() if after.get(artifact_id) != digest}
+        # A thread-state cohort completes its graph postimage once per
+        # preparation against the Source it read; it is prepared again.
+        moved.update(
+            id(artifact) for artifact in carry.artifacts.values() if artifact.codex_state_kind == "thread_state"
+        )
         if moved:
             # The committed tape moved evidence these artifacts were parsed
             # against: this seal prepares them again.
