@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sqlite3
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NoReturn, TypeAlias, cast
+from typing import Any, TypeAlias, cast
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -34,7 +33,6 @@ from polylogue.pipeline.services.ingest_batch import (
     _failed_raw_state_update,
     _IngestBatchSummary,
     _persist_batch_raw_state_updates,
-    _process_ingest_batch_sync,
     _RawIngestOutcome,
     _successful_raw_state_update,
     _topo_sort_session_entries,
@@ -47,12 +45,7 @@ from polylogue.pipeline.services.ingest_worker import (
 )
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.pipeline.services.parsing_models import ParseResult
-from polylogue.sinex.models import PublicationMode, ReceiptState
-from polylogue.sinex.transport import (
-    LocalReferenceTransport,
-    clear_configured_transport_factory,
-    register_configured_transport_factory,
-)
+from polylogue.sinex.models import PublicationMode
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -60,13 +53,12 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
-from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -79,7 +71,6 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import (
@@ -87,7 +78,7 @@ from tests.infra.index_writer import (
     write_fixture_index_session,
     write_fixture_ingest_payload,
 )
-from tests.infra.storage_records import admit_raw_record
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
@@ -346,67 +337,6 @@ def test_sync_ingest_index_publication_refuses_a_foreign_archive_lease(tmp_path:
         ingest_batch_core._open_sync_connection(target_root / "index.db", archive_root=target_root)
 
 
-def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Primary authority must be established before any local read projection."""
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    raw_record = RawSessionRecord(
-        raw_id="raw-primary",
-        source_name="codex",
-        source_path="/sources/primary.jsonl",
-        blob_size=16,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    session = _session_data(
-        "codex-session:primary-unconfirmed",
-        content_hash="primary-unconfirmed",
-        raw_id=raw_record.raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-primary",
-                "codex-session:primary-unconfirmed",
-                role="assistant",
-                text="must remain hidden",
-                content_hash="msg-primary",
-                sort_key=1.0,
-            )
-        ],
-    )
-
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "ingest_record",
-        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
-    )
-    transport = LocalReferenceTransport(fault_fn=lambda _request_id, _attempt: ReceiptState.RAW_ACCEPTED)
-    register_configured_transport_factory(lambda: transport)
-    try:
-        summary = _process_ingest_batch_sync(
-            [raw_record],
-            db_path=archive_root / "index.db",
-            archive_root_str=str(archive_root),
-            blob_root_str=str(archive_root / "blob"),
-            validation_mode="advisory",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-            publication_mode=PublicationMode.PRIMARY,
-        )
-    finally:
-        clear_configured_transport_factory()
-
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
-        assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-        assert index_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone() == (0,)
-    with sqlite3.connect(archive_root / "source.db") as source_conn:
-        assert source_conn.execute("SELECT COUNT(*) FROM sinex_publication_obligations").fetchone() == (1,)
-    assert summary.publication_deferred_raw_ids == {raw_record.raw_id}
-    assert summary.publication_payloads_by_raw_id == {}
-    assert summary.publication_payload_bytes == 0
-
-
 def test_batch_projection_preserves_worker_disposition_fields() -> None:
     summary = _IngestBatchSummary()
     ingest_batch_core._record_outcome(
@@ -428,95 +358,6 @@ def test_batch_projection_preserves_worker_disposition_fields() -> None:
     assert outcome.evidence_ref == "schema_validation_strict"
     assert outcome.remediation == "repair source schema"
     assert outcome.diagnostic == "missing required field: messages"
-
-
-def test_primary_transport_resolution_precedes_index_connection(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class MissingTransportError(RuntimeError):
-        pass
-
-    opened = False
-
-    def missing_transport() -> NoReturn:
-        raise MissingTransportError("primary transport is not configured")
-
-    def unexpected_open(_path: Path) -> sqlite3.Connection:
-        nonlocal opened
-        opened = True
-        raise AssertionError("index connection must not open before transport resolution")
-
-    monkeypatch.setattr(ingest_batch_core, "resolve_configured_transport", missing_transport)
-    monkeypatch.setattr(ingest_batch_core, "_open_sync_connection", unexpected_open)
-
-    with pytest.raises(MissingTransportError, match="not configured"):
-        _process_ingest_batch_sync(
-            [],
-            db_path=tmp_path / "archive" / "index.db",
-            archive_root_str=str(tmp_path / "archive"),
-            blob_root_str=str(tmp_path / "archive" / "blob"),
-            validation_mode="advisory",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-            publication_mode=PublicationMode.PRIMARY,
-        )
-
-    assert not opened
-
-
-def test_primary_mode_projects_revision_after_allowed_durable_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    raw_record = RawSessionRecord(
-        raw_id="raw-primary-confirmed",
-        source_name="codex",
-        source_path="/sources/primary-confirmed.jsonl",
-        blob_size=16,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    session = _session_data(
-        "codex-session:primary-confirmed",
-        content_hash="primary-confirmed",
-        raw_id=raw_record.raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-primary-confirmed",
-                "codex-session:primary-confirmed",
-                role="assistant",
-                text="durably visible",
-                content_hash="msg-primary-confirmed",
-                sort_key=1.0,
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "ingest_record",
-        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
-    )
-    register_configured_transport_factory(LocalReferenceTransport)
-    try:
-        summary = _process_ingest_batch_sync(
-            [raw_record],
-            db_path=archive_root / "index.db",
-            archive_root_str=str(archive_root),
-            blob_root_str=str(archive_root / "blob"),
-            validation_mode="advisory",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-            publication_mode=PublicationMode.PRIMARY,
-        )
-    finally:
-        clear_configured_transport_factory()
-
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
-        assert index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
-        assert index_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone() == (1,)
-    assert summary.publication_deferred_raw_ids == set()
 
 
 class _FakeConnectionBackend:
@@ -3286,398 +3127,6 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
         ).fetchone() == (1,)
 
 
-async def test_process_ingest_batch_uses_archive_root_blob_store(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    archive_root = tmp_path / "explicit-archive"
-    ambient_blob_root = tmp_path / "ambient-xdg" / "blob"
-    expected_blob_root = archive_root / "blob"
-    raw_record = RawSessionRecord(
-        raw_id="raw-1",
-        source_name="chatgpt",
-        source_path="/sources/session.json",
-        blob_size=17,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    repository = SimpleNamespace(get_raw_sessions_batch=AsyncMock(return_value=[raw_record]))
-    service = SimpleNamespace(
-        repository=repository,
-        archive_root=archive_root,
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-        execution=None,
-    )
-    backend = SimpleNamespace(db_path=archive_root / "index.db")
-    seen: dict[str, object] = {}
-
-    def fake_process_sync(
-        raw_artifacts: list[RawSessionRecord],
-        *,
-        db_path: Path,
-        archive_root_str: str,
-        blob_root_str: str,
-        validation_mode: str,
-        publication_mode: str,
-        ingest_workers: int | None,
-        measure_ingest_result_size: bool,
-        force_write: bool,
-        ingest_result_chunk_size: int,
-        suspend_fts_triggers: bool,
-    ) -> _IngestBatchSummary:
-        seen.update(
-            {
-                "raw_artifacts": raw_artifacts,
-                "db_path": db_path,
-                "archive_root_str": archive_root_str,
-                "blob_root_str": blob_root_str,
-                "validation_mode": validation_mode,
-                "publication_mode": publication_mode,
-                "ingest_workers": ingest_workers,
-                "measure_ingest_result_size": measure_ingest_result_size,
-                "force_write": force_write,
-                "ingest_result_chunk_size": ingest_result_chunk_size,
-                "suspend_fts_triggers": suspend_fts_triggers,
-            }
-        )
-        return _IngestBatchSummary(raw_record_count=1)
-
-    monkeypatch.setattr("polylogue.paths.blob_store_root", lambda: ambient_blob_root)
-    monkeypatch.setattr(ingest_batch_core, "blob_store_root", lambda: ambient_blob_root, raising=False)
-    monkeypatch.setattr(ingest_batch_core, "_process_ingest_batch_sync", fake_process_sync)
-    monkeypatch.setattr(ingest_batch_core, "_persist_batch_raw_state_updates", AsyncMock(return_value=0.0))
-
-    await ingest_batch_core.process_ingest_batch(
-        cast(ParsingService, service),
-        cast(SQLiteBackend, backend),
-        ["raw-1"],
-        ParseResult(),
-        progress_callback=None,
-    )
-
-    assert seen["archive_root_str"] == str(archive_root)
-    assert seen["blob_root_str"] == str(expected_blob_root)
-    assert seen["blob_root_str"] != str(ambient_blob_root)
-    assert seen["publication_mode"] == "off"
-
-
-def test_process_ingest_batch_sync_indexes_changed_session_and_invalidates_search_cache(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "index.db"
-    archive_root = tmp_path / "archive"
-    blob_root = tmp_path / "blob"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-sync-side-effects"
-    session_id = "codex-session:sync-side-effects"
-    message_id = "msg-sync-side-effects"
-    needle = "syncsideeffectneedle"
-
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    session = _session_data(
-        session_id,
-        content_hash="hash-sync-side-effects",
-        message_tuples=[
-            _message_tuple(
-                message_id,
-                session_id,
-                role="user",
-                text=f"cached search should see {needle}",
-                content_hash="hash-sync-message",
-                sort_key=0.0,
-            )
-        ],
-    )
-
-    first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
-    cache_version_before = get_cache_stats()["cache_version"]
-    assert first_result.hits == ()
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(
-        "polylogue.storage.fts.fts_lifecycle.suspend_fts_triggers_sync",
-        lambda _conn: (_ for _ in ()).throw(AssertionError("live/default ingest must keep FTS triggers active")),
-    )
-
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(blob_root),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert summary.changed_session_ids == [session_id]
-    assert get_cache_stats()["cache_version"] == cache_version_before + 1
-
-    with open_connection(db_path) as conn:
-        trigger_names = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '%_fts_%'"
-            ).fetchall()
-        }
-        assert {"messages_fts_ai", "messages_fts_ad", "messages_fts_au"}.issubset(trigger_names)
-        # messages_fts is a contentless FTS5 table (content=''); column values are
-        # not retrievable, so verify indexing via MATCH on the indexed block text.
-        assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?",
-                (needle,),
-            ).fetchone()[0]
-            == 1
-        )
-
-    public_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)
-    assert [hit.session_id for hit in public_result.hits] == [session_id]
-
-
-@pytest.mark.parametrize("payload", [b"production ingest attachment", b""], ids=["nonempty", "empty"])
-def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    payload: bytes,
-) -> None:
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    db_path = archive_root / "index.db"
-    legacy_blob_root = tmp_path / "legacy-worker-blob-root"
-    source_path = tmp_path / "raw.jsonl"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-inline-attachment"
-    session_id = "codex-session:inline-attachment"
-    attachment = _attachment_tuple("att-inline", mime_type="text/plain", inline_bytes=payload)
-    session = _session_data(
-        session_id,
-        content_hash="inline-attachment",
-        raw_id=raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-inline",
-                session_id,
-                role="user",
-                text="attachment",
-                content_hash="inline-message",
-                sort_key=0.0,
-            )
-        ],
-        attachment_tuples=[attachment],
-        attachment_ref_tuples=[_attachment_ref_tuple("att-inline", session_id, "msg-inline")],
-    )
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[session])
-
-    gc_reports: list[BlobGCResult] = []
-    readonly_opens: list[Path] = []
-    write_opens: list[tuple[Path, str, Path | None]] = []
-    original_flush = ArchiveBlobPublisher.flush
-    original_open_write = open_isolated_write_connection
-    original_open_readonly = open_readonly_connection
-
-    def flush_then_gc(publisher: ArchiveBlobPublisher):  # type: ignore[no-untyped-def]
-        receipts = original_flush(publisher)
-        for receipt in receipts:
-            os.utime(publisher.blob_path(receipt.blob_hash), (1_700_000_000, 1_700_000_000))
-        gc_reports.append(run_blob_gc_report(archive_root / "source.db", archive_root / "blob"))
-        return receipts
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_gc)
-
-    def trace_archive_bound_write(
-        path: Path,
-        *,
-        purpose: str,
-        timeout: float | None = None,
-        archive_root: Path | None = None,
-    ) -> sqlite3.Connection:
-        write_opens.append((path, purpose, archive_root))
-        return original_open_write(path, purpose=purpose, timeout=timeout, archive_root=archive_root)
-
-    monkeypatch.setattr(
-        "polylogue.pipeline.services.ingest_batch._core.open_isolated_write_connection",
-        trace_archive_bound_write,
-    )
-
-    def trace_source_read(
-        path: Path,
-        *,
-        timeout_class: str = "interactive-read",
-        validate_schema: bool = True,
-    ) -> sqlite3.Connection:
-        readonly_opens.append(path)
-        return original_open_readonly(path, timeout_class=timeout_class, validate_schema=validate_schema)
-
-    monkeypatch.setattr(
-        "polylogue.pipeline.services.ingest_batch._core.open_readonly_connection",
-        trace_source_read,
-    )
-
-    # The real index publication and its later source-tier receipt consumption
-    # must share the lease bound to this archive. A refactor that opens either
-    # tier outside the authority route now fails before SQLite can contend.
-    with arm_write_lease_enforcement(), write_lease("test.ingest", archive_root=archive_root):
-        _process_ingest_batch_sync(
-            [raw_record],
-            db_path=db_path,
-            archive_root_str=str(archive_root),
-            blob_root_str=str(legacy_blob_root),
-            validation_mode="off",
-            ingest_workers=1,
-            measure_ingest_result_size=False,
-        )
-
-    expected_hash = sha256(payload).digest()
-    assert len(gc_reports) == 1
-    assert gc_reports[0].deleted_count == 0
-    assert gc_reports[0].skipped_reserved == 1
-    assert BlobStore(archive_root / "blob").exists(expected_hash.hex())
-    assert not legacy_blob_root.exists()
-    with open_connection(db_path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash = ?", (expected_hash,)).fetchone()[0] == 1
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
-    assert archive_root / "source.db" in readonly_opens
-    assert (db_path, "ingest index publication", archive_root) in write_opens
-    assert (archive_root / "source.db", "ingest blob publication receipt", archive_root) in write_opens
-
-
-def test_process_ingest_batch_sync_replaces_stale_sessions_for_same_raw_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db_path = tmp_path / "index.db"
-    archive_root = tmp_path / "archive"
-    blob_root = tmp_path / "blob"
-    source_path = tmp_path / "raw.jsonl.txt.json"
-    source_path.write_text("{}", encoding="utf-8")
-    raw_id = "raw-provider-redetected"
-    stale_session_id = "aistudio-drive:provider-redetected"
-    replacement_session_id = "codex-session:provider-redetected"
-
-    raw_record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="gemini",
-        source_path=str(source_path),
-        blob_size=source_path.stat().st_size,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    stale = _session_data(
-        stale_session_id,
-        content_hash="stale-provider-session",
-        raw_id=raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-stale-provider-redetected",
-                stale_session_id,
-                role="user",
-                text="stale drive payload",
-                content_hash="stale-message",
-                sort_key=0.0,
-            )
-        ],
-    )
-    replacement = _session_data(
-        replacement_session_id,
-        content_hash="replacement-provider-session",
-        raw_id=raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-provider-redetected",
-                replacement_session_id,
-                role="user",
-                text="redetected stream payload",
-                content_hash="replacement-message",
-                sort_key=0.0,
-            )
-        ],
-    )
-
-    with open_connection(db_path) as conn:
-        write_fixture_ingest_payload(conn, stale)
-        conn.commit()
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        archive_root_str: str,
-        validation_mode: str,
-        measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        del archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
-        assert record.raw_id == raw_id
-        return IngestRecordResult(raw_id=record.raw_id, sessions=[replacement])
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-
-    _process_ingest_batch_sync(
-        [raw_record],
-        db_path=db_path,
-        archive_root_str=str(archive_root),
-        blob_root_str=str(blob_root),
-        validation_mode="off",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-        force_write=True,
-    )
-
-    with open_connection(db_path) as conn:
-        rows = conn.execute(
-            "SELECT session_id FROM sessions WHERE raw_id = ? ORDER BY session_id", (raw_id,)
-        ).fetchall()
-        assert [row[0] for row in rows] == [replacement_session_id]
-        assert (
-            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
-        )
-        assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (stale_session_id,)).fetchone()[0] == 0
-        assert (
-            conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (replacement_session_id,)).fetchone()[0]
-            == 1
-        )
-        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-
-
 def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp_path: Path) -> None:
     with open_connection(tmp_path / "index.db") as conn:
         c_msg = _message_tuple(
@@ -4288,181 +3737,6 @@ async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp
 
 
 @pytest.mark.asyncio
-async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The public async batch route applies CAS resolution after index commit."""
-    bootstrap_archive_root(tmp_path)
-    payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
-    BlobStore(tmp_path / "blob").write_from_bytes(payload)
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CHATGPT_EXPORT,
-            source_path="public-batch.json",
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=1,
-        )
-        upsert_raw_artifact(
-            conn,
-            raw_id,
-            ArchiveSourceArtifact(
-                artifact_id="public-deferred-cas",
-                origin=Origin.CHATGPT_EXPORT,
-                source_path="public-batch.json",
-                source_index=0,
-                artifact_kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
-                classification_reason="deferred CAS",
-                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
-                parse_as_session=True,
-                schema_eligible=True,
-                first_observed_at_ms=1,
-                last_observed_at_ms=1,
-            ),
-        )
-        conn.commit()
-
-    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode="off"),
-    )
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-    parse_result = ParseResult()
-    try:
-        await ingest_batch_core.process_ingest_batch(
-            service,
-            repository.backend,
-            [raw_id],
-            parse_result,
-            None,
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (1, None)
-        assert conn.execute(
-            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (
-            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
-            "unknown",
-        )
-    assert parse_result.processed_ids
-
-
-@pytest.mark.asyncio
-async def test_process_ingest_batch_off_mode_supports_repository_without_source_backend(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """OFF publication keeps the public index-only repository route usable."""
-    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
-    raw_id = "raw-off-index-only"
-    blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(b"index-only ingest payload")
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
-    assert repository.source_backend is None
-    assert await admit_raw_record(
-        repository,
-        RawSessionRecord(
-            raw_id=raw_id,
-            blob_hash=blob_hash,
-            source_name=Provider.CODEX,
-            source_path="/sources/index-only.jsonl",
-            blob_size=blob_size,
-            acquired_at="2026-04-02T00:00:00Z",
-        ),
-    )
-
-    session_id = "codex-session:off-index-only"
-    session = _session_data(
-        session_id,
-        content_hash="off-index-only",
-        raw_id=raw_id,
-        message_tuples=[
-            _message_tuple(
-                "message-off-index-only",
-                session_id,
-                role="user",
-                text="index-only session persisted",
-                content_hash="message-off-index-only",
-                sort_key=1.0,
-            )
-        ],
-    )
-
-    def fake_ingest_record(
-        record: RawSessionRecord,
-        _archive_root_str: str,
-        _validation_mode: str,
-        _measure_ingest_result_size: bool,
-        *,
-        blob_root_str: str | None,
-    ) -> IngestRecordResult:
-        assert record.raw_id == raw_id
-        assert blob_root_str == str(tmp_path / "blob")
-        return IngestRecordResult(raw_id=raw_id, sessions=[session])
-
-    marker_carrier_attempts: list[str] = []
-
-    def reject_sync_marker_carrier(*_args: object, **_kwargs: object) -> NoReturn:
-        marker_carrier_attempts.append("index-to-source marker publication")
-        raise AssertionError("OFF mode must not attempt source-tier marker publication")
-
-    def reject_async_marker_carrier(*_args: object, **_kwargs: object) -> NoReturn:
-        marker_carrier_attempts.append("accepted marker carrier preparation")
-        raise AssertionError("OFF mode must not prepare a source-tier marker carrier")
-
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest_record)
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "_publish_marker_witnesses_before_index_commit",
-        reject_sync_marker_carrier,
-    )
-    monkeypatch.setattr(ingest_batch_core, "prepare_accepted_marker_input", reject_async_marker_carrier)
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode="off"),
-    )
-    service = ParsingService(
-        repository=repository,
-        archive_root=tmp_path,
-        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
-        ingest_workers=1,
-    )
-    parse_result = ParseResult()
-    try:
-        await ingest_batch_core.process_ingest_batch(
-            service,
-            repository.backend,
-            [raw_id],
-            parse_result,
-            None,
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (1,)
-        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone() == (1,)
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (1, None)
-        assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
-        assert conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
-    assert parse_result.processed_ids == {session_id}
-    assert parse_result.parse_failures == 0
-    assert marker_carrier_attempts == []
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "diagnostic"),
     [
@@ -4533,70 +3807,6 @@ async def test_persist_batch_corrupt_input_remains_terminal_in_lifecycle(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("payload", "diagnostic"),
-    [
-        (b"", "decode: Input is a zero-length, empty document"),
-        (b"{", "decode: Input data was truncated"),
-    ],
-    ids=["zero-length-public-route", "decode-failure-public-route"],
-)
-async def test_process_ingest_batch_public_route_persists_corrupt_input_readiness(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    payload: bytes,
-    diagnostic: str,
-) -> None:
-    """The real worker route makes corrupt input terminal and status-readable."""
-    bootstrap_archive_root(tmp_path)
-    BlobStore(tmp_path / "blob").write_from_bytes(payload)
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="public-corrupt.jsonl",
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=1,
-        )
-
-    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[])
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode="off"),
-    )
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
-    parse_result = ParseResult()
-    try:
-        await ingest_batch_core.process_ingest_batch(
-            service,
-            repository.backend,
-            [raw_id],
-            parse_result,
-            None,
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT validation_status, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == ("failed", diagnostic)
-        assert conn.execute(
-            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value, "decode_failed")
-
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.terminal == 1
-    assert lifecycle.unexplained == 0
-    assert lifecycle.blocking is False
-    status = raw_failure_info_for_root(tmp_path)
-    assert status["terminal_rejections"] == 1
-    assert status["unexplained_failures"] == 0
-
-
-@pytest.mark.asyncio
 async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_raw_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4653,141 +3863,6 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
 
 
-def test_the_batch_index_transaction_holds_the_publisher_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """An excision cannot take the publisher slot while a batch's index transaction is open.
-
-    Anti-vacuity (Codex P1, #5696): release the shared slot when a flush ends
-    and an excision can commit between the batch's excision checks and its
-    index commit -- and, taking the slot before index.db while the batch
-    takes index.db before the slot, deadlock against it.
-    """
-    import fcntl
-
-    from polylogue.storage.blob_publication import _writer_lock_path
-
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    raw_record = RawSessionRecord(
-        raw_id="raw-slot",
-        source_name="codex",
-        source_path="/sources/slot.jsonl",
-        blob_size=16,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    session = _session_data(
-        "codex-session:slot",
-        content_hash="slot",
-        raw_id=raw_record.raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-slot", "codex-session:slot", role="assistant", text="held", content_hash="msg-slot", sort_key=1.0
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "ingest_record",
-        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
-    )
-    observed: list[bool] = []
-    original_flush = ingest_batch_core._flush_ingest_results
-
-    def probe_then_flush(conn: sqlite3.Connection, **kwargs: Any) -> Any:
-        with _writer_lock_path(archive_root / "source.db").open("a+b") as lock:
-            try:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                observed.append(True)
-            else:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-                observed.append(False)
-        return original_flush(conn, **kwargs)
-
-    monkeypatch.setattr(ingest_batch_core, "_flush_ingest_results", probe_then_flush)
-    _process_ingest_batch_sync(
-        [raw_record],
-        db_path=archive_root / "index.db",
-        archive_root_str=str(archive_root),
-        blob_root_str=str(archive_root / "blob"),
-        validation_mode="advisory",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert observed == [True]
-
-
-def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A session refused for excised content is not counted as a parse failure.
-
-    Anti-vacuity (Codex P2, #5696): let the generic handler catch
-    ``ContentExcisedError`` and it becomes a retryable parse failure instead
-    of a non-retryable ``validation_rejected`` outcome with a
-    ``content_excised`` diagnostic; count it only in the internal summary and
-    the public ``ParseResult`` reports no excision skips.
-    """
-    from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome
-    from polylogue.pipeline.services.ingest_batch._summary import apply_ingest_batch_summary
-    from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
-
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    raw_record = RawSessionRecord(
-        raw_id="raw-excised",
-        source_name="codex",
-        source_path="/sources/excised.jsonl",
-        blob_size=16,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-    session = _session_data(
-        "codex-session:excised",
-        content_hash="excised",
-        raw_id=raw_record.raw_id,
-        message_tuples=[
-            _message_tuple(
-                "msg-x", "codex-session:excised", role="assistant", text="x", content_hash="msg-x", sort_key=1.0
-            )
-        ],
-    )
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "ingest_record",
-        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
-    )
-
-    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
-        raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
-
-    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse)
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=archive_root / "index.db",
-        archive_root_str=str(archive_root),
-        blob_root_str=str(archive_root / "blob"),
-        validation_mode="advisory",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert summary.parse_failures == 0
-    assert summary.excised_skips == 1
-    # Settled as a skip, not a failure: no ``parse_error`` reaches raw state.
-    assert raw_record.raw_id not in summary.failed_raw_ids
-    assert raw_record.raw_id in summary.skipped_raw_ids
-    outcome = summary.outcomes[raw_record.raw_id]
-    assert outcome.parse_error is None
-    assert outcome.outcome_code == IngestOutcome.VALIDATION_REJECTED.value
-    assert str(outcome.diagnostic).startswith("content_excised")
-    assert outcome.retryable is False
-    assert INGEST_OUTCOME_RETRYABLE[IngestOutcome.VALIDATION_REJECTED] is False
-    result = ParseResult()
-    apply_ingest_batch_summary(result, summary)
-    assert result.excised_skips == 1
-
-
 def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
     """The durable raw state names the excision, not a generic empty parse.
 
@@ -4800,67 +3875,6 @@ def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
     update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
 
     assert str(update.validation_error).startswith("content_excised")
-
-
-def test_a_grouped_raw_with_one_excised_session_still_records_its_written_sibling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A raw whose other session wrote is not settled as skipped.
-
-    Anti-vacuity (Codex P2, #5696): mark the raw skipped at the first
-    excision refusal and its written sibling's raw is durably recorded as a
-    ``content_excised`` skip.
-    """
-    from polylogue.core.enums import IngestOutcome
-    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
-
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    raw_record = RawSessionRecord(
-        raw_id="raw-grouped",
-        source_name="codex",
-        source_path="/sources/grouped.jsonl",
-        blob_size=16,
-        acquired_at="2026-04-02T00:00:00Z",
-    )
-
-    def session(name: str) -> Any:
-        session_id = f"codex-session:{name}"
-        return _session_data(
-            session_id,
-            content_hash=name,
-            raw_id=raw_record.raw_id,
-            message_tuples=[
-                _message_tuple(f"msg-{name}", session_id, role="assistant", text=name, content_hash=name, sort_key=1.0)
-            ],
-        )
-
-    refused, written = session("refused"), session("written")
-    monkeypatch.setattr(
-        ingest_batch_core,
-        "ingest_record",
-        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[refused, written]),
-    )
-
-    def refuse_one(conn: sqlite3.Connection, payload: Any, **kwargs: Any) -> Any:
-        if payload.session_id == refused.session_id:
-            raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
-        return write_fixture_ingest_payload(conn, payload, **kwargs)
-
-    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse_one)
-    summary = _process_ingest_batch_sync(
-        [raw_record],
-        db_path=archive_root / "index.db",
-        archive_root_str=str(archive_root),
-        blob_root_str=str(archive_root / "blob"),
-        validation_mode="advisory",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    assert summary.excised_skips == 1
-    assert raw_record.raw_id not in summary.skipped_raw_ids
-    assert summary.outcomes[raw_record.raw_id].outcome_code != IngestOutcome.VALIDATION_REJECTED.value
 
 
 def test_drive_cohort_snapshot_copies_every_row_of_a_large_cohort() -> None:
@@ -4884,3 +3898,274 @@ def test_drive_cohort_snapshot_copies_every_row_of_a_large_cohort() -> None:
         conn.close()
 
     assert len(snapshot.rows) == 1_500
+
+
+_CANONICAL_CODEX_PAYLOAD = (
+    Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+).read_bytes()
+
+
+@asynccontextmanager
+async def _canonical_parsing_service(
+    root: Path,
+    *,
+    repository: SessionRepository | None = None,
+) -> AsyncIterator[ParsingService]:
+    """A real parsing service whose publication is the canonical retained owner."""
+    owned_repository = repository is None
+    repo = repository or SessionRepository(backend=SQLiteBackend(db_path=root / "index.db"), archive_root=root)
+    try:
+        async with prepared_live_convergence_owner(root) as owner:
+            yield ParsingService(
+                repository=repo,
+                archive_root=root,
+                config=Config(archive_root=root, render_root=root / "render", sources=[]),
+                ingest_workers=1,
+                retained_runner=owner.ingest_retained_raw_ids,
+            )
+    finally:
+        if owned_repository:
+            await repo.close()
+
+
+def _seed_retained_raw(root: Path, *, origin: Origin, source_path: str, payload: bytes) -> str:
+    BlobStore(root / "blob").write_from_bytes(payload)
+    with sqlite3.connect(root / "source.db") as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=origin,
+            source_path=source_path,
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1,
+        )
+        conn.commit()
+    return raw_id
+
+
+def _publication_mode(monkeypatch: pytest.MonkeyPatch, mode: str = "off") -> None:
+    monkeypatch.setattr(
+        "polylogue.config.load_polylogue_config",
+        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode=mode),
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_ingest_batch_requires_its_retained_owner(tmp_path: Path) -> None:
+    """The public batch route publishes only through a supplied retained owner.
+
+    Anti-vacuity: falling back to a local parse/write when no owner is
+    supplied would publish outside the canonical owner and this refusal
+    would disappear.
+    """
+    bootstrap_archive_root(tmp_path)
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="no-owner.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
+    )
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(
+        repository=repository,
+        archive_root=tmp_path,
+        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
+        ingest_workers=1,
+    )
+    try:
+        with pytest.raises(PermissionError, match="retained Raw owner"):
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
+    finally:
+        await repository.close()
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [member.value for member in PublicationMode if member is not PublicationMode.OFF])
+async def test_process_ingest_batch_refuses_sinex_publication_before_the_retained_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """A non-OFF publication mode is refused before any local projection.
+
+    Replaces the predecessor primary-mode laws: the retained route has no
+    accepted-marker/outbox producer, so it must refuse before the owner
+    publishes Index or FTS rows.
+    """
+    from polylogue.sinex.material_adapter import PublicationEncodingError
+
+    bootstrap_archive_root(tmp_path)
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="sinex.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
+    )
+    _publication_mode(monkeypatch, mode)
+    calls: list[tuple[str, ...]] = []
+
+    async def owner_must_not_run(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+        calls.append(tuple(raw_ids))
+        return ()
+
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
+    service = ParsingService(
+        repository=repository,
+        archive_root=tmp_path,
+        config=Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
+        ingest_workers=1,
+        retained_runner=owner_must_not_run,
+    )
+    try:
+        with pytest.raises(PublicationEncodingError, match="accepted-marker and outbox producer"):
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
+    finally:
+        await repository.close()
+    assert calls == []
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_process_ingest_batch_publishes_and_invalidates_search_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A changed session from the canonical route is searchable, never served stale.
+
+    Ported from the predecessor sync-route law: the search cache epoch covers
+    ordinary ingest writes within one generation, so publication that changes
+    a session must advance it. Anti-vacuity: drop the invalidation and the
+    cached empty result is served after publication.
+    """
+    bootstrap_archive_root(tmp_path)
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="search.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
+    )
+    _publication_mode(monkeypatch)
+    needle = "witness"
+    before = search_messages(needle, archive_root=tmp_path, db_path=tmp_path / "index.db", limit=10)
+    assert before.hits == ()
+    version_before = get_cache_stats()["cache_version"]
+    parse_result = ParseResult()
+    async with _canonical_parsing_service(tmp_path) as service:
+        await ingest_batch_core.process_ingest_batch(service, service.repository.backend, [raw_id], parse_result, None)
+    assert len(parse_result.processed_ids) == 1
+    assert get_cache_stats()["cache_version"] > version_before
+    after = search_messages(needle, archive_root=tmp_path, db_path=tmp_path / "index.db", limit=10)
+    assert {hit.session_id for hit in after.hits} == set(parse_result.processed_ids)
+
+
+@pytest.mark.asyncio
+async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The public batch route supersedes deferred CAS evidence after publication."""
+    bootstrap_archive_root(tmp_path)
+    payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CHATGPT_EXPORT, source_path="public-batch.json", payload=payload
+    )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        upsert_raw_artifact(
+            conn,
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id="public-deferred-cas",
+                origin=Origin.CHATGPT_EXPORT,
+                source_path="public-batch.json",
+                source_index=0,
+                artifact_kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
+                classification_reason="deferred CAS",
+                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
+                parse_as_session=True,
+                schema_eligible=True,
+                first_observed_at_ms=1,
+                last_observed_at_ms=1,
+            ),
+        )
+        conn.commit()
+    _publication_mode(monkeypatch)
+    parse_result = ParseResult()
+    async with _canonical_parsing_service(tmp_path) as service:
+        await ingest_batch_core.process_ingest_batch(service, service.repository.backend, [raw_id], parse_result, None)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, None)
+        assert conn.execute(
+            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (
+            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
+            "unknown",
+        )
+    assert parse_result.processed_ids
+
+
+@pytest.mark.asyncio
+async def test_process_ingest_batch_off_mode_supports_repository_without_source_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OFF publication keeps an index-only repository usable and writes no marker inputs."""
+    await asyncio.to_thread(initialize_active_archive_root, tmp_path)
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="index-only.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
+    )
+    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
+    assert repository.source_backend is None
+    _publication_mode(monkeypatch)
+    parse_result = ParseResult()
+    try:
+        async with _canonical_parsing_service(tmp_path, repository=repository) as service:
+            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], parse_result, None)
+    finally:
+        await repository.close()
+
+    assert len(parse_result.processed_ids) == 1
+    (session_id,) = parse_result.processed_ids
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (session_id,)).fetchone() == (2,)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT parsed_at_ms IS NOT NULL, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+        ).fetchone() == (1, None)
+        assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
+        assert conn.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+    assert parse_result.parse_failures == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "diagnostic"),
+    [
+        (b"", "decode: Input is a zero-length, empty document"),
+        (b"{", "decode: Input data was truncated"),
+    ],
+    ids=["zero-length-public-route", "decode-failure-public-route"],
+)
+async def test_process_ingest_batch_public_route_persists_corrupt_input_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload: bytes,
+    diagnostic: str,
+) -> None:
+    """The canonical route makes corrupt input terminal and status-readable."""
+    bootstrap_archive_root(tmp_path)
+    raw_id = _seed_retained_raw(
+        tmp_path, origin=Origin.CODEX_SESSION, source_path="public-corrupt.jsonl", payload=payload
+    )
+    _publication_mode(monkeypatch)
+    parse_result = ParseResult()
+    async with _canonical_parsing_service(tmp_path) as service:
+        await ingest_batch_core.process_ingest_batch(service, service.repository.backend, [raw_id], parse_result, None)
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        artifact = conn.execute(
+            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+    assert artifact == (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value, "decode_failed"), diagnostic
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.terminal == 1
+    assert lifecycle.unexplained == 0
+    assert lifecycle.blocking is False
+    status = raw_failure_info_for_root(tmp_path)
+    assert status["terminal_rejections"] == 1
+    assert status["unexplained_failures"] == 0
