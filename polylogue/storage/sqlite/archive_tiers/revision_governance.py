@@ -1504,23 +1504,38 @@ def raw_membership_retired_full_revision_siblings(
     """
     rows = (
         store._ensure_source_conn()
-        .execute(
-            """
-            SELECT m.raw_id
-            FROM raw_session_memberships AS m
-            JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-            WHERE m.logical_source_key = ?
-              AND c.revision_authority = ?
-            ORDER BY m.raw_id
-            """,
-            (
-                logical_source_key,
-                RawRevisionAuthority.QUARANTINED.value,
-            ),
-        )
+        .execute(_RETIRED_MEMBERSHIP_SIBLINGS_SQL, _retired_membership_siblings_parameters(logical_source_key))
         .fetchall()
     )
     return tuple(str(row[0]) for row in rows)
+
+
+# A retired member is proven by its census's typed quarantine authority, or,
+# when the census code has no typed translation (NULL), by the retired raw
+# row itself: retirement leaves it keyless, of unknown kind and quarantined.
+# An unknown census code never reads as "not retired".
+_RETIRED_MEMBERSHIP_SIBLINGS_SQL = """
+    SELECT m.raw_id
+    FROM raw_session_memberships AS m
+    JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+    JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+    WHERE m.logical_source_key = ?
+      AND (
+          c.revision_authority = ?
+          OR (
+              c.revision_authority IS NULL
+              AND r.logical_source_key IS NULL
+              AND r.revision_kind = 'unknown'
+              AND r.revision_authority = ?
+          )
+      )
+    ORDER BY m.raw_id
+"""
+
+
+def _retired_membership_siblings_parameters(logical_source_key: str) -> tuple[str, str, str]:
+    quarantined = RawRevisionAuthority.QUARANTINED.value
+    return (logical_source_key, quarantined, quarantined)
 
 
 def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHost, logical_source_key: str) -> bool:
@@ -4499,16 +4514,6 @@ def record_prepared_accepted_head_reparse_receipt(
     record_revision_application_sync(index, receipt, decided_at_ms=decided_at_ms)
 
 
-_RETIRED_MEMBERSHIP_SIBLINGS_SQL = """
-                    SELECT m.raw_id
-                    FROM raw_session_memberships AS m
-                    JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-                    WHERE m.logical_source_key = ?
-                      AND c.revision_authority = ?
-                    ORDER BY m.raw_id
-                    """
-
-
 def prepared_raw_membership_retired_full_revision_siblings(
     seal: PreparedIndexMutation,
     logical_source_key: str,
@@ -4516,7 +4521,7 @@ def prepared_raw_membership_retired_full_revision_siblings(
     """Use the canonical sibling predicate on the merged selected Source state."""
     _load_membership_selector_inputs(seal, logical_source_key, None)
     with seal.source_rows(
-        _RETIRED_MEMBERSHIP_SIBLINGS_SQL, (logical_source_key, RawRevisionAuthority.QUARANTINED.value)
+        _RETIRED_MEMBERSHIP_SIBLINGS_SQL, _retired_membership_siblings_parameters(logical_source_key)
     ) as selected:
         rows = selected.fetchall()
     return tuple(str(row[0]) for row in rows)
@@ -5004,12 +5009,19 @@ def _raw_revision_rebuild_logical_keys(
 
 
 def _raw_replay_representative_query(keys: Sequence[str]) -> tuple[str, tuple[object, ...]]:
+    """Rank each key's raws, whether the raw's revision key or its membership names it."""
     marks = ",".join("?" for _ in keys)
+    order = raw_receipt_order_sql("raw_sessions")
     return (
-        "SELECT logical_source_key, raw_id FROM raw_sessions "
-        f"WHERE logical_source_key IN ({marks}) "
-        f"ORDER BY logical_source_key, {raw_receipt_order_sql('raw_sessions')} DESC, raw_id ASC",
-        tuple(keys),
+        "SELECT logical_source_key, raw_id FROM ("
+        f"SELECT raw_sessions.logical_source_key AS logical_source_key, raw_sessions.raw_id AS raw_id, {order} AS rank "
+        f"FROM raw_sessions WHERE raw_sessions.logical_source_key IN ({marks}) "
+        "UNION "
+        f"SELECT m.logical_source_key, raw_sessions.raw_id, {order} "
+        "FROM raw_session_memberships AS m JOIN raw_sessions ON raw_sessions.raw_id = m.raw_id "
+        f"WHERE m.logical_source_key IN ({marks})"
+        ") ORDER BY logical_source_key, rank DESC, raw_id ASC",
+        (*keys, *keys),
     )
 
 
@@ -5829,8 +5841,10 @@ def _load_membership_selector_inputs(
             return
         for (raw_id,) in page:
             check_compute_cancelled()
+            # The member's own raw row carries its typed retirement authority.
             predicates: list[tuple[str, str, tuple[object, ...]]] = [
-                ("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,))
+                ("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,)),
+                ("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,)),
             ]
             if source_generation_id is not None:
                 predicates.append(
@@ -6407,6 +6421,7 @@ def _record_membership_decisions(
     *,
     decided_at_ms: int,
     manage_transaction: bool,
+    projections: Mapping[str, SessionRevisionProjection] | None = None,
 ) -> Iterator[tuple[str, bool]]:
     """Use one canonical decision builder and completion read on both hosts.
 
@@ -6438,23 +6453,36 @@ def _record_membership_decisions(
                     # A skipped derived attempt cannot retract settled Source
                     # evidence or issue a new terminal acknowledgement for it.
                     continue
-            values = (
-                decision.value,
-                decided_at_ms,
-                "quarantined"
+            # The decision is about the projection classified now. Enrichment
+            # evidence admitted after the census (a renamed index title) moves
+            # that projection; record the revision this decision is about.
+            projection = None if projections is None else projections.get(raw_id)
+            assignments: dict[str, object] = {
+                "decision": decision.value,
+                "decided_at_ms": decided_at_ms,
+                "revision_authority": "quarantined"
                 if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
                 else "byte_proven",
-                classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-                raw_id,
-                logical_source_key,
+                "acquisition_generation": classification.accepted_raw_ids.index(raw_id)
+                if raw_id in classification.accepted_raw_ids
+                else 0,
+            }
+            if projection is not None:
+                assignments["source_revision"] = projection.session_hash.hex()
+                assignments["normalized_content_hash"] = projection.session_hash
+                assignments["message_count"] = len(projection.message_hashes)
+            # Placeholders bind in statement order: assignments, then the key.
+            rendered = tuple(
+                producer.binding_literal(value) for value in (*assignments.values(), raw_id, logical_source_key)
             )
-            rendered = tuple(producer.binding_literal(value) for value in values)
             expressions = tuple(expression for expression, _ in rendered)
             parameters = tuple(value for _, operands in rendered for value in operands)
+            set_clause = ",".join(
+                f"{column}={expression}" for column, expression in zip(assignments, expressions, strict=False)
+            )
             sql = (
-                f"UPDATE raw_session_memberships SET decision={expressions[0]},decided_at_ms={expressions[1]},"
-                f"revision_authority={expressions[2]},acquisition_generation={expressions[3]} "
-                f"WHERE raw_id={expressions[4]} AND logical_source_key={expressions[5]}"
+                f"UPDATE raw_session_memberships SET {set_clause} "
+                f"WHERE raw_id={expressions[-2]} AND logical_source_key={expressions[-1]}"
             )
             producer.membership_decision_write(raw_id, logical_source_key, sql, parameters)
             updated_raw_ids.append(raw_id)
@@ -6471,6 +6499,7 @@ def prepare_membership_classification_source(
     *,
     decisions: Mapping[str, MembershipDecision],
     decided_at_ms: int,
+    projections: Mapping[str, SessionRevisionProjection] | None = None,
 ) -> None:
     """Stage the canonical Source outcome after the parent resolves its head.
 
@@ -6486,6 +6515,7 @@ def prepare_membership_classification_source(
         decisions,
         decided_at_ms=decided_at_ms,
         manage_transaction=False,
+        projections=projections,
     ):
         check_compute_cancelled()
         if complete:
@@ -6703,6 +6733,22 @@ def _apply_membership_head_plan(index: sqlite3.Connection, logical_source_key: s
             pass
 
 
+def _retire_superseded_membership_applications(
+    conn: sqlite3.Connection, raw_id: str, logical_source_key: str, source_revision: str
+) -> None:
+    """Drop applications made for a membership projection that has moved.
+
+    A membership revision is the semantic projection, which enrichment admitted
+    after the census (a renamed index title) can change. Applications decided
+    for the earlier projection describe no current evidence, and a rebuild from
+    current evidence would not produce them.
+    """
+    conn.execute(
+        "DELETE FROM raw_revision_applications WHERE raw_id=? AND logical_source_key=? AND source_revision!=?",
+        (raw_id, logical_source_key, source_revision),
+    )
+
+
 def apply_prepared_membership_index(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -6750,6 +6796,9 @@ def apply_prepared_membership_index(
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
+            _retire_superseded_membership_applications(
+                store._conn, raw_id, logical_source_key, projection.session_hash.hex()
+            )
             record_revision_application_sync(
                 store._conn,
                 RevisionApplicationReceipt(
@@ -6820,6 +6869,9 @@ def apply_prepared_membership_index(
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
+            _retire_superseded_membership_applications(
+                store._conn, raw_id, logical_source_key, projection.session_hash.hex()
+            )
             decision = decisions.get(raw_id, MembershipDecision.APPLIED)
             is_ambiguous = decision is MembershipDecision.AMBIGUOUS
             record_revision_application_sync(

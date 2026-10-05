@@ -167,13 +167,33 @@ def apply_prepared_revision_replay(
         apply_options.setdefault("prepared_write", prepared_write)
         # The prepared write is published under the seal that prepared it.
         with archive.index_mutation_scope(prepared_seal=seal):
-            return archive.apply_raw_revision_replay(
+            result = archive.apply_raw_revision_replay(
                 plan,
                 parsed_by_raw_id,
                 prepared_outcome=outcome,
                 acquired_at_ms=acquired_at_ms,
                 **apply_options,
             )
+    if result[1]:
+        # Retained replay acknowledges an applied outcome's terminal raws on
+        # Source after the Index outcome, as prepare_retained_replay_source does.
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            prepare_raw_parse_success,
+            raw_revision_descriptor,
+            revision_replay_terminal_raw_ids,
+        )
+
+        terminal = {
+            raw_id: raw_revision_descriptor(archive, raw_id)[0] for raw_id in revision_replay_terminal_raw_ids(plan)
+        }
+        archive.commit()
+
+        def acknowledge(source_seal: PreparedIndexMutation) -> None:
+            for raw_id, provider in terminal.items():
+                prepare_raw_parse_success(source_seal, raw_id, provider=provider)
+
+        publish_prepared_source(root, "test.revision-replay", acknowledge)
+    return result
 
 
 def ingest_append_plans_on_owner(root: Path, append_owner: Any, plans: list[Any]) -> Any:

@@ -1679,6 +1679,7 @@ def apply_prepared_revision_replay(
     prepared_membership_keys: tuple[str, ...],
     prepared_byte_logical_keys: tuple[str, ...],
     prepared_key_refusals: tuple[CohortMembershipRefusalError, ...],
+    prepared_lineage_deferrals: tuple[str, ...] = (),
     bulk_fts: bool = True,
     exact_fts_audit: bool = False,
 ) -> PreparedRevisionReplayResult:
@@ -1753,7 +1754,9 @@ def apply_prepared_revision_replay(
         for key, count in result.counts.items():
             written_counts[key] = written_counts.get(key, 0) + count
 
-    refused_keys = {refusal.logical_source_key for refusal in prepared_key_refusals}
+    # Deferred children publish nothing in this unit; like refused keys they
+    # carry no prepared outcome and no Source acknowledgement here.
+    refused_keys = {refusal.logical_source_key for refusal in prepared_key_refusals} | set(prepared_lineage_deferrals)
     logical_keys: set[str] = set()
     spill = _PreparedReplayInputs(prepared_inputs)
     with _prepared_replay_archive(archive_root, reference_seal, active_index_path) as archive:
@@ -1773,7 +1776,7 @@ def apply_prepared_revision_replay(
                     "prepared work-event envelope acquired transcript membership publication"
                 )
             replay_schedule = prepared_replay_schedule
-            if set(replay_schedule.order) != logical_keys.difference(work_event_keys):
+            if set(replay_schedule.order) != (logical_keys | membership_keys).difference(work_event_keys):
                 raise RetainedPreparationRetryableError(
                     "prepared retained replay schedule has another selected key set"
                 )
@@ -1928,7 +1931,7 @@ def apply_prepared_revision_replay(
                 byte_replayed_keys.add(logical_key)
             from polylogue.storage.sqlite.archive_tiers.revision_governance import apply_prepared_membership_index
 
-            for logical_key in sorted(membership_keys):
+            for logical_key in (key for key in replay_schedule.order if key in membership_keys):
                 if logical_key in refused_keys:
                     continue
                 membership_plan = prepared_membership_plans.get(logical_key)
@@ -3617,6 +3620,7 @@ def prepare_retained_replay_source(
                 plan.classification,
                 decisions=decisions,
                 decided_at_ms=decided_at_ms,
+                projections=plan.projections,
             )
             selected_membership[logical_key] = dataclasses.replace(
                 plan,
