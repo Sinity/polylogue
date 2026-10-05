@@ -46,8 +46,14 @@ import pytest
 from devtools.measurement_receipts import emit_receipt
 from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation
 from polylogue.sources import revision_backfill
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.cold_build import (
+    ColdBuildGeneration,
+    clear_cold_build_generation,
+    register_cold_build_generation,
+)
 from polylogue.storage.derived.raw import RawObservationDerivation
-from polylogue.storage.index_generation import IndexGenerationStore, source_revision_snapshot
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, finalize_archive_template
 from tests.infra.reindex_differential import (
@@ -163,16 +169,41 @@ def _merged_publication_ledger(receipts: tuple[object, ...]) -> tuple[dict[str, 
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
     """Complete one replay configuration over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)
-    generation = None
+    cold_build: ColdBuildGeneration | None = None
     if arm.owned_inactive_generation:
+        # The owned generation is the registered cold-build destination, as the
+        # daemon's fresh build engages it; the retained owner writes only there.
         with write_lease("test.finished-build.generation", archive_root=archive_root):
-            generation = IndexGenerationStore.for_archive_root(archive_root).create(
-                owner_id="finished-build-equivalence", source_snapshot=source_revision_snapshot(archive_root)
+            cold_build = ColdBuildGeneration.begin(
+                archive_root,
+                reason="finished-build-equivalence",
+                sources=(WatchSource("fixture", archive_root / "absent"),),
+                owner_id="finished-build-equivalence",
             )
+        register_cold_build_generation(cold_build)
+    generation = None if cold_build is None else cold_build.generation
     index_path = archive_root / "index.db" if generation is None else Path(generation.index_path)
 
+    # Open the writer destination before preparation records its file identity,
+    # as the production ingest route's retained destination step does.
+    with write_lease("test.finished-build.destination", archive_root=archive_root):
+        with (
+            ArchiveStore.open_existing(archive_root, read_only=False)
+            if cold_build is None
+            else cold_build.open_writer()
+        ):
+            pass
+
     probe = FinishedBuildResourceProbe.start()
-    run = replay_retained_components(archive_root, owned_generation=generation)
+    try:
+        run = replay_retained_components(archive_root, owned_generation=generation)
+        if cold_build is not None:
+            # A finished fresh build publishes its candidate; public reads then
+            # serve the replacement generation.
+            cold_build.promote()
+    finally:
+        if cold_build is not None:
+            clear_cold_build_generation()
     stage_timings_s, stage_counts = _merged_publication_ledger(run.receipts)
     with sqlite3.connect(f"file:{index_path}?mode=ro", uri=True) as conn:
         session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))

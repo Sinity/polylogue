@@ -38,6 +38,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
@@ -401,18 +402,22 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
 
     await asyncio.to_thread(initialize_active_archive_root, tmp_path)
     db_path = tmp_path / "index.db"
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-large-meta",
-                source_name="codex",
-                title="Large Meta Session",
-                metadata={"tag": "kept"},
-            ),
-            messages=[],
-            attachments=[],
-            conn=conn,
-        )
+
+    def _seed_0() -> None:
+        with open_connection(db_path) as conn:
+            store_records(
+                session=make_session(
+                    "conv-large-meta",
+                    source_name="codex",
+                    title="Large Meta Session",
+                    metadata={"tag": "kept"},
+                ),
+                messages=[],
+                attachments=[],
+                conn=conn,
+            )
+
+    run_off_event_loop(_seed_0)
 
     backend = SQLiteBackend(db_path=db_path)
     repo = SessionRepository(backend=backend)
@@ -1792,20 +1797,24 @@ class TestInfraTagAssignment:
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             archive_root = Path(tmp_dir) / "archive"
-            bootstrap_ready_archive_root(archive_root)
             db_path = archive_root / "index.db"
-            seed_session_graph(db_path, spec.sessions)
 
             # The tag primitive the daemon's TagAddActuator applies. A daemon
             # per Hypothesis example would test process lifecycle, not tag
             # storage laws; the facade route is covered by the
             # daemon-served tests above.
             from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+            from tests.infra.archive_templates import run_off_event_loop
 
-            with ArchiveStore(archive_root) as store:
-                for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
-                    for tag in tags:
-                        store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
+            def seed() -> None:
+                bootstrap_ready_archive_root(archive_root)
+                seed_session_graph(db_path, spec.sessions)
+                with ArchiveStore(archive_root) as store:
+                    for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
+                        for tag in tags:
+                            store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
+
+            run_off_event_loop(seed)
 
             repo = archive_for_scenario_db(db_path)
             try:

@@ -95,17 +95,22 @@ class TestCommandOutputs:
         assert "Usage: polylogue ops doctor [OPTIONS]" in drift_help_text
         assert "format drift" not in drift_help_text
 
-        status = run_in_pty(
-            ["--plain", "ops", "status", "--daemon-url", "http://127.0.0.1:1"],
-            rows=80,
-            env=drift_env,
-        )
+        # Status is daemon-only: the drift evidence is rendered from the
+        # resident status read, so run it against a real operation stack
+        # serving the drifted archive at the archive-scoped socket the CLI
+        # resolves. The workspace pins POLYLOGUE_DAEMON_URL to an unreachable
+        # HTTP endpoint; dropping it selects that socket route.
+        from polylogue.daemon.socket_path import daemon_socket_path
+        from tests.infra.daemon_operations import running_daemon_operations
 
-        # A drifted archive read without a daemon is a degraded answer, and
-        # OUTCOME_EXIT_CODES maps degraded to 1 (polylogue-1fu1a). This
-        # asserted 0 only because standalone_mode discarded the refusal; the
-        # subject here is the rendered drift evidence below, not the status.
-        assert status.exit_code == 1
+        runtime_dir = tmp_path / "run"
+        runtime_dir.mkdir(mode=0o700)
+        status_env = {key: value for key, value in drift_env.items() if key != "POLYLOGUE_DAEMON_URL"}
+        status_env["XDG_RUNTIME_DIR"] = str(runtime_dir)
+        socket_path = daemon_socket_path(drift_root.resolve(), runtime_dir=str(runtime_dir))
+        with running_daemon_operations(drift_root, socket_path=socket_path):
+            status = run_in_pty(["--plain", "ops", "status"], rows=80, env=status_env)
+
         status_text = grid_to_text(status.grid)
         assert "Format drift sentinel" in status_text
         assert "codex-session" in status_text

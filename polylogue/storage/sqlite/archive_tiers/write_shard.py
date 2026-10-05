@@ -37,11 +37,12 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 from urllib.parse import quote
 
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
@@ -338,12 +339,22 @@ class SessionShardBuilder:
         width = len(_bound_columns(_spec(table)))
         placeholders = ", ".join("?" * width)
         sql = f"INSERT INTO {table} VALUES ({placeholders})"
-        while True:
-            window = list(islice(rows, 128))
-            if not window:
-                break
-            self._conn.executemany(sql, window)
-            self._next_rowid[table] += len(window)
+        window: list[tuple[object, ...]] = []
+
+        def flush() -> None:
+            if window:
+                self._conn.executemany(sql, window).close()
+                self._next_rowid[table] += len(window)
+                window.clear()
+
+        # The streamed rows settle with this append, including on failure.
+        with settled_iterator(rows) as original_rows:
+            for row in original_rows:
+                check_compute_cancelled()
+                window.append(row)
+                if len(window) == 128:
+                    flush()
+            flush()
 
     def _append(self, table: str, rows: Sequence[tuple[object, ...]]) -> int:
         lo = self._next_rowid[table]
@@ -632,16 +643,10 @@ def open_session_shard(path: Path) -> SessionShard:
                 raise ShardRefusedError(
                     f"shard {path}: seal claims {session_count} sessions, manifest has {checked_count}"
                 )
-            # A session is addressed by its id, so two entries under one id
-            # would let the writer copy the wrong rowid range for one of
-            # them. Refuse the file rather than pick.
-            previous_id: str | None = None
-            for (session_id,) in conn.execute(
-                "SELECT session_id FROM shard_session INDEXED BY shard_session_id ORDER BY session_id"
-            ):
-                if session_id == previous_id:
-                    raise ShardRefusedError(f"shard {path}: a session id appears twice in the manifest")
-                previous_id = str(session_id)
+            # The sealed manifest preserves original parser output ordinals.
+            # A repeated identity must remain inspectable before the canonical
+            # key selector can refuse it. Identity-addressed writer bindings
+            # independently require exactly one range in ShardSessionMapping.
             owner_count = int(conn.execute("SELECT COUNT(*) FROM shard_owner_manifest").fetchone()[0])
             if owner_count != session_count:
                 raise ShardRefusedError("sealed shard lacks captured session owner evidence")

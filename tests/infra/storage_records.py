@@ -1177,13 +1177,19 @@ def materialize_session_insights(
 
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.archive_templates import run_off_event_loop
 
-    with open_connection(db_path) as conn:
-        return rebuild_session_insights_sync(
-            conn,
-            session_ids=None if session_ids is None else list(session_ids),
-            progress_callback=progress_callback,
-        )
+    def materialize() -> Any:
+        # The writer opens a synchronous write lease, which refuses to block a
+        # running event loop; async tests run it on a loop-free thread.
+        with open_connection(db_path) as conn:
+            return rebuild_session_insights_sync(
+                conn,
+                session_ids=None if session_ids is None else list(session_ids),
+                progress_callback=progress_callback,
+            )
+
+    return run_off_event_loop(materialize)
 
 
 def seed_insight_scope_archive(root: Path) -> None:

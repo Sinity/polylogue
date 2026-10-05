@@ -9,15 +9,29 @@ from pathlib import Path
 import pytest
 
 from devtools import seeded_archive_cache_gc as command
+from polylogue.scenarios import CorpusSpec
 from tests.infra import workload_artifacts
 from tests.infra.workload_artifacts import (
     ArtifactGcDisposition,
+    SeededArchiveArtifact,
     SeededArchiveReachabilityInventory,
     build_seeded_archive,
+    copy_seeded_archive,
     current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
 )
 from tests.infra.workload_declarations import c03_semantic_corpus_spec
+
+pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+def _stale_specs(seed: int) -> tuple[CorpusSpec, ...]:
+    """A small unreachable recipe; collection semantics do not depend on its size."""
+    return (
+        dataclasses.replace(
+            c03_semantic_corpus_spec(), seed=seed, count=2, session_native_ids=("c03-target", "c03-irrelevant-000")
+        ),
+    )
 
 
 def _age_artifact(root: Path, *, now: float = 10_000.0) -> None:
@@ -37,11 +51,12 @@ def test_route_refuses_a_partial_implicit_inventory_before_gc(tmp_path: Path, mo
     assert "incomplete" in output.getvalue()
 
 
-def test_route_preview_apply_and_repeat_apply_use_generated_keys(tmp_path: Path) -> None:
+def test_route_preview_apply_and_repeat_apply_use_generated_keys(
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path
+) -> None:
     cache_root = tmp_path / "cache"
-    current = build_seeded_archive(cache_root=cache_root)
-    stale_specs = (dataclasses.replace(c03_semantic_corpus_spec(), seed=999),)
-    stale = build_seeded_archive(stale_specs, cache_root=cache_root)
+    current = copy_seeded_archive(c03_seeded_artifact, cache_root=cache_root)
+    stale = build_seeded_archive(_stale_specs(999), cache_root=cache_root)
     _age_artifact(stale.root)
     preview_receipt = tmp_path / "preview.json"
     preview_output = io.StringIO()
@@ -129,13 +144,12 @@ def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:
     every comparison against NaN is False, and this test would then fail.
     """
     cache_root = tmp_path / "cache"
-    current = build_seeded_archive(cache_root=cache_root)
 
     for bad in (float("nan"), float("inf"), float("-inf")):
         with pytest.raises(ValueError, match="finite"):
             gc_seeded_archive_artifacts(
                 cache_root=cache_root,
-                reachable_keys=(current.manifest.key,),
+                reachable_keys=("seeded-archive:sha256:" + "f" * 64,),
                 grace_period_s=bad,
                 dry_run=False,
             )
@@ -157,7 +171,9 @@ def test_route_refuses_receipt_beneath_artifact_candidates(tmp_path: Path) -> No
     assert not receipt.exists()
 
 
-def test_route_returns_nonzero_when_deletion_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_route_returns_nonzero_when_deletion_fails(
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A deletion failure must fail the operation, not silently succeed.
 
     Anti-vacuity: reverting the CLI's ``return`` to unconditional ``0`` makes
@@ -165,9 +181,8 @@ def test_route_returns_nonzero_when_deletion_fails(tmp_path: Path, monkeypatch: 
     command would report success.
     """
     cache_root = tmp_path / "cache"
-    current = build_seeded_archive(cache_root=cache_root)
-    stale_specs = (dataclasses.replace(c03_semantic_corpus_spec(), seed=999),)
-    stale = build_seeded_archive(stale_specs, cache_root=cache_root)
+    current = copy_seeded_archive(c03_seeded_artifact, cache_root=cache_root)
+    stale = build_seeded_archive(_stale_specs(999), cache_root=cache_root)
     _age_artifact(stale.root)
 
     def _boom(path: Path, **kwargs: object) -> None:
@@ -225,21 +240,14 @@ def test_json_refusal_payload_bounds_untrusted_error_text(tmp_path: Path, monkey
 
 
 def test_gc_sigterm_after_partial_deletion_is_receipted_and_resumable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The production command must retire before unlinking and preserve a resumable interruption."""
     import signal
 
     cache_root = tmp_path / "cache"
-    current = build_seeded_archive(cache_root=cache_root)
-    stale = build_seeded_archive(
-        (
-            dataclasses.replace(
-                c03_semantic_corpus_spec(), seed=991, count=2, session_native_ids=("c03-target", "c03-irrelevant-000")
-            ),
-        ),
-        cache_root=cache_root,
-    )
+    current = copy_seeded_archive(c03_seeded_artifact, cache_root=cache_root)
+    stale = build_seeded_archive(_stale_specs(991), cache_root=cache_root)
     _age_artifact(stale.root)
     receipt = tmp_path / "gc.json"
     original = workload_artifacts._remove_tree

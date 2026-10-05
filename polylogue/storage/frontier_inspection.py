@@ -1245,6 +1245,7 @@ def frontier_inspection_projection_from_connections(
     healthy frontier. This performs only journal/identity reads, not a corpus
     inspection or a filesystem blob walk.
     """
+    from polylogue.core.errors import SchemaRefusalError
     from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
@@ -1272,7 +1273,7 @@ def frontier_inspection_projection_from_connections(
 
     try:
         frame = capture_sqlite_read(read_frame)
-    except (OSError, ValueError) as failure:
+    except (OSError, ValueError, SchemaRefusalError) as failure:
         return {"available": False, "current": False, "healthy": False, "detail": str(failure)}
     if not isinstance(frame, Measured):
         detail = frame.detail if isinstance(frame, Unavailable) else None

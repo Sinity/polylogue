@@ -173,14 +173,6 @@ class _IngestBatchSummary:
     stage_timings_s: dict[str, float] = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
-class _IngestWorkerRequest:
-    archive_root_str: str
-    blob_root_str: str
-    validation_mode: str
-    measure_ingest_result_size: bool
-
-
 _SessionEntry = tuple[str, SessionWritePayload]
 
 

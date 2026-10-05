@@ -15,6 +15,7 @@ import os
 import pickle
 import re
 import sqlite3
+import stat
 import struct
 import tempfile
 import threading
@@ -2454,7 +2455,7 @@ class PreparedIndexMutation:
             before = path.lstat()
         except FileNotFoundError:
             return None
-        link = os.readlink(path) if path.is_symlink() else None
+        link = os.readlink(path) if stat.S_ISLNK(before.st_mode) else None
         after = path.lstat()
         identity = (before.st_dev, before.st_ino, before.st_mode, link)
         if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
@@ -2667,8 +2668,10 @@ class PreparedIndexMutation:
             with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
                 if cursor.fetchone():
                     return False
-        parsed = _relevant_ref(ref.wire_ref)
-        return parsed is not None and _resolve_target(conn, parsed) is None
+        # The anchored target itself must no longer resolve. A removed session's
+        # token can fall through to a surviving prefix sibling; that sibling is
+        # a different object, not evidence that the removed target remains.
+        return _relevant_ref(ref.wire_ref) is not None and not _still_resolves(conn, ref)
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
@@ -4632,6 +4635,7 @@ class PreparedIndexMutation:
         with owned_literal_stream(left), owned_literal_stream(right):
             return all(a == b for a, b in zip_longest(normalized(left), normalized(right)))
 
+    @_namespace_verified_per_row
     def _retain_row_image(self, image: KnownTierRowImage) -> int:
         """Persist schema-width locators, never a pickled variable row payload."""
         self._require_witness_main_mutable()
@@ -5122,6 +5126,7 @@ class PreparedIndexMutation:
             self._cleanup_requested = True
             raise
 
+    @_namespace_verified_per_row
     def _retain_native_row(
         self,
         connection: sqlite3.Connection,

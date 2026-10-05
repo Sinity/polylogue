@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.persistence import materialize_artifact_observations
 from polylogue.storage.artifacts.queries import (
     filter_artifact_observations,
@@ -14,10 +16,30 @@ from polylogue.storage.artifacts.queries import (
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.query_models import ArtifactObservationListQuery
 from polylogue.storage.runtime import ArtifactObservationRecord
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+from polylogue.storage.sqlite.write_lease import write_lease
 
 from .models import ArtifactCoverageReport, ProviderArtifactCoverage
 from .requests import ArtifactCoverageRequest, ArtifactObservationQuery, bounded_window
+
+
+def _materialized_source_observations(db_path: Path) -> list[ArtifactObservationRecord]:
+    """Hydrate artifact observations on the Source tier that owns them.
+
+    Callers name the archive by its Index path. Raw sessions and their
+    ``raw_artifacts`` observations live in the Source tier, which the Index
+    connection attaches read-only, so hydration takes the Source writer under
+    the archive write lease.
+    """
+    location = ArchiveLocation.resolve(db_path.parent)
+    source_path = location.configured_tier("source").configured_path
+    with write_lease("schema.artifact.observations", archive_root=location.configured_root):
+        conn = open_source_tier_write_connection(source_path, archive_root=location.configured_root)
+        try:
+            conn.row_factory = sqlite3.Row
+            return materialize_artifact_observations(conn)
+        finally:
+            conn.close()
 
 
 def _increment_count(counter: dict[str, int], key: str, amount: int = 1) -> None:
@@ -34,8 +56,7 @@ def list_artifact_observation_rows(
         return []
 
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
-    with open_connection(db_path) as conn:
-        records = materialize_artifact_observations(conn)
+    records = _materialized_source_observations(db_path)
     return filter_artifact_observations(
         records,
         ArtifactObservationListQuery(
@@ -58,8 +79,7 @@ def list_artifact_cohort_rows(
         return []
 
     bounded_limit, bounded_offset = bounded_window(request.record_limit, request.record_offset)
-    with open_connection(db_path) as conn:
-        records = materialize_artifact_observations(conn)
+    records = _materialized_source_observations(db_path)
     return summarize_artifact_cohorts(
         records,
         ArtifactObservationListQuery(

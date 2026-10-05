@@ -10,13 +10,13 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
     UNTRUSTED_FUTURE_FRESHNESS_TOLERANCE_MS,
     should_skip_stale_replace,
 )
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 _NOW_MS = 1_760_000_000_000
@@ -68,11 +68,10 @@ def test_commit_evidence_survives_a_checkout_this_machine_cannot_resolve(tmp_pat
         git_branch="feature/offline",
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
     )
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(bootstrapped_tier_path(tmp_path / "index.db"))
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
         session_id = write_fixture_index_session(
             conn,
             session,

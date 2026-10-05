@@ -36,11 +36,11 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.strategies import (
     AcquisitionInputSpec,
     ParseMergeEvent,
@@ -466,8 +466,14 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
     batch: tuple[AcquisitionInputSpec, ...],
 ) -> None:
     """Acquisition preserves observations while identical payloads share one blob."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.archive_templates import run_off_event_loop
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
     with TemporaryDirectory() as tempdir:
-        backend = SQLiteBackend(db_path=Path(tempdir) / "acquire.db")
+        archive_root = Path(tempdir)
+        run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+        backend = SQLiteBackend(db_path=archive_root / "index.db")
         source_name = "generated-source"
 
         raw_items = [
@@ -485,9 +491,12 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
                 "polylogue.pipeline.services.acquisition.iter_source_acquisition_records",
                 return_value=iter(SourceInputRecord('["physical-file-v1",0]', item) for item in raw_items),
             ):
-                result = await AcquisitionService(backend=backend).acquire_sources(
-                    [Source(name=source_name, path=Path("/tmp/inbox"))]
-                )
+                # Acquisition publishes through the daemon's admitted writer.
+                async with prepared_live_convergence_owner(archive_root) as owner:
+                    execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                    result = await AcquisitionService(backend=backend, execution=execution).acquire_sources(
+                        [Source(name=source_name, path=Path("/tmp/inbox"))]
+                    )
 
             assert result.counts["acquired"] == len(batch)
             assert result.counts["skipped"] == 0
@@ -500,7 +509,7 @@ async def test_acquisition_law_preserves_coordinates_deduplicates_blobs_and_norm
                 assert stored is not None
                 assert stored.blob_hash is not None
                 blob_hashes.add(stored.blob_hash)
-                raw_bytes = BlobStore(Path(tempdir) / "blob").read_all(stored.blob_hash)
+                raw_bytes = BlobStore(archive_root / "blob").read_all(stored.blob_hash)
                 payload_id = json.loads(raw_bytes)["id"]
                 assert payload_id == spec.payload_id
                 expected_provider = spec.provider_hint or "unknown"
@@ -842,11 +851,14 @@ def test_ingest_worker_reuses_schema_resolution_and_walks_drift(
 
 
 def _open_index_archive(tmp_path: Path) -> sqlite3.Connection:
-    index_path = tmp_path / "archive" / "index.db"
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(index_path)
+    """Bootstrap the archive and open its Index through a measured creator.
+
+    The fixture writer captures Index mutations against the connection's
+    original physical creator, which a bare ``sqlite3.connect`` lacks.
+    """
+    archive_root = bootstrap_archive_root(tmp_path / "archive")
+    conn = connect_measured(archive_root / "index.db")
     conn.row_factory = sqlite3.Row
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
@@ -889,7 +901,7 @@ def test_transform_with_tool_use_message_keeps_non_empty_message_hash(tmp_path: 
         ).fetchall()
         action_count = conn.execute("SELECT COUNT(*) FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     assert len(message_hashes) == 1
     assert message_hashes[0]["content_hash"]
@@ -948,7 +960,7 @@ def test_transform_deduplicates_materialized_message_rows_by_primary_key(tmp_pat
             "SELECT message_count FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()[0]
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     # Id-less messages, so both ids come from the content fallback.
     ordered_ids = [str(row["message_id"]) for row in message_rows]

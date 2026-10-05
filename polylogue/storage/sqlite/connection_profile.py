@@ -111,12 +111,9 @@ if hasattr(os, "register_at_fork") and not globals().get("_NATIVE_FORK_REGISTERE
 
 def retained_native_sql_owners_on_current_thread() -> tuple[NativeSQLCustodyOwner, ...]:
     """Return actual handles awaiting cleanup by their creating thread."""
+    pid, thread = os.getpid(), threading.current_thread()
     with _LIVE_NATIVE_SQL_OWNERS_LOCK:
-        return tuple(
-            owner
-            for owner in _LIVE_NATIVE_SQL_OWNERS.values()
-            if owner.pid == os.getpid() and owner.thread is threading.current_thread()
-        )
+        return tuple(owner for owner in _LIVE_NATIVE_SQL_OWNERS.values() if owner.pid == pid and owner.thread is thread)
 
 
 def retained_native_settlement_owners_on_current_thread(
@@ -201,11 +198,12 @@ def settle_cached_connections_on_current_thread(custody: object) -> None:
 
 def retained_native_sql_owners_for_lifetime(dependency: object) -> tuple[NativeSQLCustodyOwner, ...]:
     """Protect artifact cleanup while any actual native owner retains it."""
+    pid = os.getpid()
     with _LIVE_NATIVE_SQL_OWNERS_LOCK:
         return tuple(
             owner
             for owner in _LIVE_NATIVE_SQL_OWNERS.values()
-            if owner.pid == os.getpid()
+            if owner.pid == pid
             and (not owner._settled or owner._terminal_parent is not None)
             and any(item is dependency for item in owner._lifetime_dependencies)
         )

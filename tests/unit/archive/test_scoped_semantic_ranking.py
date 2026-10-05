@@ -15,9 +15,20 @@ from polylogue.archive.query.execution_control import QueryCancelledError
 from polylogue.archive.query.expression import ExpressionCompileError, compile_expression
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.session.domain_models import Session
+from polylogue.config import Config
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.operations.operation_context import open_operation_read
-from tests.infra.scoped_semantic import declare_ranking_repository, ranking_archive
+from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.scoped_semantic import declare_ranking_repository
+from tests.infra.scoped_semantic import ranking_archive as _ranking_archive
+
+
+def ranking_archive(
+    *args: Any, **kwargs: Any
+) -> tuple[Config, SqliteVecProvider, dict[tuple[str, str], tuple[str, str]], list[dict[str, object]]]:
+    """Seed off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _ranking_archive(*args, **kwargs))
 
 
 def test_rare_scope_precedes_vector_ranking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

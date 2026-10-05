@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -69,7 +71,8 @@ def _insert_raw_record(
     raw_id, blob_size = blob_store.write_from_bytes(raw_content)
     origin = origin_from_provider(Provider.from_string(payload_provider or source_name))
 
-    with open_connection(db_path) as conn:
+    # Raw evidence lives in the Source tier; plant it as an independent writer.
+    with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
         write_source_raw_session_blob_ref(
             conn,
             origin=origin,
@@ -489,7 +492,7 @@ class TestInspectRawArtifactCoverage:
         assert chatgpt_stats.element_kinds == {"session_document": 1}
         assert chatgpt_stats.resolution_reasons == {"exact_structure": 1}
 
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
             observation_count = conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone()[0]
         assert observation_count == 5
 
@@ -523,7 +526,7 @@ class TestInspectRawArtifactCoverage:
             source_path=source_path,
             source_index=0,
         )
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
             conn.execute(
                 """
                 INSERT INTO raw_artifacts (
@@ -632,7 +635,8 @@ class TestInspectRawArtifactCoverage:
 
         # The durable raw_artifacts row is refreshed in place: its stale
         # support_status flips from unsupported to supported on re-inspection.
-        with open_connection(db_path) as conn:
+        with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
+            conn.row_factory = sqlite3.Row
             refreshed = conn.execute(
                 """
                 SELECT support_status

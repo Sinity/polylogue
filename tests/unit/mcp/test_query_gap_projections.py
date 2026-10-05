@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import (
     build_tools,
@@ -27,6 +28,7 @@ from tests.infra.mcp import (
 from tests.infra.session_profiles import write_session_profile
 
 
+@seeds_off_event_loop
 def _seed_archive(archive_root: Path) -> str:
     """Write one session with searchable text; returns its canonical id."""
     from polylogue.archive.message.roles import Role
@@ -53,6 +55,7 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
+@seeds_off_event_loop
 def _seed_repo_filtered_archive(archive_root: Path) -> str:
     """Write two profiled sessions so repository filtering is observable."""
     from polylogue.archive.message.roles import Role
@@ -127,6 +130,7 @@ def _seed_repo_filtered_archive(archive_root: Path) -> str:
     return session_ids[0]
 
 
+@seeds_off_event_loop
 def _seed_tool_episode_archive(archive_root: Path) -> str:
     """Write a matching and an out-of-scope tagged tool episode."""
     from polylogue.archive.message.roles import Role

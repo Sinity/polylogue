@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import hashlib
 import json
 import os
@@ -11,13 +12,13 @@ import tempfile
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable, Coroutine, Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError, Future
 from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.core.compute import (
@@ -38,7 +39,7 @@ from polylogue.core.stage_admission import stage_write_admission, stage_write_ad
 from polylogue.core.write_lease import adopt_write_lease
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
-from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge, StagedTask
 from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.audit import (
     MACHINE_PAGE_KINDS,
@@ -104,66 +105,18 @@ _STAGED_OPERATIONS = frozenset(
 )
 
 
+#: Request-body bytes of the staged exchange whose task is running. A staged
+#: operation's compute phases reserve them, as the scheduled route does for its
+#: one submission, so a queued staged exchange is not admitted as weightless.
+_STAGED_REQUEST_BYTES: contextvars.ContextVar[int] = contextvars.ContextVar("polylogue_staged_request_bytes", default=0)
+
+
 #: Name prefix of the ingest owner's re-drive task on its owner loop.
 REDRIVE_TASK_PREFIX = "polylogue-ingest-redrive:"
 
 
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
-
-
-class _StagedTask(Generic[_T]):
-    """A coroutine on the owner loop whose future settles only with its task.
-
-    ``run_coroutine_threadsafe`` marks its proxy future cancelled at once,
-    while the task behind it may still be awaiting a running compute phase and
-    its ``finally`` cleanup. Shutdown and the exchange's settled callback wait
-    on this future, so cancellation is forwarded to the task and the future
-    takes the task's terminal state only when the task has actually finished.
-    """
-
-    def __init__(
-        self,
-        loop: asyncio.AbstractEventLoop,
-        start: Callable[[], Coroutine[Any, Any, _T]],
-        *,
-        name: str | None = None,
-    ) -> None:
-        self.future: Future[_T] = Future()
-        self._loop = loop
-        self._task: asyncio.Task[_T] | None = None
-        self._cancelled = False
-        self._name = name
-        loop.call_soon_threadsafe(self._start, start)
-
-    def cancel(self) -> None:
-        """Request cancellation from any thread; the future settles with the task."""
-        self._loop.call_soon_threadsafe(self._cancel)
-
-    def _start(self, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
-        # ``_start`` and ``_cancel`` both run on the owner loop in submission
-        # order, so a cancellation either precedes the task or reaches it.
-        if self._cancelled:
-            return
-        self._task = self._loop.create_task(start(), name=self._name)
-        self._task.add_done_callback(self._settle)
-
-    def _cancel(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
-        elif not self._cancelled:
-            self._cancelled = True
-            self.future.cancel()
-
-    def _settle(self, task: asyncio.Task[_T]) -> None:
-        if self.future.done():
-            return
-        if task.cancelled():
-            self.future.cancel()
-        elif (exc := task.exception()) is not None:
-            self.future.set_exception(exc)
-        else:
-            self.future.set_result(task.result())
 
 
 @dataclass(slots=True)
@@ -294,7 +247,7 @@ class DaemonOperationRuntime:
 
             # Named: the re-drive is this runtime's own declared child on the
             # owner loop, not an anonymous task.
-            self._redrive = _StagedTask(
+            self._redrive = StagedTask(
                 self._owner_loop, redrive, name=f"{REDRIVE_TASK_PREFIX}{self.archive_root}"
             ).future
             redrive_future = self._redrive
@@ -377,7 +330,9 @@ class DaemonOperationRuntime:
         # The kernel's pool outlives every bind, so its threads carry no
         # correlation context of their own (verified: a bare submit sees an
         # empty context where a propagate()d one does not).
-        submitted = self._kernel.submit(propagate(work), admission_class="control")
+        submitted = self._kernel.submit(
+            propagate(work), admission_class="control", estimated_bytes=_STAGED_REQUEST_BYTES.get()
+        )
         pending = asyncio.wrap_future(submitted.future)
         try:
             return await asyncio.shield(pending)
@@ -1210,7 +1165,13 @@ class DaemonOperationRuntime:
                             "maintenance.restore_verified_backup": execute_restore_verified_backup_operation,
                         }[request.operation]
 
-                        staged_task = _StagedTask(self._owner_loop, lambda: staged(request, context))
+                        staged_body_bytes = request_body_bytes
+
+                        async def run_staged() -> Any:
+                            _STAGED_REQUEST_BYTES.set(staged_body_bytes)
+                            return await staged(request, context)
+
+                        staged_task = StagedTask(self._owner_loop, run_staged)
                         exchange.future = staged_task.future
 
                         def cancel_staged_before_acceptance() -> None:

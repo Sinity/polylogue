@@ -385,6 +385,7 @@ from pathlib import Path
 # initialize()/interrupted-attempt recovery, which must proceed normally.
 ARMED = [False]
 
+from polylogue.storage import io_phase_metrics  # noqa: E402
 
 from polylogue.storage import io_phase_metrics  # noqa: E402
 
