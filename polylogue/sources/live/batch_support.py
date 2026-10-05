@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Buffer, Callable, Iterable, Iterator, Seq
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Protocol, cast
+from typing import IO, TYPE_CHECKING, Any, Protocol, cast
 
 import ijson
 
@@ -30,10 +30,12 @@ from polylogue.archive.artifact_taxonomy import (
 from polylogue.archive.raw_payload.decode import (
     jsonl_session_artifact,
 )
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_failure_evidence import PartialAdmission, RetainedRawDecodeRefusalError
+from polylogue.core.sources import origin_from_provider
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
@@ -1530,3 +1532,31 @@ def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payloa
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+def hook_carrier_logical_source_key(*, provider: Provider, source_path: str) -> str:
+    """Return the physical-carrier revision key under its acquisition origin."""
+    return f"{origin_from_provider(provider).value}:{source_path}"
+
+
+def bind_hook_carrier_baseline_revision(
+    archive: Any,
+    raw_id: str,
+    *,
+    provider: Provider,
+    source_path: str,
+    source_revision: str,
+) -> str:
+    """Bind an initially acquired carrier to its physical append chain."""
+    logical_source_key = hook_carrier_logical_source_key(provider=provider, source_path=source_path)
+    archive.bind_raw_revision(
+        raw_id,
+        RawRevisionEnvelope(
+            logical_source_key=logical_source_key,
+            kind=RawRevisionKind.FULL,
+            source_revision=source_revision,
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    return logical_source_key

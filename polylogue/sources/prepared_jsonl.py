@@ -846,20 +846,7 @@ class PreparedJsonl:
                             (enrichment_digest, enrichment_index_path),
                         )
                     if classification is not None:
-                        selected = classification.classification
-                        store.conn.execute(
-                            "INSERT INTO prepared_classification VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                            (
-                                selected.provider.value,
-                                selected.kind.value,
-                                int(selected.parse_as_session),
-                                int(selected.schema_eligible),
-                                selected.default_priority,
-                                selected.reason,
-                                int(classification.proved_non_session),
-                                classification.record_count,
-                            ),
-                        )
+                        record_prepared_classification(store.conn, classification)
                     if publication_publisher is not None:
                         _prepare_attachment_publications(
                             store, publication_publisher, artifact_directory, source_read=publication_source_read
@@ -1893,6 +1880,24 @@ class PreparedSessionSequence(Sequence[ParsedSession]):
             raise RuntimeError(self.artifact.error or "JSONL preparation has no sealed artifact")
         self.artifact.verify_files(full=False)
         return self.artifact._session_by_ordinal(index, _shard=self._shard)
+
+
+def record_prepared_classification(conn: sqlite3.Connection, taxonomy: ArtifactStreamClassification) -> None:
+    """Seal the complete original-input classification beside the artifact's sessions."""
+    classification = taxonomy.classification
+    conn.execute(
+        "INSERT INTO prepared_classification VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            classification.provider.value,
+            classification.kind.value,
+            int(classification.parse_as_session),
+            int(classification.schema_eligible),
+            classification.default_priority,
+            classification.reason,
+            int(taxonomy.proved_non_session),
+            taxonomy.record_count,
+        ),
+    )
 
 
 def _write_artifact(
@@ -3605,20 +3610,7 @@ def prepare_jsonl_blob(
             accepted_count = store.conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0]
             if explicit is not None and not explicit.parse_as_session and not accepted_count:
                 taxonomy = ArtifactStreamClassification(explicit, True, taxonomy.record_count)
-        classification = taxonomy.classification
-        store.conn.execute(
-            "INSERT INTO prepared_classification VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                classification.provider.value,
-                classification.kind.value,
-                int(classification.parse_as_session),
-                int(classification.schema_eligible),
-                classification.default_priority,
-                classification.reason,
-                int(taxonomy.proved_non_session),
-                taxonomy.record_count,
-            ),
-        )
+        record_prepared_classification(store.conn, taxonomy)
         if publication_publisher is not None and prepare_sessions is None:
             _prepare_attachment_publications(
                 store, publication_publisher, artifact_directory, source_read=publication_source_read

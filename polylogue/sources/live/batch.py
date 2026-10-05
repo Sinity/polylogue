@@ -130,6 +130,7 @@ from polylogue.sources.live.batch_support import (
     _ingest_pass_exhausted,
     _path_size,
     _throttled_phase_heartbeat,
+    bind_hook_carrier_baseline_revision,
     classify_pre_acquisition,
     claude_semantic_frontier_for_prefix,
     claude_semantic_frontier_for_prefix_with_bytes,
@@ -803,6 +804,19 @@ def _zip_member_debt_subject(path: Path, ordinal: int, member: str) -> str:
     return f"{_zip_member_debt_prefix(path)}{ordinal}:{member}"
 
 
+def _declared_evidence_raw(source: sqlite3.Connection, raw_id: str, path: Path) -> bool:
+    """Whether a raw's path is declared non-session evidence (a carrier, a memory document).
+
+    Retaining such bytes is that path's whole admission, so a census without
+    sessions is its settled outcome rather than a no-session exclusion.
+    """
+    row = source.execute("SELECT detected_provider FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    if row is None or row[0] is None:
+        return False
+    rule = artifact_rule_for_path(Provider.from_string(str(row[0])), str(path))
+    return rule is not None and rule.parse_policy != "session"
+
+
 def _admit_live_full_raw(
     archive: ArchiveStore,
     record: RawSessionRecord,
@@ -862,6 +876,17 @@ def _admit_live_full_raw(
             post_parse=True,
         )
         source_write_name = "full.source_raw_write"
+    path_artifact = classify_artifact_path(record.source_path, provider=acquisition_provider)
+    if path_artifact is not None and path_artifact.kind is ArtifactKind.HOOK_EVENT_CARRIER:
+        # A carrier's first capture is the full baseline of its physical
+        # append chain; later growth binds append revisions onto it.
+        bind_hook_carrier_baseline_revision(
+            archive,
+            source_raw_id,
+            provider=acquisition_provider,
+            source_path=record.source_path,
+            source_revision=blob_hash,
+        )
     return source_raw_id, source_write_name
 
 
@@ -3209,7 +3234,7 @@ class LiveBatchProcessor:
                 )
                 if corrupt:
                     settled[path] = REFUSED_CORRUPT_INPUT
-                elif (
+                elif not _declared_evidence_raw(source, raw_id, path) and (
                     source.execute(
                         "SELECT 1 FROM raw_membership_census WHERE raw_id = ? AND parser_fingerprint = ? "
                         "AND status = 'non_session'",
