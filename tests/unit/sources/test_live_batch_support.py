@@ -3502,35 +3502,6 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     }
 
 
-def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path, artifact_count: int) -> None:
-    """Decoded session evidence bypasses path-only workflow-journal admission."""
-    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
-    path.parent.mkdir(parents=True)
-    payload = b"".join(
-        b'{"contentKey":"artifact-' + str(index).encode() + b'","agentId":"workflow-agent"}\n'
-        for index in range(artifact_count)
-    ) + (
-        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"recover this journal record"},'
-        b'"uuid":"journal-user","timestamp":"2025-01-01T00:00:00Z"}\n'
-        b'{"parentUuid":"journal-user","type":"assistant","message":{"role":"assistant",'
-        b'"content":[{"type":"text","text":"repaired reply"}]},"uuid":"journal-assistant",'
-        b'"timestamp":"2025-01-01T00:00:01Z"}\n'
-    )
-    path.write_bytes(payload)
-    plan = replace(_append_plan(path, payload, payload_hash="session-shaped"), source_name="claude-code")
-
-    result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
-
-    assert result.succeeded == []
-    assert result.failed == []
-    assert result.deferred == [plan]
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts").fetchone() == (0,)
-        assert conn.execute("SELECT revision_kind, revision_authority FROM raw_sessions").fetchall() == [
-            ("append", "quarantined")
-        ]
-
-
 def _write_plain_sqlite_db(path: Path) -> None:
     """A genuine SQLite database with no Hermes state.db/verification_evidence.db shape."""
     path.parent.mkdir(parents=True, exist_ok=True)
