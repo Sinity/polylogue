@@ -1668,6 +1668,7 @@ def apply_prepared_revision_replay(
     prepared_membership_keys: tuple[str, ...],
     prepared_byte_logical_keys: tuple[str, ...],
     prepared_key_refusals: tuple[CohortMembershipRefusalError, ...],
+    prepared_lineage_deferrals: tuple[str, ...] = (),
     bulk_fts: bool = True,
     exact_fts_audit: bool = False,
 ) -> PreparedRevisionReplayResult:
@@ -1742,7 +1743,9 @@ def apply_prepared_revision_replay(
         for key, count in result.counts.items():
             written_counts[key] = written_counts.get(key, 0) + count
 
-    refused_keys = {refusal.logical_source_key for refusal in prepared_key_refusals}
+    # Deferred children publish nothing in this unit; like refused keys they
+    # carry no prepared outcome and no Source acknowledgement here.
+    refused_keys = {refusal.logical_source_key for refusal in prepared_key_refusals} | set(prepared_lineage_deferrals)
     logical_keys: set[str] = set()
     spill = _PreparedReplayInputs(prepared_inputs)
     with _prepared_replay_archive(archive_root, reference_seal, active_index_path) as archive:

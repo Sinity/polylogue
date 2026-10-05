@@ -185,6 +185,9 @@ class RawObservationReplacement:
     prepared_membership_keys: tuple[str, ...] = ()
     prepared_byte_logical_keys: tuple[str, ...] = ()
     prepared_key_refusals: tuple[CohortMembershipRefusalError, ...] = ()
+    #: Logical keys whose parent publishes earlier in this same unit; they
+    #: publish nothing here and are re-prepared against that parent.
+    prepared_lineage_deferrals: tuple[str, ...] = ()
     needs_source_classification: bool = False
     scratch_directory: Path | None = None
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
@@ -787,10 +790,12 @@ class RawObservationDerivation(RawObservationInspection):
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    #: Restored bytes, Source census and classification each commit before
-    #: the replay that depends on them can be prepared off the writer; the
-    #: kernel continues those phases within one pass (replay is the last).
-    publication_phases = 4
+    # Restored bytes, Source census, classification and in-unit lineage
+    # deferral each commit before the work that depends on them can be
+    # prepared off the writer; the kernel continues those phases within one
+    # pass while :meth:`publication_advanced` reports committed progress.
+    # Every advance is one that cannot repeat for the same state, so the
+    # continuation is bounded by progress rather than a phase count.
 
     def __init__(
         self,
@@ -811,6 +816,10 @@ class RawObservationDerivation(RawObservationInspection):
         #: Replacements whose publication committed a prerequisite phase,
         #: consumed by :meth:`publication_advanced` on the same key.
         self._phase_committed: dict[int, str] = {}
+        #: Logical keys already deferred once for in-unit lineage. A key is
+        #: deferred at most once per adapter, so re-preparation always makes
+        #: progress even when its parent's publication is itself refused.
+        self._lineage_deferred: set[str] = set()
         if owned_generation is not None:
             from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -820,6 +829,41 @@ class RawObservationDerivation(RawObservationInspection):
             if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
                 raise ValueError("retained replay Index differs from its owned generation")
             self._index_db_path = destination.index_path
+
+    def _lineage_deferrals(
+        self,
+        prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+        selected_writes: Mapping[tuple[str, str], tuple[ParsedSession, PreparedJsonl]],
+        *,
+        write_keys: Mapping[str, tuple[str, str]],
+    ) -> tuple[str, ...]:
+        """Logical keys whose claimed parent session publishes earlier in this unit.
+
+        Each write was prepared against the Index as it stood before the unit,
+        so a child whose parent is absent there expects no parent. Only a
+        child whose parent another write of this unit produces is deferred.
+        """
+        produced = {session_id for _raw_id, session_id in write_keys.values()}
+        deferred: list[str] = []
+        for logical_key, write_key in write_keys.items():
+            write = prepared_writes.get(write_key)
+            selected = selected_writes.get(write_key)
+            if write is None or selected is None or write.context.parent_session_id is not None:
+                continue
+            session = selected[0]
+            claimed = write.context.hook_parent_native_id or session.parent_session_provider_id
+            if not claimed:
+                continue
+            from polylogue.core.sources import origin_from_provider
+
+            parent_session_id = f"{origin_from_provider(session.source_name).value}:{claimed.strip()}"
+            if parent_session_id == write_key[1] or parent_session_id not in produced:
+                continue
+            if logical_key in self._lineage_deferred:
+                continue
+            deferred.append(logical_key)
+        self._lineage_deferred.update(deferred)
+        return tuple(sorted(deferred))
 
     def publication_advanced(self, replacement: RawObservationReplacement) -> bool:
         """Whether this replacement's publication committed a prerequisite phase.
@@ -1063,6 +1107,7 @@ class RawObservationDerivation(RawObservationInspection):
                     prepared_replay_adoption: dict[tuple[str, tuple[str, ...]], PreparedRevisionAdoption] = {}
                     membership_plans: dict[str, PreparedMembershipReplay] = {}
                     prepared_byte_outcomes: dict[str, PreparedRevisionReplayOutcome] = {}
+                    prepared_lineage_deferrals: tuple[str, ...] = ()
                     prepared_replay_source: PreparedRetainedReplaySource | None = None
                     verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
                     prepared_source_census: PreparedRevisionSourceCensus | None = None
@@ -1594,6 +1639,40 @@ class RawObservationDerivation(RawObservationInspection):
                                             ),
                                             before_input=reference_seal.before_index_input,
                                         )
+                            # A child prepared against an Index without its parent
+                            # expects no parent; if that parent publishes earlier in
+                            # this same unit, the child's write would find it and
+                            # refuse as moved lineage. Defer the child: the rest
+                            # publishes, and the child is re-prepared in this same
+                            # pass against its published parent.
+                            prepared_lineage_deferrals = self._lineage_deferrals(
+                                prepared_writes,
+                                selected_writes,
+                                write_keys={
+                                    **{
+                                        logical_key: (
+                                            prepared_revision_plans[logical_key].accepted_raw_ids[-1],
+                                            str(
+                                                prepared_replay_adoption[
+                                                    (logical_key, prepared_revision_plans[logical_key].accepted_raw_ids)
+                                                ].session_id
+                                            ),
+                                        )
+                                        for logical_key in prepared_byte_outcomes
+                                    },
+                                    **{
+                                        logical_key: (
+                                            plan.classification.accepted_raw_ids[-1],
+                                            _session_id(plan.sessions[plan.classification.accepted_raw_ids[-1]]),
+                                        )
+                                        for logical_key, plan in membership_plans.items()
+                                        if plan.classification.accepted_raw_ids
+                                    },
+                                },
+                            )
+                            for deferred_key in prepared_lineage_deferrals:
+                                prepared_byte_outcomes.pop(deferred_key, None)
+                                membership_plans.pop(deferred_key, None)
                             # A later membership refusal supersedes any earlier
                             # prepared byte outcome for that same original key.
                             # The Source acknowledgement and writer consume the
@@ -1654,6 +1733,7 @@ class RawObservationDerivation(RawObservationInspection):
                         prepared_membership_keys=prepared_membership_keys,
                         prepared_byte_logical_keys=prepared_byte_logical_keys,
                         prepared_key_refusals=tuple(prepared_key_refusals.values()),
+                        prepared_lineage_deferrals=prepared_lineage_deferrals,
                         scratch_directory=scratch,
                         scratch_owner=scratch_owner,
                     )
@@ -1890,6 +1970,7 @@ class RawObservationDerivation(RawObservationInspection):
                         prepared_membership_keys=replacement.prepared_membership_keys,
                         prepared_byte_logical_keys=replacement.prepared_byte_logical_keys,
                         prepared_key_refusals=replacement.prepared_key_refusals,
+                        prepared_lineage_deferrals=replacement.prepared_lineage_deferrals,
                         bulk_fts=True,
                         # One publication is one component of a pass: each
                         # replayed session proves its own FTS rows, and the
@@ -1906,6 +1987,11 @@ class RawObservationDerivation(RawObservationInspection):
                 refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                 if refusal is not None:
                     raise refusal
+                if replacement.prepared_lineage_deferrals:
+                    # The parents published; their deferred children are
+                    # prepared against them by the next phase of this pass.
+                    self._phase_committed[id(replacement)] = replacement.key
+                    return False
                 return True
             finally:
                 if lifetime_bound:

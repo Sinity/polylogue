@@ -407,6 +407,23 @@ class RawObservationArchiveWork:
                         break
                     if publication_failures:
                         raise publication_failures[0]
+                    if (
+                        len(phases) == 1
+                        and phases[0][0] == "replay"
+                        and replacement.prepared_lineage_deferrals
+                        and isinstance(phases[0][1], PreparedRevisionReplayResult)
+                    ):
+                        # Parents published; their deferred children are
+                        # re-prepared against them next. The deferral itself
+                        # is the progress (a key is deferred at most once), so
+                        # the identical-Source-inputs guard does not apply.
+                        if replacement.prepared_key_refusals:
+                            assert on_membership_refusal is not None
+                            for membership_refusal in replacement.prepared_key_refusals:
+                                on_membership_refusal(membership_refusal)
+                        results.append(phases[0][1])
+                        previous_progress = None
+                        continue
                     if len(phases) != 1 or phases[0][0] not in ("census", "classification"):
                         raise RetainedPreparationRetryableError(
                             "retained publication deferred without accepted Source progress"
