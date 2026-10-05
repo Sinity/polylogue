@@ -11,13 +11,16 @@ from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager, closing, contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.config import Source
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.sqlite.population_admission import assert_population_admitted
+
+if TYPE_CHECKING:
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
 _ONE_SHOT_MARKER = ".one-shot-ingest-owner"
 
@@ -215,7 +218,6 @@ async def ingest_sources_archive(
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError, resident_daemon_pid
     from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cursor import CursorStore
-    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT, WatchSource
     from polylogue.sources.source_root_admission import refuse_non_capture_source_root
     from polylogue.sources.source_walk import _resolve_source_paths
@@ -285,7 +287,7 @@ async def ingest_sources_archive(
     try:
         await coordinator.run_sync("demo.ingest.initialize", initialize)
         archive = Polylogue(archive_root=root)
-        sqlite_capture_stage = LiveSQLiteCaptureStage(compute_adapter=compute_adapter)
+        sqlite_capture_stage = live_sqlite_capture_stage(compute_adapter)
     except BaseException as primary:
         try:
             await _wait_for_coordinator_idle(coordinator)
@@ -445,9 +447,17 @@ async def ingest_one_shot_archive(
             return await ingest_sources_archive(root, sources, compute_adapter=adapter, parse_workers=parse_workers)
 
 
+def live_sqlite_capture_stage(compute_adapter: BoundedComputeAdapter) -> LiveSQLiteCaptureStage:
+    """The live watcher's SQLite capture stage on the owner's compute adapter."""
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+
+    return LiveSQLiteCaptureStage(compute_adapter=compute_adapter)
+
+
 __all__ = [
     "admit_one_shot_root",
     "ingest_one_shot_archive",
     "ingest_sources_archive",
+    "live_sqlite_capture_stage",
     "scoped_one_shot_archive_owner",
 ]

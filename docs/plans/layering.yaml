@@ -59,16 +59,14 @@ writer_modules:
           durability: durable
           interruption: atomic
       entrypoints:
-        [apply_prepared_membership_index, apply_prepared_raw_revision_classification,
-        apply_raw_membership_classification, apply_raw_revision_replay,
+        [apply_prepared_membership_index, apply_raw_membership_classification, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate, classify_raw_revision_cohort_for_live_watch,
         classify_raw_revision_cohort_for_live_watch_in_transaction,
         classify_raw_revision_cohort_for_rebuild_repair,
         classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
-        prepare_raw_revision_rebuild_classification, promote_reconstructed_legacy_append_revisions,
-        record_current_parser_source_census, record_prepared_membership_census_receipt,
-        release_provisional_full_revisions, replace_raw_membership_census, write_parsed_for_retained_raw,
-        write_parsed_for_retained_raw_result]
+        promote_reconstructed_legacy_append_revisions, record_current_parser_source_census,
+        record_prepared_membership_census_receipt, release_provisional_full_revisions,
+        replace_raw_membership_census, write_parsed_for_retained_raw, write_parsed_for_retained_raw_result]
       twin_write_contract: raw-membership-classification
     - path: polylogue/storage/sqlite/archive_tiers/revision_application.py
       surfaces:
