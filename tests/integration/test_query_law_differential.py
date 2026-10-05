@@ -16,12 +16,15 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.archive_templates import clone_archive_template
 from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.query_census import (
+    IMMUTABLE_TIERS,
     ArchiveSnapshot,
     CensusConcurrencyError,
     CensusObservation,
     CensusSnapshotError,
+    _file_digest,
     reflink_archive_snapshot,
     run_workload_census,
 )
@@ -176,8 +179,17 @@ def test_query_law_unmutated_run_is_green_for_the_same_probes(
 def census_snapshot(
     query_law_corpus: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ArchiveSnapshot]:
+    # The census starts a daemon on the copy, so the copy must be a populated
+    # archive with its own destination authority (a raw byte copy keeps the
+    # source's durable identity and is refused at bootstrap).
     destination = tmp_path_factory.mktemp("query-law-census") / "copy"
-    snapshot = reflink_archive_snapshot(query_law_corpus.archive_root, destination)
+    method = clone_archive_template(query_law_corpus.archive_root, destination)
+    snapshot = ArchiveSnapshot(
+        source=query_law_corpus.archive_root.resolve(),
+        root=destination.resolve(),
+        reflinked=method == "reflink",
+        digests={name: _file_digest(destination / name) for name in IMMUTABLE_TIERS},
+    )
     yield snapshot
     shutil.rmtree(snapshot.root, ignore_errors=True)
 

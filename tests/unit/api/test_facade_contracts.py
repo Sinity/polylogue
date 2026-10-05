@@ -469,7 +469,7 @@ async def test_get_session_page_reports_the_normalized_offset(tmp_path: Path) ->
         await archive.close()
 
 
-def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
+def _materialize_run_projection_on_writer(index_db: Path) -> SessionInsightCounts:
     """Run the session-insight materializer for richer digest-derived projections.
 
     ``Polylogue.rebuild_insights`` refuses in-process execution: an insight
@@ -484,6 +484,11 @@ def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
 
     with open_connection(index_db) as conn:
         return rebuild_session_insights_sync(conn)
+
+
+def _materialize_run_projection(index_db: Path) -> SessionInsightCounts:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _materialize_run_projection_on_writer(index_db))
 
 
 async def test_facade_capture_candidate_dispatches_executor_and_persists_user_row(
@@ -537,7 +542,7 @@ async def test_facade_capture_candidate_dispatches_executor_and_persists_user_ro
 _HASH = b"x" * 32
 
 
-def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
+def _seed_import_explain_archive_on_writer(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
     source_path = source_path or str(Path.home() / ".codex" / "sessions" / "session.jsonl")
     raw_id = "raw-import-1"
     initialize_active_archive_root(tmp_path)
@@ -629,6 +634,11 @@ def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = No
         source_conn.close()
         index_conn.close()
     return raw_id, source_path
+
+
+def _seed_import_explain_archive(tmp_path: Path, *, source_path: str | None = None) -> tuple[str, str]:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_import_explain_archive_on_writer(tmp_path, source_path=source_path))
 
 
 @pytest.mark.asyncio
@@ -2490,7 +2500,7 @@ async def test_prepare_delete_session_returns_typed_not_found(tmp_path: Path, fa
         await archive.close()
 
 
-def _seed_delete_target(archive: Polylogue, provider_session_id: str) -> str:
+def _seed_delete_target_on_writer(archive: Polylogue, provider_session_id: str) -> str:
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 
     session = ParsedSession(
@@ -2506,6 +2516,11 @@ def _seed_delete_target(archive: Polylogue, provider_session_id: str) -> str:
     )
     with ArchiveStore(archive.config.archive_root) as archive_db:
         return write_index_session(archive_db, session)
+
+
+def _seed_delete_target(archive: Polylogue, provider_session_id: str) -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_delete_target_on_writer(archive, provider_session_id))
 
 
 async def test_delete_session_requires_a_presented_preview(tmp_path: Path, facade_daemon_writer: Any) -> None:
@@ -7439,13 +7454,11 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
             finally:
                 archive_module.COST_INSIGHT_FETCH_BATCH = original_page
         return (
-            insight,
             paged,
             single_page,
         )
 
     (
-        insight,
         paged,
         single_page,
     ) = run_off_event_loop(_off_loop_65)

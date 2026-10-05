@@ -418,7 +418,7 @@ class TestActiveAppendNoFullReread:
             *,
             whole_archive: bool = True,
             session_ids: Iterable[str] = (),
-        ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        ) -> tuple[set[Path], float, dict[str, float], list[object], list[object]]:
             # Bound to the production signature of
             # ``LiveBatchProcessor._converge_paths``: the real route passes
             # ``whole_archive=`` and ``session_ids=`` as keywords, and a double
@@ -429,7 +429,8 @@ class TestActiveAppendNoFullReread:
             if not appended_after_persistence:
                 _append_jsonl(path, [_claude_code_record(session_id=session_id, uuid="later")])
                 appended_after_persistence = True
-            return set(paths), 0.0, {}, []
+            # (converged paths, seconds, stage seconds, open debt, debt settlements)
+            return set(paths), 0.0, {}, [], []
 
         monkeypatch.setattr(proc, "_converge_paths", append_after_persistence)
         full_route_paths: list[Path] = []
