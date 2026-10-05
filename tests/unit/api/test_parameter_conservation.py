@@ -239,6 +239,13 @@ def _effect_values(request: BaseModel, field_name: str) -> tuple[object, ...]:
     return tuple(values)
 
 
+class _EmptyRows(list[object]):
+    """An empty read result usable both as a list and as a closable row iterator."""
+
+    def close(self) -> None:
+        return None
+
+
 @dataclass
 class _ReaderSpy:
     calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = field(default_factory=list)
@@ -246,7 +253,7 @@ class _ReaderSpy:
     def __getattr__(self, method_name: str) -> Callable[..., list[object]]:
         def read(*args: object, **kwargs: object) -> list[object]:
             self.calls.append((method_name, args, dict(kwargs)))
-            return []
+            return _EmptyRows()
 
         return read
 

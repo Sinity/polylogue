@@ -67,6 +67,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 from tests.infra.source_composer import (
     ComposedSources,
@@ -759,7 +760,7 @@ def _analyze_registry_tables(index_db: Path) -> None:
         conn.commit()
 
 
-def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+def _seed_partial_convergence_archive_on_writer(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
     """Seed the current partial-convergence workload through typed archive writes."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -805,6 +806,11 @@ def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partial
             archive_id="archive:testdiet-02-partial-convergence",
         ),
     )
+
+
+def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_partial_convergence_archive_on_writer(root, target_hot=target_hot))
 
 
 def truncate_sparse(path: Path, size: int) -> None:

@@ -25,6 +25,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 
 if TYPE_CHECKING:
@@ -44,7 +45,7 @@ def _message(native_id: str, role: Role, text: str) -> ParsedMessage:
     )
 
 
-def _seed(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -> None:
+def _seed_on_writer(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -> None:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -75,6 +76,11 @@ def _seed(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -
     write_fixture_index_session(conn, session)
     conn.commit()
     conn.close()
+
+
+def _seed(db_path: Path, *, extra_events: tuple[ParsedSessionEvent, ...] = ()) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_on_writer(db_path, extra_events=extra_events))
 
 
 @pytest.mark.asyncio
@@ -148,7 +154,7 @@ async def test_effective_context_ignores_a_partial_stored_boundary(
     ]
 
 
-def _seed_with_fork(db_path: Path) -> None:
+def _seed_with_fork_on_writer(db_path: Path) -> None:
     """Parent carrying a compaction boundary plus a fork that replays its prefix."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -194,6 +200,11 @@ def _seed_with_fork(db_path: Path) -> None:
     write_fixture_index_session(conn, fork)
     conn.commit()
     conn.close()
+
+
+def _seed_with_fork(db_path: Path) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_with_fork_on_writer(db_path))
 
 
 @pytest.mark.asyncio
