@@ -16,7 +16,7 @@ import asyncio
 import threading
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -31,6 +31,7 @@ from polylogue.archive.query.execution_control import (
     execute_archive_read_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -51,12 +52,17 @@ _EXPENSIVE_SQL = (
 _ABORT_SLO_S = 5.0
 
 
-def _bootstrap_archive(tmp_path: Path) -> Path:
+def _bootstrap_archive_sync(tmp_path: Path) -> Path:
     from polylogue.storage.sqlite.write_lease import write_lease
 
     with write_lease("test.fixture.query-control", archive_root=tmp_path), ArchiveStore(tmp_path):
         pass
     return tmp_path
+
+
+def _bootstrap_archive(*args: Any, **kwargs: Any) -> Path:
+    """Run setup off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _bootstrap_archive_sync(*args, **kwargs))
 
 
 def _expensive_work(store: ArchiveStore) -> object:
