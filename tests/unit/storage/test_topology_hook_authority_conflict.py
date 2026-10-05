@@ -497,8 +497,9 @@ def test_state_export_after_the_child_reaches_the_same_topology(tmp_path: Path, 
     ``write_thread_state_projection`` and the child-first archive keeps the
     parser-only edge (or none) and composes through the wrong parent.
     """
-    state_first = _index_conn(tmp_path / "state-first.db")
-    source = _source_conn(tmp_path / "source.db")
+    # Two independent archives, each an Index with its own Source tier.
+    state_first = _index_conn(tmp_path / "state-first" / "index.db")
+    source = _source_conn(tmp_path / "state-first" / "source.db")
     _project_state_export(state_first, parent=_HOOK_PARENT, child=_CHILD)
     write_fixture_index_session(state_first, _session(_HOOK_PARENT), source_conn=source)
     write_fixture_index_session(state_first, _session(_PARSER_PARENT), source_conn=source)
@@ -506,10 +507,13 @@ def test_state_export_after_the_child_reaches_the_same_topology(tmp_path: Path, 
         state_first, _session(_CHILD, parent=parser_parent), source_conn=source
     )
 
-    child_first = _index_conn(tmp_path / "child-first.db")
-    write_fixture_index_session(child_first, _session(_HOOK_PARENT), source_conn=source)
-    write_fixture_index_session(child_first, _session(_PARSER_PARENT), source_conn=source)
-    child_id = write_fixture_index_session(child_first, _session(_CHILD, parent=parser_parent), source_conn=source)
+    child_first = _index_conn(tmp_path / "child-first" / "index.db")
+    child_source = _source_conn(tmp_path / "child-first" / "source.db")
+    write_fixture_index_session(child_first, _session(_HOOK_PARENT), source_conn=child_source)
+    write_fixture_index_session(child_first, _session(_PARSER_PARENT), source_conn=child_source)
+    child_id = write_fixture_index_session(
+        child_first, _session(_CHILD, parent=parser_parent), source_conn=child_source
+    )
     before = _edge_decisions(child_first, child_id)
     _project_state_export(child_first, parent=_HOOK_PARENT, child=_CHILD)
 
@@ -731,19 +735,35 @@ def test_a_prepared_child_publishes_under_the_root_it_was_prepared_in(tmp_path: 
     the prepared write is refused as stale on every retry.
     """
     from polylogue.pipeline.ids import session_content_hash
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.index_writer import _fixture_writer_admission
 
     index, source = _two_roots_naming_one_child(tmp_path)
     _project_both_roots(index, source)
+    index.commit()
+    source.commit()
     child = _session(_CHILD)
-    prepared = prepare_session_write(
-        index, child, merge_append=False, source_read=ConnectionSessionSourceRead(source), raw_id="child-rollout"
-    )
-    child_id = write_fixture_index_session(
-        index,
-        child,
-        content_hash=str(session_content_hash(child)),
-        prepared_write=prepared,
-        raw_id="child-rollout",
-    )
+    # Preparation resolves the install root through the original Source read;
+    # publication runs in that seal's Index scope and reuses the prepared root.
+    with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            prepared = prepare_session_write(
+                seal.observer("index"),
+                child,
+                merge_append=False,
+                source_read=PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob")),
+                raw_id="child-rollout",
+                before_input=seal.before_index_input,
+            )
+        with _fixture_writer_admission(index, "test.prepared-child.publish", tmp_path), seal.mutation_scope(index):
+            child_id = write_fixture_index_session(
+                index,
+                child,
+                content_hash=str(session_content_hash(child)),
+                prepared_write=prepared,
+                raw_id="child-rollout",
+            )
 
     _assert_child_under_root_a(index, child_id)

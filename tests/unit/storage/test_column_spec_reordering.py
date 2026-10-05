@@ -134,7 +134,7 @@ class TestColumnSpecReordering:
 
     def test_archive_ddl_mapping_exposes_each_tier_script(self) -> None:
         """The public archive DDL map must preserve every tier's fresh-create script."""
-        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, _source_runtime_ddl
         from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
         from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_DDL
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
@@ -143,14 +143,17 @@ class TestColumnSpecReordering:
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
         from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 
-        assert ARCHIVE_DDL_BY_TIER == {
+        assert {
             ArchiveTier.AUDIT: AUDIT_DDL,
             ArchiveTier.EMBEDDINGS: EMBEDDINGS_DDL,
             ArchiveTier.INDEX: INDEX_DDL,
             ArchiveTier.OPS: OPS_DDL,
-            ArchiveTier.SOURCE: SOURCE_DDL,
+            # Source's fresh-create script is its immutable baseline followed by
+            # its numbered steps, in order.
+            ArchiveTier.SOURCE: _source_runtime_ddl(),
             ArchiveTier.USER: USER_DDL,
-        }
+        } == ARCHIVE_DDL_BY_TIER
+        assert ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE].startswith(SOURCE_DDL)
 
     def test_non_vector_tier_scripts_create_their_schema(self) -> None:
         """Fresh archive tiers must execute the scripts exported through the public map."""

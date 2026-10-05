@@ -32,10 +32,12 @@ from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
 
+@seeds_off_event_loop
 def _write_codex_session(db_path: Path, *, native_id: str, title: str | None) -> None:
     conn = connect_measured(db_path)
     conn.row_factory = sqlite3.Row

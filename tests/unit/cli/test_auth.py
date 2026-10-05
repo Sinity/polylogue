@@ -191,22 +191,22 @@ class TestAuthCommand:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["ops", "auth", "--service", "unknown"], env=workspace["env"])
+        result = run_cli(["ops", "auth", "--service", "unknown"], env=workspace["env"], entrypoint="module")
         assert result.exit_code != 0
 
     def test_auth_revoke_no_token(self, tmp_path: Path) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["ops", "auth", "--revoke"], env=workspace["env"])
+        result = run_cli(["ops", "auth", "--revoke"], env=workspace["env"], entrypoint="module")
         output_lower = result.output.lower()
-        assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower
+        assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower, result.output
 
     def test_auth_missing_credentials(self, tmp_path: Path) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        result = run_cli(["ops", "auth"], env=workspace["env"])
+        result = run_cli(["ops", "auth"], env=workspace["env"], entrypoint="module")
         assert result.exit_code != 0
         output_lower = result.output.lower()
         assert "credentials" in output_lower or "missing" in output_lower or "oauth" in output_lower

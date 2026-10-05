@@ -17,6 +17,7 @@ no CI budget; route and byte-count assertions keep the harness non-vacuous.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
@@ -29,13 +30,12 @@ import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.append_cohort_memory_counter import append_cohort_memory_counter
+from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.live_ingest import run_owned_append_plans
 
 
@@ -62,6 +62,37 @@ def _owner(archive_root: Path) -> object:
     )
 
 
+def _admit_full_snapshots(
+    archive_root: Path,
+    source_path: Path,
+    session_id: str,
+    snapshots: list[bytes],
+    authorities: list[RawRevisionAuthority],
+) -> None:
+    """Admit each full revision through the canonical raw writer on the admitted writer."""
+
+    def acquire() -> None:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            for index, (payload, authority) in enumerate(zip(snapshots, authorities, strict=True)):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    capture_mode=Provider.CODEX,
+                    payload=payload,
+                    source_path=str(source_path),
+                    source_index=0,
+                    acquired_at_ms=index + 1,
+                    revision=RawRevisionEnvelope(
+                        f"codex-session:{session_id}",
+                        RawRevisionKind.FULL,
+                        f"full-{index}",
+                        index,
+                        authority=authority,
+                    ),
+                )
+
+    asyncio.run(run_archive_fixture_write(archive_root, acquire))
+
+
 def _seed_cohort_and_append_plan(
     archive_root: Path,
     *,
@@ -76,29 +107,7 @@ def _seed_cohort_and_append_plan(
         session_id, "append", "a" * 16_384
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        publisher = archive._blob_publisher
-        assert publisher is not None
-        for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = publisher.write_from_bytes(payload)
-            publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
-                capture_mode=Provider.CODEX,
-                payload=payload,
-                source_path=str(source_path),
-                source_index=0,
-                acquired_at_ms=index + 1,
-                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                revision=RawRevisionEnvelope(
-                    f"codex-session:{session_id}",
-                    RawRevisionKind.FULL,
-                    f"full-{index}",
-                    index,
-                    authority=full_authority,
-                ),
-            )
+    _admit_full_snapshots(archive_root, source_path, session_id, snapshots, [full_authority] * len(snapshots))
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,
@@ -127,33 +136,16 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
         session_id, "append", "a" * 16_384
     )
     source_path.write_bytes(snapshots[-1] + append_payload)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        publisher = archive._blob_publisher
-        assert publisher is not None
-        for index, payload in enumerate(snapshots):
-            blob_hash, _blob_size = publisher.write_from_bytes(payload)
-            publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
-                capture_mode=Provider.CODEX,
-                payload=payload,
-                source_path=str(source_path),
-                source_index=0,
-                acquired_at_ms=index + 1,
-                blob_publication_receipt_id=publisher.receipt_id(blob_hash),
-                revision=RawRevisionEnvelope(
-                    f"codex-session:{session_id}",
-                    RawRevisionKind.FULL,
-                    f"full-{index}",
-                    index,
-                    authority=(
-                        RawRevisionAuthority.BYTE_PROVEN
-                        if index < len(snapshots) - 1
-                        else RawRevisionAuthority.ASSERTED
-                    ),
-                ),
-            )
+    _admit_full_snapshots(
+        archive_root,
+        source_path,
+        session_id,
+        snapshots,
+        [
+            RawRevisionAuthority.BYTE_PROVEN if index < len(snapshots) - 1 else RawRevisionAuthority.ASSERTED
+            for index in range(len(snapshots))
+        ],
+    )
     stat = source_path.stat()
     return _AppendPlan(
         path=source_path,

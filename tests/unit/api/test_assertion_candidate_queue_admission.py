@@ -20,12 +20,13 @@ from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 
 _NOW_MS = 1_700_000_000_000
 
 
-def _seed(root: Path) -> str:
+def _seed_on_writer(root: Path) -> str:
     with ArchiveStore(root) as archive:
         session_id = write_index_session(
             archive,
@@ -62,6 +63,11 @@ def _seed(root: Path) -> str:
                 now_ms=_NOW_MS - 10_000,
             )
     return session_id
+
+
+def _seed(root: Path) -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_on_writer(root))
 
 
 async def test_candidate_queue_excludes_expired_claims_the_review_surface_retains(tmp_path: Path) -> None:

@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.storage.blob_gc import MIN_AGE_S, run_blob_gc
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.io_phase_metrics import connect_measured
 from tests.infra.frozen_clock import FrozenClock
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -34,9 +34,8 @@ pytestmark = pytest.mark.uses_real_clock(
 @pytest.fixture
 def db_path(tmp_path: Path) -> Path:
     # Bootstrap the full split-file archive: source.db carries raw_sessions
-    # (with blob_hash), blob_refs, and gc_generations. open_connection
-    # attaches the source tier so unqualified blob-GC queries resolve
-    # cross-tier.
+    # (with blob_hash), blob_refs, and gc_generations, which the laws seed
+    # and read on the Source tier itself.
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
     initialize_active_archive_root(tmp_path)
@@ -69,9 +68,9 @@ def test_gc_age_gate_respects_previous_generation(db_path: Path, tmp_path: Path)
 
     now = int(time.time())
     # Previous generation completed 1000s ago. gc_generations lives in the
-    # attached source tier; open_connection resolves the unqualified name.
+    # Source tier; the seed writes it there directly.
     completed_at_ms = (now - 1000) * 1000
-    conn = open_connection(db_path)
+    conn = connect_measured(db_path.parent / "source.db")
     try:
         conn.execute(
             "INSERT INTO gc_generations "
@@ -120,7 +119,7 @@ def test_gc_combines_reference_and_generation_guards(
 
     now = int(frozen_clock.time())
     completed_at_ms = (now - 1000) * 1000
-    conn = open_connection(db_path)
+    conn = connect_measured(db_path.parent / "source.db")
     try:
         conn.execute(
             "INSERT INTO gc_generations "
@@ -160,7 +159,7 @@ def test_gc_combines_reference_and_generation_guards(
     assert (blob_dir / generation_young_hash[:2] / generation_young_hash[2:]).exists()
     assert not (blob_dir / orphan_hash[:2] / orphan_hash[2:]).exists()
 
-    conn = open_connection(db_path)
+    conn = connect_measured(db_path.parent / "source.db")
     try:
         rows = [
             tuple(row)

@@ -310,6 +310,10 @@ class FtsIdentityStateMachine(RuleBasedStateMachine):
         assert identity_rowids == indexable_docids
 
     def teardown(self) -> None:
+        # Rules write through the connection's implicit transaction; settle it
+        # before its owner closes, which refuses an unsettled transaction.
+        if self._conn.in_transaction:
+            self._conn.rollback()
         self._conn_cm.__exit__(None, None, None)
         self._tmpdir.cleanup()
 

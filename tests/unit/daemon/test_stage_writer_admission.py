@@ -18,10 +18,11 @@ from typing import IO
 from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.convergence import DaemonConverger
 from polylogue.operations.attachment_convergence import make_attachment_convergence_stage
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.index_writer import write_fixture_index_session
-from tests.unit.daemon.test_attachment_convergence import _open_index, _retain_raws, _session
+from tests.unit.daemon.test_attachment_convergence import _retain_raws, _session
 
 
 class _SerializingWriter:
@@ -47,7 +48,10 @@ class _SerializingWriter:
 
 def _seed_drive_attachments(tmp_path: Path) -> tuple[sqlite3.Connection, sqlite3.Connection, dict[str, bytes]]:
     initialize_active_archive_root(tmp_path)
-    index = _open_index(tmp_path / "index.db")
+    # The fixture writer prepares on its original measured physical creator.
+    index = connect_measured(tmp_path / "index.db")
+    index.row_factory = sqlite3.Row
+    index.execute("PRAGMA foreign_keys = ON")
     write_fixture_index_session(index, _session("slow-one", file_id="drive-slow"), raw_id="slow-raw")
     index.commit()
     source = sqlite3.connect(tmp_path / "source.db")

@@ -121,17 +121,18 @@ def test_cost_rollup_unions_normalized_model_session_counts_and_separates_basis_
             session_id TEXT, model_name TEXT, input_tokens INTEGER,
             output_tokens INTEGER, cache_read_tokens INTEGER,
             cache_write_tokens INTEGER, provider_cost_usd REAL,
-            catalog_cost_usd REAL, cost_credits REAL
+            catalog_cost_usd REAL, cost_credits REAL,
+            provider_lanes_complete INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
         INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, NULL);
         INSERT INTO sessions VALUES ('s2', 'chatgpt-export', 2, 2, NULL);
         INSERT INTO session_model_usage VALUES
-            ('s1', 'gpt-5.2', 100, 10, 0, 0, NULL, 1.0, 100.0);
+            ('s1', 'gpt-5.2', 100, 10, 0, 0, NULL, 1.0, 100.0, 1);
         INSERT INTO session_model_usage VALUES
-            ('s1', 'gpt-5.2-2025-12-11', 50, 5, 0, 0, NULL, 0.5, 50.0);
+            ('s1', 'gpt-5.2-2025-12-11', 50, 5, 0, 0, NULL, 0.5, 50.0, 1);
         INSERT INTO session_model_usage VALUES
-            ('s2', 'gpt-5.2-2025-12-11', 200, 20, 0, 0, NULL, 2.0, 200.0);
+            ('s2', 'gpt-5.2-2025-12-11', 200, 20, 0, 0, NULL, 2.0, 200.0, 1);
         """
     )
     archive = ArchiveStore.__new__(ArchiveStore)
@@ -199,11 +200,12 @@ def test_cost_rollup_labels_session_reported_fallback_as_origin_reported() -> No
             session_id TEXT, model_name TEXT, input_tokens INTEGER,
             output_tokens INTEGER, cache_read_tokens INTEGER,
             cache_write_tokens INTEGER, provider_cost_usd REAL,
-            catalog_cost_usd REAL, cost_credits REAL
+            catalog_cost_usd REAL, cost_credits REAL,
+            provider_lanes_complete INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
         INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, 7.5);
-        INSERT INTO session_model_usage VALUES ('s1', 'gpt-5', 0, 0, 0, 0, NULL, NULL, NULL);
+        INSERT INTO session_model_usage VALUES ('s1', 'gpt-5', 0, 0, 0, 0, NULL, NULL, NULL, 1);
         """
     )
     archive = ArchiveStore.__new__(ArchiveStore)
@@ -230,13 +232,14 @@ def test_cost_rollup_does_not_attribute_session_total_to_each_model() -> None:
             session_id TEXT, model_name TEXT, input_tokens INTEGER,
             output_tokens INTEGER, cache_read_tokens INTEGER,
             cache_write_tokens INTEGER, provider_cost_usd REAL,
-            catalog_cost_usd REAL, cost_credits REAL
+            catalog_cost_usd REAL, cost_credits REAL,
+            provider_lanes_complete INTEGER NOT NULL DEFAULT 1
         );
         CREATE TABLE session_profiles (session_id TEXT PRIMARY KEY);
         INSERT INTO sessions VALUES ('s1', 'chatgpt-export', 1, 1, 7.5);
         INSERT INTO session_model_usage VALUES
-            ('s1', 'gpt-5', 0, 0, 0, 0, NULL, NULL, NULL),
-            ('s1', 'gpt-5-mini', 0, 0, 0, 0, NULL, NULL, NULL);
+            ('s1', 'gpt-5', 0, 0, 0, 0, NULL, NULL, NULL, 1),
+            ('s1', 'gpt-5-mini', 0, 0, 0, 0, NULL, NULL, NULL, 1);
         """
     )
     archive = ArchiveStore.__new__(ArchiveStore)

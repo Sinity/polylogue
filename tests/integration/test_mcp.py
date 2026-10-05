@@ -10,6 +10,7 @@ import pytest
 
 from polylogue.mcp.server_support import _set_runtime_services
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.mcp import invoke_surface, invoke_surface_async
 
 
@@ -17,7 +18,7 @@ def _content_hash(value: str) -> bytes:
     return hashlib.sha256(value.encode()).digest()
 
 
-def _seed_session(
+def _seed_session_on_writer(
     archive_root: Path,
     *,
     session_id: str,
@@ -47,6 +48,15 @@ def _seed_session(
             (message_id, session_id, 0, "text", text),
         )
         conn.commit()
+
+
+def _seed_session(archive_root: Path, *, session_id: str, origin: str, native_id: str, text: str) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(
+        lambda: _seed_session_on_writer(
+            archive_root, session_id=session_id, origin=origin, native_id=native_id, text=text
+        )
+    )
 
 
 def _prepare_mcp_archive(monkeypatch: pytest.MonkeyPatch, archive_root: Path) -> None:
