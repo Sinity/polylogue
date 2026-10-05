@@ -34,7 +34,9 @@ def swap_main(connect: Callable[..., sqlite3.Connection], *args: Any, **kwargs: 
         held.rename(source)
 
 
-class RacingConnection(sqlite3.Connection):
+class _RacingStatements(sqlite3.Connection):
+    """Race hooks layered over the connection class production asks for."""
+
     def execute(self, statement: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
         if attack == "spill-policy" and statement == "BEGIN":
             policy = super().execute("PRAGMA temp_store").fetchone()
@@ -60,13 +62,21 @@ class RacingConnection(sqlite3.Connection):
         return super().execute(statement, *args, **kwargs)
 
 
+def _racing_factory(kwargs: dict[str, Any]) -> type[sqlite3.Connection]:
+    # Production supplies its own measured connection class; the race hooks
+    # wrap it instead of replacing it.
+    base: type[sqlite3.Connection] = kwargs.pop("factory", sqlite3.Connection)
+    return type("RacingConnection", (_RacingStatements, base), {})
+
+
 def connect(database: str, *args: Any, **kwargs: Any) -> sqlite3.Connection:
     if source.name not in str(database):
         connection: sqlite3.Connection = real_connect(database, *args, **kwargs)
         return connection
+    factory = _racing_factory(kwargs)
     if attack.startswith("main-"):
-        return swap_main(real_connect, database, *args, factory=RacingConnection, **kwargs)
-    conn = real_connect(database, *args, factory=RacingConnection, **kwargs)
+        return swap_main(real_connect, database, *args, factory=factory, **kwargs)
+    conn = real_connect(database, *args, factory=factory, **kwargs)
     if attack in {"unknown", "unlinked"}:
         os.open(external, os.O_RDONLY)
         if attack == "unlinked":

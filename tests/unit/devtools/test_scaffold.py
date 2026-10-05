@@ -9,8 +9,7 @@ byte-for-byte reproducible.
 
 from __future__ import annotations
 
-import subprocess
-import sys
+import py_compile
 from pathlib import Path
 
 import pytest
@@ -170,12 +169,10 @@ def test_generated_bundle_compiles(tmp_path: Path, family: str) -> None:
     target = tmp_path / plan.output_root
     sources = sorted(target.glob("*.py"))
     assert sources
-    result = subprocess.run(
-        [sys.executable, "-m", "py_compile", *(str(path) for path in sources)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
+    # Bytecode goes to an explicit path under tmp_path, never to the
+    # interpreter's pycache prefix, which may be read-only or inside the tree.
+    for index, path in enumerate(sources):
+        py_compile.compile(str(path), cfile=str(tmp_path / f"compiled-{index}.pyc"), doraise=True)
 
 
 def test_generated_declaration_passes_production_diagnostics(tmp_path: Path) -> None:

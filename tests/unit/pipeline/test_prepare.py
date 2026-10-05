@@ -15,7 +15,7 @@ from polylogue.rendering.formatting import format_session
 from polylogue.rendering.renderers.html import render_session_html
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import SessionRecord
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_read_connection
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import (
     SessionBuilder,
@@ -169,7 +169,7 @@ async def test_ingest_updates_metadata(
     )
 
     session_id = _record_session_id("codex", "conv-update")
-    with open_connection(None) as conn:
+    with open_read_connection(None) as conn:
         convo = conn.execute(
             "SELECT title, updated_at_ms, git_branch FROM sessions WHERE session_id = ?",
             (session_id,),
@@ -234,7 +234,7 @@ async def test_ingest_updates_fields_without_hash_changes(
     )
 
     session_id = _record_session_id("codex", "conv-hash-stable")
-    with open_connection(None) as conn:
+    with open_read_connection(None) as conn:
         convo = conn.execute(
             "SELECT title, updated_at_ms, git_branch FROM sessions WHERE session_id = ?",
             (session_id,),
@@ -272,7 +272,7 @@ async def test_ingest_removes_missing_attachments(
         attachments=[],
     )
 
-    with open_connection(None) as conn:
+    with open_read_connection(None) as conn:
         attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
         attachment_ref_count = conn.execute("SELECT COALESCE(SUM(ref_count), 0) FROM attachments").fetchone()[0]
         ref_count = conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0]

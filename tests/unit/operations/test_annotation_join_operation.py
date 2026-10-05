@@ -23,7 +23,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.daemon_operations import running_daemon_operations
 
 
@@ -166,8 +166,8 @@ def test_resident_join_resolves_user_targets_on_the_original_reader(tmp_path: Pa
 async def test_direct_join_refuses_republication_during_its_single_pin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    root = bootstrap_archive_root(tmp_path / "archive")
-    _seed_labels(root)
+    root = run_off_event_loop(lambda: bootstrap_archive_root(tmp_path / "archive"))
+    run_off_event_loop(lambda: _seed_labels(root))
     generation = root / ".index-generations" / "neutral-republication"
     generation.mkdir(parents=True)
     shutil.copyfile(ArchiveLocation.resolve(root).active_index_path, generation / "index.db")
@@ -201,8 +201,8 @@ async def test_direct_join_cancellation_settles_the_original_pinned_reader(
 ) -> None:
     from polylogue.operations import annotation_join
 
-    root = bootstrap_archive_root(tmp_path / "archive")
-    _seed_labels(root)
+    root = run_off_event_loop(lambda: bootstrap_archive_root(tmp_path / "archive"))
+    run_off_event_loop(lambda: _seed_labels(root))
     entered = threading.Event()
     settled = threading.Event()
     handles: list[sqlite3.Connection] = []

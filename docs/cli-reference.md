@@ -158,9 +158,8 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
-  --no-daemon                     Refuse daemon-served reads for this
-                                  invocation (reads will fail if they require
-                                  the daemon).
+  --no-daemon                     Refuse daemon-served reads; daemon-only
+                                  reads fail.
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
@@ -353,6 +352,13 @@ Examples:
 Usage: polylogue select [OPTIONS]
 
   Select one matched session or print bounded candidate identities.
+
+  Examples:
+      polylogue find 'origin:codex-session since:30d' then select --print title
+      polylogue find 'tag:review AND NOT tag:archived' then select --limit 5
+      polylogue find 'title:"release notes"' then select --format json
+      polylogue find 'origin:claude-code-session AND has:thinking' then select
+      polylogue find 'has:tools since:7d' then select --print origin
 
 Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
