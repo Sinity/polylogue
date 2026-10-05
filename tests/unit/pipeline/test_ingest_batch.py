@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, TypeAlias
 from unittest.mock import AsyncMock
 
@@ -3046,11 +3045,27 @@ def _seed_retained_raw(root: Path, *, origin: Origin, source_path: str, payload:
     return raw_id
 
 
+class _PublicationConfig:
+    """The loaded config with only its publication and validation modes pinned."""
+
+    def __init__(self, loaded: object, mode: str) -> None:
+        self._loaded = loaded
+        self.schema_validation = "advisory"
+        self.sinex_mode = mode
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._loaded, name)
+
+
 def _publication_mode(monkeypatch: pytest.MonkeyPatch, mode: str = "off") -> None:
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda *_args, **_kwargs: SimpleNamespace(schema_validation="advisory", sinex_mode=mode),
-    )
+    import polylogue.config
+
+    loaded = polylogue.config.load_polylogue_config
+
+    def pinned(*args: Any, **kwargs: Any) -> _PublicationConfig:
+        return _PublicationConfig(loaded(*args, **kwargs), mode)
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", pinned)
 
 
 @pytest.mark.asyncio
