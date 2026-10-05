@@ -263,7 +263,15 @@ def test_cold_build_preparation_is_visible_before_the_first_intake_page(
     archive.mkdir()
     source_root = tmp_path / "source"
     source_root.mkdir()
-    payloads = [b'{"one": 1}\n', b'{"second": "session"}\n']
+    # Intake excludes material it would not parse as a session before hashing it.
+    payloads = [
+        (
+            f'{{"type":"session_meta","payload":{{"id":"progress-{index}","timestamp":"2026-06-02T00:00:00Z"}}}}\n'
+            '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+            '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n'
+        ).encode()
+        for index in range(2)
+    ]
     for index, payload in enumerate(payloads):
         (source_root / f"session-{index}.jsonl").write_bytes(payload)
     source = WatchSource(name="codex", root=source_root, suffixes=(".jsonl",))

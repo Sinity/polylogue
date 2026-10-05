@@ -47,6 +47,7 @@ def publish_prepared_membership_classification(
     root = archive.archive_root
     store = BlobStore(root / "blob")
     accepted = tuple(classification.accepted_raw_ids)
+    parsed_by_raw_id = {raw_id: _parse_bound(session) for raw_id, session in parsed_by_raw_id.items()}
     blobs: dict[object, tuple[bytes | None, int, str]] = {}
     if accepted:
         for attachment in parsed_by_raw_id[accepted[-1]].attachments:
@@ -104,9 +105,26 @@ def publish_prepared_membership_classification(
             classification,
             decisions=decisions,
             decided_at_ms=decided_at_ms,
+            projections=projections_by_raw_id,
         ),
     )
     return session_id, actual
+
+
+def _parse_bound(session: ParsedSession) -> ParsedSession:
+    """Bind the semantic digest as retained preparation does before preparing a write.
+
+    ``prepare_retained_jsonl_artifact`` binds every parsed session's content
+    hash first, so the prepared write (over timestamp-normalized rows) and the
+    membership projection carry the same digest.
+    """
+    from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
+
+    if bound_session_content_hash(session) is not None:
+        return session
+    bound = session.model_copy()
+    bound.content_hash = session_content_hash(session)
+    return bound
 
 
 def write_prepared_retained_session(

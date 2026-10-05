@@ -10,7 +10,6 @@ pin the boundary that hands the generation back to live readers.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +19,9 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.raw_owner_routes import run_ingest_files
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -34,6 +35,9 @@ def _codex_session(native_id: str, text: str) -> bytes:
 
 def _processor(archive_root: Path, root: Path) -> LiveBatchProcessor:
     index_db = archive_root / "index.db"
+    # The daemon ingests into a bootstrapped root; source-only acquisition
+    # refuses a missing Source tier.
+    bootstrap_archive_root(archive_root)
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -72,7 +76,7 @@ def test_an_empty_generation_gives_the_live_pass_the_cold_build_shape(tmp_path: 
 
     ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
     try:
-        metrics = asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False))
+        metrics = run_ingest_files(processor, [root / "one.jsonl"], emit_event=False)
     finally:
         ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
 
@@ -106,8 +110,8 @@ def test_a_populated_generation_falls_back_to_the_live_shape(tmp_path: Path) -> 
 
     ArchiveStore.open_active_cold_build = classmethod(recording)  # type: ignore[assignment]
     try:
-        assert asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False)).succeeded_file_count == 1
-        assert asyncio.run(processor.ingest_files([root / "two.jsonl"], emit_event=False)).succeeded_file_count == 1
+        assert run_ingest_files(processor, [root / "one.jsonl"], emit_event=False).succeeded_file_count == 1
+        assert run_ingest_files(processor, [root / "two.jsonl"], emit_event=False).succeeded_file_count == 1
     finally:
         ArchiveStore.open_active_cold_build = classmethod(original)  # type: ignore[assignment]
 
@@ -130,7 +134,7 @@ def test_the_cold_build_boundary_leaves_a_readable_wal_generation(tmp_path: Path
     root.mkdir()
     (root / "one.jsonl").write_bytes(_codex_session("cold-boundary", "zero"))
     processor = _processor(tmp_path, root)
-    assert asyncio.run(processor.ingest_files([root / "one.jsonl"], emit_event=False)).succeeded_file_count == 1
+    assert run_ingest_files(processor, [root / "one.jsonl"], emit_event=False).succeeded_file_count == 1
 
     assert _index_pragma(tmp_path, "journal_mode") == "wal"
     conn = sqlite3.connect(tmp_path / "index.db")

@@ -34,12 +34,15 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _build_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     session_id = "codex-session:daemon-fixture"
     orphan_message_id = f"{session_id}:orphaned"
 
+    # Promotion proves durable references against the archive's active Index.
+    bootstrap_archive_root(tmp_path)
     generation_store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = generation_store.create(owner_id="embedding-orphan-test", source_snapshot="fixture-snapshot")
     conn = sqlite3.connect(generation.index_path)

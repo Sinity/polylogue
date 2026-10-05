@@ -117,7 +117,10 @@ def test_convergence_plan_reads_its_declared_probe_set(tmp_path: Path) -> None:
 
     workload = replace(generated_convergence_workload(), probe_terms=("shared",))
     plan = build_convergence_run_plan(workload)
-    archive = build_converged_archive(tmp_path / "archive", workload.sources)
+    root = tmp_path / "archive"
+    root.mkdir()
+    # Fixture ingest prepares lease-free and takes the writer lease itself.
+    archive = build_converged_archive(root, workload.sources)
     execute_convergence_plan(plan, (archive.root,), law=ConvergenceLaw.PERMUTATION)
 
 

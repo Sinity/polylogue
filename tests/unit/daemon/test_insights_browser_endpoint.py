@@ -224,7 +224,7 @@ class TestInsightsEndpointDispatch:
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert payload["session_id"] == session_id
         assert payload["include"] == list(INSIGHT_KINDS)
         kinds = payload["kinds"]
@@ -324,7 +324,7 @@ class TestInsightsEndpointDispatch:
         send_error.assert_not_called()
         send_json.assert_called_once()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert payload["include"] == ["profile", "threads"]
         # Only the requested kinds appear — restriction must be honored.
         assert set(payload["kinds"].keys()) == {"profile", "threads"}
@@ -335,7 +335,7 @@ class TestInsightsEndpointDispatch:
         _, send_json = _capture_responses(handler)
         handler.do_GET()
         status, payload = send_json.call_args.args
-        assert status == HTTPStatus.OK
+        assert status == HTTPStatus.OK, (status, payload)
         assert set(payload["kinds"].keys()) == {"profile", "threads"}
 
     def test_envelope_carries_origin_and_id(self, workspace_env: dict[str, Path]) -> None:

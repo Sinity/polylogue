@@ -22,7 +22,7 @@ import json
 import zipfile
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -531,6 +531,18 @@ class TestDeleteEndpointHostGate:
 # ---------------------------------------------------------------------------
 
 
+def _capture_operation(handler: object) -> list[dict[str, Any]]:
+    """Capture the complete operation response the route delivers.
+
+    Operation routes answer through ``_send_daemon_operation`` (staged,
+    complete delivery), not ``_send_json``; an accepted outcome is sent as
+    202 Accepted by that method.
+    """
+    sent: list[dict[str, Any]] = []
+    setattr(handler, "_send_daemon_operation", sent.append)  # noqa: B010 - instance override
+    return sent
+
+
 class TestIngestEndpointStagingBoundary:
     """``POST /api/ingest`` schedules client-staged import entries only."""
 
@@ -595,6 +607,7 @@ class TestIngestEndpointStagingBoundary:
         )
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -603,9 +616,10 @@ class TestIngestEndpointStagingBoundary:
             handler.do_POST()
 
         send_error.assert_not_called()
-        send_json.assert_called_once()
-        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
-        payload = send_json.call_args.args[1]
+        send_json.assert_not_called()
+        assert len(sent) == 1
+        payload = sent[0]
+        assert payload["outcome"] == "accepted"
         assert payload["path"] == str(staged.resolve())
         assert payload["preflight"]["status"] == "supported"
         assert payload["preflight"]["providers"] == ["chatgpt"]
@@ -641,9 +655,11 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": str(staged), field: "/unrelated/label"}).encode()
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
         handler.do_POST()
         assert send_error.call_args.args[:2] == (HTTPStatus.BAD_REQUEST, "invalid_source_declaration")
         send_json.assert_not_called()
+        assert not sent
         assert requests == []
 
     def test_rejects_staged_unsupported_import_shape(
@@ -658,6 +674,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": str(staged)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -670,6 +687,7 @@ class TestIngestEndpointStagingBoundary:
         assert send_error.call_args.args[1] == "unsupported_import_source"
         assert "no parseable" in send_error.call_args.args[2]
         send_json.assert_not_called()
+        assert not sent
         emit_event.assert_not_called()
 
     @pytest.mark.parametrize("outcome", ["rejected", "indeterminate"])
@@ -708,10 +726,12 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": str(staged), "idempotency_key": "stable-upload"}).encode()
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
         with patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]):
             handler.do_POST()
         send_error.assert_not_called()
-        response = send_json.call_args.args[1]
+        assert len(sent) == 1
+        response = sent[0]
         assert response["status"] == "failed"
         assert response["outcome"] == outcome
         assert requests[0].request_id == "stable-upload"
@@ -747,6 +767,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": str(staged)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -755,9 +776,10 @@ class TestIngestEndpointStagingBoundary:
             handler.do_POST()
 
         send_error.assert_not_called()
-        send_json.assert_called_once()
-        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
-        payload = send_json.call_args.args[1]
+        send_json.assert_not_called()
+        assert len(sent) == 1
+        payload = sent[0]
+        assert payload["outcome"] == "accepted"
         assert payload["preflight"]["status"] == "degraded"
         assert payload["preflight"]["supported_count"] == 1
         assert payload["preflight"]["unsupported_count"] == 1
@@ -785,12 +807,14 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": "session.json", "source_path": "/exports/session.json"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]):
             handler.do_POST()
 
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "path_not_found")
         send_json.assert_not_called()
+        assert not sent
 
     def test_rejects_unstaged_absolute_local_path(
         self,
@@ -806,6 +830,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": str(outside)}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -815,6 +840,7 @@ class TestIngestEndpointStagingBoundary:
 
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "path_not_found")
         send_json.assert_not_called()
+        assert not sent
         emit_event.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -855,6 +881,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": traversal_path}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -866,6 +893,7 @@ class TestIngestEndpointStagingBoundary:
         # path shape the client sent.
         assert send_error.called, f"traversal path {traversal_path!r} was not rejected"
         send_json.assert_not_called()
+        assert not sent
         emit_event.assert_not_called()
 
     @pytest.mark.parametrize("nested,absolute", [(False, False), (True, False), (True, True)])
@@ -906,6 +934,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": requested}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -915,8 +944,9 @@ class TestIngestEndpointStagingBoundary:
 
         # The normalized coordinate names the actual staged entry.
         send_error.assert_not_called()
-        assert send_json.call_args.args[0] == HTTPStatus.ACCEPTED
-        payload = send_json.call_args.args[1]
+        assert len(sent) == 1
+        payload = sent[0]
+        assert payload["outcome"] == "accepted"
         assert payload["path"] == str(staged.resolve())
 
     def test_symlink_escape_is_rejected(
@@ -939,6 +969,7 @@ class TestIngestEndpointStagingBoundary:
         body = json.dumps({"path": "escape_link.jsonl"}).encode("utf-8")
         handler = _make_handler("POST", "/api/ingest", auth_header="Bearer secret", body=body)
         send_error, send_json = capture_responses(handler)
+        sent = _capture_operation(handler)
 
         with (
             patch("polylogue.paths.archive_root", return_value=workspace_env["archive_root"]),
@@ -948,6 +979,7 @@ class TestIngestEndpointStagingBoundary:
 
         send_error.assert_called_once_with(HTTPStatus.BAD_REQUEST, "invalid_path")
         send_json.assert_not_called()
+        assert not sent
 
 
 # ---------------------------------------------------------------------------
@@ -1020,7 +1052,6 @@ class TestJsonSerializationRobustness:
         (simulating the decorator's error-response call), confirming the
         contract holds.
         """
-        from typing import Any
 
         from polylogue.daemon.http import daemon_safe_handler
 
@@ -1057,7 +1088,6 @@ class TestJsonSerializationRobustness:
 
     def test_handler_ignores_client_disconnect_during_response(self) -> None:
         """Client timeouts must not turn BrokenPipe into a noisy 500 path."""
-        from typing import Any
 
         from polylogue.daemon.http import daemon_safe_handler
 

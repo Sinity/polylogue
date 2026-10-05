@@ -115,5 +115,6 @@ def test_baseline_inventory_keeps_pre_migration_index_predicates() -> None:
 
 
 def test_undeclared_future_inventory_is_refused() -> None:
+    # One past the runtime's declared chain: no installed step reaches it.
     with pytest.raises(migration_runner.DurableChangeTrainError):
-        durable._canonical_schema_inventory(_TIER, _target_version() + 1)
+        durable._canonical_schema_inventory(_TIER, durable._runtime_durable_version(_TIER) + 1)

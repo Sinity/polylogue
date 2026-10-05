@@ -8655,12 +8655,18 @@ class PreparedSessionSourceRead:
             f"SELECT rowid FROM raw_sessions WHERE logical_source_key IN ({marks})",
             parameters,
         )
+        self._load_matches(
+            "raw_session_memberships",
+            f"SELECT rowid FROM raw_session_memberships WHERE logical_source_key IN ({marks})",
+            parameters,
+        )
         after: str | None = None
         while True:
             with self._seal.source_rows(
-                f"SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
-                "AND (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
-                (*parameters, after, after),
+                f"SELECT raw_id FROM (SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
+                f"UNION SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks})) "
+                "WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (*parameters, *parameters, after, after),
             ) as rows:
                 page = rows.fetchall()
             if not page:
@@ -8784,6 +8790,24 @@ class PreparedSessionSourceRead:
         from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_native_id
 
         return prepared_raw_native_id(self._seal, raw_id)
+
+    def raw_ids_for_native_session(self, origin: str, native_id: str) -> tuple[str, ...]:
+        """Retained raws acquired as one origin's native session, before or after census."""
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_raw_observation_inputs
+
+        self._load_matches(
+            "raw_sessions",
+            "SELECT rowid FROM raw_sessions WHERE origin=? AND native_id=?",
+            (origin, native_id),
+        )
+        with self._seal.source_rows(
+            "SELECT raw_id FROM raw_sessions WHERE origin=? AND native_id=? ORDER BY raw_id",
+            (origin, native_id),
+        ) as rows:
+            raw_ids = tuple(str(row[0]) for row in rows)
+        for raw_id in raw_ids:
+            _load_raw_observation_inputs(self._seal, raw_id)
+        return raw_ids
 
     @contextmanager
     def open_raw_revision_material(
@@ -12779,9 +12803,68 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 # happens to equal a parent block is never dropped.
 
 
+def _prefix_alignment_signature(role: str, block_hashes: Iterable[bytes]) -> str:
+    """Digest what a replayed prefix copies: the role and each block's evidence.
+
+    A child that replays its parent's prefix (a fork, a resume, a compaction
+    continuation) re-emits those messages under new provider ids, timestamps,
+    parent links and provenance classification, all of which the complete
+    semantic address hashes. Alignment compares the role and each block's
+    identity-free evidence digest (``blocks.content_hash``: text, tool call,
+    outcome, error and exit evidence), so a divergent answer still ends the
+    shared prefix. The branch point itself stays guarded by the parent's
+    stored complete content address (``branch_point_content_address``).
+    """
+    digest = hashlib.sha256(b"polylogue-prefix-alignment-v2\0")
+    encoded_role = role.encode("utf-8", "surrogatepass")
+    digest.update(len(encoded_role).to_bytes(8, "big"))
+    digest.update(encoded_role)
+    for block_hash in block_hashes:
+        digest.update(len(block_hash).to_bytes(8, "big"))
+        digest.update(block_hash)
+    return digest.hexdigest()
+
+
+def _parsed_block_evidence_hash(block: ParsedContentBlock) -> bytes:
+    """The stored ``blocks.content_hash`` this block will be written with."""
+    return _block_content_hash(
+        block_type=_block_type(block).value,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_input_json=_json_dumps(block.tool_input) if block.tool_input is not None else None,
+        semantic_type=_semantic_type(block),
+        media_type=block.media_type,
+        language=_block_language(block),
+        is_error=getattr(block, "is_error", None),
+        exit_code=getattr(block, "exit_code", None),
+        tool_outcome=getattr(block, "tool_outcome", None),
+        outcome_unknown_reason=_enum_value(block.outcome_unknown_reason),
+        semantic_extra_json=_block_semantic_extra_json(block),
+    )
+
+
 def _parsed_message_signature(message: ParsedMessage) -> str:
-    """Align prefixes with the same complete witness that authorizes inheritance."""
-    return _message_content_address(message).hex()
+    """The prefix alignment signature of a parsed message (see above)."""
+    return _prefix_alignment_signature(
+        _enum_value(message.role) or "",
+        (_parsed_block_evidence_hash(block) for block in _message_blocks(message)),
+    )
+
+
+def _signatures_from_block_rows(rows: Iterable[Sequence[object]]) -> Iterator[tuple[str, str]]:
+    """Group ``(message_id, role, block content_hash)`` rows per message."""
+    current_id: str | None = None
+    current_role = ""
+    hashes: list[bytes] = []
+    for message_id, role, block_hash in rows:
+        if message_id != current_id:
+            if current_id is not None:
+                yield current_id, _prefix_alignment_signature(current_role, hashes)
+            current_id, current_role, hashes = str(message_id), str(role or ""), []
+        if block_hash is not None:
+            hashes.append(bytes(cast(bytes, block_hash)))
+    if current_id is not None:
+        yield current_id, _prefix_alignment_signature(current_role, hashes)
 
 
 def _is_acompact_native_id(native_id: str) -> bool:
@@ -12892,20 +12975,32 @@ def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -
 def _own_db_signatures(
     conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
 ) -> list[tuple[str, str]]:
-    """Return complete semantic witnesses for this session's own stored rows."""
+    """Return prefix alignment signatures for this session's own stored rows."""
     if before_input is not None:
         before_input(
             "messages",
-            ("message_id", "content_address"),
+            ("message_id", "role", "position", "variant_index"),
             "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
+            (session_id,),
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "content_hash"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
             (session_id,),
         )
     with connection_cursor(
         conn,
-        "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position,variant_index",
+        """
+        SELECT m.message_id, m.role, b.content_hash
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
+        """,
         (session_id,),
     ) as cursor:
-        return [(str(message_id), bytes(address).hex()) for message_id, address in cursor]
+        return list(_signatures_from_block_rows(cursor))
 
 
 def _iter_own_db_signatures(
@@ -12913,39 +13008,41 @@ def _iter_own_db_signatures(
     segment: _TranscriptSegment,
     before_input: BeforeIndexInput | None = None,
 ) -> Generator[tuple[str, str], None, None]:
+    segment_parameters = (
+        segment.session_id,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_variant_index,
+    )
     if before_input is not None:
         before_input(
             "messages",
-            ("message_id", "content_address"),
+            ("message_id", "role", "position", "variant_index"),
             "SELECT rowid FROM messages WHERE session_id=? "
             "AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?)) "
             "ORDER BY position,variant_index",
-            (
-                segment.session_id,
-                segment.upto_position,
-                segment.upto_position,
-                segment.upto_position,
-                segment.upto_variant_index,
-            ),
+            segment_parameters,
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "content_hash"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (segment.session_id,),
         )
     with connection_cursor(
         conn,
         """
-        SELECT message_id, content_address FROM messages
-        WHERE session_id = ?
-          AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?))
-        ORDER BY position, variant_index
+        SELECT m.message_id, m.role, b.content_hash
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        WHERE m.session_id = ?
+          AND (? IS NULL OR m.position < ? OR (m.position = ? AND m.variant_index <= ?))
+        ORDER BY m.position, m.variant_index, b.position
         """,
-        (
-            segment.session_id,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_variant_index,
-        ),
+        segment_parameters,
     ) as cursor:
-        for message_id, address in cursor:
-            yield str(message_id), bytes(address).hex()
+        yield from _signatures_from_block_rows(cursor)
 
 
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):

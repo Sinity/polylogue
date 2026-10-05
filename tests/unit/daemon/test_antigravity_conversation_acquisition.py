@@ -23,6 +23,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions, parse_one_source_path
 from polylogue.sources.source_walk import _walk_source_paths
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def test_source_role_contract_partitions_current_antigravity_items(tmp_path: Path) -> None:
@@ -173,7 +174,9 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
             return "### User Input\n\nhello"
 
     monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: Client())
-    index_db = tmp_path / "cursor.db"
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    bootstrap_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="antigravity", root=root),),
@@ -211,7 +214,9 @@ def test_failed_conversion_still_records_the_attempted_observation(
         yield  # pragma: no cover
 
     monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", raising)
-    index_db = tmp_path / "cursor.db"
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    bootstrap_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="antigravity", root=root),),
@@ -327,7 +332,9 @@ def _live_vendor_cohort(
             return f"### User Input\n\nSynthetic conversation {cascade_id}"
 
     monkeypatch.setattr(antigravity, "AntigravityLanguageServerClient", lambda _root: Client())
-    db_path = tmp_path / "cursor.db"
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    bootstrap_archive_root(tmp_path)
+    db_path = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
         (WatchSource(name="antigravity", root=root),),

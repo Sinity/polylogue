@@ -101,7 +101,11 @@ def test_clone_validates_source_release_before_any_source_backup(
             verified = True
         return result
 
-    class ObservedConnection(sqlite3.Connection):
+    from polylogue.storage.io_phase_metrics import _MeasuredConnection
+
+    # Production opens tiers through its measured connection; the observer
+    # extends that class rather than replacing it with a bare connection.
+    class ObservedConnection(_MeasuredConnection):
         def backup(self, target: sqlite3.Connection, **kwargs: Any) -> None:
             path = self.execute("PRAGMA database_list").fetchone()[2]
             if path == str(source / "source.db"):

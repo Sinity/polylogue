@@ -76,6 +76,7 @@ def _build_archive(root: Path, composed: ComposedSources | None = None) -> Conve
     """Use production ingest and convergence without the unrelated blob audit."""
     selected = rich_convergence_sources() if composed is None else composed
     initialize_active_archive(root)
+    # Fixture ingest prepares lease-free and takes the writer lease itself.
     archive = ingest_composed_sources(
         root,
         selected,

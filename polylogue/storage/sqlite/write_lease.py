@@ -704,7 +704,9 @@ async def _close_async_archive_custody(
             # Borrowed custody is physically owned by its existing outer
             # executor. Preserve that owner rather than inventing an executor.
             break
-        wait = asyncio.create_task(asyncio.to_thread(retry.wait_after, observed))
+        wait = asyncio.create_task(
+            asyncio.to_thread(retry.wait_after, observed), name="polylogue-writer-custody:settlement-wait"
+        )
         value, interrupted, failure = await _settle_task(wait, retry=retry)
         cancellation = cancellation or interrupted
         if failure is not None:
@@ -1621,7 +1623,8 @@ async def async_write_lease(
         retry = SQLSettlementRetry()
         observed_generation = retry.generation()
         acquire_task = asyncio.create_task(
-            asyncio.to_thread(_acquire_async_archive_custody, archive_root, retry, observed_generation)
+            asyncio.to_thread(_acquire_async_archive_custody, archive_root, retry, observed_generation),
+            name=f"polylogue-writer-custody:{actor}",
         )
         custody, cancellation, failure = await _settle_task(acquire_task, retry=retry)
         if cancellation is not None:
