@@ -47,6 +47,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_session_tag,
     read_assertion_envelope,
 )
+from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.write_lease import authorized_session_removal, write_lease
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
@@ -1921,7 +1923,19 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
     with ArchiveStore(root) as facade:
         session_id = write_index_session(facade, session)
         facade.add_user_tags((session_id,), ("keep-user-state",))
-        deleted = facade.delete_sessions((session_id,))
+        # Unauthorized disappearance of a tagged session stays refused: only
+        # an authorized removal plan may leave its durable anchors dangling.
+        with (
+            write_lease("test.delete.unauthorized", archive_root=root),
+            pytest.raises(ReferenceSealError),
+        ):
+            facade.delete_sessions((session_id,))
+        assert facade.count_sessions() == 1
+        with (
+            write_lease("test.delete.authorized", archive_root=root),
+            authorized_session_removal(archive_root=root, plan_hash="test-delete-plan", session_ids=(session_id,)),
+        ):
+            deleted = facade.delete_sessions((session_id,))
         remaining = facade.count_sessions()
 
     user_conn = sqlite3.connect(root / "user.db")
