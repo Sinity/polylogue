@@ -33,7 +33,11 @@ from polylogue.daemon.derivation import Budget, DerivationReport
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.logging import propagate
-from polylogue.operations.raw_observation_derivation import RAW_OBSERVATION_DOMAIN, raw_observation_frame
+from polylogue.operations.raw_observation_derivation import (
+    RAW_OBSERVATION_DOMAIN,
+    raw_observation_frame,
+    raw_observation_payload_bytes,
+)
 from polylogue.operations.raw_observation_owner import RawObservationArchiveWork, retained_settlement_owners
 
 if TYPE_CHECKING:
@@ -181,12 +185,16 @@ class RawObservationConvergenceOwner:
                 raw_ids=(raw_id,),
                 index_db_path=index_path,
             )
+            # The parse holds the retained payload: reserve its size up front.
+            # A read fault propagates as retryable rather than admitting the
+            # parse as a zero-byte task beside a full reservation.
+            payload_bytes = await asyncio.to_thread(raw_observation_payload_bytes, self._archive_root, raw_id)
             return await owner.converge(
                 frame,
                 budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
                 domains=(RAW_OBSERVATION_DOMAIN,),
                 resume=False,
-                estimated_bytes=0,
+                estimated_bytes=payload_bytes,
                 exclusive_bytes=True,
             )
 
