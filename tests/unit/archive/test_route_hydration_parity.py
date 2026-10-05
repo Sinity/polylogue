@@ -850,23 +850,25 @@ async def test_prose_classification_survives_stored_and_bounded_reads(workspace_
     from polylogue.archive.message.types import MessageType
 
     db_path = db_setup(workspace_env)
-    session_id = write_session_sync(
-        db_path,
-        ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id="prose-classification",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="ordinary-assistant",
-                    role=Role.ASSISTANT,
-                    text="Ordinary prose",
-                    blocks=[
-                        ParsedContentBlock(type=BlockType.THINKING, text="<environment_context>"),
-                        ParsedContentBlock(type=BlockType.TEXT, text="Ordinary prose"),
-                    ],
-                )
-            ],
-        ),
+    session_id = run_off_event_loop(
+        lambda: write_session_sync(
+            db_path,
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="prose-classification",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="ordinary-assistant",
+                        role=Role.ASSISTANT,
+                        text="Ordinary prose",
+                        blocks=[
+                            ParsedContentBlock(type=BlockType.THINKING, text="<environment_context>"),
+                            ParsedContentBlock(type=BlockType.TEXT, text="Ordinary prose"),
+                        ],
+                    )
+                ],
+            ),
+        )
     )
     seeded = _Seeded(workspace_env["archive_root"], session_id)
     rows, composed = _canonical_messages(seeded)
