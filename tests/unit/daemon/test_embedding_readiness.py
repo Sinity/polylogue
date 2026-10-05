@@ -361,7 +361,8 @@ def test_readiness_unconfigured_when_enabled_flag_off(
                 role TEXT NOT NULL DEFAULT 'user',
                 message_type TEXT NOT NULL DEFAULT 'message',
                 material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8
+                word_count INTEGER NOT NULL DEFAULT 8,
+                content_hash BLOB NOT NULL DEFAULT (zeroblob(32))
             )
             """
         )
