@@ -1126,13 +1126,13 @@ async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
         (root / "sessions").mkdir(parents=True)
         sources.append(WatchSource(name="codex", root=root / "sessions"))
         sources.append(WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")))
-    db_path = workspace_env["data_root"] / "codex-two-roots.db"
+    db_path = workspace_env["archive_root"] / "index.db"
     run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     processor = LiveBatchProcessor(
         archive,
         tuple(sources),
-        cursor=CursorStore(db_path),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     rollout_path = roots["a"] / "sessions" / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
