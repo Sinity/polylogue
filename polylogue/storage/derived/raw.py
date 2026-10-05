@@ -18,6 +18,7 @@ from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclasses_field
 from functools import partial
 from itertools import chain
 from pathlib import Path
@@ -67,6 +68,7 @@ from polylogue.storage.sqlite.connection_profile import attach_readonly_database
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
+    from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.sources.revision_backfill import (
@@ -80,6 +82,9 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    #: A Source phase committed in place: its receipt and the fields its tape changed.
+    _InPlacePhase = tuple[tuple[Literal["census", "classification"], RevisionCensusResult], ...]
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
 
@@ -157,6 +162,63 @@ class StagedBlobRestorations:
         self._finalizer()
 
 
+@dataclass(slots=True)
+class _PreparationCarry:
+    """One preparation's seal and parsed artifacts, continued across its Source phases.
+
+    After a census or classification commits in place, the seal rebases onto
+    its own accepted tape and the next phase is prepared on it. An artifact is
+    reused only under its unchanged descriptor key and while the enrichment
+    and sidecar evidence it was parsed against is unchanged.
+    """
+
+    seal: PreparedIndexMutation | None = None
+    raw_ids: tuple[str, ...] = ()
+    scratch_owner: tempfile.TemporaryDirectory[str] | None = None
+    artifacts: dict[tuple[object, ...], PreparedJsonl] = dataclasses_field(default_factory=dict)
+    attachment_refs_published: set[int] = dataclasses_field(default_factory=set)
+    #: Each prepared raw's captured ZIP coordinate, read with its descriptor.
+    zip_coordinates: dict[str, CapturedZipMemberCoordinate | None] = dataclasses_field(default_factory=dict)
+    committed: list[tuple[Literal["census", "classification"], RevisionCensusResult]] = dataclasses_field(
+        default_factory=list
+    )
+
+    def discard_payload(self, *, keep: RawObservationReplacement | None = None) -> None:
+        """Discard carried artifacts and scratch that ``keep`` does not itself close."""
+        kept_artifacts = (
+            set()
+            if keep is None
+            else {
+                id(item.prepared_artifact)
+                for item in (keep.prepared_inputs or {}).values()
+                if item.prepared_artifact is not None
+            }
+        )
+        failures: list[BaseException] = []
+        try:
+            _close_prepared_carriers(
+                {}, {}, (artifact for artifact in self.artifacts.values() if id(artifact) not in kept_artifacts)
+            )
+        except BaseException as failure:
+            failures.append(failure)
+        self.artifacts.clear()
+        self.attachment_refs_published.clear()
+        if keep is not None and keep.scratch_owner is self.scratch_owner:
+            self.scratch_owner = None
+        if self.scratch_owner is not None and not failures:
+            try:
+                _cleanup_scratch(self.scratch_owner)
+            except BaseException as failure:
+                failures.append(failure)
+            self.scratch_owner = None
+        if failures:
+            raise BaseExceptionGroup("carried preparation cleanup failed", failures)
+
+
+class _CarryInvalidatedError(Exception):
+    """The carried unit's selection changed; prepare again from a new seal."""
+
+
 @dataclass(frozen=True, slots=True)
 class RawObservationReplacement:
     key: str
@@ -194,6 +256,14 @@ class RawObservationReplacement:
     #: absent parent; compute widens the unit to them and prepares again.
     lineage_parent_raw_ids: tuple[str, ...] = ()
     needs_source_classification: bool = False
+    #: Source phases this preparation already committed in place, in order;
+    #: publication reports them whatever its own outcome.
+    committed_phase_receipts: tuple[tuple[Literal["census", "classification"], RevisionCensusResult], ...] = ()
+    #: A refused in-place classification, reported by publication as its own.
+    prepared_phase_failure: BaseException | None = None
+    #: The preparation's carried artifacts and scratch; closing this carrier
+    #: releases whatever its own payload does not already hold.
+    carried_payload: _PreparationCarry | None = None
     scratch_directory: Path | None = None
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     empty: bool = False
@@ -223,6 +293,7 @@ class RawObservationReplacement:
         with retain_native_sql_lifetimes(*(() if self.scratch_owner is None else (self.scratch_owner,))):
             failures: list[BaseException] = []
             for close in (
+                *(() if self.carried_payload is None else (partial(self.carried_payload.discard_payload, keep=self),)),
                 partial(
                     _close_prepared_carriers,
                     self.prepared_writes or {},
@@ -795,9 +866,12 @@ class RawObservationDerivation(RawObservationInspection):
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    # Restored bytes, Source census, classification and in-unit lineage
-    # deferral each commit before the work that depends on them can be
-    # prepared off the writer; the kernel continues those phases within one
+    # The Source census and byte classification stage on one tape that
+    # ``compute`` commits in place on the writer; preparation then continues
+    # to the replay on the same seal, reusing each artifact whose descriptor
+    # and enrichment evidence the commit left unchanged. A phase that cannot
+    # commit in place, restored bytes and in-unit lineage deferral commit
+    # through ``publish`` instead, and the kernel continues them within one
     # pass while :meth:`publication_advanced` reports committed progress.
     # Every advance is one that cannot repeat for the same state, so the
     # continuation is bounded by progress rather than a phase count.
@@ -1020,6 +1094,9 @@ class RawObservationDerivation(RawObservationInspection):
         # unit widens to that parent and prepares again; in-unit deferral then
         # publishes the parent first. The selection only grows, so this ends.
         widened: tuple[str, ...] = ()
+        carry = _PreparationCarry()
+        census_first: list[str] = []
+        first = True
         while True:
             selection = select_retained_raw_ids
             if widened:
@@ -1028,12 +1105,217 @@ class RawObservationDerivation(RawObservationInspection):
                     base = (key,) if select_retained_raw_ids is None else tuple(select_retained_raw_ids(read))
                     return (*base, *(raw_id for raw_id in extra if raw_id not in base))
 
-            replacement = self._compute_once(frame, key, replay_current=replay_current, selection=selection)
-            additional = tuple(raw_id for raw_id in replacement.lineage_parent_raw_ids if raw_id not in widened)
-            if not additional:
+            scope = frame.scope if isinstance(frame.scope, RawObservationScope) else RawObservationScope()
+            if first and scope.raw_ids:
+                selection = self._census_first_selection(scope.raw_ids, key, selection, census_first)
+            first = False
+            try:
+                replacement = self._compute_once(
+                    frame, key, replay_current=replay_current, selection=selection, carry=carry
+                )
+            except _CarryInvalidatedError:
+                carry = _PreparationCarry()
+                continue
+            try:
+                outcome = self._after_preparation(frame, replacement, carry, census_first, widened)
+            except BaseException as primary:
+                failures: list[BaseException] = []
+                for close in (replacement.close, partial(carry.discard_payload, keep=replacement)):
+                    try:
+                        close()
+                    except BaseException as cleanup:
+                        failures.append(cleanup)
+                if failures:
+                    raise BaseExceptionGroup(
+                        "retained preparation and cleanup failed", [primary, *failures]
+                    ) from primary
+                raise
+            if isinstance(outcome, RawObservationReplacement):
+                return replace(outcome, carried_payload=carry)
+            if outcome == "restart":
+                carry.discard_payload(keep=replacement)
+                carry = _PreparationCarry()
+                continue
+            if outcome == "widen":
+                carry = _PreparationCarry()
+                widened = (
+                    *widened,
+                    *(raw_id for raw_id in replacement.lineage_parent_raw_ids if raw_id not in widened),
+                )
+                continue
+            carry = outcome
+
+    def _after_preparation(
+        self,
+        frame: RawFrame,
+        replacement: RawObservationReplacement,
+        carry: _PreparationCarry,
+        census_first: list[str],
+        widened: tuple[str, ...],
+    ) -> RawObservationReplacement | _PreparationCarry | Literal["restart", "widen"]:
+        """Decide what one preparation pass leads to within this compute."""
+        if census_first:
+            # Content decides these envelopes' identity: census all of them
+            # before any of them replays, then prepare the seed's own unit.
+            census_first.clear()
+            if replacement.needs_source_census and self._publish_phase_in_place(frame, replacement) is not None:
+                replacement.close()
+                return "restart"
+            if replacement.needs_source_census or replacement.needs_source_classification:
                 return replacement
             replacement.close()
-            widened = (*widened, *additional)
+            return "restart"
+        if any(raw_id not in widened for raw_id in replacement.lineage_parent_raw_ids):
+            replacement.close()
+            carry.discard_payload(keep=replacement)
+            return "widen"
+        committed = tuple(carry.committed)
+        if not (replacement.needs_source_census or replacement.needs_source_classification):
+            return replace(replacement, committed_phase_receipts=committed) if committed else replacement
+        continuation = self._continue_after_phase(frame, replacement, carry)
+        if continuation is None:
+            # A guard refused in-place publication: the existing publish path
+            # receives this phase and revalidates it under the writer.
+            return replace(replacement, committed_phase_receipts=committed) if committed else replacement
+        if isinstance(continuation, BaseException):
+            return replace(replacement, committed_phase_receipts=committed, prepared_phase_failure=continuation)
+        return continuation
+
+    def _census_first_selection(
+        self,
+        scope: tuple[str, ...],
+        key: str,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        census_first: list[str],
+    ) -> Callable[[PreparedSessionSourceRead], Sequence[str]]:
+        """Add the scope's other uncensused identity-opaque envelopes to an opaque seed's census."""
+
+        def select(read: PreparedSessionSourceRead) -> Sequence[str]:
+            base = (key,) if selection is None else tuple(selection(read))
+            if not read.uncensused_identity_opaque_raw_ids((key,)):
+                return base
+            opaque = read.uncensused_identity_opaque_raw_ids(scope)
+            extra = tuple(raw_id for raw_id in opaque if raw_id not in base)
+            census_first[:] = extra
+            return (*base, *extra)
+
+        return select
+
+    def _continue_after_phase(
+        self, frame: RawFrame, replacement: RawObservationReplacement, carry: _PreparationCarry
+    ) -> _PreparationCarry | BaseException | None:
+        """Commit a Source phase in place and keep its seal and artifacts for the next phase.
+
+        Returns the carry to continue with, a refused classification to report,
+        or None when publication must take the existing path.
+        """
+        seal = replacement.reference_seal
+        if seal is None:
+            return None
+        inputs = replacement.prepared_inputs or {}
+        before = self._artifact_dependency_digests(seal, inputs, carry.zip_coordinates)
+        published = self._publish_phase_in_place(frame, replacement)
+        if published is None or isinstance(published, BaseException):
+            return published
+        carry.committed.extend(published)
+        carry.raw_ids = replacement.raw_ids
+        after = self._artifact_dependency_digests(seal, inputs, carry.zip_coordinates)
+        moved = {artifact_id for artifact_id, digest in before.items() if after.get(artifact_id) != digest}
+        if moved:
+            # The committed tape moved evidence these artifacts were parsed
+            # against: this seal prepares them again.
+            stale = {key: artifact for key, artifact in carry.artifacts.items() if id(artifact) in moved}
+            for key in stale:
+                del carry.artifacts[key]
+            carry.attachment_refs_published.difference_update(moved)
+            _close_prepared_carriers({}, {}, stale.values())
+        return carry
+
+    def _artifact_dependency_digests(
+        self,
+        seal: PreparedIndexMutation,
+        inputs: Mapping[str, PreparedRetainedInput],
+        zip_coordinates: Mapping[str, CapturedZipMemberCoordinate | None],
+    ) -> dict[int, str]:
+        """Digest the enrichment and sidecar evidence each prepared artifact depends on.
+
+        This is the writer's own staleness criterion
+        (``prepared_enrichment_dependency_state``), read from the seal's
+        current committed Source and Index view.
+        """
+        from polylogue.sources.revision_backfill import enrichment_dependency_digest
+
+        digests: dict[int, str] = {}
+        if not inputs:
+            return digests
+        blob_store = BlobStore(self.archive_root / "blob")
+        with seal.original_read_snapshot():
+            index = seal.observer("index") if seal.has_tier_capability("index") else None
+            for raw_id, item in inputs.items():
+                artifact = item.prepared_artifact
+                if artifact is None or id(artifact) in digests:
+                    continue
+                check_compute_cancelled()
+                digests[id(artifact)] = enrichment_dependency_digest(
+                    provider=item.provider,
+                    source_path=item.source_path,
+                    captured_zip_coordinate=zip_coordinates.get(raw_id),
+                    provider_session_ids=(
+                        artifact.iter_provider_session_ids() if artifact.sessions_path is not None else ()
+                    ),
+                    index_conn=index,
+                    source_conn=seal.observer("source"),
+                    blob_root=blob_store.root,
+                    parser_sidecars=True,
+                )
+        return digests
+
+    def _publish_phase_in_place(
+        self, frame: RawFrame, replacement: RawObservationReplacement
+    ) -> _InPlacePhase | BaseException | None:
+        """Publish a census or classification on the writer without ending its seal.
+
+        Every input guard of :meth:`publish` runs first; a refusing guard
+        returns None and leaves the tape for that path.
+        """
+        from polylogue.core.stage_admission import admit_stage_write, stage_write_admission_bound
+        from polylogue.core.write_lease import current_write_lease
+        from polylogue.sources.revision_backfill import RevisionCensusResult
+        from polylogue.storage.index_generation import ActiveWriterLease
+
+        seal = replacement.reference_seal
+        if seal is None or not (stage_write_admission_bound() or current_write_lease() is not None):
+            return None
+
+        def work() -> _InPlacePhase | BaseException | None:
+            assert seal is not None
+            lease = ActiveWriterLease(self.archive_root)
+            lease.acquire()
+            try:
+                if not self._publication_inputs_current(frame, replacement, before_restoration=True):
+                    return None
+                if not self._publication_inputs_current(frame, replacement, before_restoration=False):
+                    return None
+                receipts: list[tuple[Literal["census", "classification"], RevisionCensusResult]] = []
+                failures: list[BaseException] = []
+
+                def receive(
+                    phase: Literal["census", "classification", "replay"],
+                    receipt: RevisionCensusResult | PreparedRevisionReplayResult,
+                ) -> None:
+                    if phase == "replay" or not isinstance(receipt, RevisionCensusResult):
+                        raise RuntimeError("an in-place Source phase reported a replay receipt")
+                    receipts.append((phase, receipt))
+
+                if not self._apply_source_phase(
+                    replacement, phase_receipt=receive, publication_failure=failures.append
+                ):
+                    return failures[0]
+                return tuple(receipts)
+            finally:
+                lease.close()
+
+        return admit_stage_write("raw_observation.prepared_source_phase", work)
 
     def _compute_once(
         self,
@@ -1042,19 +1324,26 @@ class RawObservationDerivation(RawObservationInspection):
         *,
         replay_current: bool,
         selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+        carry: _PreparationCarry,
     ) -> RawObservationReplacement:
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
-        index_path = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
-        destination = (
-            None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
-        )
-        seal = PreparedIndexMutation(
-            index_path,
-            archive_root=self.archive_root,
-            destination=destination,
-            input_demand=self._compute_adapter.amend_current_input_demand,
-        )
+        if carry.seal is not None:
+            seal = carry.seal
+        else:
+            index_path = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
+            destination = (
+                None
+                if self._owned_generation is None
+                else IndexMutationDestination.owned_inactive(self._owned_generation)
+            )
+            seal = PreparedIndexMutation(
+                index_path,
+                archive_root=self.archive_root,
+                destination=destination,
+                input_demand=self._compute_adapter.amend_current_input_demand,
+            )
+            carry.seal = seal
         replacement: RawObservationReplacement | None = None
         try:
             replacement = replace(
@@ -1064,19 +1353,24 @@ class RawObservationDerivation(RawObservationInspection):
                     replay_current=replay_current,
                     reference_seal=seal,
                     select_retained_raw_ids=selection,
+                    carry=carry,
                 ),
                 reference_seal=seal,
             )
             seal.validate_observers_current()
             return replacement
         except BaseException as primary:
-            try:
-                if replacement is None:
-                    seal.close()
-                else:
-                    replacement.close()
-            except BaseException as cleanup:
-                raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, cleanup]) from primary
+            failures: list[BaseException] = []
+            for close in (
+                seal.close if replacement is None else replacement.close,
+                partial(carry.discard_payload, keep=replacement),
+            ):
+                try:
+                    close()
+                except BaseException as cleanup:
+                    failures.append(cleanup)
+            if failures:
+                raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, *failures]) from primary
             raise
 
     def _compute_prepared(
@@ -1087,7 +1381,9 @@ class RawObservationDerivation(RawObservationInspection):
         replay_current: bool,
         reference_seal: PreparedIndexMutation,
         select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+        carry: _PreparationCarry | None = None,
     ) -> RawObservationReplacement:
+        carry = _PreparationCarry(reference_seal) if carry is None else carry
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
@@ -1121,6 +1417,10 @@ class RawObservationDerivation(RawObservationInspection):
                 )
                 selected = (key,) if select_retained_raw_ids is None else tuple(select_retained_raw_ids(selection_read))
                 raw_ids, logical_keys = selection_read.expand_raw_membership_selection(selected)
+                if carry.raw_ids and carry.raw_ids != raw_ids:
+                    # The committed phase changed this unit's membership; its
+                    # carried artifacts describe another unit.
+                    raise _CarryInvalidatedError
                 for selected_raw_id in raw_ids:
                     refusal = selection_read.raw_terminal_decode_refusal(selected_raw_id)
                     if refusal is not None:
@@ -1202,16 +1502,20 @@ class RawObservationDerivation(RawObservationInspection):
                         key: plan.accepted_raw_ids for key, plan in prepared_revision_plans.items()
                     }
                 material_store = BlobStore(self.archive_root / "blob")
-                material_staging = material_store._ensure_private_staging_root()
-                scratch_owner = tempfile.TemporaryDirectory(prefix=".raw-prepared-", dir=material_staging)
-                scratch = Path(scratch_owner.name)
-                with retain_native_sql_lifetimes(scratch_owner):
+                if carry.scratch_owner is not None:
+                    scratch_owner = carry.scratch_owner
+                else:
+                    material_staging = material_store._ensure_private_staging_root()
+                    scratch_owner = tempfile.TemporaryDirectory(prefix=".raw-prepared-", dir=material_staging)
                     # Whatever path removes the scratch tree (publication, an
                     # exception, or the directory's own finalizer when publication
                     # is bypassed), the decodes cached from it go with it.
                     from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
 
-                    weakref.finalize(scratch_owner, discard_decoded_sessions_under, scratch)
+                    weakref.finalize(scratch_owner, discard_decoded_sessions_under, Path(scratch_owner.name))
+                    carry.scratch_owner = scratch_owner
+                scratch = Path(scratch_owner.name)
+                with retain_native_sql_lifetimes(scratch_owner):
                     prepared: dict[str, PreparedRetainedInput] = {}
                     aggregates: dict[str, PreparedRetainedAggregate] = {}
                     prepared_writes: dict[tuple[str, str], PreparedSessionWrite] = {}
@@ -1228,7 +1532,9 @@ class RawObservationDerivation(RawObservationInspection):
                     prepared_membership_keys: tuple[str, ...] = ()
                     prepared_byte_logical_keys: tuple[str, ...] = ()
                     prepared_key_refusals: dict[str, CohortMembershipRefusalError] = {}
-                    prepared_artifacts: dict[tuple[object, ...], PreparedJsonl] = {}
+                    # A continued preparation keeps the artifacts parsed under
+                    # this seal; each is reused only under its unchanged key.
+                    prepared_artifacts = carry.artifacts
                     try:
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
@@ -1257,11 +1563,16 @@ class RawObservationDerivation(RawObservationInspection):
                                 native_id = retained_read.raw_native_id(raw_id) if kind.value == "append" else None
                                 fallback_timestamp = retained_read.raw_revision_file_mtime(raw_id)
                                 profile_identity = retained_read.raw_profile_identity(raw_id)
+                                carry.zip_coordinates[raw_id] = retained_read.raw_captured_zip_coordinate(raw_id)
+                            # Everything a worker reads to parse and enrich these
+                            # bytes. Parsing distinguishes only an append revision,
+                            # so a census that types an unknown revision as full
+                            # keeps the artifact.
                             artifact_key = (
                                 provider,
                                 blob_hash,
                                 path,
-                                kind,
+                                kind.value == "append",
                                 native_id,
                                 fallback_timestamp,
                                 profile_identity,
@@ -1291,7 +1602,13 @@ class RawObservationDerivation(RawObservationInspection):
                                             reference_seal,
                                             blob_store=blob_store,
                                         )
-                                        artifact = worker(retained_read, raw_id, directory=scratch)
+                                        # Each artifact owns its directory, so a stale
+                                        # one is discarded without its siblings.
+                                        artifact = worker(
+                                            retained_read,
+                                            raw_id,
+                                            directory=Path(tempfile.mkdtemp(prefix="artifact-", dir=scratch)),
+                                        )
                                     check_compute_cancelled()
                                 except DaemonOperationCancelled:
                                     raise
@@ -1352,7 +1669,23 @@ class RawObservationDerivation(RawObservationInspection):
                         for artifact in prepared_artifacts.values():
                             if artifact.error is None:
                                 artifact.publish_blobs(reference_seal=reference_seal)
-                        _publish_acquired_attachment_refs(reference_seal, prepared, blob_store=material_store)
+                        # A claim is consumed once: a continued preparation
+                        # publishes only the artifacts it has not yet published.
+                        published_refs = carry.attachment_refs_published
+                        _publish_acquired_attachment_refs(
+                            reference_seal,
+                            {
+                                raw_id: item
+                                for raw_id, item in prepared.items()
+                                if item.prepared_artifact is None or id(item.prepared_artifact) not in published_refs
+                            },
+                            blob_store=material_store,
+                        )
+                        published_refs.update(
+                            id(item.prepared_artifact)
+                            for item in prepared.values()
+                            if item.prepared_artifact is not None
+                        )
                         from polylogue.sources.prepared_jsonl import complete_thread_projection_cohort
 
                         with reference_seal.original_read_snapshot(), reference_seal.source_producer():
@@ -1477,6 +1810,16 @@ class RawObservationDerivation(RawObservationInspection):
                                     prepared_inputs=prepared,
                                 )
                                 census_raw_ids, census_keys = census_read.expand_raw_membership_selection(raw_ids)
+                            # Byte classification reads the census staged above,
+                            # so one tape publishes both phases.
+                            from polylogue.sources.revision_backfill import stage_revision_source_classification
+
+                            classified, classification_stats = stage_revision_source_classification(
+                                reference_seal,
+                                PreparedSessionSourceRead(reference_seal, blob_store=material_store),
+                                logical_keys=census_keys,
+                                payload_store=material_store,
+                            )
                             prepared_source_census = PreparedRevisionSourceCensus(
                                 reference_seal.prepare_source_mutation(),
                                 RevisionCensusResult(
@@ -1486,6 +1829,10 @@ class RawObservationDerivation(RawObservationInspection):
                                     census_raw_ids,
                                     census_keys,
                                 ),
+                                classification_result=(
+                                    RevisionCensusResult(0, 0, 0, census_raw_ids, census_keys) if classified else None
+                                ),
+                                classification_blob_stats=classification_stats if classified else (),
                             )
                         if not needs_source_census:
                             from polylogue.sources.revision_backfill import (
@@ -1958,6 +2305,124 @@ class RawObservationDerivation(RawObservationInspection):
             source_db, tuple((receipt, raw_by_hash[receipt.blob_hash]) for receipt in receipts)
         )
 
+    def _publication_inputs_current(
+        self, frame: RawFrame, replacement: RawObservationReplacement, *, before_restoration: bool
+    ) -> bool:
+        """Revalidate a prepared unit's inputs under the writer, before any exposure."""
+        from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids
+
+        assert replacement.reference_seal is not None
+        if before_restoration:
+            if not self._current(frame):
+                return False
+            # This gate also covers early Blob restoration, whose branch
+            # does not reach a Source or Index permit. It must precede any
+            # exposure, and checks the same original observers after actual
+            # writer admission instead of copying a second value digest.
+            replacement.reference_seal.validate_observers_current()
+            frontier_refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
+            selected_paths = set(self.source_paths(replacement.raw_ids).values())
+            return frontier_refusal.unattributed_reason is None and not selected_paths.intersection(
+                frontier_refusal.source_paths
+            )
+        with self._preparation_archive() as archive:
+            raw_ids, _keys = archive.expand_raw_membership_selection(list(replacement.raw_ids))
+            if raw_ids != replacement.raw_ids:
+                return False
+            for raw_id in raw_ids:
+                _provider, blob_hash, _path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+                blob_store = BlobStore(self.archive_root / "blob")
+                if replacement.prepared_inputs is not None:
+                    expected_stat = (replacement.verified_blob_stats or {}).get(raw_id)
+                    try:
+                        current_stat = self._blob_stat_identity(blob_store.blob_path(blob_hash))
+                    except OSError:
+                        return False
+                    if expected_stat is None or current_stat != expected_stat:
+                        return False
+                elif not replacement.needs_source_classification:
+                    return False
+        for prepared in (replacement.prepared_inputs or {}).values():
+            if prepared.prepared_artifact is not None:
+                try:
+                    prepared.prepared_artifact.verify_files(full=False)
+                except (OSError, ValueError):
+                    return False
+        for aggregate in (replacement.prepared_aggregates or {}).values():
+            try:
+                aggregate.artifact.verify_files(full=False)
+            except (OSError, ValueError):
+                return False
+        return True
+
+    def _apply_source_phase(
+        self,
+        replacement: RawObservationReplacement,
+        *,
+        phase_receipt: Callable[
+            [Literal["census", "classification", "replay"], RevisionCensusResult | PreparedRevisionReplayResult], None
+        ]
+        | None,
+        publication_failure: Callable[[BaseException], None] | None,
+    ) -> bool:
+        """Commit a prepared census or classification tape; False reports a refused classification."""
+        from polylogue.sources.revision_backfill import (
+            RetainedPreparationNoProgressError,
+            RetainedPreparationRetryableError,
+            apply_prepared_revision_census,
+            apply_prepared_revision_classification,
+        )
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawClassificationStaleError
+
+        assert replacement.reference_seal is not None
+        phase: Literal["census", "classification"]
+        receipts: list[tuple[Literal["census", "classification"], RevisionCensusResult]] = []
+        before = self._census_state(replacement.raw_ids)
+        if replacement.needs_source_census:
+            if replacement.prepared_source_census is None:
+                raise RetainedPreparationRetryableError("retained census lacks its original prepared Source tape")
+            phase = "census"
+            try:
+                receipt = apply_prepared_revision_census(
+                    replacement.reference_seal,
+                    replacement.prepared_source_census,
+                    payload_store=BlobStore(self.archive_root / "blob"),
+                )
+            except PreparedRawClassificationStaleError as failure:
+                if publication_failure is not None:
+                    publication_failure(failure)
+                return False
+            receipts.append((phase, receipt))
+            classification = replacement.prepared_source_census.classification_result
+            if classification is not None:
+                receipts.append(("classification", classification))
+        else:
+            if replacement.prepared_source_classification is None:
+                raise RetainedPreparationRetryableError("retained classification lacks its original Source tape")
+            phase = "classification"
+            try:
+                receipt = apply_prepared_revision_classification(
+                    replacement.reference_seal,
+                    replacement.prepared_source_classification,
+                    payload_store=BlobStore(self.archive_root / "blob"),
+                )
+            except (PreparedRawClassificationStaleError, RetainedPreparationRetryableError) as failure:
+                if publication_failure is not None:
+                    publication_failure(failure)
+                return False
+            receipts.append((phase, receipt))
+        if self._census_state(replacement.raw_ids) == before:
+            raise RetainedPreparationNoProgressError(
+                f"retained {phase} left its durable inputs unchanged: {replacement.key}"
+            )
+        if phase_receipt is not None:
+            for committed_phase, committed_receipt in receipts:
+                phase_receipt(committed_phase, committed_receipt)
+        refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
+        if refusal is not None:
+            raise refusal
+        return True
+
     def publish(
         self,
         frame: RawFrame,
@@ -1969,16 +2434,39 @@ class RawObservationDerivation(RawObservationInspection):
         | None = None,
         publication_failure: Callable[[BaseException], None] | None = None,
     ) -> bool:
+        if phase_receipt is not None:
+            for phase, receipt in replacement.committed_phase_receipts:
+                phase_receipt(phase, receipt)
+        if replacement.prepared_phase_failure is not None:
+            replacement.close()
+            if publication_failure is not None:
+                publication_failure(replacement.prepared_phase_failure)
+            published = False
+        else:
+            published = self._publish_prepared(
+                frame, replacement, phase_receipt=phase_receipt, publication_failure=publication_failure
+            )
+        if not published and replacement.committed_phase_receipts:
+            # The Source phases committed in place are this key's progress.
+            self._phase_committed[id(replacement)] = replacement.key
+        return published
+
+    def _publish_prepared(
+        self,
+        frame: RawFrame,
+        replacement: RawObservationReplacement,
+        *,
+        phase_receipt: Callable[
+            [Literal["census", "classification", "replay"], RevisionCensusResult | PreparedRevisionReplayResult], None
+        ]
+        | None,
+        publication_failure: Callable[[BaseException], None] | None,
+    ) -> bool:
         from polylogue.sources.revision_backfill import (
-            RetainedPreparationNoProgressError,
             RetainedPreparationRetryableError,
-            apply_prepared_revision_census,
-            apply_prepared_revision_classification,
             apply_prepared_revision_replay,
         )
         from polylogue.storage.index_generation import ActiveWriterLease
-        from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawClassificationStaleError
 
         if replacement.already_valid:
             try:
@@ -1995,18 +2483,7 @@ class RawObservationDerivation(RawObservationInspection):
                     raise RetainedPreparationRetryableError("retained publication lacks its original reference seal")
                 replacement.reference_seal.retain_publication_lifetime(lease, replacement._close_prepared_payload)
                 lifetime_bound = True
-                if not self._current(frame):
-                    return False
-                # This gate also covers early Blob restoration, whose branch
-                # does not reach a Source or Index permit. It must precede any
-                # exposure, and checks the same original observers after actual
-                # writer admission instead of copying a second value digest.
-                replacement.reference_seal.validate_observers_current()
-                frontier_refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
-                selected_paths = set(self.source_paths(replacement.raw_ids).values())
-                if frontier_refusal.unattributed_reason is not None or selected_paths.intersection(
-                    frontier_refusal.source_paths
-                ):
+                if not self._publication_inputs_current(frame, replacement, before_restoration=True):
                     return False
                 if replacement.blob_restorations is not None:
                     self._publish_blob_restorations(replacement.blob_restorations)
@@ -2014,81 +2491,13 @@ class RawObservationDerivation(RawObservationInspection):
                     # now finds them present; this publication certifies no output.
                     self._phase_committed[id(replacement)] = replacement.key
                     return False
-                with self._preparation_archive() as archive:
-                    raw_ids, _keys = archive.expand_raw_membership_selection(list(replacement.raw_ids))
-                    if raw_ids != replacement.raw_ids:
-                        return False
-                    for raw_id in raw_ids:
-                        _provider, blob_hash, _path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-                        blob_store = BlobStore(self.archive_root / "blob")
-                        if replacement.prepared_inputs is not None:
-                            expected_stat = (replacement.verified_blob_stats or {}).get(raw_id)
-                            try:
-                                current_stat = self._blob_stat_identity(blob_store.blob_path(blob_hash))
-                            except OSError:
-                                return False
-                            if expected_stat is None or current_stat != expected_stat:
-                                return False
-                        elif not replacement.needs_source_classification:
-                            return False
-                for prepared in (replacement.prepared_inputs or {}).values():
-                    if prepared.prepared_artifact is not None:
-                        try:
-                            prepared.prepared_artifact.verify_files(full=False)
-                        except (OSError, ValueError):
-                            return False
-                for aggregate in (replacement.prepared_aggregates or {}).values():
-                    try:
-                        aggregate.artifact.verify_files(full=False)
-                    except (OSError, ValueError):
-                        return False
-                if replacement.needs_source_census:
-                    if replacement.prepared_source_census is None:
-                        raise RetainedPreparationRetryableError(
-                            "retained census lacks its original prepared Source tape"
-                        )
-                    before = self._census_state(replacement.raw_ids)
-                    receipt = apply_prepared_revision_census(
-                        replacement.reference_seal,
-                        replacement.prepared_source_census,
-                    )
-                    if self._census_state(replacement.raw_ids) == before:
-                        raise RetainedPreparationNoProgressError(
-                            f"retained census left its durable inputs unchanged: {replacement.key}"
-                        )
-                    if phase_receipt is not None:
-                        phase_receipt("census", receipt)
-                    refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
-                    if refusal is not None:
-                        raise refusal
-                    self._phase_committed[id(replacement)] = replacement.key
+                if not self._publication_inputs_current(frame, replacement, before_restoration=False):
                     return False
-                if replacement.needs_source_classification:
-                    if replacement.prepared_source_classification is None:
-                        raise RetainedPreparationRetryableError(
-                            "retained classification lacks its original Source tape"
-                        )
-                    before = self._census_state(replacement.raw_ids)
-                    try:
-                        receipt = apply_prepared_revision_classification(
-                            replacement.reference_seal,
-                            replacement.prepared_source_classification,
-                            payload_store=BlobStore(self.archive_root / "blob"),
-                        )
-                    except (PreparedRawClassificationStaleError, RetainedPreparationRetryableError) as failure:
-                        if publication_failure is not None:
-                            publication_failure(failure)
-                        return False
-                    if self._census_state(replacement.raw_ids) == before:
-                        raise RetainedPreparationNoProgressError(
-                            f"retained classification left its durable inputs unchanged: {replacement.key}"
-                        )
-                    if phase_receipt is not None:
-                        phase_receipt("classification", receipt)
-                    refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
-                    if refusal is not None:
-                        raise refusal
-                    self._phase_committed[id(replacement)] = replacement.key
+                if replacement.needs_source_census or replacement.needs_source_classification:
+                    if self._apply_source_phase(
+                        replacement, phase_receipt=phase_receipt, publication_failure=publication_failure
+                    ):
+                        self._phase_committed[id(replacement)] = replacement.key
                     return False
                 if (
                     replacement.prepared_inputs is None
@@ -2293,6 +2702,7 @@ def _await_reporting_stalls(operation: SubmittedOperation[T], *, subject: str) -
 
 
 if TYPE_CHECKING:
+    from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate
     from polylogue.core.sql_settlement import SQLCustodyOwner
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.prepared_jsonl import PreparedJsonl

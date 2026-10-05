@@ -470,9 +470,11 @@ def _retained_parser_sidecar_digest(source_conn: sqlite3.Connection, *, provider
     root_path = session_dir.parent / f"{session_dir.name}.jsonl"
     tool_prefix = f"{directory.as_posix()}/"
     sibling_prefix = f"{(session_dir / 'subagents').as_posix()}/"
+    # The sibling resolver distinguishes only an append revision; a census
+    # that types an unknown revision as full does not move this evidence.
     for row in source_conn.execute(
         "SELECT source_path, raw_id, hex(blob_hash), blob_size, file_mtime_ms, "
-        "revision_kind, acquired_at_ms FROM raw_sessions "
+        "revision_kind = 'append', acquired_at_ms FROM raw_sessions "
         "WHERE source_path = ? OR (source_path >= ? AND source_path < ?) "
         "OR (source_path >= ? AND source_path < ?) ORDER BY source_path, raw_id",
         (
@@ -1148,12 +1150,32 @@ def uncensused_historical_revision_raw_ids(
 def apply_prepared_revision_census(
     seal: PreparedIndexMutation,
     prepared: PreparedRevisionSourceCensus,
+    *,
+    payload_store: BlobStore,
 ) -> RevisionCensusResult:
     """Publish the same off-writer census tape before returning its receipt."""
     from polylogue.storage.sqlite.archive_tiers.revision_governance import publish_prepared_revision_source
 
+    _require_classification_inputs_current(prepared.classification_blob_stats, payload_store)
     publish_prepared_revision_source(seal, prepared.permit)
     return prepared.result
+
+
+def _require_classification_inputs_current(
+    blob_stats: Sequence[tuple[str, tuple[int, int, int, int, int]]], payload_store: BlobStore
+) -> None:
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import _blob_stat_identity
+
+    for blob_hash, identity in blob_stats:
+        check_compute_cancelled()
+        try:
+            current = _blob_stat_identity(payload_store.blob_path(blob_hash))
+        except OSError as failure:
+            raise PreparedRawClassificationStaleError(
+                "retained classification input disappeared before publication"
+            ) from failure
+        if current != identity:
+            raise PreparedRawClassificationStaleError("retained classification input changed before publication")
 
 
 class ReplayTopologyState(PolylogueStrEnum):
@@ -3457,10 +3479,17 @@ def prepare_revision_source_membership_conversion(
 
 @dataclass(frozen=True, slots=True)
 class PreparedRevisionSourceCensus:
-    """The original Source tape and detached census outcome for one component."""
+    """The original Source tape and detached census outcome for one component.
+
+    A census may carry the byte classification staged on top of it in the
+    same tape; ``classification_blob_stats`` are its inputs, which must be
+    unchanged at publication.
+    """
 
     permit: KnownTierMutationPermit
     result: RevisionCensusResult
+    classification_result: RevisionCensusResult | None = None
+    classification_blob_stats: tuple[tuple[str, tuple[int, int, int, int, int]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -3479,6 +3508,30 @@ def prepare_revision_source_classification(
     payload_store: BlobStore,
 ) -> PreparedRevisionSourceClassification | None:
     """Prepare byte authority on the same selected Source state as the census."""
+    changed, blob_stats = stage_revision_source_classification(
+        seal, evidence_reader, logical_keys=logical_keys, payload_store=payload_store
+    )
+    if not changed:
+        return None
+    return PreparedRevisionSourceClassification(
+        seal.prepare_source_mutation(),
+        RevisionCensusResult(0, 0, 0, tuple(selected_raw_ids), tuple(logical_keys)),
+        blob_stats,
+    )
+
+
+def stage_revision_source_classification(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    *,
+    logical_keys: Sequence[str],
+    payload_store: BlobStore,
+) -> tuple[bool, tuple[tuple[str, tuple[int, int, int, int, int]], ...]]:
+    """Stage byte authority on the seal's selected Source state, census included.
+
+    Returns whether any cohort changed and the byte identities the
+    classification read, which publication requires unchanged.
+    """
     from polylogue.storage.sqlite.archive_tiers.revision_governance import prepare_raw_revision_byte_classification
 
     changed = False
@@ -3499,13 +3552,7 @@ def prepare_revision_source_classification(
                 if previous is not None and previous != identity:
                     raise PreparedRawClassificationStaleError("classification input changed between logical cohorts")
                 blob_stats[blob_hash] = identity
-    if not changed:
-        return None
-    return PreparedRevisionSourceClassification(
-        seal.prepare_source_mutation(),
-        RevisionCensusResult(0, 0, 0, tuple(selected_raw_ids), tuple(logical_keys)),
-        tuple(blob_stats.items()),
-    )
+    return changed, tuple(blob_stats.items())
 
 
 def apply_prepared_revision_classification(
@@ -3515,21 +3562,9 @@ def apply_prepared_revision_classification(
     payload_store: BlobStore,
 ) -> RevisionCensusResult:
     """Validate the original byte seals, then apply its canonical Source tape."""
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
-        _blob_stat_identity,
-        publish_prepared_revision_source,
-    )
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import publish_prepared_revision_source
 
-    for blob_hash, identity in prepared.blob_stats:
-        check_compute_cancelled()
-        try:
-            current = _blob_stat_identity(payload_store.blob_path(blob_hash))
-        except OSError as failure:
-            raise PreparedRawClassificationStaleError(
-                "retained classification input disappeared before publication"
-            ) from failure
-        if current != identity:
-            raise PreparedRawClassificationStaleError("retained classification input changed before publication")
+    _require_classification_inputs_current(prepared.blob_stats, payload_store)
     publish_prepared_revision_source(seal, prepared.permit)
     return prepared.result
 

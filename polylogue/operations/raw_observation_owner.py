@@ -308,7 +308,9 @@ class RawObservationArchiveWork:
                         )
                         return expanded
 
-                    frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
+                    # The frame scope is the whole selection, so an opaque
+                    # envelope's census can cover its unreplayed siblings.
+                    frame = raw_observation_frame(archive_root, raw_ids=selected, index_db_path=index_path)
                     try:
                         replacement = adapter.compute(
                             frame, raw_id, replay_current=True, select_retained_raw_ids=select_original
@@ -412,11 +414,14 @@ class RawObservationArchiveWork:
                         break
                     if publication_failures:
                         raise publication_failures[0]
+                    # Census and classification a preparation committed in
+                    # place precede its own replay receipt.
+                    replay_phases = [receipt for phase, receipt in phases if phase == "replay"]
+                    source_phases = [phase for phase, _receipt in phases if phase != "replay"]
                     if (
-                        len(phases) == 1
-                        and phases[0][0] == "replay"
+                        len(replay_phases) == 1
                         and replacement.prepared_lineage_deferrals
-                        and isinstance(phases[0][1], PreparedRevisionReplayResult)
+                        and isinstance(replay_phases[0], PreparedRevisionReplayResult)
                     ):
                         # Parents published; their deferred children are
                         # re-prepared against them next. The deferral itself
@@ -426,11 +431,11 @@ class RawObservationArchiveWork:
                             assert on_membership_refusal is not None
                             for membership_refusal in replacement.prepared_key_refusals:
                                 on_membership_refusal(membership_refusal)
-                        results.append(phases[0][1])
+                        results.append(replay_phases[0])
                         visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
                         previous_progress = None
                         continue
-                    if len(phases) != 1 or phases[0][0] not in ("census", "classification"):
+                    if replay_phases or not source_phases:
                         raise RetainedPreparationRetryableError(
                             "retained publication deferred without accepted Source progress"
                         )
