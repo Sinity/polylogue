@@ -804,13 +804,6 @@ writes:
     classification: declared_retention
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "apply_prepared_raw_revision_classification"
-    table: "raw_sessions"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "Applies a prepared full-raw byte-classification proof only after rechecking its exact raw_sessions and membership/census source binding plus every retained blob's stat identity. It updates only proof-listed raw revision authority/predecessor/baseline/generation fields in the source-writer phase, then promotes contiguous append authority through the existing guard; a stale proof is rejected before mutation."
-  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "_classify_raw_revision_cohort"
     table: "raw_sessions"
     kind: "update"

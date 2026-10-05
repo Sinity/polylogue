@@ -359,79 +359,6 @@ class ArchiveRawParsedWriteResult:
     unresolved_attachment_owners: tuple[tuple[str, AttachmentOwnerResolutionReason], ...] = ()
 
 
-def _reissue_accepted_head_reparse_receipt(
-    store: RawRevisionGovernanceHost,
-    *,
-    raw_id: str,
-    session_id: str,
-    content_hash: str,
-    decided_at_ms: int,
-) -> None:
-    """Move the accepted head when a reparse rewrites its own accepted raw.
-
-    polylogue-2tfug. ``raw_revision_heads`` records which raw is authoritative
-    for a logical source key AND the ``content_hash`` that raw was last known
-    to produce. An ordinary write that reparses the head's own raw into
-    different content (a parser fix, not new evidence) updated
-    ``sessions.content_hash`` and left the head's copy behind.
-    ``validate_raw_replay_application_receipt`` requires the two to agree, so
-    the stale pair reads as ledger inconsistency rather than as the legitimate
-    correction it is.
-
-    The condition is deliberately narrow -- same raw, same session, changed
-    hash -- because that is the only case where the head's authority is not in
-    question: no competing raw is claiming the key, so there is nothing to
-    adjudicate, only a recorded value to bring current. Anything else is a
-    real precedence question and still belongs to the replay path.
-    """
-    head = store._conn.execute(
-        """
-        SELECT accepted_raw_id, accepted_source_revision, accepted_content_hash,
-               accepted_frontier_kind, accepted_frontier, acquisition_generation,
-               append_end_offset, logical_source_key
-        FROM raw_revision_heads WHERE session_id = ? AND accepted_raw_id = ?
-        """,
-        (session_id, raw_id),
-    ).fetchone()
-    if head is None:
-        return
-    accepted_content_hash = head["accepted_content_hash"]
-    new_content_hash = bytes.fromhex(content_hash)
-    if accepted_content_hash is not None and bytes(accepted_content_hash) == new_content_hash:
-        return
-    source_lineage = (
-        store._ensure_source_conn()
-        .execute(
-            "SELECT baseline_raw_id, predecessor_raw_id FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        )
-        .fetchone()
-    )
-    if source_lineage is None:
-        raise RuntimeError(f"accepted-head reparse source evidence is missing for {raw_id}")
-    record_revision_application_sync(
-        store._conn,
-        RevisionApplicationReceipt(
-            raw_id=raw_id,
-            session_id=session_id,
-            logical_source_key=str(head["logical_source_key"]),
-            source_revision=str(head["accepted_source_revision"]),
-            acquisition_generation=int(head["acquisition_generation"]),
-            decision=ApplicationDecision.REPARSE_REAFFIRMATION,
-            accepted_raw_id=raw_id,
-            accepted_source_revision=str(head["accepted_source_revision"]),
-            accepted_content_hash=new_content_hash,
-            accepted_frontier_kind=str(head["accepted_frontier_kind"]),
-            accepted_frontier=int(head["accepted_frontier"]),
-            baseline_raw_id=source_lineage[0],
-            predecessor_raw_id=source_lineage[1],
-            append_end_offset=head["append_end_offset"],
-            detail="reparse:accepted_head_content_correction",
-        ),
-        decided_at_ms=decided_at_ms,
-    )
-
-
 def _source_integer(value: object) -> int:
     """Require the integer emitted by the canonical Source schema or query."""
     if type(value) is not int:
@@ -1787,94 +1714,6 @@ def _raw_classification_source_binding(store: RawRevisionGovernanceHost, logical
     return digest.hexdigest()
 
 
-def prepare_raw_revision_rebuild_classification(
-    store: RawRevisionGovernanceHost, logical_source_key: str
-) -> PreparedRawRevisionClassification:
-    """Stream full-raw byte comparisons on a read-only source snapshot."""
-    binding = _raw_classification_source_binding(store, logical_source_key)
-    updates: list[tuple[str, str, str | None, str | None, int]] = []
-    _classify_raw_revision_cohort(
-        store,
-        logical_source_key,
-        check_source_path_identity_split=True,
-        source_effects=False,
-        prepared_updates=updates,
-    )
-    payload_store = _retained_blob_store(store)
-    blob_stats: list[tuple[str, tuple[int, int, int, int, int]]] = []
-    for row in store._ensure_source_conn().execute(
-        "SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE logical_source_key = ? AND revision_kind = 'full'",
-        (logical_source_key,),
-    ):
-        blob_hash = str(row[0])
-        path = payload_store.blob_path(blob_hash)
-        try:
-            before = _blob_stat_identity(path)
-            verified = payload_store.verify(blob_hash)
-            after = _blob_stat_identity(path)
-        except OSError as exc:
-            raise PreparedRawClassificationStaleError(
-                f"retained full raw disappeared during byte classification for {logical_source_key}"
-            ) from exc
-        if not verified or before != after:
-            raise PreparedRawClassificationStaleError(
-                f"retained full raw changed during byte classification for {logical_source_key}"
-            )
-        blob_stats.append((blob_hash, after))
-    if _raw_classification_source_binding(store, logical_source_key) != binding:
-        raise PreparedRawClassificationStaleError("source changed during byte classification")
-    return PreparedRawRevisionClassification(logical_source_key, binding, tuple(updates), tuple(blob_stats))
-
-
-def prepared_raw_revision_classification_current(
-    store: RawRevisionGovernanceHost, proof: PreparedRawRevisionClassification
-) -> bool:
-    """Check persisted authority against a prepared proof without blob reads."""
-    if _raw_classification_source_binding(store, proof.logical_source_key) != proof.source_binding:
-        raise PreparedRawClassificationStaleError(
-            f"source changed after byte classification for {proof.logical_source_key}"
-        )
-    source_conn = store._ensure_source_conn()
-    for raw_id, authority, predecessor, baseline, generation in proof.full_updates:
-        row = source_conn.execute(
-            "SELECT revision_authority, predecessor_raw_id, baseline_raw_id, acquisition_generation "
-            "FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone()
-        if row is None or tuple(row) != (authority, predecessor, baseline, generation):
-            return False
-    return not _contiguous_append_authority_drift_exists(source_conn, proof.logical_source_key)
-
-
-def apply_prepared_raw_revision_classification(
-    store: RawRevisionGovernanceHost, proof: PreparedRawRevisionClassification
-) -> RevisionReplayPlan:
-    """Apply an off-writer byte proof after checking its exact source rows."""
-    if _raw_classification_source_binding(store, proof.logical_source_key) != proof.source_binding:
-        raise PreparedRawClassificationStaleError(
-            f"source changed before byte classification for {proof.logical_source_key}"
-        )
-    payload_store = _retained_blob_store(store)
-    try:
-        if any(_blob_stat_identity(payload_store.blob_path(blob_hash)) != stat for blob_hash, stat in proof.blob_stats):
-            raise PreparedRawClassificationStaleError(
-                f"retained blob changed before byte classification for {proof.logical_source_key}"
-            )
-    except OSError as exc:
-        raise PreparedRawClassificationStaleError(
-            f"retained blob disappeared before byte classification for {proof.logical_source_key}"
-        ) from exc
-    source_conn = store._ensure_source_conn()
-    for raw_id, authority, predecessor, baseline, generation in proof.full_updates:
-        source_conn.execute(
-            "UPDATE raw_sessions SET revision_authority = ?, predecessor_raw_id = ?, "
-            "baseline_raw_id = ?, acquisition_generation = ? WHERE raw_id = ?",
-            (authority, predecessor, baseline, generation, raw_id),
-        )
-    _promote_contiguous_append_evidence(source_conn, proof.logical_source_key)
-    return raw_revision_replay_plan(store, proof.logical_source_key)
-
-
 def _classify_raw_revision_cohort(
     store: RawRevisionSourceHost,
     logical_source_key: str,
@@ -3127,22 +2966,6 @@ def raw_membership_selection_components(
 
 
 _MEMBERSHIP_EXPANSION_BATCH = 400
-
-
-def _batched_values(conn: sqlite3.Connection, template: str, values: set[str], *, repeat: int = 1) -> set[str]:
-    """Run ``template`` over ``values`` in bounded ``IN`` batches.
-
-    ``template`` holds one ``{marks}`` per bound copy of the batch. A selection
-    larger than SQLite's variable limit is valid input, so it is paged rather
-    than refused.
-    """
-    ordered = sorted(values)
-    found: set[str] = set()
-    for start in range(0, len(ordered), _MEMBERSHIP_EXPANSION_BATCH):
-        batch = tuple(ordered[start : start + _MEMBERSHIP_EXPANSION_BATCH])
-        marks = ",".join("?" for _ in batch)
-        found.update(str(row[0]) for row in conn.execute(template.format(marks=marks), batch * repeat))
-    return found
 
 
 def expand_raw_membership_selection_sync(
