@@ -382,13 +382,16 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
     context = _response_context_var.get()
     page = _bounded_item_page(payload, exclude_none=exclude_none)
     continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
-    # Personal-state projections page by decimal offset and carry no framed
+    from polylogue.analysis.registry import INSIGHT_REGISTRY
+
+    registry_projections = {descriptor.resolved_cli_command_name for descriptor in INSIGHT_REGISTRY.values()}
+    # Registry and personal-state projections page by offset and carry no framed
     # transaction; ``_narrow_continuation`` already advanced their offset.
     if (
         context is not None
         and context.tool in {"query", "query_units"}
         and page is not None
-        and context.arguments.get("projection") not in PERSONAL_STATE_PROJECTIONS
+        and context.arguments.get("projection") not in PERSONAL_STATE_PROJECTIONS | registry_projections
     ):
         # The executor attaches the framed request outside its serialized
         # payload. Rebase from it rather than a storage continuation: even a

@@ -1313,14 +1313,9 @@ FROM grouped g
 LEFT JOIN repo_json r ON r.thread_id = g.thread_id
 LEFT JOIN origin_json o ON o.thread_id = g.thread_id;
 
--- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
--- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
--- (session_insight_thread_queries.list_threads) had zero production
--- callers; the live "analyze threads" search path
--- (list_thread_insights below) already does a manual LIKE substring scan
--- over thread_id/session title/repo/branch and never touched threads_fts.
--- list_threads now does the same LIKE scan over threads.search_text
--- instead of an FTS5 MATCH. See lifecycle.py's v63 declaration.
+-- ArchiveStore owns public thread text search and lowers it before paging.
+-- It uses session facts and the public payload's support vocabulary, without
+-- an independently materialized thread FTS index.
 
 CREATE VIEW IF NOT EXISTS thread_sessions AS
 SELECT COALESCE(root_session_id, session_id) AS thread_id, session_id,

@@ -207,17 +207,6 @@ class SessionTimelineListQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class ThreadListQuery:
-    """Canonical thread read selection for repository/search runtime."""
-
-    since: str | None = None
-    until: str | None = None
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class SessionTagRollupListQuery:
     """Canonical tag-rollup selection for durable insight aggregate reads."""
 
@@ -258,5 +247,4 @@ __all__ = [
     "SessionProfileListQuery",
     "SessionTagRollupListQuery",
     "SessionTimelineListQuery",
-    "ThreadListQuery",
 ]
