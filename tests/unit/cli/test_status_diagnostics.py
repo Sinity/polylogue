@@ -95,7 +95,7 @@ class TestDiagnoseSchemaMismatch:
         assert reset_help.exit_code == 0, reset_help.output
         assert "--index" in reset_help.output
 
-        from polylogue.daemon.cli import main as daemon_cli
+        from polylogue.daemon.commands import main as daemon_cli
 
         daemon_help = CliRunner().invoke(daemon_cli, ["run", "--help"])
         assert daemon_help.exit_code == 0, daemon_help.output

@@ -68,14 +68,8 @@ def test_bench_cli_status_cold(benchmark: Any, bench_cli_cold_start_archive_root
         else:
             assert payload["ok"] is False
             assert payload["daemon_liveness"] is False
-            if route == "daemon":
-                # The daemon command currently recomputes its status locally
-                # when no listener exists; it has no resident snapshot.
-                assert payload["status_snapshot"]["state"] == "missing"
-                assert payload["status_snapshot"]["age_s"] == -1.0
-            else:
-                assert payload["status_snapshot"]["state"] == "unavailable"
-                assert payload["status_snapshot"]["reason"] == "daemon_absent"
+            assert payload["status_snapshot"]["state"] == "unavailable"
+            assert payload["status_snapshot"]["reason"] == "daemon_absent"
         samples.append(elapsed_ms)
         record_metrics(
             benchmark,

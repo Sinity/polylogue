@@ -417,7 +417,7 @@ def test_sigterm_read_only_daemon_records_forensics(
             [
                 sys.executable,
                 "-c",
-                "from polylogue.daemon.cli import main; main()",
+                "from polylogue.daemon.commands import main; main()",
                 "run",
                 "--no-watch",
                 "--no-source-catchup",
@@ -481,7 +481,7 @@ def test_sigterm_with_locked_ops_exits_without_normal_sqlite_wait(
             [
                 sys.executable,
                 "-c",
-                "from polylogue.daemon.cli import main; main()",
+                "from polylogue.daemon.commands import main; main()",
                 "run",
                 "--no-watch",
                 "--no-source-catchup",

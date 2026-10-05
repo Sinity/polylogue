@@ -24,7 +24,7 @@ from click.testing import CliRunner
 
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, loads
-from polylogue.daemon.cli import main
+from polylogue.daemon.commands import main
 from polylogue.daemon.convergence import ConvergenceStage
 from polylogue.daemon.derivation import DerivationReport, Outcome
 from polylogue.daemon.execution import BoundedComputeAdapter
@@ -136,6 +136,19 @@ def test_polylogued_health_expensive_flag_selects_all_tiers(monkeypatch: pytest.
     assert observed == [{HealthTier.FAST, HealthTier.MEDIUM, HealthTier.EXPENSIVE}]
 
 
+def _render_observed_status(args: list[str]) -> Any:
+    """Exercise command rendering of the actual producer's unit-test view.
+
+    The resident transport has separate real-socket controls. These existing
+    component assertions keep exercising the canonical status producer.
+    """
+    from polylogue.daemon.status import daemon_status_payload
+
+    payload = daemon_status_payload()
+    with patch("polylogue.daemon.commands._live_daemon_status_payload", return_value=payload):
+        return CliRunner().invoke(main, ["status", *args])
+
+
 @pytest.mark.contract
 def test_polylogued_status_json_reports_daemon_components(
     tmp_path: Path,
@@ -146,9 +159,8 @@ def test_polylogued_status_json_reports_daemon_components(
     )
 
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
-        result = CliRunner().invoke(
-            main,
-            ["status", "--format", "json"],
+        result = _render_observed_status(
+            ["--format", "json"],
         )
 
     assert result.exit_code == 1
@@ -167,7 +179,7 @@ def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> No
     sources = (WatchSource(name="exists", root=tmp_path),)
 
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
-        result = CliRunner().invoke(main, ["status"])
+        result = _render_observed_status([])
 
     assert result.exit_code == 1
     assert "Polylogue daemon" in result.output
@@ -199,9 +211,8 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
         patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
-        patch("polylogue.daemon.cli._live_daemon_status_payload", return_value=None),
     ):
-        result = CliRunner().invoke(main, ["status", "--format", "json"])
+        result = _render_observed_status(["--format", "json"])
 
     # A schema-complete but empty archive has no raw revisions from which to
     # prove materialization readiness, so status must report it as unmeasured.
@@ -258,7 +269,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
-        result = CliRunner().invoke(main, ["status", "--format", "json"])
+        result = _render_observed_status(["--format", "json"])
 
     assert result.exit_code == 1
     payload = loads(result.output)
@@ -298,7 +309,7 @@ def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
-        result = CliRunner().invoke(main, ["status"])
+        result = _render_observed_status([])
 
     assert result.exit_code == 1
     assert "Storage: archive_file_set (source, index); missing embeddings, user, audit, ops" in result.output
@@ -325,7 +336,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
         patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
         patch("polylogue.daemon.status.default_sources", return_value=()),
     ):
-        result = CliRunner().invoke(main, ["status"])
+        result = _render_observed_status([])
 
     assert result.exit_code == 1
     assert (

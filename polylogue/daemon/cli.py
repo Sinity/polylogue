@@ -15,7 +15,6 @@ import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
-from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -29,16 +28,15 @@ from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
 from polylogue.core.durable_fs import atomic_create
-from polylogue.core.json import JSONDocument, dumps, json_document
+from polylogue.core.json import dumps
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
     StageWriteAdmission,
     admit_stage_write,
     stage_write_admission,
 )
-from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV, api_command
+from polylogue.daemon.api_auth import API_ALLOW_NO_AUTH_ENV
 from polylogue.daemon.api_auth import resolve_api_auth_token as resolve_api_auth_token
-from polylogue.daemon.browser_capture import browser_capture_command
 from polylogue.daemon.event_bus import IngestCommitted, daemon_event_bus
 from polylogue.daemon.execution import publish_daemon_compute_adapter, reset_daemon_compute_adapter
 from polylogue.daemon.health import (
@@ -62,7 +60,6 @@ from polylogue.daemon.services import (
     ServiceProfile,
     ServiceState,
 )
-from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
 from polylogue.daemon.supervisor import DaemonSupervisor
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
@@ -99,7 +96,6 @@ from polylogue.storage.sqlite.connection_profile import (
 from polylogue.storage.sqlite.wal_checkpoint import (
     checkpoint_connection as checkpoint_connection,
 )
-from polylogue.version import POLYLOGUE_VERSION
 
 
 def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, auth_token: str | None) -> None:
@@ -3853,93 +3849,7 @@ async def _serve_until_complete(
         raise failure[0]
 
 
-@click.group(help="Run long-lived Polylogue local services.")
-@click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogued")
-def main() -> None:
-    from polylogue.runtime import require_free_threaded_runtime
-
-    require_free_threaded_runtime(consumer="polylogued")
-    pass
-
-
-main.add_command(browser_capture_command)
-main.add_command(api_command)
-
-
-def _live_daemon_status_payload() -> JSONDocument | None:
-    """Return the running daemon's status through its machine socket, or ``None``.
-
-    ``polylogued status`` used to always recompute the full rich status
-    in-process, cold, with every expensive diagnostic flag on by default --
-    the same collection a running daemon already keeps refreshed off-request
-    (polylogue-20d.17). It asks the daemon for its ``status`` operation, which
-    merges the daemon's cached runtime snapshot (writer, services, cold-build
-    progress, ETA) with the pinned archive reading.
-
-    The request goes over the daemon's AF_UNIX socket, the route every CLI
-    verb uses: the client verifies the listener's uid with ``SO_PEERCRED``
-    before any credential is sent, so neither a squatted TCP port, a proxy, a
-    redirect nor a URL from an untrusted ``polylogue.toml`` can receive the
-    daemon's bearer. No socket means no daemon and a silent local fallback. A
-    daemon that answers but refuses is reported on stderr: a silent
-    recomputation here would present the CLI's own configuration and an empty
-    in-process state as the running daemon's view.
-    """
-    from polylogue.cli.operation_kernel import (
-        OperationKernelError,
-        OperationRequest,
-        OperationUnavailableError,
-        dispatch,
-    )
-    from polylogue.config import load_polylogue_config
-
-    config = load_polylogue_config()
-    try:
-        # The operation's own declared deadline: a pinned read on a large
-        # archive can legitimately take longer than a connect probe, and
-        # cutting it short would fall back to the slower local path.
-        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
-    except OperationUnavailableError:
-        return None
-    except OperationKernelError as exc:
-        click.echo(
-            f"polylogued status: the running daemon did not answer the status request ({exc}); "
-            "showing a recomputation in this process, which cannot see the daemon's in-process state",
-            err=True,
-        )
-        return None
-    document = json_document(result.value)
-    return document or None
-
-
-@main.command("status", help="Show configured daemon component status.")
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["json"]),
-    default=None,
-    help="Output format.",
-)
-def status_command(output_format: str | None) -> None:
-    configure_logging()
-    payload = _live_daemon_status_payload()
-    if payload is None:
-        if output_format == "json":
-            with redirect_stdout(sys.stderr):
-                payload = daemon_status_payload()
-        else:
-            payload = daemon_status_payload()
-    status_ok = payload.get("ok") is True
-    if output_format == "json":
-        click.echo(dumps(payload))
-    else:
-        for line in format_daemon_status_lines(payload):
-            click.echo(line)
-    if not status_ok:
-        raise SystemExit(1)
-
-
-@main.command("health", help="Run tiered daemon health checks.")
+@click.command("health", help="Run tiered daemon health checks.")
 @click.option(
     "--tier",
     "tiers",
@@ -3995,7 +3905,7 @@ def health_command(
         raise SystemExit(1)
 
 
-@main.command("run", help="Run configured long-lived daemon components.")
+@click.command("run", help="Run configured long-lived daemon components.")
 @click.option(
     "--host",
     default="127.0.0.1",
@@ -4231,7 +4141,7 @@ def run_command(
         shutdown_events(timeout_s=0.25)
 
 
-@main.command("watch", help="Watch source directories and ingest new sessions live.")
+@click.command("watch", help="Watch source directories and ingest new sessions live.")
 def watch_command() -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError, DurableChangeTrainError
@@ -4268,9 +4178,7 @@ def watch_command() -> None:
 __all__ = [
     "default_sources",
     "health_command",
-    "main",
     "run_command",
     "run_daemon_services",
-    "status_command",
     "watch_command",
 ]

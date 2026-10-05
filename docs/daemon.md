@@ -377,13 +377,12 @@ Enabled by default on `127.0.0.1:8765`. Disable with `--no-browser-capture`.
 `polylogued health` runs tiered health checks (fast by default,
 `--expensive` to include full integrity checks).
 
-`polylogued status` asks the running daemon first, for its `status`
-operation over the machine socket every CLI verb uses; the client checks the
-listener's uid with `SO_PEERCRED` before it sends any credential. With no
-socket it recomputes status in its own process. If the daemon answers but
-fails the request, stderr says so first, because that recomputation cannot
-see the daemon's in-process state such as cold-build progress, the writer
-holder or the ETA.
+`polylogued status` reads one `status` operation from the resident daemon over
+its peer-verified machine socket. An absent daemon returns the typed
+`daemon_absent` unavailable result and exit 1. A refused request preserves its
+typed reason. The command never recomputes the resident view in its own
+process. Service commands load their original implementation when selected;
+root help and status do not initialize the service loop.
 
 ### Status Fields
 

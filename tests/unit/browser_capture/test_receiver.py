@@ -44,7 +44,7 @@ from polylogue.browser_capture.server import (
     make_server,
     mission_control_archive_facts,
 )
-from polylogue.daemon.cli import main as daemon_cli
+from polylogue.daemon.commands import main as daemon_cli
 from polylogue.paths import browser_capture_receiver_identity_path
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"

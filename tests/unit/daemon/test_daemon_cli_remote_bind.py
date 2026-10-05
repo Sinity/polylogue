@@ -31,7 +31,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from polylogue.daemon.cli import main, run_daemon_services
+from polylogue.daemon.cli import run_daemon_services
+from polylogue.daemon.commands import main
 from polylogue.daemon.services import ServiceCapability, ServiceProfile
 from tests.infra.daemon_service_harness import ServiceHarness
 

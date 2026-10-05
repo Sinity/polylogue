@@ -227,7 +227,7 @@ async def test_import_demo_converges_through_live_daemon_path(
             [
                 sys.executable,
                 "-c",
-                "from polylogue.daemon.cli import main; main()",
+                "from polylogue.daemon.commands import main; main()",
                 "run",
                 "--no-browser-capture",
                 "--api-port",
