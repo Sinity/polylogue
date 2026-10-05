@@ -194,6 +194,7 @@ def test_unavailable_overview_and_degraded_search_are_explicit(
         # built tiers is unavailable.
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "uninitialized-archive"))
         unavailable_status, _, unavailable_page = get_text(base_url, "/")
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(reader_workspace.archive_root))
     with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
         degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
