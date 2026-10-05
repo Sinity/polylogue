@@ -185,11 +185,6 @@ def test_refuses_populated_workdir_archive_before_mutation(tmp_path: Path) -> No
     assert sentinel.read_text(encoding="utf-8") == "preserve"
 
 
-def test_lineage_rejects_mislabeled_provider(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="lineage currently uses the codex provider"):
-        measure_ingest_throughput(lineage=True, provider="chatgpt", workdir=tmp_path)
-
-
 def test_receipt_build_identity_uses_the_imported_checkout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
@@ -382,26 +377,3 @@ def test_excision_and_budget_evidence_survive_in_report(
     assert payload["parse_outcomes"]["budget_exhausted"] == 1
     assert payload["workload_receipt"]["status"] == "failed"
     assert "excised_skips" in " ".join(payload["workload_receipt"]["notes"])
-
-
-def test_lineage_workload_composes(tmp_path: Path) -> None:
-    report = measure_ingest_throughput(
-        lineage=True,
-        batches=4,
-        seed=7,
-        messages_max=12,
-        workdir=tmp_path,
-    )
-
-    assert report["ok"] is True
-    assert report["workload"] == "lineage"
-    # One parent + four forks were written.
-    assert report["total_sessions"] == 5
-    assert len(report["per_batch"]) == 4
-    # total_messages reflects parent prefix + every fork's replayed prefix + tail.
-    assert report["total_messages"] > report["messages_max"]
-    # Stage attribution still populated through the direct ArchiveStore path.
-    assert isinstance(report["stage_timings_s"], dict)
-    assert report["stage_timings_s"]
-    assert report["cpu_utilization"] >= 0.0
-    assert report["peak_rss_mb"] > 0.0

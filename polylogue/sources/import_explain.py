@@ -16,6 +16,7 @@ from typing import cast
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact, classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.json import JSONValue
 from polylogue.core.provider_identity import captured_hermes_profile_key
 from polylogue.core.sources import origin_from_provider
@@ -48,6 +49,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.source_write import read_capture_mode_resolution
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
+from polylogue.storage.tier_access import capture_sqlite_read
 from polylogue.surfaces.payloads import (
     ImportDetectorEvidencePayload,
     ImportExplainEntryPayload,
@@ -448,14 +450,23 @@ def _explain_file(path: Path, *, provider_hint: Provider) -> ImportExplainEntryP
     # not to gate the SQLite-specific parse routes, which have their own
     # structural admission check (looks_like_*_path).
     try:
-        inspection = inspect_sqlite_source(path)
-    except (OSError, sqlite3.Error, ValueError) as exc:
+        evidence = capture_sqlite_read(lambda: inspect_sqlite_source(path))
+    except (OSError, ValueError) as exc:
         return _skipped_entry(
             path,
             provider_hint=provider_hint,
             artifact=None,
             reason=f"SQLite inspection failure: {type(exc).__name__}: {exc}",
         )
+    if not isinstance(evidence, Measured):
+        detail = evidence.detail if isinstance(evidence, Unavailable) else None
+        return _skipped_entry(
+            path,
+            provider_hint=provider_hint,
+            artifact=None,
+            reason=f"SQLite inspection failure: {detail or 'sqlite_read_failed'}",
+        )
+    inspection = evidence.value
     if inspection.domain is not None:
         return _explain_sqlite_inspection(path, inspection, provider_hint=provider_hint)
 

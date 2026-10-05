@@ -460,19 +460,28 @@ async def facade_record_work_event(
         if current.identity != authority.identity:
             raise ValueError("archive_identity_stale")
         with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
-            version = int(archive.index_connection.execute("PRAGMA user_version").fetchone()[0])
+            index = archive.index_connection
+            if index is None:
+                raise ValueError("index_unavailable")
+            version = int(index.execute("PRAGMA user_version").fetchone()[0])
             if version != authority.schema_versions.get("index"):
                 raise ValueError("schema_version_mismatch")
             _validate_identity(request, context, authority)
             runtime.observe_snapshot(request, authority)
             runtime.begin_unbound_write(request, snapshot=authority)
+            event_payload = payload.get("payload") or {}
+            if not isinstance(event_payload, Mapping):
+                raise TypeError("work event payload must be a mapping")
+            timestamp = payload.get("timestamp")
+            if timestamp is not None and not isinstance(timestamp, str):
+                raise TypeError("work event timestamp must be a string")
             return archive.admit_work_event(
                 session_id=str(payload["session_id"]),
                 event_type=str(payload["event_type"]),
-                payload=dict(payload.get("payload") or {}),
+                payload=dict(event_payload),
                 event_id=str(payload["event_id"]),
                 summary=str(payload["summary"]),
-                timestamp=payload.get("timestamp"),
+                timestamp=timestamp,
             )
 
     admitted = await runtime.write_phase("work-event.acquire", acquire)

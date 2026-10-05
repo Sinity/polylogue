@@ -25,6 +25,7 @@ from typing import Any, Protocol, cast
 
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql, raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.evidence import Measured
 from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
@@ -71,6 +72,7 @@ from polylogue.sources.sqlite_snapshot import (
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.tier_access import capture_sqlite_read
 
 logger = get_logger(__name__)
 # Bump whenever parser semantics change the values derived from already-
@@ -756,18 +758,26 @@ class LiveWatcher:
                 return cursor is not None and size > cursor.byte_offset
             return _retry_due(cursor.next_retry_at)
         if self._is_hermes_database(path) or self._is_declared_codex_database(path):
-            try:
+            database_cursor = cursor
+
+            def database_changed() -> bool:
                 with bind_source_input(path) as binding:
                     if self._is_hermes_database(path) and (
-                        cursor.captured_profile_key is None
-                        or cursor.captured_profile_key != binding.captured_profile_key
+                        database_cursor.captured_profile_key is None
+                        or database_cursor.captured_profile_key != binding.captured_profile_key
                     ):
                         return True
-                    if cursor.tail_hash == sqlite_source_revision(path, source_binding=binding):
+                    if database_cursor.tail_hash == sqlite_source_revision(path, source_binding=binding):
                         return False
-                    return self._database_content_changed(path, cursor, source_binding=binding)
-            except (sqlite3.Error, OSError, UnicodeDecodeError):
+                    return self._database_content_changed(path, database_cursor, source_binding=binding)
+
+            try:
+                changed = capture_sqlite_read(database_changed)
+            except (OSError, UnicodeDecodeError):
+                # An unreadable or undecodable source is not proof of freshness.
                 return True
+            # A failed SQLite read is not proof of freshness either.
+            return changed.value if isinstance(changed, Measured) else True
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Only an exact recorded observation authorizes the hot skip.
             # A bounded tail cannot prove that an earlier same-size prefix was

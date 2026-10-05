@@ -230,9 +230,8 @@ def _normalized_session(
 ) -> ParsedSession:
     """Normalize timestamps using producer evidence before acquisition metadata."""
     from polylogue.core.timestamp_authority import normalize_session_timestamps
-    from polylogue.sources.parsers.base import ParsedSession
 
-    return cast(ParsedSession, normalize_session_timestamps(convo, fallback_timestamp=fallback_timestamp))
+    return normalize_session_timestamps(convo, fallback_timestamp=fallback_timestamp)
 
 
 def _record_result(
