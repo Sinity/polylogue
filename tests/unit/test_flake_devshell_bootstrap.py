@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
@@ -89,3 +91,49 @@ def test_devshell_venv_bootstrap_binds_uv_to_active_python(
         "--python",
         str(active_python),
     ]
+
+
+@pytest.mark.parametrize("entrypoint", ["devshell", "direnv"])
+def test_checkout_entrypoints_enable_bytecode_in_the_checkout_cache(tmp_path: Path, entrypoint: str) -> None:
+    """Both real shell fragments override an inherited prohibition.
+
+    The first child creates bytecode outside the source directory. A second
+    child after a source change reads the new value, preserving Python's
+    canonical cache invalidation instead of introducing a project cache.
+    """
+    if entrypoint == "devshell":
+        source = (REPO_ROOT / "flake.nix").read_text(encoding="utf-8")
+        start = source.index("          # Permit bytecode in the checkout cache")
+        end = source.index("          export POLYLOGUE_REPO_ROOT=", start)
+        fragment = textwrap.dedent(source[start:end])
+    else:
+        source = (REPO_ROOT / ".envrc").read_text(encoding="utf-8")
+        start = source.index("unset PYTHONDONTWRITEBYTECODE")
+        end = source.index("\ncase ", start)
+        fragment = source[start:end]
+    module = tmp_path / "synthetic_cache_probe.py"
+    module.write_text("value = 'first'\n", encoding="utf-8")
+    child = (
+        "import importlib.util, json, sys; import synthetic_cache_probe as probe; "
+        "print(json.dumps({'value': probe.value, 'disabled': sys.dont_write_bytecode, "
+        "'prefix': sys.pycache_prefix, 'cache': importlib.util.cache_from_source(probe.__file__)}))"
+    )
+    script = fragment + '\nexec "$CACHE_PROBE_PYTHON" -c "$CACHE_PROBE_SOURCE"\n'
+    environment = os.environ | {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "foreign-cache"),
+        "CACHE_PROBE_PYTHON": sys.executable,
+        "CACHE_PROBE_SOURCE": child,
+    }
+    for value, source_text in [("first", "value = 'first'\n"), ("changed", "value = 'changed'\n")]:
+        module.write_text(source_text, encoding="utf-8")
+        result = subprocess.run(["bash", "-c", script], cwd=tmp_path, env=environment, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        observation = json.loads(result.stdout)
+        assert observation["value"] == value
+        assert observation["disabled"] is False
+        assert observation["prefix"] == str(tmp_path / ".cache" / "pycache")
+        assert Path(observation["cache"]).is_file()
+        assert Path(observation["cache"]).is_relative_to(tmp_path / ".cache" / "pycache")
+        assert not (tmp_path / "__pycache__").exists()
+        assert not (tmp_path / "foreign-cache").exists()
