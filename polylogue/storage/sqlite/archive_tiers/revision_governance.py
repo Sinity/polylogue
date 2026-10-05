@@ -1504,23 +1504,38 @@ def raw_membership_retired_full_revision_siblings(
     """
     rows = (
         store._ensure_source_conn()
-        .execute(
-            """
-            SELECT m.raw_id
-            FROM raw_session_memberships AS m
-            JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-            WHERE m.logical_source_key = ?
-              AND c.revision_authority = ?
-            ORDER BY m.raw_id
-            """,
-            (
-                logical_source_key,
-                RawRevisionAuthority.QUARANTINED.value,
-            ),
-        )
+        .execute(_RETIRED_MEMBERSHIP_SIBLINGS_SQL, _retired_membership_siblings_parameters(logical_source_key))
         .fetchall()
     )
     return tuple(str(row[0]) for row in rows)
+
+
+# A retired member is proven by its census's typed quarantine authority, or,
+# when the census code has no typed translation (NULL), by the retired raw
+# row itself: retirement leaves it keyless, of unknown kind and quarantined.
+# An unknown census code never reads as "not retired".
+_RETIRED_MEMBERSHIP_SIBLINGS_SQL = """
+    SELECT m.raw_id
+    FROM raw_session_memberships AS m
+    JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
+    JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+    WHERE m.logical_source_key = ?
+      AND (
+          c.revision_authority = ?
+          OR (
+              c.revision_authority IS NULL
+              AND r.logical_source_key IS NULL
+              AND r.revision_kind = 'unknown'
+              AND r.revision_authority = ?
+          )
+      )
+    ORDER BY m.raw_id
+"""
+
+
+def _retired_membership_siblings_parameters(logical_source_key: str) -> tuple[str, str, str]:
+    quarantined = RawRevisionAuthority.QUARANTINED.value
+    return (logical_source_key, quarantined, quarantined)
 
 
 def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionSourceHost, logical_source_key: str) -> bool:
@@ -4499,16 +4514,6 @@ def record_prepared_accepted_head_reparse_receipt(
     record_revision_application_sync(index, receipt, decided_at_ms=decided_at_ms)
 
 
-_RETIRED_MEMBERSHIP_SIBLINGS_SQL = """
-                    SELECT m.raw_id
-                    FROM raw_session_memberships AS m
-                    JOIN raw_membership_census AS c ON c.raw_id = m.raw_id
-                    WHERE m.logical_source_key = ?
-                      AND c.revision_authority = ?
-                    ORDER BY m.raw_id
-                    """
-
-
 def prepared_raw_membership_retired_full_revision_siblings(
     seal: PreparedIndexMutation,
     logical_source_key: str,
@@ -4516,7 +4521,7 @@ def prepared_raw_membership_retired_full_revision_siblings(
     """Use the canonical sibling predicate on the merged selected Source state."""
     _load_membership_selector_inputs(seal, logical_source_key, None)
     with seal.source_rows(
-        _RETIRED_MEMBERSHIP_SIBLINGS_SQL, (logical_source_key, RawRevisionAuthority.QUARANTINED.value)
+        _RETIRED_MEMBERSHIP_SIBLINGS_SQL, _retired_membership_siblings_parameters(logical_source_key)
     ) as selected:
         rows = selected.fetchall()
     return tuple(str(row[0]) for row in rows)
@@ -5828,8 +5833,10 @@ def _load_membership_selector_inputs(
             return
         for (raw_id,) in page:
             check_compute_cancelled()
+            # The member's own raw row carries its typed retirement authority.
             predicates: list[tuple[str, str, tuple[object, ...]]] = [
-                ("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,))
+                ("raw_membership_census", "SELECT rowid FROM raw_membership_census WHERE raw_id=?", (raw_id,)),
+                ("raw_sessions", "SELECT rowid FROM raw_sessions WHERE raw_id=?", (raw_id,)),
             ]
             if source_generation_id is not None:
                 predicates.append(
