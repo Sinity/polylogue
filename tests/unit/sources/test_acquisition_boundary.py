@@ -257,7 +257,50 @@ def _route_acquire_file(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
 
 
 def _route_acquire_zip_member(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
-    return _route_acquire(_archive(tmp_path), store)
+    """Drive the real acquisition consumer, which settles the container.
+
+    The container is retained as the input denominator before its members
+    are decoded, so the refused member leaves a published container with a
+    ``refused`` disposition, no raw for the member and no open reservation.
+    The generator alone stops before that settlement.
+    """
+    import asyncio
+    import sqlite3
+
+    from polylogue.config import Source
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from polylogue.pipeline.services.acquisition import AcquisitionService
+    from polylogue.storage.sqlite import SQLiteBackend
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    zip_path = _archive(tmp_path)
+
+    async def acquire() -> None:
+        backend = SQLiteBackend(db_path=archive_root / "index.db")
+        try:
+            async with prepared_live_convergence_owner(archive_root) as owner:
+                execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+                result = await AcquisitionService(backend, execution=execution).acquire_sources(
+                    [Source(name="claude-code", path=zip_path)]
+                )
+                assert result.acquired == 0 and result.raw_ids == []
+        finally:
+            await backend.close()
+
+    asyncio.run(acquire())
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as source:
+        container = source.execute("SELECT source_path, blob_hash FROM source_items").fetchall()
+        dispositions = source.execute(
+            "SELECT member_name, disposition, diagnostic FROM source_item_member_dispositions"
+        ).fetchall()
+        assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
+    assert [(path, blob is not None) for path, blob in container] == [(str(zip_path), True)]
+    assert [(name, disposition) for name, disposition, _diagnostic in dispositions] == [(_NAME, "refused")]
+    return "foreign_origin_content" in str(dispositions[0][2])
 
 
 def _route_retained(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
