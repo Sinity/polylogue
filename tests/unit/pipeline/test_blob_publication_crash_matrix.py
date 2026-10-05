@@ -29,10 +29,11 @@ from pathlib import Path
 
 import pytest
 
-import polylogue.storage.sqlite.archive_tiers.source_write as source_write
+import polylogue.storage.blob_publication as blob_publication
 import polylogue.storage.sqlite.archive_tiers.write as archive_write
 from polylogue.core.enums import Provider
 from polylogue.storage.blob_publication import (
+    BlobPublicationReconciliation,
     abandon_blob_publication_receipts,
     exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
@@ -40,7 +41,8 @@ from polylogue.storage.blob_publication import (
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write, run_off_event_loop
 from tests.infra.live_ingest import prepared_live_convergence_owner
 from tests.infra.live_provider_proof import native_proof_artifact
 
@@ -64,6 +66,21 @@ def _all_reservations(source_db: Path) -> list[tuple[str, bytes]]:
 def _attachment_hashes(index_db: Path) -> set[bytes]:
     with sqlite3.connect(index_db) as conn:
         return {bytes(row[0]) for row in conn.execute("SELECT blob_hash FROM attachments WHERE blob_hash IS NOT NULL")}
+
+
+def _reconcile_excluded(root: Path) -> BlobPublicationReconciliation:
+    """Excluded reconciliation deletes Source rows, so it runs as the archive writer does."""
+
+    def reconcile() -> BlobPublicationReconciliation:
+        with (
+            write_lease("test.blob.reconcile", archive_root=root),
+            exclude_archive_blob_publishers(root / "source.db") as exclusion,
+        ):
+            return reconcile_blob_publication_reservations(
+                root / "source.db", root / "blob", index_db_path=root / "index.db", writer_exclusion=exclusion
+            )
+
+    return run_off_event_loop(reconcile)
 
 
 async def _acquire_inline_attachment_capture(tmp_path: Path) -> tuple[Path, str, dict[bytes, int]]:
@@ -157,10 +174,7 @@ def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_t
             (bytes.fromhex(blob_hash),),
         )
 
-    with exclude_archive_blob_publishers(source_db) as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            source_db, store.root, index_db_path=index_db, writer_exclusion=exclusion
-        )
+    outcome = _reconcile_excluded(archive_root)
 
     assert outcome.cleared_referenced == 0
     assert outcome.retained_referenced == 2
@@ -168,9 +182,10 @@ def test_reconciliation_keeps_same_hash_receipts_without_their_exact_consuming_t
 
     with sqlite3.connect(index_db) as index:
         index.execute("DELETE FROM attachments WHERE attachment_id = 'attachment'")
-    abandonment = abandon_blob_publication_receipts(
-        source_db, store.root, ["publication-a"], confirmed=True, index_db_path=index_db
-    )
+    with write_lease("test.blob.abandon", archive_root=archive_root):
+        abandonment = abandon_blob_publication_receipts(
+            source_db, store.root, ["publication-a"], confirmed=True, index_db_path=index_db
+        )
     assert abandonment.abandoned == 1
     assert _reservation_rows(source_db, bytes.fromhex(blob_hash)) == [("publication-b",)]
 
@@ -228,10 +243,7 @@ async def test_crash_after_reservation_before_blob_write_leaves_missing_classifi
     assert not (_attachment_hashes(root / "index.db") & set(expected))
     _assert_crash_consistent(root, expected)
 
-    with exclude_archive_blob_publishers(root / "source.db") as exclusion:
-        cleared = reconcile_blob_publication_reservations(
-            root / "source.db", root / "blob", index_db_path=root / "index.db", writer_exclusion=exclusion
-        )
+    cleared = _reconcile_excluded(root)
     assert cleared.cleared_missing == len(expected)
     assert _all_reservations(root / "source.db") == []
 
@@ -265,10 +277,7 @@ async def test_crash_after_blob_write_before_index_write_lands_in_unresolved_buc
     assert not (_attachment_hashes(root / "index.db") & set(expected))
     _assert_crash_consistent(root, expected)
 
-    with exclude_archive_blob_publishers(root / "source.db") as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            root / "source.db", root / "blob", index_db_path=root / "index.db", writer_exclusion=exclusion
-        )
+    outcome = _reconcile_excluded(root)
     assert outcome.unresolved == len(expected)
     assert outcome.cleared_missing == 0
     assert outcome.cleared_referenced == 0
@@ -295,7 +304,7 @@ async def test_crash_during_durable_reference_consumption_keeps_a_classified_rec
         raise RuntimeError("simulated crash: during durable reference consumption")
 
     with monkeypatch.context() as patch:
-        patch.setattr(source_write, "consume_blob_publication_receipt", boom_consume)
+        patch.setattr(blob_publication, "blob_publication_receipt_delete", boom_consume)
         failure = await _ingest(root, raw_id)
 
     assert failure is not None
@@ -305,10 +314,7 @@ async def test_crash_during_durable_reference_consumption_keeps_a_classified_rec
         assert len(_reservation_rows(root / "source.db", blob_hash)) == 1
     _assert_crash_consistent(root, expected)
     referenced = _attachment_hashes(root / "index.db") & set(expected)
-    with exclude_archive_blob_publishers(root / "source.db") as exclusion:
-        outcome = reconcile_blob_publication_reservations(
-            root / "source.db", root / "blob", index_db_path=root / "index.db", writer_exclusion=exclusion
-        )
+    outcome = _reconcile_excluded(root)
     assert outcome.cleared_missing == 0
     assert outcome.unresolved + outcome.cleared_referenced + outcome.retained_referenced == len(expected)
     if not referenced:
