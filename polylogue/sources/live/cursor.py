@@ -73,6 +73,44 @@ logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class CursorPathAuthority:
+    """The canonical coordinate and profile of the file a cursor describes.
+
+    Every cursor write carries one: a byte offset without it is refused by
+    the raw-frontier gate (``ops cursor canonical path authority is
+    unavailable``). Writers that hold an acquisition capture pass its
+    already-observed values; the others observe the file through
+    :meth:`observe`, the same bound open acquisition uses.
+    """
+
+    canonical_source_path: str
+    captured_profile_key: str | None
+
+    @classmethod
+    def observe(cls, path: Path) -> CursorPathAuthority:
+        """Bind the canonical path and profile of the file at ``path`` now."""
+        from polylogue.sources.acquisition_boundary import (
+            bound_profile_identity,
+            bound_source_observation,
+            open_bound_path,
+        )
+
+        with open_bound_path(path, None) as stream:
+            canonical, _observation = bound_source_observation(stream)
+            profile = bound_profile_identity(stream)
+        if canonical is None:
+            raise OSError(f"cursor source has no canonical coordinate: {path}")
+        return cls(canonical, profile.key if profile is not None else None)
+
+    @classmethod
+    def of_record(cls, record: CursorRecord) -> CursorPathAuthority | None:
+        """The authority an existing cursor already claims, if it claims one."""
+        if record.canonical_source_path is None:
+            return None
+        return cls(record.canonical_source_path, record.captured_profile_key)
+
+
+@dataclass(frozen=True, slots=True)
 class CursorRecord:
     """Stored live cursor state for one source file."""
 
@@ -1361,8 +1399,7 @@ class CursorStore:
         failure_count: int | None = None,
         next_retry_at: str | None = None,
         excluded: bool | None = None,
-        canonical_source_path: str | None = None,
-        captured_profile_key: str | None = None,
+        authority: CursorPathAuthority,
         allow_backward: bool = False,
         deferred_end_offset: int | None = None,
     ) -> bool:
@@ -1382,8 +1419,8 @@ class CursorStore:
         return self._sync_cursor_record_to_ops(
             CursorRecord(
                 source_path=str(path),
-                canonical_source_path=canonical_source_path,
-                captured_profile_key=captured_profile_key,
+                canonical_source_path=authority.canonical_source_path,
+                captured_profile_key=authority.captured_profile_key,
                 byte_size=byte_size,
                 byte_offset=offset,
                 last_complete_newline=newline_offset,
@@ -1442,7 +1479,13 @@ class CursorStore:
         best_effort_cursor_write("archive ops cursor observation rebase", write)
         return updated
 
-    def mark_failed(self, path: Path, *, failed_stat: os.stat_result | None = None) -> None:
+    def mark_failed(
+        self,
+        path: Path,
+        *,
+        authority: CursorPathAuthority | None,
+        failed_stat: os.stat_result | None = None,
+    ) -> None:
         """Increment failure count and set exponential backoff.
 
         Read-modify-write against ``failure_count`` happens inside one
@@ -1455,6 +1498,10 @@ class CursorStore:
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
             record = current
             if record is None:
+                if authority is None:
+                    # No cursor and no observable file: there is no offset
+                    # this failure could bind, so it records nothing.
+                    return None
                 try:
                     stat = path.stat()
                     byte_size = stat.st_size
@@ -1468,6 +1515,8 @@ class CursorStore:
                     mtime_ns = None
                 record = CursorRecord(
                     source_path=str(path),
+                    canonical_source_path=authority.canonical_source_path,
+                    captured_profile_key=authority.captured_profile_key,
                     byte_size=byte_size,
                     byte_offset=byte_size,
                     last_complete_newline=byte_size,

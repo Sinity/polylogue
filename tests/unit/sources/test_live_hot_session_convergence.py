@@ -8,15 +8,20 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.unit.sources.test_live_watcher import _ingest_one, _make_watcher
 
 
 def test_cursor_rejects_stale_backward_write_for_same_parser(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    assert store.set(p, 250, byte_offset=250, parser_fingerprint="parser") is True
+    assert (
+        store.set(p, 250, byte_offset=250, parser_fingerprint="parser", authority=fixture_cursor_authority(p)) is True
+    )
 
-    assert store.set(p, 100, byte_offset=100, parser_fingerprint="parser") is False
+    assert (
+        store.set(p, 100, byte_offset=100, parser_fingerprint="parser", authority=fixture_cursor_authority(p)) is False
+    )
 
     record = store.get_record(p)
     assert record is not None
@@ -27,9 +32,19 @@ def test_cursor_rejects_stale_backward_write_for_same_parser(tmp_path: Path) -> 
 def test_cursor_allows_explicit_backward_write_for_truncation(tmp_path: Path) -> None:
     store = CursorStore(tmp_path / "live.sqlite")
     p = tmp_path / "session.jsonl"
-    store.set(p, 250, byte_offset=250, parser_fingerprint="parser")
+    store.set(p, 250, byte_offset=250, parser_fingerprint="parser", authority=fixture_cursor_authority(p))
 
-    assert store.set(p, 100, byte_offset=100, parser_fingerprint="parser", allow_backward=True) is True
+    assert (
+        store.set(
+            p,
+            100,
+            byte_offset=100,
+            parser_fingerprint="parser",
+            allow_backward=True,
+            authority=fixture_cursor_authority(p),
+        )
+        is True
+    )
 
     record = store.get_record(p)
     assert record is not None
@@ -83,6 +98,7 @@ def test_legacy_same_size_cursor_without_authority_requires_reauthorization(tmp_
         stat.st_size,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
         content_fingerprint="legacy-full-hash",
+        authority=fixture_cursor_authority(f),
     )
 
     f.write_text('{"b":2}\n')

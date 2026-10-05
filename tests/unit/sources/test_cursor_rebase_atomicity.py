@@ -18,11 +18,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.sources.live.cursor import CursorObservationRebase, CursorRecord, CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def _seed(store: CursorStore, path: Path) -> CursorRecord:
     path.write_text("x" * 10, encoding="utf-8")
-    store.set(path, 10, record_count=1, st_dev=1, st_ino=1, mtime_ns=1)
+    store.set(path, 10, record_count=1, st_dev=1, st_ino=1, mtime_ns=1, authority=fixture_cursor_authority(path))
     record = store.get_record(path)
     assert record is not None
     return record

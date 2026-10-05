@@ -353,6 +353,7 @@ from polylogue.storage.sqlite.connection_profile import (
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
     attach_readonly_database,
+    execute_pragma_statement,
     open_connection,
     open_readonly_connection,
     open_source_tier_write_connection,
@@ -1338,7 +1339,7 @@ class ArchiveStore:
 
         self._conn.create_collation("polylogue_result_number", compare_result_number)
         for statement in pragma_statements:
-            self._conn.execute(statement)
+            execute_pragma_statement(self._conn, statement)
         if read_only and validate_index_layout:
             from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 
@@ -1604,7 +1605,7 @@ class ArchiveStore:
             # The emptiness proof is what licenses synchronous=OFF and
             # foreign_keys=OFF; without it this is an ordinary live write.
             for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
-                self._conn.execute(statement)
+                execute_pragma_statement(self._conn, statement)
             self._active_cold_build_engaged = False
             return
         self._active_cold_build_engaged = True
