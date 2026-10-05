@@ -77,7 +77,7 @@ async def _shutdown(compute: BoundedComputeAdapter, coordinator: DaemonWriteCoor
 async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authority(tmp_path: Path) -> None:
     """The owner materializes an exact raw through the canonical derivation."""
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
-    raw_id = _admit(tmp_path)
+    raw_id = await run_archive_fixture_write(tmp_path, lambda: _admit(tmp_path))
     owner, compute, coordinator = await _owner(tmp_path)
     try:
         report = await owner.converge_raw_id(raw_id)
@@ -100,13 +100,17 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
         b'{"type":"response_item","payload":{"type":"message","id":"m1",'
         b'"role":"user","content":[{"type":"input_text","text":"hello"}]}}\n'
     )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path="above-cache-budget.jsonl",
-            acquired_at_ms=1,
-        )
+
+    def acquire() -> str:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="above-cache-budget.jsonl",
+                acquired_at_ms=1,
+            )
+
+    raw_id = await run_archive_fixture_write(tmp_path, acquire)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     owner = RawObservationConvergenceOwner(
@@ -143,7 +147,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
 @pytest.mark.asyncio
 async def test_owner_refuses_a_preheld_writer_lease_before_preparation(tmp_path: Path) -> None:
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
-    raw_id = _admit(tmp_path, "preheld")
+    raw_id = await run_archive_fixture_write(tmp_path, lambda: _admit(tmp_path, "preheld"))
     owner, compute, coordinator = await _owner(tmp_path)
 
     async def nested() -> None:
@@ -273,17 +277,24 @@ async def test_multi_session_claude_code_raw_settles_every_session(
         for index, session in enumerate(("multi-alpha", "multi-beta"))
     ]
     payload = b"".join(json.dumps(record).encode() + b"\n" for record in records)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE,
-            payload=payload,
-            source_path="multi-session.jsonl",
-            acquired_at_ms=1,
-            post_parse=True,
-        )
-        if envelope_byte_classified:
-            (pending_key,) = archive.pending_raw_revision_logical_keys()
-            assert archive.classify_raw_revision_cohort_for_rebuild_repair(pending_key).accepted_raw_ids == (raw_id,)
+
+    def acquire() -> str:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            acquired = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=payload,
+                source_path="multi-session.jsonl",
+                acquired_at_ms=1,
+                post_parse=True,
+            )
+            if envelope_byte_classified:
+                (pending_key,) = archive.pending_raw_revision_logical_keys()
+                assert archive.classify_raw_revision_cohort_for_rebuild_repair(pending_key).accepted_raw_ids == (
+                    acquired,
+                )
+            return acquired
+
+    raw_id = await run_archive_fixture_write(tmp_path, acquire)
     owner, compute, coordinator = await _owner(tmp_path)
     try:
         # A multi-session raw first publishes its parser census (pending,
@@ -373,25 +384,33 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
     validator cannot certify reports the settled raw stale forever.
     """
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first = archive.write_raw_payload(
-            provider=Provider.CLAUDE_CODE,
-            payload=_claude_code_payload("overlap-alpha"),
-            source_path="overlap.jsonl",
-            acquired_at_ms=1,
-            post_parse=True,
-        )
+
+    def acquire_first() -> str:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=_claude_code_payload("overlap-alpha"),
+                source_path="overlap.jsonl",
+                acquired_at_ms=1,
+                post_parse=True,
+            )
+
+    first = await run_archive_fixture_write(tmp_path, acquire_first)
     owner, compute, coordinator = await _owner(tmp_path)
     try:
         await _settle(owner, first)
-        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-            second = archive.write_raw_payload(
-                provider=Provider.CLAUDE_CODE,
-                payload=_claude_code_payload("overlap-alpha", "overlap-beta"),
-                source_path=second_path,
-                acquired_at_ms=2,
-                post_parse=True,
-            )
+
+        def acquire_second() -> str:
+            with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+                return archive.write_raw_payload(
+                    provider=Provider.CLAUDE_CODE,
+                    payload=_claude_code_payload("overlap-alpha", "overlap-beta"),
+                    source_path=second_path,
+                    acquired_at_ms=2,
+                    post_parse=True,
+                )
+
+        second = await coordinator.run_sync("test.raw.overlap.acquire", acquire_second)
         await _settle(owner, second)
         for raw_id in (first, second):
             settled = await owner.converge_raw_id(raw_id)
@@ -418,7 +437,7 @@ async def test_raw_parse_reserves_its_retained_payload_bytes(tmp_path: Path, mon
     Anti-vacuity: submitting without ``estimated_bytes`` records 0 here.
     """
     await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
-    raw_id = _admit(tmp_path)
+    raw_id = await run_archive_fixture_write(tmp_path, lambda: _admit(tmp_path))
     owner, compute, coordinator = await _owner(tmp_path)
     reserved: list[int] = []
     real_submit = compute.submit
