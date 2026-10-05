@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 
 def _payload() -> bytes:
@@ -185,7 +186,9 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
 
     live_root = tmp_path / "live"
     bootstrap_archive_root(live_root)
-    live_metrics = asyncio.run(_processor(live_root, source_root).ingest_files([source_path], emit_event=False))
+    live_metrics = asyncio.run(
+        ingest_files_with_owners(_processor(live_root, source_root), [source_path], emit_event=False)
+    )
     assert live_metrics.succeeded_file_count == 1, live_metrics
     live = _snapshot(live_root)
 
@@ -218,7 +221,9 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
     )
     register_cold_build_generation(generation)
     try:
-        cold_metrics = asyncio.run(_processor(cold_root, source_root).ingest_files([source_path], emit_event=False))
+        cold_metrics = asyncio.run(
+            ingest_files_with_owners(_processor(cold_root, source_root), [source_path], emit_event=False)
+        )
         assert cold_metrics.succeeded_file_count == 1, cold_metrics
         candidate = Path(generation.generation.index_path)
         cold_before_promotion = _snapshot(cold_root, candidate)
@@ -232,7 +237,7 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
             generation.discard()
     cold = _snapshot(cold_root)
 
-    assert live == cold
+    assert live == cold, {key: (live[key], cold[key]) for key in live if live[key] != cold[key]}
     assert cold_before_promotion == cold
     # One interpretation: live intake enriches from retained archive evidence
     # exactly as retained replay does, so title and content hash agree, and a
