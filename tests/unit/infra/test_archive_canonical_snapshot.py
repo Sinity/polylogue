@@ -13,6 +13,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_canonical_snapshot import (
     RUN_LOCAL_NORMALIZATION_ALLOWLIST,
     RelationSnapshot,
@@ -76,12 +77,14 @@ def _build_archive(root: Path, composed: ComposedSources | None = None) -> Conve
     """Use production ingest and convergence without the unrelated blob audit."""
     selected = rich_convergence_sources() if composed is None else composed
     initialize_active_archive(root)
-    archive = ingest_composed_sources(
-        root,
-        selected,
-        session_indexes=tuple(range(len(selected.sessions))),
-        converge_after_each=False,
-    )
+    # Fixture ingest publishes blobs and Source rows; writes require the lease.
+    with write_lease("test.canonical-snapshot-fixture", archive_root=root):
+        archive = ingest_composed_sources(
+            root,
+            selected,
+            session_indexes=tuple(range(len(selected.sessions))),
+            converge_after_each=False,
+        )
     converge_convergence_archive(archive)
     return archive
 

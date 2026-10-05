@@ -1527,9 +1527,7 @@ def test_raw_discovery_bounds_valid_prefix_and_resumes_after_it(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1) == ()
@@ -1585,9 +1583,7 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key == valid else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     admitted: list[str] = []
 
     async def admit(raw_id: str) -> AdmissionResult:
@@ -1666,9 +1662,7 @@ def test_raw_discovery_resets_only_for_a_new_generation_binding(
         "polylogue.operations.raw_observation_derivation.raw_observation_frame",
         lambda _archive_root: next(frames),
     )
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(1)[0][0] == first
@@ -1721,9 +1715,7 @@ def test_raw_discovery_cursor_stays_behind_ids_the_dispatcher_never_admitted(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return {key: "valid" if key in materialized else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert [raw_id for raw_id, _cost in discovery.discover_pending_raw_ids(8)] == ["a", "b", "c"]
@@ -1805,9 +1797,7 @@ def test_raw_discovery_second_idle_pass_stays_one_page_at_large_scope(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(32) == ()
@@ -2388,9 +2378,7 @@ def test_raw_discovery_sweep_advances_under_a_sustained_arrival_rate(
             # are outstanding, which is exactly the starvation condition.
             return {key: "valid" if key.startswith("page") else "missing" for key in keys}
 
-    monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.RawObservationDerivation", FakeRawObservationDerivation
-    )
+    monkeypatch.setattr("polylogue.storage.derived.raw.RawObservationInspection", FakeRawObservationDerivation)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     assert discovery.discover_pending_raw_ids(4) == ()
@@ -3428,9 +3416,11 @@ class _LeaseTakingSourceAdapter(FakeAdapter):
         return items
 
     async def admit(self, item: IntakeItem) -> AdmissionResult:
-        from polylogue.core.write_lease import write_lease
+        from polylogue.core.write_lease import async_write_lease
 
-        with write_lease(f"test.intake.{self.source.name}", archive_root=self.archive_root):
+        # Admission runs on the dispatcher's event loop: a synchronous lease
+        # may not block it, so the configured adapter takes the async lease.
+        async with async_write_lease(f"test.intake.{self.source.name}", archive_root=self.archive_root):
             self.lease_acquisitions += 1
             return await super().admit(item)
 

@@ -20,6 +20,7 @@ from polylogue.sources.drive.source_client import DriveSourceClient
 from polylogue.sources.drive.types import DriveNotFoundError, DriveRetryPolicy
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.drive_mocks import drive_http_error
@@ -56,7 +57,8 @@ def _session(
 
 
 def _open_index(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # Index capture binds its seal to the connection's original measured creator.
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)

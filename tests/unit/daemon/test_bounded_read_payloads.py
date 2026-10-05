@@ -181,7 +181,7 @@ def _message_ids(payload: dict[str, Any]) -> list[str]:
 def _deep_message_id(session_id: str, archive_root: Path) -> str:
     """The id of the message at ``_DEEP_INDEX`` in composed transcript order."""
 
-    with ArchiveStore(archive_root) as archive:
+    with ArchiveStore(archive_root, read_only=True) as archive:
         envelope = archive.read_session_page(session_id, limit=1, offset=_DEEP_INDEX)
     return str(envelope.messages[0].message_id)
 

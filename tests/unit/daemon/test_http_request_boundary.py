@@ -9,6 +9,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http import HTTPStatus
+from pathlib import Path
 
 import pytest
 
@@ -16,11 +17,13 @@ from polylogue.archive.query.transaction import QueryArchiveEpochUnreadableError
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.logging import DEBUG, capture, set_level
 from polylogue.surfaces.payloads import QueryFailurePayload
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 @contextmanager
-def _running_server(escaped: list[object] | None = None) -> Iterator[int]:
-    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
+def _running_server(archive_root: Path, escaped: list[object] | None = None) -> Iterator[int]:
+    # The server's standalone writer prepares operation journals in a real archive.
+    server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler, archive_root=bootstrap_archive_root(archive_root))
     if escaped is not None:
         # socketserver reports an exception that escaped the handler here.
         server.handle_error = lambda request, client_address: escaped.append(client_address)  # type: ignore[method-assign]
@@ -36,7 +39,9 @@ def _running_server(escaped: list[object] | None = None) -> Iterator[int]:
         thread.join(timeout=2.0)
 
 
-def test_escaped_read_error_is_answered_with_a_500_error_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_escaped_read_error_is_answered_with_a_500_error_envelope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """An undecorated read route that raises answers 500 ``outcome: error`` JSON.
 
     Anti-vacuity: removing the ``except Exception`` boundary in ``do_GET``
@@ -48,7 +53,7 @@ def test_escaped_read_error_is_answered_with_a_500_error_envelope(monkeypatch: p
         raise RuntimeError("unexpected read failure")
 
     monkeypatch.setattr(DaemonAPIHandler, "_serve_webui_pastes", _raising_route)
-    with _running_server() as port:
+    with _running_server(tmp_path / "archive") as port:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
             connection.request("GET", "/p")
@@ -67,7 +72,9 @@ def test_escaped_read_error_is_answered_with_a_500_error_envelope(monkeypatch: p
     assert QueryFailurePayload.model_validate(payload).outcome.state == "error"
 
 
-def test_error_after_response_started_closes_without_a_second_status(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_error_after_response_started_closes_without_a_second_status(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A route failing mid-response is not answered with a second status line.
 
     Anti-vacuity: dropping the ``_response_started`` check makes the boundary
@@ -84,7 +91,7 @@ def test_error_after_response_started_closes_without_a_second_status(monkeypatch
         raise RuntimeError("failed after the answer began")
 
     monkeypatch.setattr(DaemonAPIHandler, "_serve_webui_pastes", _half_written_route)
-    with _running_server() as port:
+    with _running_server(tmp_path / "archive") as port:
         # ``http.client`` would silently reconnect, so read the raw stream until
         # the server closes it and count the status lines it sent.
         with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
@@ -99,7 +106,9 @@ def test_error_after_response_started_closes_without_a_second_status(monkeypatch
     assert received.endswith(b"{}")
 
 
-def test_disconnect_while_answering_an_escaped_error_is_logged_not_escaped(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_disconnect_while_answering_an_escaped_error_is_logged_not_escaped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """A client gone before the boundary's error answer is written is a debug event.
 
     Anti-vacuity: without the disconnect guard around the boundary answer, the
@@ -118,7 +127,7 @@ def test_disconnect_while_answering_an_escaped_error_is_logged_not_escaped(monke
     escaped: list[object] = []
     previous_level = set_level(DEBUG)
     try:
-        with capture() as records, _running_server(escaped) as port:
+        with capture() as records, _running_server(tmp_path / "archive", escaped) as port:
             with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
                 sock.sendall(b"GET /p HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
                 while sock.recv(65536):
@@ -132,7 +141,7 @@ def test_disconnect_while_answering_an_escaped_error_is_logged_not_escaped(monke
     assert disconnects[0]["error_type"] == "BrokenPipeError"
 
 
-def test_an_unreadable_archive_tier_answers_its_typed_503(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_unreadable_archive_tier_answers_its_typed_503(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A missing user tier on an undecorated read is the typed unavailability, not a 500.
 
     Anti-vacuity: without the ``QueryArchiveEpochUnreadableError`` branch the
@@ -143,7 +152,7 @@ def test_an_unreadable_archive_tier_answers_its_typed_503(monkeypatch: pytest.Mo
         raise QueryArchiveEpochUnreadableError("user.db is absent")
 
     monkeypatch.setattr(DaemonAPIHandler, "_serve_webui_pastes", _raising_route)
-    with _running_server() as port:
+    with _running_server(tmp_path / "archive") as port:
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
         try:
             connection.request("GET", "/p")

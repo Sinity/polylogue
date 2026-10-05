@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.durable_tier_fixtures import (
     checkpoint_durable_tier,
     initialize_runtime_source_fixture,
@@ -1433,7 +1434,10 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
@@ -1481,7 +1485,10 @@ def test_full_evidence_backup_keeps_index_only_attachment(
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
@@ -1525,7 +1532,10 @@ def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     original_inventory = backup_mod._inventory_from_liveness
@@ -1561,7 +1571,10 @@ def test_backup_creation_oracle_rejects_projection_omitting_independent_attachme
         messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="attachment", position=0)],
         attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1", inline_bytes=payload)],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.backup-fixture", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
     omitted_hash = hashlib.sha256(payload).hexdigest()
     original_projection = backup_mod._source_blob_liveness_projection
@@ -1916,7 +1929,8 @@ def test_backup_includes_reserved_blob_and_verifies_exact_hash_inventory(
     publisher = ArchiveBlobPublisher(archive_root / "source.db", blob_root)
     payload = b"reservation-only backup evidence"
     blob_hash, _ = publisher.write_from_bytes(payload)
-    publisher.flush()
+    with write_lease("test.backup-fixture", archive_root=archive_root):
+        publisher.flush()
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
 
@@ -2482,7 +2496,8 @@ def test_backup_verifies_a_multi_chunk_blob_without_materializing_it(
     payload = (b"multi-chunk backup evidence " * 64) * 1024
     assert len(payload) > 1024 * 1024
     blob_hash, _ = publisher.write_from_bytes(payload)
-    publisher.flush()
+    with write_lease("test.backup-fixture", archive_root=archive_root):
+        publisher.flush()
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
 

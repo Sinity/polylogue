@@ -26,6 +26,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
@@ -38,7 +39,8 @@ PARENT = "codex-session:s00"
 
 
 def _index(root: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(root / "index.db")
+    # Index capture binds its seal to the connection's original measured creator.
+    conn = connect_measured(root / "index.db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

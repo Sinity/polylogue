@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.fts import completed_fts_readiness
 from tests.infra.session_profiles import write_session_profile
 
@@ -3229,7 +3230,8 @@ def test_blob_publication_reservation_info_reports_unresolved_bucket(tmp_path: P
     initialize_active_archive_root(archive_root_dir)
     publisher = ArchiveBlobPublisher(archive_root_dir / "source.db", archive_root_dir / "blob")
     publisher.write_from_bytes(b"unresolved status probe payload")
-    publisher.flush()
+    with write_lease("test.status-fixture", archive_root=archive_root_dir):
+        publisher.flush()
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=archive_root_dir),
@@ -4027,7 +4029,8 @@ def test_publication_surfaces_preserve_blocked_liveness(
     initialize_active_archive_root(root)
     publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
     blob_hash, _size = publisher.write_from_bytes(b"blocked publication surface control")
-    receipt = publisher.flush()[0]
+    with write_lease("test.status-fixture", archive_root=root):
+        receipt = publisher.flush()[0]
     if not blob_present:
         BlobStore(root / "blob").blob_path(blob_hash).unlink()
     (root / "index.db").unlink()

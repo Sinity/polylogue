@@ -3415,89 +3415,66 @@ def test_raw_observation_owner_preserves_source_frontier_refusal(
 def test_raw_observation_publication_holds_writer_lease_through_replay(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    bounded_compute_adapter: BoundedComputeAdapter,
 ) -> None:
-    """Canonical replay keeps FTS/index publication under one writer lease."""
-    from contextlib import contextmanager
+    """Canonical replay applies its prepared publication under the writer lease.
 
-    from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationReplacement
+    Real retained bytes are acquired and replayed through the canonical owner;
+    every prepared replay apply must observe a held ``ActiveWriterLease``, and
+    the raw frontier gate is consulted for the published raw first.
+    Anti-vacuity: acquiring the lease after, or releasing it before, the
+    prepared apply records an unheld apply; skipping the frontier gate leaves
+    ``blocked_checks`` without the raw.
+    """
+    import asyncio
 
-    held = 0
-    replay_held: list[int] = []
+    from polylogue.core.enums import Provider
+    from polylogue.sources import revision_backfill
+    from polylogue.storage import index_generation, raw_retention
+    from tests.infra.retained_replay import publish_retained_payload
+
+    leases: list[index_generation.ActiveWriterLease] = []
+    replay_held: list[bool] = []
     blocked_checks: list[tuple[str, ...]] = []
 
-    class Lease:
-        def __init__(self, _root: Path) -> None:
-            pass
+    class RecordingLease(index_generation.ActiveWriterLease):
+        def __init__(self, archive_root: Path) -> None:
+            super().__init__(archive_root)
+            leases.append(self)
 
-        def acquire(self) -> None:
-            nonlocal held
-            held += 1
+    real_apply = revision_backfill.apply_prepared_revision_replay
+    real_blocked = raw_retention.raw_frontier_blocked_raw_ids
 
-        def close(self) -> None:
-            nonlocal held
-            held -= 1
+    def recording_apply(*args: Any, **kwargs: Any) -> Any:
+        replay_held.append(any(lease.held for lease in leases))
+        return real_apply(*args, **kwargs)
 
-    class FakeArchive:
-        # ``publish`` pins its membership read through ``open_operation_read``
-        # (3faacef23, #5023), which reads the archive's own root and active
-        # index path to capture the read view. A double that omits them is more
-        # permissive than production, so they are supplied rather than the
-        # production read being loosened; ``pin_operation_snapshot`` stays
-        # absent because operation_context declares that minimal-double path.
-        archive_root = tmp_path
-        index_db_path = tmp_path / "index.db"
-
-        def expand_raw_membership_selection(self, _raw_ids: Sequence[str]) -> tuple[tuple[str, ...], tuple[str, ...]]:
-            return ("raw-1",), ()
-
-        def raw_revision_descriptor(self, _raw_id: str) -> tuple[str, str, str, str, int]:
-            return ("codex-session", "blob-hash", "/archive/source.jsonl", "full", 1)
-
-    @contextmanager
-    def open_archive() -> Any:
-        yield FakeArchive()
-
-    def fake_replay(*_args: object, **_kwargs: object) -> None:
-        replay_held.append(held)
-
-    monkeypatch.setattr("polylogue.storage.index_generation.ActiveWriterLease", Lease)
-
-    def record_blocked_check(_root: Path, raw_ids: Sequence[str]) -> object:
+    def recording_blocked(root: Path, raw_ids: Sequence[str]) -> Any:
         blocked_checks.append(tuple(raw_ids))
-        return SimpleNamespace(source_paths=frozenset(), unattributed_reason=None)
+        return real_blocked(root, raw_ids)
 
-    monkeypatch.setattr(
-        "polylogue.storage.raw_retention.raw_frontier_blocked_raw_ids",
-        record_blocked_check,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda *_args, **_kwargs: open_archive(),
-    )
-    monkeypatch.setattr("polylogue.storage.blob_store.BlobStore.verify", lambda _self, _blob_hash: True)
-    monkeypatch.setattr("polylogue.sources.revision_backfill.backfill_historical_revision_evidence", fake_replay)
+    monkeypatch.setattr(index_generation, "ActiveWriterLease", RecordingLease)
+    monkeypatch.setattr(revision_backfill, "apply_prepared_revision_replay", recording_apply)
+    monkeypatch.setattr(raw_retention, "raw_frontier_blocked_raw_ids", recording_blocked)
 
-    adapter = RawObservationDerivation(tmp_path, compute_adapter=bounded_compute_adapter)
-    monkeypatch.setattr(adapter, "_current", lambda _frame: True)
-    monkeypatch.setattr(adapter, "_binding", lambda _raw_ids: "binding")
-    monkeypatch.setattr(adapter, "source_paths", lambda _raw_ids: {"raw-1": "/archive/source.jsonl"})
-    frame = SimpleNamespace(
-        archive_root=str(tmp_path),
-        source_revision=str(tmp_path / "index.db"),
-        recipe_version=lambda _domain: adapter.recipe_version,
+    payload = (
+        b'{"type":"session_meta","payload":{"id":"lease-replay","timestamp":"2025-01-01T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m1","role":"user","content":'
+        b'[{"type":"input_text","text":"Hello"}]}}\n'
     )
-    replacement = RawObservationReplacement(
-        key="raw-1",
-        input_binding="binding",
-        payload=None,
-        raw_ids=("raw-1",),
+    raw_id, written = asyncio.run(
+        publish_retained_payload(
+            tmp_path / "archive",
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(tmp_path / "sessions" / "lease-replay.jsonl"),
+            acquired_at_ms=1,
+        )
     )
 
-    assert adapter.publish(frame, replacement) is True
-    assert blocked_checks == [("raw-1",)]
-    assert replay_held == [1]
-    assert held == 0
+    assert written
+    assert replay_held and all(replay_held)
+    assert (raw_id,) in blocked_checks
+    assert not any(lease.held for lease in leases)
 
 
 def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
