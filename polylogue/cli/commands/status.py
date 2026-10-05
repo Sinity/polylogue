@@ -514,6 +514,10 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     if isinstance(raw_frontier, dict):
         _render_raw_frontier_integrity(env, raw_frontier)
 
+    schema_drift = status.get("schema_drift")
+    if isinstance(schema_drift, dict):
+        _render_schema_drift_status(env, schema_drift)
+
     assertion_candidate_queue = status.get("assertion_candidate_queue")
     if isinstance(assertion_candidate_queue, dict):
         _render_assertion_candidate_queue(env, assertion_candidate_queue)
