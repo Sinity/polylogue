@@ -4190,7 +4190,6 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
         )
         conn.commit()
     cursor = CursorStore(index_db)
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4269,7 +4268,6 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
         )
         conn.commit()
     cursor = CursorStore(index_db)
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4343,7 +4341,6 @@ def test_codex_append_identity_rejects_mixed_origins_at_same_path(
         )
         conn.commit()
 
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4396,7 +4393,6 @@ def test_codex_append_identity_rejects_mismatched_index_owner_before_global_fall
         )
         conn.commit()
 
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4441,7 +4437,6 @@ def test_codex_append_identity_rejects_global_fallback_when_ownership_query_erro
         )
         conn.commit()
 
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -4490,7 +4485,6 @@ def test_latest_raw_fingerprint_ignores_archive_source_row_with_missing_blob(tmp
         )
         conn.commit()
     cursor = CursorStore(index_db)
-    bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=root),),
@@ -5906,7 +5900,6 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
     )
-    bootstrap_archive_root(archive_root)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
         (WatchSource(name="codex", root=path.parent),),
