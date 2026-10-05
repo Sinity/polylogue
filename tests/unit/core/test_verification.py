@@ -636,6 +636,7 @@ class TestInspectRawArtifactCoverage:
         # The durable raw_artifacts row is refreshed in place: its stale
         # support_status flips from unsupported to supported on re-inspection.
         with closing(sqlite3.connect(db_path.with_name("source.db"))) as conn, conn:
+            conn.row_factory = sqlite3.Row
             refreshed = conn.execute(
                 """
                 SELECT support_status

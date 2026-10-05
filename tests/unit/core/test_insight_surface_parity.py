@@ -173,7 +173,15 @@ async def test_cli_mcp_and_api_insight_lists_are_identical(
             api_payload = api_payloads[insight_type.name]
             cli_payload = cli_by_type[insight_type.name]
             if cli_payload is not None:
-                assert _canonical(cli_payload) == _canonical(api_payload), (
+                # The resident CLI route also declares the operation's terminal
+                # outcome; the rows and the remaining envelope must match.
+                cli_rows = dict(cli_payload)
+                outcome = cli_rows.pop("outcome", None)
+                expected_state = "ok" if api_payload["total"] else "empty"
+                assert isinstance(outcome, Mapping) and outcome.get("state") == expected_state, (
+                    f"{insight_type.name}: CLI insight list declared {outcome!r}, expected {expected_state}"
+                )
+                assert _canonical(cli_rows) == _canonical(api_payload), (
                     f"{insight_type.name}: CLI and API insight lists diverged"
                 )
                 compared.append(insight_type.name)
