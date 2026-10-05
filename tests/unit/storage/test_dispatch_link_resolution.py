@@ -497,7 +497,9 @@ def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) ->
             """SELECT l.parent_tool_use_block_id, l.method, json_extract(l.evidence_json, '$.dispatch_reason'),
                       (SELECT b.block_id FROM blocks b WHERE b.tool_id = 'call_1' AND b.block_type = 'tool_use')
                FROM session_links l JOIN sessions s ON s.session_id = l.src_session_id
-               WHERE s.native_id = 'agent-a1'""",
+               WHERE s.native_id = ?""",
+            # A Claude Code subagent's native id is scoped by its parent session.
+            (f"{_PARENT}:agent-a1",),
         ).fetchall()
 
     assert len(edge) == 1
