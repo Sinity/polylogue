@@ -15,7 +15,9 @@ from __future__ import annotations
 import collections
 import json
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -224,7 +226,7 @@ def test_ingest_preparation_rejects_changes_since_its_original_seal(
         if during_parse:
             original = ingest_batch_core._iter_ingest_results_sync
 
-            def parse_then_change(*args, **kwargs):
+            def parse_then_change(*args: Any, **kwargs: Any) -> Iterator[Any]:
                 yield from original(*args, **kwargs)
                 acquire(1)
 

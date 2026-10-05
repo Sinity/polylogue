@@ -49,7 +49,7 @@ async def test_actual_ingest_publication_leaves_upkeep_to_its_owner(
     else:
         monkeypatch.setattr("polylogue.core.memory.release_process_memory", refuse)
     config = Config(archive_root=root, render_root=tmp_path / "render", sources=[])
-    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: config)
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda **_kwargs: config)
     backend = SQLiteBackend(db_path=root / "index.db")
     repository = SessionRepository(backend=backend, archive_root=root)
     result = ParseResult()

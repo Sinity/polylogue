@@ -18,11 +18,10 @@ from polylogue.sources.live.cold_build import (
     register_cold_build_generation,
 )
 from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
-from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite import runtime_indexes, schema_bootstrap
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.source_write import apply_source_raw_state_update
+from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation
 from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
@@ -150,26 +149,22 @@ async def test_backfill_resumes_after_index_receipt_commits_before_source_termin
 
     raw_id = await run_archive_fixture_write(tmp_path, acquire)
 
-    original_update = apply_source_raw_state_update
+    # Source terminal markers are staged during preparation and published by
+    # the original Source permit after the Index commit; crash at that
+    # publication, once the Index receipt is durable.
+    original_publish = archive_revision_governance.publish_prepared_revision_source
     reached = False
 
-    def crash_after_index_commit(
-        conn: sqlite3.Connection,
-        selected_raw_id: str,
-        *,
-        state: RawSessionStateUpdate,
-        manage_transaction: bool = True,
-    ) -> None:
+    def crash_after_index_commit(seal: PreparedIndexMutation, permit: KnownTierMutationPermit) -> None:
         nonlocal reached
-        if selected_raw_id == raw_id and state.parsed_at is not None:
-            with closing(sqlite3.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True)) as index:
-                committed = index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
-            if committed == 1:
-                reached = True
-                raise RuntimeError("crash after index receipt")
-        original_update(conn, selected_raw_id, state=state, manage_transaction=manage_transaction)
+        with closing(sqlite3.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True)) as index:
+            committed = index.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
+        if committed == 1:
+            reached = True
+            raise RuntimeError("crash after index receipt")
+        original_publish(seal, permit)
 
-    monkeypatch.setattr(archive_revision_governance, "apply_source_raw_state_update", crash_after_index_commit)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", crash_after_index_commit)
     with pytest.raises(RuntimeError, match="crash after index receipt"):
         async with prepared_live_convergence_owner(tmp_path) as owner:
             await owner.replay_retained_raw_ids((raw_id,))
@@ -179,7 +174,7 @@ async def test_backfill_resumes_after_index_receipt_commits_before_source_termin
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
 
-    monkeypatch.setattr(archive_revision_governance, "apply_source_raw_state_update", original_update)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", original_publish)
     async with prepared_live_convergence_owner(tmp_path) as owner:
         resumed = await owner.replay_retained_raw_ids((raw_id,))
     assert sum(receipt.replayed_logical_sources for receipt in resumed) == 1
