@@ -54,9 +54,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
     write_source_raw_session,
 )
-from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.excision_execution import execute_excision
-from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
 from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
@@ -541,7 +540,7 @@ def test_excising_a_keeps_the_attachment_it_shares_with_b(tmp_path: Path) -> Non
     raw_a = _acquire(archive_root, "att-a", payload_a, (_SHARED_ATTACHMENT, _A_ONLY_ATTACHMENT))
     raw_b = _acquire(archive_root, "att-b", b'{"uuid": "att-b", "synthetic": "session b"}', ())
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    with open_connection(archive_root / "index.db") as conn:
+    with fixture_index_connection(archive_root / "index.db") as conn:
         for payload in (
             _attachment_session("att-a", raw_a, {"shared.txt": _SHARED_ATTACHMENT, "own.txt": _A_ONLY_ATTACHMENT}),
             _attachment_session("att-b", raw_b, {"shared.txt": _SHARED_ATTACHMENT}),

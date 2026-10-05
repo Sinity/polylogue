@@ -21,8 +21,10 @@ import pytest
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.pipeline.services import ingest_worker as ingest_worker_module
 from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.sources.live import WatchSource
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.runtime import RawSessionRecord
+from tests.infra.archive_templates import run_off_event_loop
 
 
 @pytest.fixture
@@ -361,24 +363,16 @@ def _chatgpt_export_document() -> bytes:
     ).encode("utf-8")
 
 
-async def _acquire_evidence(archive_root: Path, source: object, paths: list[Path]) -> None:
-    """Acquire declared non-session evidence through the live source route."""
+async def _acquire_evidence(archive_root: Path, source: WatchSource, paths: list[Path]) -> None:
+    """Acquire declared non-session evidence through the live source route and its owners."""
     import polylogue.sources.live.watcher as live_watcher
-    from polylogue import Polylogue
-    from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.cursor import CursorStore
+    from tests.infra.live_batch import prepared_live_batch_processor
 
-    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (source,),
-        cursor=CursorStore(archive_root / "cursor.db"),
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    archive_root.mkdir(parents=True, exist_ok=True)
+    async with prepared_live_batch_processor(
+        archive_root, (source,), parser_fingerprint=live_watcher._PARSER_FINGERPRINT
+    ) as processor:
         await processor.ingest_files(paths, emit_event=False)
-    finally:
-        await archive.close()
 
 
 def _retained_artifact_kinds(archive_root: Path) -> dict[str, str]:
@@ -878,11 +872,14 @@ async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_st
 
     _write_chatgpt_zip(zip_path, ["first.png", "second.png"])
     await _acquire_evidence(archive_root, source, [zip_path])
-    assert _resolved_library_names(archive_root, zip_path) == ("first.png", "first.png")
+    assert run_off_event_loop(lambda: _resolved_library_names(archive_root, zip_path)) == ("first.png", "first.png")
 
     _write_chatgpt_zip(zip_path, ["reexported.png"])
     await _acquire_evidence(archive_root, source, [zip_path])
-    assert _resolved_library_names(archive_root, zip_path) == ("reexported.png", "reexported.png")
+    assert run_off_event_loop(lambda: _resolved_library_names(archive_root, zip_path)) == (
+        "reexported.png",
+        "reexported.png",
+    )
 
 
 @pytest.mark.asyncio

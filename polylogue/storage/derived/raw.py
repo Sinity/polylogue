@@ -1903,6 +1903,12 @@ class RawObservationDerivation(RawObservationInspection):
                     return False
                 if phase_receipt is not None:
                     phase_receipt("replay", replay_receipt)
+                if replay_receipt.changed_session_ids:
+                    # Searches answered before this publication are cached by
+                    # epoch; a changed session must never be served stale.
+                    from polylogue.storage.search.cache import invalidate_search_cache
+
+                    invalidate_search_cache()
                 refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                 if refusal is not None:
                     raise refusal

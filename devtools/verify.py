@@ -1331,11 +1331,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     sys.stderr.write(f"verify: {identity.describe()}\n")
     # Every step must see one tree: its Git-visible content is compared at the end.
     started_content = git_worktree_content_sha256(ROOT)
-    # Before this run writes its own ``running`` receipt, give a terminal state
-    # to any earlier one whose process is gone. A verification killed outright
-    # runs no handler of its own, so the next reader is the only thing that can
-    # close it out.
-    reconcile_and_record_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
@@ -1343,13 +1338,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
         selection = _selection_for_changes(changed_paths)
-    seeded_from_primary = sync_testmon_graph(
-        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
-    )
-    graph = inspect_testmon_graph(
-        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
-    )
     scope = _scope(quick=args.quick, selection=selection)
+    # The import-root contract is checked before this run writes anything under
+    # the verify cache: a mismatched checkout must leave no receipt or graph.
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
@@ -1366,6 +1357,17 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         sys.stderr.write(f"verify: {exc}\n")
         _emit(payload, use_json=args.json, operation=agentctl_operation)
         return 125
+    # Before this run writes its own ``running`` receipt, give a terminal state
+    # to any earlier one whose process is gone. A verification killed outright
+    # runs no handler of its own, so the next reader is the only thing that can
+    # close it out.
+    reconcile_and_record_verify_runs(runs_root=ROOT / VERIFY_RUNS_DIR)
+    seeded_from_primary = sync_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
+    graph = inspect_testmon_graph(
+        ROOT, **({"profile": args.hypothesis_profile} if args.hypothesis_profile is not None else {})
+    )
     head = git_head(ROOT)
     tier = "quick" if args.quick else selection
     # The complete plan, pytest included, is fixed before admission: a refusal

@@ -776,19 +776,20 @@ class TestCanonicalStatusOperation:
 
         configured_root = tmp_path / "configured"
         active_root = tmp_path / "active"
-        # The publication mode comes from the loaded config and the archive
-        # file set from the resolved runtime config (#5722).
-        runtime_config = SimpleNamespace(archive_root=configured_root, db_path=active_root / "index.db")
+        # The resolved runtime config supplies both the publication mode and
+        # the archive file set.
+        runtime_config = SimpleNamespace(
+            archive_root=configured_root, db_path=active_root / "index.db", sinex_mode="off"
+        )
         with (
-            patch("polylogue.config.load_polylogue_config", return_value=SimpleNamespace(sinex_mode="off")),
             patch(
                 "polylogue.config.resolve_runtime_config",
                 return_value=SimpleNamespace(as_config=lambda: runtime_config),
             ),
-            patch("polylogue.sinex.service.publication_status") as publication_status,
+            patch("polylogue.sinex.service.publication_status_payload") as publication_status,
         ):
             _sinex_publication_status_info()
-        assert publication_status.call_args.args[0] == active_root / "source.db"
+        assert publication_status.call_args.args == (active_root / "source.db", "off")
 
     def test_status_command_passes_exact_readiness_to_canonical_operation(self, tmp_path: Path) -> None:
         env = _make_app_env()
@@ -1406,23 +1407,18 @@ class TestStrictSourceExitCodes:
 
     @staticmethod
     def _archive_env(tmp_path: Path) -> tuple[Path, dict[str, str]]:
-        """A seeded archive whose disposable OPS tier is absent.
+        """A seeded archive with every tier present.
 
-        ``ops.db`` is removed on purpose. ``ingest_attempts`` carries no index
-        on ``source_path``, so every named-source lookup against a present
-        ops.db is planned as a full scan and rejected -- which pins *every*
-        ``--source`` call to exit 3 and leaves the exit-2 branch unreachable.
-        Dropping the disposable tier is the smallest shape that exercises the
-        2-vs-3 distinction these tests are about, and it keeps them correct
-        once that scan is made bounded.
+        Named-source lookups are bounded (no unsafe scan), so a complete
+        archive reaches both refusal branches: an unsearchable source is exit 2
+        only under ``--strict-source``, and an unreadable evidence tier is
+        exit 3. Removing a tier would itself be a read failure and pin every
+        call to exit 3.
         """
         from tests.infra.cli_subprocess import setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
-        archive_root = workspace["paths"]["archive_root"]
-        for name in ("ops.db", "ops.db-wal", "ops.db-shm"):
-            (archive_root / name).unlink(missing_ok=True)
-        return archive_root, dict(workspace["env"])
+        return workspace["paths"]["archive_root"], dict(workspace["env"])
 
     @pytest.mark.integration
     def test_unsearchable_named_source_exits_two_only_under_strict_source(self, tmp_path: Path) -> None:

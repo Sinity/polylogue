@@ -55,6 +55,8 @@ from polylogue.archive.session.threads import build_session_threads
 Durable archive insights are public too:
 
 ```python
+from pathlib import Path
+
 from polylogue import Polylogue
 from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
@@ -63,6 +65,7 @@ from polylogue.analysis.archive import (
     SessionProfileInsightQuery,
     SessionTagRollupQuery,
 )
+from polylogue.analysis.export_bundle_contracts import InsightExportBundleRequest
 
 async with Polylogue() as archive:
     status = await archive.get_session_insight_status()
@@ -84,6 +87,9 @@ async with Polylogue() as archive:
         ArchiveCoverageInsightQuery(provider="claude-code", group_by="day", since="2026-01-01")
     )
     debt = await archive.list_archive_debt_insights(ArchiveDebtInsightQuery(only_actionable=True))
+    bundle = await archive.export_insight_bundle(
+        InsightExportBundleRequest(output_path=Path("insights"), insights=("session_profiles",))
+    )
 ```
 
 `SessionProfileInsight` exposes stable session semantics directly:
@@ -403,6 +409,7 @@ asyncio.run(main())
 | `list_archive_coverage_insights(query)` | List provider, day, or week archive coverage insights |
 | `list_tool_usage_insights(query)` | Per-provider tool usage with explicit coverage gaps |
 | `list_archive_debt_insights(query)` | List governed archive-debt insights |
+| `export_insight_bundle(request)` | Write a versioned archive-insight export bundle from one read snapshot |
 | `import_annotation_batch(request, registry)` | Import a durable typed annotation batch under a declared schema version |
 | `regenerate_private_fable_packet(seed=..., requested_size=...)` | Compile a private descriptive delegation packet on one Index/User snapshot, or return named `not_supported` evidence gaps |
 

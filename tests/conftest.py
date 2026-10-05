@@ -93,6 +93,9 @@ def pytest_configure(config: pytest.Config) -> None:
         raise pytest.UsageError(bare)
     global _SESSION_ARCHIVE_ROOT
     _SESSION_ARCHIVE_ROOT = pin_session_archive_root(os.environ)
+    from tests.infra.fingerprint_warmup import warm_source_fingerprints
+
+    warm_source_fingerprints()
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
     sys.stderr.write(f"pytest: session archive root → {_SESSION_ARCHIVE_ROOT}\n")
 

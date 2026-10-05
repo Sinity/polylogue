@@ -608,7 +608,7 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
     monkeypatch.setattr(RawObservationReplacement, "_close_prepared_payload", close_payload)
     compute_adapter = BoundedComputeAdapter(max_workers=1)
     adapter = compute_adapter
-    operation = adapter.submit(work)
+    operation = adapter.submit(work, exclusive_bytes=True)
     probe: int | None = None
     try:
         await _pending(adapter.retained_sql_settlements)
@@ -651,13 +651,17 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
 
 @pytest.mark.parametrize("exclusive_bytes", [False, True])
 @pytest.mark.parametrize("cancelled", [False, True])
-async def test_operation_prepared_phase_retains_original_creator_and_writer_until_native_close(
+async def test_operation_prepared_phase_retains_original_creator_and_refuses_successors_until_native_close(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool, exclusive_bytes: bool
 ) -> None:
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.core.write_lease import current_write_lease
     from polylogue.daemon.operation_runtime import DaemonOperationRuntime
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.daemon.write_coordinator import (
+        DaemonWriteCoordinator,
+        DaemonWriterSettlementError,
+        DaemonWriteThreadBridge,
+    )
     from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
     actual_connect = sqlite3.connect
@@ -704,6 +708,8 @@ async def test_operation_prepared_phase_retains_original_creator_and_writer_unti
 
     await asyncio.wrap_future(adapter.submit(admitted_without_publication_admission).future)
 
+    release_publication = threading.Event()
+
     def operation() -> int:
         adapter.require_current_creator()
         assert runtime.prepared_compute_adapter() is adapter
@@ -737,8 +743,8 @@ async def test_operation_prepared_phase_retains_original_creator_and_writer_unti
                         pass
                     publication.commit()
                     entered_publication.set()
-                    # This newly created publication child must settle before
-                    # the original writer delegation can leave the bridge.
+                    release_publication.wait()
+                    # The publication child's close fails on leaving this block.
                     return 7
 
             return admit_stage_write("operation.actual-prepared-publication", publish)
@@ -747,25 +753,49 @@ async def test_operation_prepared_phase_retains_original_creator_and_writer_unti
         runtime.prepared_phase("native-lifetime", operation, estimated_bytes=7, exclusive_bytes=exclusive_bytes)
     )
     try:
-        await _pending(adapter.retained_sql_settlements)
+        deadline = time.monotonic() + 5
+        while not entered_publication.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
         assert entered_publication.is_set()
-        assert bridge.coordinator is coordinator
-        assert handles and artifact_paths[0].exists()
-        assert adapter.snapshot().active_units == 1
-        assert adapter.snapshot().active_input_bytes == (207 if exclusive_bytes else 7)
-        assert adapter.snapshot().used_bytes == (100 if exclusive_bytes else 7)
+        # The admitted body holds the single-writer gate while it is inside it.
         assert coordinator.snapshot().active_actor == "operation.actual-prepared-publication"
-        assert not phase.done()
         if cancelled:
+            # Cancellation never abandons the physical worker.
             phase.cancel()
             await asyncio.sleep(0)
             assert not phase.done()
-            assert adapter.snapshot().active_units == 1
-            assert coordinator.snapshot().active_actor == "operation.actual-prepared-publication"
-        handles[0].allow_cleanup.set()
-        adapter.retry_sql_settlement()
-        with pytest.raises((NativeConnectionSettlementError, BaseExceptionGroup)):
+        release_publication.set()
+
+        await _pending(adapter.retained_sql_settlements)
+        # Shipped contract (01c1f38193): the prepared phase delivers the
+        # writer's typed refusal while its compute slot stays occupied by the
+        # original creator, which still owns the unsettled publication SQL.
+        with pytest.raises((DaemonWriterSettlementError, BaseExceptionGroup)) as refused:
             await phase
+        failures = refused.value.exceptions if isinstance(refused.value, BaseExceptionGroup) else (refused.value,)
+        assert any(
+            isinstance(failure, DaemonWriterSettlementError) and failure.code == "writer_sql_unsettled"
+            for failure in failures
+        )
+        assert cancelled == any(isinstance(failure, asyncio.CancelledError) for failure in failures)
+        assert adapter.snapshot().active_units == 1
+        assert adapter.snapshot().active_input_bytes == (207 if exclusive_bytes else 7)
+        assert adapter.snapshot().used_bytes == (100 if exclusive_bytes else 7)
+        assert coordinator.snapshot().unsettled_writer_workers == 1
+        assert artifact_paths[0].exists()
+
+        # No second writer is admitted while that SQL is unsettled.
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run_sync("test.unsettled_successor", lambda: None)
+        assert artifact_paths[0].exists()
+
+        # A later admission retries cleanup on the original creator.
+        handles[0].allow_cleanup.set()
+        await coordinator.run_sync("test.settled_successor", lambda: None)
+        assert coordinator.snapshot().unsettled_writer_workers == 0
+        deadline = time.monotonic() + 5
+        while adapter.snapshot().active_units and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
         assert adapter.snapshot().active_units == 0
         assert adapter.snapshot().active_input_bytes == adapter.snapshot().exclusive_byte_units == 0
         assert adapter.retained_sql_settlements() == ()
@@ -773,6 +803,7 @@ async def test_operation_prepared_phase_retains_original_creator_and_writer_unti
         assert not artifact_paths[0].exists()
         assert all(thread is creators[0] for _name, thread in handles[0].calls)
     finally:
+        release_publication.set()
         for handle in handles:
             handle.allow_cleanup.set()
         adapter.retry_sql_settlement()

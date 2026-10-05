@@ -19,8 +19,8 @@ from polylogue.archive.filter.filters import SessionFilter
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.io_phase_metrics import connect_measured
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import db_setup
 
@@ -28,10 +28,9 @@ _TITLE_REF = "codex-history:codex-tr-native"
 
 
 def _write_codex_session(db_path: Path, *, native_id: str, title: str) -> None:
-    conn = sqlite3.connect(db_path)
+    conn = connect_measured(bootstrapped_tier_path(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
         session = ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id=native_id,
@@ -208,7 +207,7 @@ def test_canonical_index_ddl_declares_no_retired_session_columns() -> None:
 
 def test_fresh_index_database_has_no_retired_session_columns(tmp_path: Path) -> None:
     """The same retirement, proven against a materialized fresh archive."""
-    db_path = tmp_path / "fresh-index.db"
+    db_path = tmp_path / "index.db"
     _write_codex_session(db_path, native_id="codex-tr-ddl", title="Ship the release")
     conn = sqlite3.connect(db_path)
     try:

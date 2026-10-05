@@ -69,8 +69,10 @@ def test_search_hits_come_from_the_snapshot_its_readiness_admitted(
         probes: list[CommitBetweenStatements] = []
 
         @contextmanager
-        def open_probe(path: Path | str | None = None) -> Iterator[CommitBetweenStatements]:
-            with real_open(path) as conn:
+        def open_probe(
+            path: Path | str | None = None, *, archive_root: Path | None = None
+        ) -> Iterator[CommitBetweenStatements]:
+            with real_open(path, archive_root=archive_root) as conn:
                 probe = CommitBetweenStatements(
                     conn,
                     trigger_sql="SELECT COUNT(*) FROM blocks WHERE search_text != ''",

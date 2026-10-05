@@ -120,7 +120,9 @@ def _seed_byte_authority(root: Path, path: Path, *, native_id: str) -> None:
             provider=Provider.CODEX,
             payload=payload,
             source_path=str(path),
-            canonical_source_path=str(path),
+            # Production acquisition records the resolved path authority; the
+            # live selection gate refuses an archive holding a raw without it.
+            canonical_source_path=str(path.resolve()),
             acquired_at_ms=1,
             native_id=native_id,
             revision=revision,

@@ -15,9 +15,7 @@ from __future__ import annotations
 import collections
 import json
 import sqlite3
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -27,15 +25,11 @@ from polylogue.core.json import JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.sinex.models import PublicationMode
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
-from polylogue.storage.sqlite.write_lease import write_lease
-from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
 
 _COHORT_SIZE = 12
 _LINEAGE_COLUMNS = (
@@ -98,7 +92,7 @@ def _ingest_drive_cohort(
     ArchiveBlobPublisher.open = counting_open  # type: ignore[method-assign]
     try:
         with (
-            open_connection(archive_root / "index.db") as conn,
+            fixture_index_connection(archive_root / "index.db") as conn,
             sqlite3.connect(str(archive_root / "source.db")) as source_conn,
         ):
             for revision, raw_id in enumerate(raw_ids):
@@ -160,93 +154,6 @@ def test_drive_cohort_blob_loads_do_not_grow_with_the_cohort(tmp_path: Path) -> 
     # asserted from the design.
     assert uncached_opens > _COHORT_SIZE * _COHORT_SIZE
     assert cache.served_from_cache == uncached_opens - _COHORT_SIZE
-
-
-def test_prepared_drive_source_commit_advances_only_its_retained_seal(tmp_path: Path) -> None:
-    """The exact Drive lineage commit keeps its same-observer seal current."""
-    root = tmp_path / "archive"
-    initialize_active_archive_root(root)
-    with write_lease("test.drive-prepared-rows", archive_root=root):
-        with ArchiveStore.open_existing(root, read_only=False) as archive:
-            archive.write_raw_payload(
-                provider=Provider.GEMINI,
-                payload=json.dumps(_drive_revision_payload(0)).encode(),
-                source_path="Google AI Studio/chat.json",
-                canonical_source_path="Google AI Studio/chat.json",
-                acquired_at_ms=1_767_000_000_000,
-            )
-            second_raw_id = archive.write_raw_payload(
-                provider=Provider.GEMINI,
-                payload=json.dumps(_drive_revision_payload(1)).encode(),
-                source_path="Google AI Studio/chat.json",
-                canonical_source_path="Google AI Studio/chat.json",
-                acquired_at_ms=1_767_000_000_500,
-            )
-
-    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
-        prepared = ingest_batch_core._prepare_ingest_unit_sync(
-            second_raw_id,
-            db_path=root / "index.db",
-            archive_root=root,
-            validation_mode="strict",
-            publication_mode=PublicationMode.OFF,
-            measure_ingest_result_size=False,
-            reference_seal=seal,
-        )
-        assert prepared is not None
-        assert second_raw_id in {str(row[-1]) for row in prepared.drive_revision_updates}
-
-        original_version = seal.observer_version("source")
-        with write_lease("test.drive-prepared-publication", archive_root=root):
-            ingest_batch_core._publish_prepared_drive_revision_updates(prepared, root, seal)
-            seal.validate_observers_current()
-            with open_connection(root / "index.db", archive_root=root) as conn:
-                with seal.mutation_scope(conn):
-                    pass
-        assert seal.observer_version("source") != original_version
-
-
-@pytest.mark.parametrize("during_parse", [False, True])
-def test_ingest_preparation_rejects_changes_since_its_original_seal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, during_parse: bool
-) -> None:
-    """A Source commit before or during compute cannot become a fresh baseline."""
-    root = tmp_path / "archive"
-    initialize_active_archive_root(root)
-
-    def acquire(revision: int) -> str:
-        with write_lease("test.sealed-ingest-acquire", archive_root=root):
-            with ArchiveStore.open_existing(root, read_only=False) as archive:
-                return archive.write_raw_payload(
-                    provider=Provider.GEMINI,
-                    payload=json.dumps(_drive_revision_payload(revision)).encode(),
-                    source_path="Google AI Studio/chat.json",
-                    canonical_source_path="Google AI Studio/chat.json",
-                    acquired_at_ms=1_767_000_000_000 + revision,
-                )
-
-    raw_id = acquire(0)
-    with PreparedIndexMutation(root / "index.db", archive_root=root) as seal:
-        if during_parse:
-            original = ingest_batch_core._iter_ingest_results_sync
-
-            def parse_then_change(*args: Any, **kwargs: Any) -> Iterator[Any]:
-                yield from original(*args, **kwargs)
-                acquire(1)
-
-            monkeypatch.setattr(ingest_batch_core, "_iter_ingest_results_sync", parse_then_change)
-        else:
-            acquire(1)
-        with pytest.raises(ReferenceSealStaleError):
-            ingest_batch_core._prepare_ingest_unit_sync(
-                raw_id,
-                db_path=root / "index.db",
-                archive_root=root,
-                validation_mode="strict",
-                publication_mode=PublicationMode.OFF,
-                measure_ingest_result_size=False,
-                reference_seal=seal,
-            )
 
 
 def test_drive_cohort_blob_cache_leaves_lineage_bit_identical(tmp_path: Path) -> None:

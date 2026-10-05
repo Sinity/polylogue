@@ -34,11 +34,13 @@ from polylogue.operations.session_contracts import (
 from polylogue.operations.session_reads import execute_session_operation, raw_operation, session_timeline
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop, seeds_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import invoke_surface_async
 
 
+@seeds_off_event_loop
 def seed(root: Path, count: int = 3) -> list[str]:
     ids = []
     with ArchiveStore(root) as archive:
@@ -251,23 +253,27 @@ async def test_timeline_uses_falsey_summary_fallback(tmp_path: Path) -> None:
     leaving the event blank and omitting it from an expression search.
     """
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive_db:
-        write_index_session(
-            archive_db,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="falsey-event-summary",
-                title="Falsey summary",
-                messages=[],
-                session_events=[
-                    ParsedSessionEvent(
-                        event_type="test_event",
-                        timestamp="2024-01-01T00:00:00Z",
-                        payload={"summary": "", "text": "fallback"},
-                    )
-                ],
-            ),
-        )
+
+    def _seed_0() -> None:
+        with ArchiveStore(root) as archive_db:
+            write_index_session(
+                archive_db,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="falsey-event-summary",
+                    title="Falsey summary",
+                    messages=[],
+                    session_events=[
+                        ParsedSessionEvent(
+                            event_type="test_event",
+                            timestamp="2024-01-01T00:00:00Z",
+                            payload={"summary": "", "text": "fallback"},
+                        )
+                    ],
+                ),
+            )
+
+    run_off_event_loop(_seed_0)
     page = await session_timeline(root, SessionTimeline(expression="fallback"))
     assert len(page.items) == 1
     assert page.items[0].text == "fallback"
@@ -530,22 +536,26 @@ async def test_all_indexed_operation_outputs_match_their_generated_contracts(tmp
 async def test_timeline_filters_complete_event_text_before_bounding_excerpt(tmp_path: Path) -> None:
     """Filtering the display excerpt loses matching events with later evidence."""
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="long-event",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        timestamp="2026-01-01T12:00:00Z",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="x" * 3000 + "needle")],
-                    )
-                ],
-            ),
-        )
+
+    def _seed_1() -> None:
+        with ArchiveStore(root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="long-event",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            timestamp="2026-01-01T12:00:00Z",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="x" * 3000 + "needle")],
+                        )
+                    ],
+                ),
+            )
+
+    run_off_event_loop(_seed_1)
     async with Polylogue(archive_root=root) as api:
         result = await execute_session_operation(api, SessionTimeline(expression="needle"))
     assert result.total == 1
@@ -681,23 +691,27 @@ async def test_timeline_reads_a_lone_surrogate_event_summary(tmp_path: Path) -> 
     again and the timeline read raises ``Could not decode to UTF-8``.
     """
     root = tmp_path / "archive"
-    with ArchiveStore(root) as archive:
-        write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="surrogate-event",
-                title="Surrogate event",
-                messages=[],
-                session_events=[
-                    ParsedSessionEvent(
-                        event_type="compaction",
-                        timestamp="2026-01-01T12:00:00Z",
-                        payload={"summary": "kept \ud800 text"},
-                    )
-                ],
-            ),
-        )
+
+    def _seed_2() -> None:
+        with ArchiveStore(root) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="surrogate-event",
+                    title="Surrogate event",
+                    messages=[],
+                    session_events=[
+                        ParsedSessionEvent(
+                            event_type="compaction",
+                            timestamp="2026-01-01T12:00:00Z",
+                            payload={"summary": "kept \ud800 text"},
+                        )
+                    ],
+                ),
+            )
+
+    run_off_event_loop(_seed_2)
     async with Polylogue(archive_root=root) as api:
         timeline = await execute_session_operation(api, SessionTimeline(limit=5))
 
