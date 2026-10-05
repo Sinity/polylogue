@@ -13,7 +13,7 @@ from typing import Any, cast
 import pytest
 
 # Import the frame's recipe bindings before replacing its derivation in a test.
-import polylogue.operations.raw_observation_derivation as raw_derivation
+import polylogue.storage.derived.raw as raw_inspection
 from polylogue.core.degraded import DegradedReason
 from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
 from polylogue.daemon.catchup_status import _halted_sources
@@ -25,7 +25,7 @@ from polylogue.operations.intake_adapters import (
     RawMaterializationDiscovery,
     build_intake_adapters,
 )
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -89,7 +89,8 @@ async def test_failed_remote_poll_retries_before_the_normal_poll_deadline(
 async def test_valid_only_raw_pages_keep_the_service_moving_then_become_idle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock
 ) -> None:
-    bootstrap_archive_root(tmp_path)
+    # Bootstrap takes a synchronous lease; run it off the event loop.
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     calls: list[tuple[str | None, int]] = []
     waits: list[float] = []
 
@@ -108,7 +109,11 @@ async def test_valid_only_raw_pages_keep_the_service_moving_then_become_idle(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
-    monkeypatch.setattr(raw_derivation, "RawObservationDerivation", ValidPages)
+        def terminal_decode_refusals(self, _keys: Sequence[str]) -> dict[str, Exception]:
+            # No retained raw in this fixture refuses to decode.
+            return {}
+
+    monkeypatch.setattr(raw_inspection, "RawObservationInspection", ValidPages)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     async def discover(limit: int) -> tuple[tuple[str, int], ...]:
@@ -184,7 +189,11 @@ def test_a_resweep_pages_promptly_only_after_resting_nine_sweep_durations(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
-    monkeypatch.setattr(raw_derivation, "RawObservationDerivation", ValidPages)
+        def terminal_decode_refusals(self, _keys: Sequence[str]) -> dict[str, Exception]:
+            # No retained raw in this fixture refuses to decode.
+            return {}
+
+    monkeypatch.setattr(raw_inspection, "RawObservationInspection", ValidPages)
     discovery = RawMaterializationDiscovery(tmp_path)
 
     discovery.discover_pending_raw_ids(32)

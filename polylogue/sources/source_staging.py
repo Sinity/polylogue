@@ -145,6 +145,13 @@ def read_staging_receipt(
             metadata_identity = _named_identity(directory, name)
         except FileNotFoundError:
             return None
+        except OSError as exc:
+            # A receipt name beyond the filesystem's name limit cannot exist:
+            # receipts belong to short operation slots, never to a payload file
+            # whose own valid name already uses the whole limit.
+            if exc.errno != errno.ENAMETOOLONG:
+                raise
+            return None
         root = _identity(os.stat(staged.name, dir_fd=directory, follow_symlinks=False))
         if root[2] != stat.S_IFDIR:
             raise ValueError("staged receipt requires its private directory slot")
