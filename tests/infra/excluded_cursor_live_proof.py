@@ -27,7 +27,7 @@ from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
-from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.raw_owner_routes import live_owner_set
 
 
 def _codex_records(
@@ -303,17 +303,15 @@ def _run_case(
     metrics_holder: list[object] = []
 
     async def admit() -> None:
-        # The daemon wires its Raw convergence owner for off-writer
-        # existing-session preparation; without it every prepared path stays
-        # deferred.
-        async with prepared_live_convergence_owner(root) as owner:
+        # The watcher runs with the daemon's complete live owner set: its writer
+        # coordinator, SQLite capture stage and Raw convergence owner. Without
+        # the coordinator, batch publication writes outside writer admission.
+        async with live_owner_set(root) as owners:
             watcher = LiveWatcher(
                 cast(Any, polylogue),
                 (WatchSource(name="codex", root=source_root),),
                 cursor=cursor,
-                append_runner=owner.ingest_append_plans,
-                retained_runner=owner.ingest_retained_raw_ids,
-                convergence_runner=owner.run_convergence_sync,
+                **owners.watcher_kwargs(),
             )
             try:
                 original_ingest = watcher._ingest_files

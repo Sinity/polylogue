@@ -171,7 +171,7 @@ def test_preflight_rejects_zip_without_parseable_members(tmp_path: Path) -> None
 def test_preflight_accepts_complete_high_ratio_conversation(tmp_path: Path) -> None:
     source = tmp_path / "compressed-preflight.zip"
     payload = _chatgpt_payload()
-    payload["padding"] = "x" * (2 * 1024 * 1024)
+    payload["padding"] = "x" * (16 * 1024 * 1024)
     with zipfile.ZipFile(source, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("conversations.json", json.dumps(payload))
     with zipfile.ZipFile(source) as archive:

@@ -20,7 +20,6 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
-from tests.infra.compute_owner import owned_compute_adapter
 
 if TYPE_CHECKING:
     from polylogue.daemon.convergence import FileState
@@ -1018,7 +1017,7 @@ class ProductionCorpusRuntime:
         raw_ids = tuple(dict.fromkeys(raw_id for ids in self._raw_ids.values() for raw_id in ids))
         paths = tuple(dict.fromkeys(self._source_paths.values()))
 
-        async def parse() -> ParseResult:
+        async def parse_and_converge() -> tuple[ParseResult, dict[Path, FileState] | None]:
             from tests.infra.live_ingest import prepared_live_convergence_owner
 
             backend = SQLiteBackend(db_path=self.archive_root / "index.db")
@@ -1029,28 +1028,39 @@ class ProductionCorpusRuntime:
                     sources=[],
                     db_path=self.archive_root / "index.db",
                 )
-                # Publication goes through the canonical retained Raw owner.
+                # Publication goes through the canonical retained Raw owner;
+                # file stages then run on that owner's admitted preparation
+                # worker with its stage write admission, as the daemon runs them.
                 async with prepared_live_convergence_owner(self.archive_root) as owner:
                     service = ParsingService(
                         repository=SessionRepository(backend=backend),
                         archive_root=self.archive_root,
                         config=config,
                         ingest_workers=1,
-                        retained_runner=owner.replay_retained_raw_ids,
+                        retained_runner=owner.ingest_retained_raw_ids,
                     )
-                    return await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
+                    parsed = await service.parse_from_raw(raw_ids=list(raw_ids), force_write=True)
+                    if parsed.parse_failures:
+                        return parsed, None
+                    converger = DaemonConverger(
+                        make_default_convergence_stages(
+                            self.archive_root / "index.db", compute_adapter=owner._compute_adapter
+                        )
+                    )
+                    converged: dict[Path, FileState] = {}
+                    for path in paths:
+                        converged[path] = await owner.run_convergence_sync(
+                            "test.corpus-convergence", converger.converge_file, path
+                        )
+                    return parsed, converged
             finally:
                 await backend.close()
 
-        parse_result = asyncio.run(parse())
-        if parse_result.parse_failures:
+        parse_result, file_states = asyncio.run(parse_and_converge())
+        if file_states is None:
             self.last_results.append(parse_result)
             raise CorpusConvergenceRejectedError(parse_result)
-        with owned_compute_adapter() as compute:
-            converger = DaemonConverger(
-                make_default_convergence_stages(self.archive_root / "index.db", compute_adapter=compute)
-            )
-            states = {path: converger.converge_file(path) for path in paths}
+        states = file_states
         result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
         if any(state.error_count or not state.converged for state in states.values()):

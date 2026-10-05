@@ -92,7 +92,8 @@ def test_sweep_unclaimed_files_logs_unrecognized_file_and_skips_git(
     assert len(logged) == 1
     assert logged[0]["event"] == "file_acquisition_unclaimed"
     assert logged[0]["path"] == str(unclaimed_file)
-    assert logged[0]["reason"] == "no detector matched (test stub)"
+    assert logged[0]["reason"] == "unclaimed_file"
+    assert logged[0]["error_detail"] == "no detector matched (test stub)"
     assert logged[0]["source_name"] == "claude-code"
     assert logged[0]["size"] == unclaimed_file.stat().st_size
 
@@ -183,7 +184,9 @@ def test_log_unclaimed_file_emits_reason(monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
     assert captured["event"] == "file_acquisition_unclaimed"
-    assert captured["reason"] == "suffix not in watched set"
+    # ``reason`` is the registered token; the specific explanation is detail.
+    assert captured["reason"] == "unclaimed_file"
+    assert captured["error_detail"] == "suffix not in watched set"
     assert captured["source_name"] == "inbox"
 
 
