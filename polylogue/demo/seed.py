@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -1692,7 +1693,9 @@ async def _seed_demo_archive_owned(
 
     healed_tiers: tuple[str, ...] = ()
     if _archive_root_is_demo_owned(archive_root):
-        healed_tiers = _reconverge_stale_demo_generated_tiers(archive_root)
+        # Bootstrap takes the synchronous archive lease, which refuses to block
+        # the event loop; run it on a worker thread like other sync writers.
+        healed_tiers = await asyncio.to_thread(_reconverge_stale_demo_generated_tiers, archive_root)
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
