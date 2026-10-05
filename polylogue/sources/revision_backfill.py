@@ -1705,8 +1705,14 @@ def apply_prepared_revision_replay(
     session_outputs: dict[str, tuple[str, bytes | None, bytes | None, int]] = {}
     membership_refusals: list[tuple[str, str, MembershipDecision]] = []
 
+    refused_publication_raw_ids: set[str] = set()
+
     def record_write_result(result: ArchiveRawParsedWriteResult) -> None:
         nonlocal written_message_count
+        if result.publication_refused:
+            # Deterministic writer precedence (e.g. a weaker DOM capture after
+            # native evidence) refuses this output; it is settled, not retryable.
+            refused_publication_raw_ids.add(result.raw_id)
         written_session_ids[result.session_id] = None
         if result.content_changed:
             writer_changed_raw_ids[result.raw_id] = None
@@ -1729,6 +1735,10 @@ def apply_prepared_revision_replay(
         # not an Index content measurement; compare the original pinned
         # projection with the actual row produced by this writer.
         if after is not None and (before is None or before[0] != session_outputs[result.session_id][2]):
+            changed_session_ids[result.session_id] = None
+        elif result.content_changed:
+            # Session-hash-excluded rows (an appended agent work event keeps
+            # every session-owned field) still change the session's output.
             changed_session_ids[result.session_id] = None
         written_message_count += result.counts.get("messages", 0)
         for key, count in result.counts.items():
@@ -1885,6 +1895,10 @@ def apply_prepared_revision_replay(
                             revision_replay_terminal_raw_ids,
                         )
 
+                        if not applied_raw_ids and tip_raw_id in refused_publication_raw_ids:
+                            adoption_deferred += len(plan.accepted_raw_ids)
+                            settled_byte_keys.add(logical_key)
+                            continue
                         if applied_raw_ids != revision_replay_terminal_raw_ids(plan):
                             raise RetainedPreparationRetryableError(
                                 "byte publication disagrees with its original Source acknowledgements"
