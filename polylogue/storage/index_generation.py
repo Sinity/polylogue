@@ -1371,6 +1371,13 @@ class IndexGenerationStore:
             except FileNotFoundError:
                 original_metadata = None
             if backup_metadata is None and original_metadata is None:
+                # Promotion records a sidecar only after checkpointing the WAL
+                # to empty; -shm is rebuildable. Before the marker exists no
+                # sidecar was moved, so a clean SQLite close may have removed
+                # them at the pointer: nothing to restore. Once the marker
+                # exists the move happened and its backup must still be there.
+                if marker_metadata is None:
+                    continue
                 raise UnpublishedPromotionRecoveryError("predecessor sidecar is missing from both locations")
             if backup_metadata is not None:
                 if original_metadata is None:

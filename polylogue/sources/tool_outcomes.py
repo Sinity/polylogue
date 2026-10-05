@@ -16,6 +16,16 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 
 
+def _exact_key(value: str | None) -> bytes | None:
+    """Bind a provider identifier losslessly, including lone surrogates.
+
+    Provider IDs are exact facts; a lone surrogate cannot be encoded as SQLite
+    TEXT, so every identifier in this private index is a ``surrogatepass``
+    UTF-8 BLOB. Equality and grouping see the same exact value on both sides.
+    """
+    return None if value is None else value.encode("utf-8", "surrogatepass")
+
+
 class _OutcomeIndex:
     """Per-call, indexed evidence with fixed-size Python state."""
 
@@ -47,13 +57,14 @@ class _OutcomeIndex:
         )
 
     @staticmethod
-    def _owner_key(owner: str | None) -> tuple[int, str]:
-        return (0, "") if owner is None else (1, owner)
+    def _owner_key(owner: str | None) -> tuple[int, bytes]:
+        return (0, b"") if owner is None else (1, owner.encode("utf-8", "surrogatepass"))
 
     def add_sidecar(
         self, tool_id: str, owner: str | None, outcome: ToolOutcome, exit_code: int | None, *, origin: Origin
     ) -> None:
         owner_present, owner_value = self._owner_key(owner)
+        tool_key = _exact_key(tool_id)
         conflicts_with_ownerless = False
         if owner is None:
             # An ownerless record applies to every matching result. Check the
@@ -65,7 +76,7 @@ class _OutcomeIndex:
                         f"""SELECT outcome FROM sidecar
                         WHERE tool_id = ? AND owner_present = 1
                         ORDER BY outcome {direction} LIMIT 1""",
-                        (tool_id,),
+                        (tool_key,),
                     )
                 ) as rows:
                     prior_owned = rows.fetchone()
@@ -74,13 +85,13 @@ class _OutcomeIndex:
                     break
         else:
             prior_ownerless = self.conn.execute(
-                "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = 0 AND owner = ''",
-                (tool_id,),
+                "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = 0 AND owner = x''",
+                (tool_key,),
             ).fetchone()
             conflicts_with_ownerless = prior_ownerless is not None and prior_ownerless[0] != outcome.value
         prior = self.conn.execute(
             "SELECT outcome FROM sidecar WHERE tool_id = ? AND owner_present = ? AND owner = ?",
-            (tool_id, owner_present, owner_value),
+            (tool_key, owner_present, owner_value),
         ).fetchone()
         if conflicts_with_ownerless or (prior is not None and prior[0] != outcome.value):
             raise ValueError(
@@ -92,22 +103,23 @@ class _OutcomeIndex:
             ON CONFLICT (tool_id, owner_present, owner) DO UPDATE SET
                 outcome = excluded.outcome,
                 exit_code = COALESCE(excluded.exit_code, sidecar.exit_code)""",
-            (tool_id, owner_present, owner_value, outcome.value, exit_code),
+            (tool_key, owner_present, owner_value, outcome.value, exit_code),
         )
 
     def _sidecar_value(self, tool_id: str | None, owner: str | None, column: str) -> str | int | None:
         if tool_id is None:
             return None
         owner_present, owner_value = self._owner_key(owner)
+        tool_key = _exact_key(tool_id)
         row = self.conn.execute(
             f"SELECT {column} FROM sidecar WHERE tool_id = ? AND owner_present = ? AND owner = ?",
-            (tool_id, owner_present, owner_value),
+            (tool_key, owner_present, owner_value),
         ).fetchone()
         if row is not None and row[0] is not None:
             return cast(str | int | None, row[0])
         row = self.conn.execute(
-            f"SELECT {column} FROM sidecar WHERE tool_id = ? AND owner_present = 0 AND owner = ''",
-            (tool_id,),
+            f"SELECT {column} FROM sidecar WHERE tool_id = ? AND owner_present = 0 AND owner = x''",
+            (tool_key,),
         ).fetchone()
         return cast(str | int | None, row[0]) if row is not None else None
 
@@ -128,13 +140,17 @@ class _OutcomeIndex:
         verdict would silently attribute evidence across records.
         """
         with closing(
-            self.conn.execute("SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome ASC LIMIT 1", (tool_id,))
+            self.conn.execute(
+                "SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome ASC LIMIT 1", (_exact_key(tool_id),)
+            )
         ) as rows:
             first = rows.fetchone()
         if first is None:
             return None
         with closing(
-            self.conn.execute("SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome DESC LIMIT 1", (tool_id,))
+            self.conn.execute(
+                "SELECT outcome FROM sidecar WHERE tool_id = ? ORDER BY outcome DESC LIMIT 1", (_exact_key(tool_id),)
+            )
         ) as rows:
             last = rows.fetchone()
         if last is not None and last[0] != first[0]:
@@ -233,9 +249,9 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
             "INSERT INTO original_messages VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 ordinal,
-                native_id,
-                normalized_id or None,
-                message.parent_message_provider_id,
+                _exact_key(native_id),
+                _exact_key(normalized_id or None),
+                _exact_key(message.parent_message_provider_id),
                 message.parent_message_position,
                 message.position,
                 message.role.value,
@@ -249,7 +265,7 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
             if block.type is BlockType.TOOL_USE:
                 index.conn.execute(
                     "INSERT INTO association_blocks VALUES(?,?,?,?,?,?,?,?)",
-                    (0, f"{ordinal}:{block_ordinal}", ordinal, block.tool_id, 1, None, None, block_ordinal),
+                    (0, f"{ordinal}:{block_ordinal}", ordinal, _exact_key(block.tool_id), 1, None, None, block_ordinal),
                 )
                 continue
             result_candidates = _result_candidates(
@@ -274,7 +290,7 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
                     0,
                     f"{ordinal}:{block_ordinal}",
                     ordinal,
-                    block.tool_id,
+                    _exact_key(block.tool_id),
                     0,
                     outcome.value,
                     unknown_reason,
