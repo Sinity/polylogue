@@ -15,6 +15,7 @@ import os
 import pickle
 import re
 import sqlite3
+import stat
 import struct
 import tempfile
 import threading
@@ -2447,7 +2448,7 @@ class PreparedIndexMutation:
             before = path.lstat()
         except FileNotFoundError:
             return None
-        link = os.readlink(path) if path.is_symlink() else None
+        link = os.readlink(path) if stat.S_ISLNK(before.st_mode) else None
         after = path.lstat()
         identity = (before.st_dev, before.st_ino, before.st_mode, link)
         if (after.st_dev, after.st_ino, after.st_mode) != identity[:3]:
@@ -4613,6 +4614,7 @@ class PreparedIndexMutation:
         with owned_literal_stream(left), owned_literal_stream(right):
             return all(a == b for a, b in zip_longest(normalized(left), normalized(right)))
 
+    @_namespace_verified_per_row
     def _retain_row_image(self, image: KnownTierRowImage) -> int:
         """Persist schema-width locators, never a pickled variable row payload."""
         self._require_witness_main_mutable()
@@ -5103,6 +5105,7 @@ class PreparedIndexMutation:
             self._cleanup_requested = True
             raise
 
+    @_namespace_verified_per_row
     def _retain_native_row(
         self,
         connection: sqlite3.Connection,

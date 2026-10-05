@@ -67,7 +67,7 @@ def test_verify_refuses_on_the_default_branch_before_any_work(
     """Anti-vacuity: drop the guard from ``verify._main`` and the run proceeds
     to its first step, raising ``_PastTheGuardError`` instead of returning."""
     monkeypatch.setattr(verify, "ROOT", _repository(tmp_path / "base", "master"))
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     assert verify._main(["--quick", "--json"]) == REFUSAL_EXIT
 
@@ -82,7 +82,7 @@ def test_verify_runs_on_the_default_branch_when_asked(
     """The opt-in admits the run, and its first line names what it tests."""
     root = _repository(tmp_path / "base", "master")
     monkeypatch.setattr(verify, "ROOT", root)
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     with pytest.raises(_PastTheGuardError):
         verify._main(["--quick", ON_DEFAULT_BRANCH_FLAG])
@@ -93,7 +93,7 @@ def test_verify_runs_on_the_default_branch_when_asked(
 
 def test_verify_runs_on_a_feature_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(verify, "ROOT", _repository(tmp_path / "feature", "claude/change"))
-    monkeypatch.setattr(verify, "reconcile_and_record_verify_runs", _admitted)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", _admitted)
 
     with pytest.raises(_PastTheGuardError):
         verify._main(["--quick"])

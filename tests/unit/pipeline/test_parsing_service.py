@@ -736,7 +736,7 @@ class TestParsingServiceStreaming:
         applied to the daemon's other unbounded writer-holding actor
         (``maintenance.drive_catchup``, measured hold_max=18,623s). A per-call
         wall-clock budget must stop ``parse_from_raw`` from draining the whole
-        raw-id backlog in one call even though ``raw_batch_size`` alone would
+        raw-id backlog in one call even though the parse page size alone would
         admit every batch. The budget is checked only *between* batches (each
         batch is a real write/transaction boundary), so at least one batch
         always completes -- forward progress is guaranteed -- and raw ids left
@@ -758,8 +758,10 @@ class TestParsingServiceStreaming:
             repository=repository,
             archive_root=config.archive_root,
             config=config,
-            raw_batch_size=1,
         )
+        # One raw per parse page, so every page is its own write boundary. Set
+        # on the instance: the clock patch below is undone mid-test.
+        service.RAW_BATCH_SIZE = 1
 
         # A monotonic clock that always advances well past any small budget
         # after its very first read -- deterministic regardless of exactly

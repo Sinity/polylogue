@@ -253,7 +253,9 @@ def test_seeded_session_counters_come_from_the_stored_projection(db_path: Path) 
     from polylogue.storage.sqlite.connection import open_connection
     from tests.infra.storage_records import SessionBuilder
 
-    builder = SessionBuilder(db_path, "counters")
+    # A runtime transcript keeps each message's declared origin; chat exports
+    # apply the session-level human-channel guarantee to every user message.
+    builder = SessionBuilder(db_path, "counters").provider("claude-code")
     builder.add_message(
         role="user",
         text="one two three",

@@ -93,8 +93,8 @@ def test_all_edge_coverage_cancels_inside_sqlite_and_closes_physical_scratch(
     directories: list[Path] = []
     exhausted = False
 
-    def track_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
-        directory = original(prefix=prefix, dir=tmp_path)
+    def track_directory(*, prefix: str, dir: Path | None = None) -> tempfile.TemporaryDirectory[str]:
+        directory = original(prefix=prefix, dir=tmp_path if dir is None else dir)
         directories.append(Path(directory.name))
         return directory
 

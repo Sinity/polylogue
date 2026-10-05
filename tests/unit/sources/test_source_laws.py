@@ -24,6 +24,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Origin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value
+from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_source_coordinate
 from polylogue.sources import decoders as decoders_module
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources import source_acquisition
@@ -518,10 +519,6 @@ def test_iter_source_sessions_accepts_grouped_json_extensions(case: tuple[str, b
     assert all(str(session.source_name) == provider for session in sessions)
 
 
-def test_parse_payload_depth_guard_contract() -> None:
-    assert parse_payload(Provider.CHATGPT.value, {}, "test") == []
-
-
 def test_source_iteration_preserves_claude_attachment_metadata_contract(tmp_path: Path) -> None:
     payload = {
         "chat_messages": [
@@ -606,36 +603,19 @@ def test_source_iteration_continues_after_invalid_json_contract(tmp_path: Path, 
         assert all(raw_data is not None for raw_data, _ in raw_items)
 
 
-def test_iter_source_sessions_tracks_file_disappearance_contract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_iter_source_sessions_tracks_file_disappearance_contract(tmp_path: Path) -> None:
     first = _write_generic_session(tmp_path / "first.json", "first")
     second = _write_generic_session(tmp_path / "second.json", "second")
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    original_open = Path.open
 
-    def flaky_open(
-        path: Path,
-        mode: str = "r",
-        buffering: int = -1,
-        encoding: str | None = None,
-        errors: str | None = None,
-        newline: str | None = None,
-    ) -> IO[str] | IO[bytes]:
-        if path == second:
-            raise FileNotFoundError("deleted")
-        return original_open(
-            path,
-            mode=mode,
-            buffering=buffering,
-            encoding=encoding,
-            errors=errors,
-            newline=newline,
-        )
-
-    monkeypatch.setattr(Path, "open", flaky_open)
-
-    sessions = list(iter_source_sessions(Source(name="test", path=tmp_path), cursor_state=cursor_state))
+    # The walk lists both files before reading either. Deleting the second one
+    # after the first is parsed reproduces the real listing/read race on the
+    # production read route rather than through a patched open().
+    sessions = []
+    for session in iter_source_sessions(Source(name="test", path=tmp_path), cursor_state=cursor_state):
+        sessions.append(session)
+        if session.provider_session_id == "first":
+            second.unlink()
 
     assert [session.provider_session_id for session in sessions] == ["first"]
     assert cursor_state["failed_count"] == 1
@@ -719,7 +699,14 @@ def test_iter_source_sessions_with_raw_preserves_grouped_bytes_contract(
     assert len(items) == 1
     raw_data, session = items[0]
     assert raw_data is not None
-    assert raw_data.source_index is None
+    if use_zip:
+        # A grouped member is retained whole: its captured coordinate is the
+        # member itself (split 0), never an element of a split container.
+        assert raw_data.addressing_mode is MemberAddressingMode.WHOLE_MEMBER
+        assert raw_data.captured_zip_coordinate is not None
+        assert raw_data.captured_zip_coordinate.split_index == 0
+    else:
+        assert raw_data.source_index is None
     raw_bytes = raw_data.raw_bytes
     if not raw_bytes and raw_data.blob_hash is not None:
         raw_bytes = get_blob_store().read_all(raw_data.blob_hash)
@@ -1499,8 +1486,9 @@ def test_session_emitter_resolves_schema_for_payloads(monkeypatch: pytest.Monkey
         *,
         schema_resolution: object | None = None,
         source_path: str | None = None,
+        profile_identity: str | None = None,
     ) -> list[ParsedSession]:
-        del source_path
+        del source_path, profile_identity
         fake_parse(provider=provider, payload=payload, fallback_id=fallback_id, schema_resolution=schema_resolution)
         return [fake_session]
 
@@ -2197,9 +2185,10 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
                 _zip_entry("nested/sessions.jsonl", size=2_000_000, compressed=1),
                 _zip_entry("nested/readme.txt"),
             ],
-            ["nested/sessions.json", "nested/other.json"],
-            1,
-            "nested/sessions.jsonl",
+            # No compression-ratio refusal: valid input is streamed, not capped.
+            ["nested/sessions.json", "nested/other.json", "nested/sessions.jsonl"],
+            0,
+            None,
         ),
         (
             "chatgpt",
@@ -2227,18 +2216,19 @@ def _zip_entry(name: str, *, size: int = 100, compressed: int = 50) -> zipfile.Z
         ),
         (
             "chatgpt",
+            # No uncompressed-size refusal: a large member is streamed, not capped.
             [_zip_entry("nested/huge.json", size=11 * 1024 * 1024 * 1024, compressed=1024)],
-            [],
-            1,
-            "huge.json",
+            ["nested/huge.json"],
+            0,
+            None,
         ),
     ],
     ids=[
         "claude-bundle-json-kept",
-        "suspicious-entry-rejected",
+        "high-compression-ratio-entry-kept",
         "supported-json-extensions-kept",
         "directories-and-unsupported-skipped",
-        "oversized-entry-rejected",
+        "large-entry-kept",
     ],
 )
 def test_zip_entry_validator_policy_contract(
@@ -2533,7 +2523,9 @@ def test_iter_source_acquisition_records_splits_multi_session_zip_entries_for_no
 
     expected_path = f"{archive_path}:nested/{entry_name}"
     assert [item.source_path for item in items] == [expected_path, expected_path]
-    assert [item.source_index for item in items] == [0, 1]
+    # source_index packs (entry ordinal, split index); both elements are entry 0.
+    assert [zip_member_source_coordinate(item.source_index or 0) for item in items] == [(0, 0), (0, 1)]
+    assert all(item.source_index is not None for item in items)
     assert [item.provider_hint for item in items] == [expected_provider, expected_provider]
     assert all(item.blob_hash is not None for item in items)
     assert all(item.raw_bytes == b"" for item in items)
@@ -2730,7 +2722,7 @@ def test_iter_source_acquisition_records_streams_preserved_zip_entries_into_blob
     assert get_blob_store().read_all(items[0].blob_hash) == entry_bytes
 
 
-def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
+def test_iter_entry_payloads_detects_every_member_of_a_document_array(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payloads = [
@@ -2782,10 +2774,10 @@ def test_iter_entry_payloads_locks_provider_after_first_detected_payload(
         Provider.CHATGPT,
         Provider.CHATGPT,
     ]
-    assert items[0][2] >= 0.0
-    assert items[1][2] >= 0.0
-    assert items[2][2] == 0.0
-    assert detect_calls == payloads[:2]
+    # Every member is checked against the document predicates; no member
+    # inherits a provider from an earlier one.
+    assert all(detect_ms >= 0.0 for _, _, detect_ms in items)
+    assert detect_calls == payloads
 
 
 def test_iter_entry_payloads_preserves_decimal_bearing_chatgpt_records() -> None:
@@ -2979,89 +2971,69 @@ def test_iter_source_acquisition_records_summarizes_zero_byte_plain_files(
     ]
 
 
+def _zip_member_dispositions(archive_path: Path, cursor_state: CursorStatePayload) -> list[tuple[str, str, str]]:
+    records = list(iter_source_acquisition_records(Source(name="codex", path=archive_path), cursor_state=cursor_state))
+    assert [record.data for record in records if record.data is not None] == []
+    return [
+        (str(record.member_name), str(record.member_disposition), str(record.diagnostic))
+        for record in records
+        if record.member_name is not None
+    ]
+
+
 def test_iter_source_acquisition_records_skips_zero_byte_zip_entries_and_tracks_failure(tmp_path: Path) -> None:
+    """An empty member is a typed per-member disposition, not a parse failure."""
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/empty.jsonl", b"")
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(
-        acquired_payloads(
-            iter_source_acquisition_records(Source(name="codex", path=archive_path), cursor_state=cursor_state)
-        )
-    )
+    dispositions = _zip_member_dispositions(archive_path, cursor_state)
 
-    assert items == []
-    assert cursor_state["failed_count"] == 1
-    assert cursor_state["failed_files"] == [{"path": f"{archive_path}:nested/empty.jsonl", "error": "empty file"}]
+    assert dispositions == [("nested/empty.jsonl", "unselected", "member is empty")]
+    assert cursor_state["failed_count"] == 0
 
 
-def test_iter_source_acquisition_records_summarizes_zero_byte_zip_entries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_iter_source_acquisition_records_summarizes_zero_byte_zip_entries(tmp_path: Path) -> None:
+    """Every empty member keeps its own disposition record, in member order."""
     archive_path = tmp_path / "bundle.zip"
     with zipfile.ZipFile(archive_path, "w") as zf:
         zf.writestr("nested/empty-a.jsonl", b"")
         zf.writestr("nested/empty-b.jsonl", b"")
 
-    warnings: list[str] = []
-    debugs: list[str] = []
+    dispositions = _zip_member_dispositions(archive_path, _empty_cursor_state())
 
-    monkeypatch.setattr(
-        source_acquisition.logger,
-        "warning",
-        lambda message, *args: warnings.append(message % args if args else message),
-    )
-    monkeypatch.setattr(
-        source_acquisition.logger,
-        "debug",
-        lambda message, *args: debugs.append(message % args if args else message),
-    )
-
-    items = list(acquired_payloads(iter_source_acquisition_records(Source(name="codex", path=archive_path))))
-
-    assert items == []
-    assert warnings == ["Skipped 2 empty artifacts from source 'codex'. Run with --verbose for details."]
-    assert debugs == [
-        f"Skipping empty source entry: {archive_path}:nested/empty-a.jsonl",
-        f"Skipping empty source entry: {archive_path}:nested/empty-b.jsonl",
+    assert dispositions == [
+        ("nested/empty-a.jsonl", "unselected", "member is empty"),
+        ("nested/empty-b.jsonl", "unselected", "member is empty"),
     ]
 
 
-def test_iter_source_acquisition_records_tracks_read_failures_without_stopping(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_iter_source_acquisition_records_tracks_read_failures_without_stopping(tmp_path: Path) -> None:
     good = tmp_path / "good.json"
     bad = tmp_path / "bad.json"
     good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
     bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
 
-    # Fail the capture of the bad file; captures stream through the
-    # acquisition boundary, whose raw reader names the source path.
-    original_write = BlobStore.write_from_fileobj
-
-    def flaky_write(
-        self: BlobStore,
-        source: IO[bytes],
-        *,
-        heartbeat: Heartbeat | None = None,
-    ) -> tuple[str, int]:
-        if getattr(getattr(source, "raw", None), "name", None) == str(bad):
-            raise OSError("boom")
-        return original_write(self, source, heartbeat=heartbeat)
-
-    monkeypatch.setattr(BlobStore, "write_from_fileobj", flaky_write)
-
-    cursor_state: CursorStatePayload = _empty_cursor_state()
-    items = list(
-        acquired_payloads(
-            iter_source_acquisition_records(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state)
+    # Captures run in an isolated reader process, so the read fault is a real
+    # one: the bad file cannot be opened at all.
+    bad.chmod(0)
+    try:
+        cursor_state: CursorStatePayload = _empty_cursor_state()
+        items = list(
+            acquired_payloads(
+                iter_source_acquisition_records(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state)
+            )
         )
-    )
+    finally:
+        bad.chmod(0o600)
 
     assert [item.source_path for item in items] == [str(good)]
     assert cursor_state["failed_count"] == 1
-    assert any(entry["path"] == str(bad) and entry["error"] == "boom" for entry in _failed_files(cursor_state))
+    assert any(
+        entry["path"] == str(bad) and "Permission denied" in str(entry["error"])
+        for entry in _failed_files(cursor_state)
+    )
 
 
 # =============================================================================

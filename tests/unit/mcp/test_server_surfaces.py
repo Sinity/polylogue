@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.config import Config
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import run_archive_fixture_prepare
 from tests.infra.index_writer import write_fixture_index_session
@@ -558,7 +559,12 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
     with (
         patch(
             "polylogue.mcp.server._get_config",
-            return_value=SimpleNamespace(archive_root=archive_root, db_path=archive_root / "index.db"),
+            return_value=Config(
+                archive_root=archive_root,
+                render_root=archive_root / "render",
+                sources=[],
+                db_path=archive_root / "index.db",
+            ),
         ),
         patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
     ):

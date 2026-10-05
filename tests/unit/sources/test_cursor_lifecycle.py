@@ -368,54 +368,38 @@ def test_breaking_the_reset_failures_actuator_is_caught_by_the_validator(
 
 _SIGKILL_SUBPROCESS_SCRIPT = """
 import signal
-import sqlite3
 import sys
 from pathlib import Path
 
-# ``upsert_ingest_cursor`` (polylogue/storage/sqlite/archive_tiers/ops_write.py)
-# issues its own ``conn.commit()`` right after the row UPDATE -- discovered
-# while building this harness: the outer ``BEGIN IMMEDIATE`` in
-# ``CursorStore._read_modify_write_cursor_record`` widens the WRITE LOCK to
-# cover the read (that is what fixes polylogue-qug2's lost-update race), but
-# the actual durable commit boundary is this inner ``conn.commit()``, not the
-# `with conn:` context manager exit several stack frames up. A crash fault
-# has to straddle THIS commit call, not merely "somewhere inside
-# CursorStore.mark_failed", or it can never observe an uncommitted write --
-# proved empirically: wrapping the outer function and killing the process
-# right after it returned always observed the write already durable.
+# Archive writers open ops.db through the measured creator, and the cursor's
+# read-modify-write commits at its ``with conn:`` exit. That exit is the durable
+# commit boundary (the outer ``BEGIN IMMEDIATE`` widens the write lock over the
+# read, polylogue-qug2), so the crash fault straddles exactly this call: the
+# transaction is still uncommitted when the process parks here.
 #
 # ARMED gates the pause so only the write this test cares about is poisoned
 # -- CursorStore.__init__ issues its own unrelated ops-tier commits during
 # initialize()/interrupted-attempt recovery, which must proceed normally.
 ARMED = [False]
 
+from polylogue.storage import io_phase_metrics  # noqa: E402
 
-class PausingConnection(sqlite3.Connection):
-    def commit(self):
-        if ARMED[0]:
-            sys.stdout.write("WROTE\\n")
-            sys.stdout.flush()
-            # Genuinely parks this thread in a kernel wait -- no further
-            # Python bytecode can run past this point. The parent sends a
-            # real SIGKILL once it has seen the announcement, so the
-            # transaction is torn down while truly mid-commit, not racing a
-            # self-delivered signal (self os.kill(SIGKILL) is NOT
-            # deterministic here: signal delivery is asynchronous and the
-            # interpreter can -- and, measured empirically, does -- run far
-            # enough to finish the commit before the kernel acts on it).
-            signal.pause()
-        return super().commit()
+_original_exit = io_phase_metrics._MeasuredConnection.__exit__
 
 
-_original_connect = sqlite3.connect
+def _pausing_exit(self, exc_type, exc, traceback):
+    if ARMED[0] and exc_type is None and self.in_transaction:
+        sys.stdout.write("WROTE\\n")
+        sys.stdout.flush()
+        # Genuinely parks this thread in a kernel wait -- no further Python
+        # bytecode can run past this point. The parent sends a real SIGKILL once
+        # it has seen the announcement, so the transaction is torn down while
+        # truly mid-commit, not racing a self-delivered signal.
+        signal.pause()
+    return _original_exit(self, exc_type, exc, traceback)
 
 
-def _patched_connect(*args, **kwargs):
-    kwargs.setdefault("factory", PausingConnection)
-    return _original_connect(*args, **kwargs)
-
-
-sqlite3.connect = _patched_connect
+io_phase_metrics._MeasuredConnection.__exit__ = _pausing_exit
 
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore  # noqa: E402
 

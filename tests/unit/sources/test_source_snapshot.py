@@ -466,6 +466,8 @@ def test_sqlite_cut_refuses_a_logical_export_with_a_different_logical_revision(
 
     def export_different_content(_source: Path, handle: sqlite_export.BinaryWriteSink, **kwargs: Any) -> None:
         kwargs.pop("expected_identity", None)
+        kwargs.pop("parent_anchor", None)
+        kwargs.pop("source_binding", None)
         logical_export = logical_export_bytes(different, **kwargs)
         handle.write(logical_export)
 

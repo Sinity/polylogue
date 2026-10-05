@@ -2,8 +2,8 @@
 
 polylogue-0puw AC3: inject a failure at each publication boundary of the real
 canonical chain -- retained preparation reserves and publishes attachment
-bytes, the Source durable-reference transaction writes ``blob_refs`` and
-consumes the reservation, then the Index write references them -- and assert the surviving state either
+bytes, the Index write references them, the Source durable-reference
+transaction consumes the reservation -- and assert the surviving state either
 resumes safely on retry or lands in a bucket
 ``reconcile_blob_publication_reservations`` names (missing / referenced /
 unresolved). The chain is driven through the canonical retained owner
@@ -267,8 +267,7 @@ async def test_crash_after_blob_write_before_index_write_keeps_the_source_refere
     together. An Index crash therefore leaves no receipt, and the bytes stay
     live through that durable Source reference (never an unreserved,
     unreferenced orphan). A retry converges the Index from the same Source
-    evidence. Anti-vacuity: the retry assertions alone hold without the fault,
-    but then the Index attachments exist before the liveness check below.
+    evidence.
     """
     from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness
 

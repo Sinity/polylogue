@@ -152,8 +152,8 @@ def test_spooled_cohort_releases_population_operands_and_physical_scratch(
     original = tempfile.TemporaryDirectory
     directories: list[Path] = []
 
-    def track_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
-        directory = original(prefix=prefix, dir=tmp_path)
+    def track_directory(*, prefix: str, dir: Path | None = None) -> tempfile.TemporaryDirectory[str]:
+        directory = original(prefix=prefix, dir=tmp_path if dir is None else dir)
         directories.append(Path(directory.name))
         return directory
 
@@ -197,8 +197,8 @@ def test_spooled_cohort_cancellation_after_input_exhaustion_closes_scratch(
     directories: list[Path] = []
     exhausted = False
 
-    def track_directory(*, prefix: str) -> tempfile.TemporaryDirectory[str]:
-        directory = original(prefix=prefix, dir=tmp_path)
+    def track_directory(*, prefix: str, dir: Path | None = None) -> tempfile.TemporaryDirectory[str]:
+        directory = original(prefix=prefix, dir=tmp_path if dir is None else dir)
         directories.append(Path(directory.name))
         return directory
 

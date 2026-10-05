@@ -14,6 +14,7 @@ import polylogue.sources.source_root_admission as source_root_admission
 from polylogue.config import Source
 from polylogue.maintenance.source_conservation import SourceConservationReport, audit_source_conservation
 from polylogue.operations.canonical_archive_ingest import _ingest_selected_paths, ingest_one_shot_archive
+from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, parse_markdown_export
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.storage.blob_store import BlobStore
@@ -36,10 +37,7 @@ def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: lis
             pb_path = source.path / "conversations" / f"{cascade_id}.pb"
             if admit_path is not None and not admit_path(pb_path):
                 continue
-            session = parse_markdown_export(
-                f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
-                AntigravitySessionSummary(cascade_id=cascade_id),
-            )
+            session = _synthetic_session(cascade_id)
             raw = source_parsing._antigravity_raw_snapshot(
                 pb_path,
                 source_sha256=sha256(pb_path.read_bytes()).hexdigest(),
@@ -49,7 +47,26 @@ def _install_antigravity_export_stub(monkeypatch: pytest.MonkeyPatch, roots: lis
             )
             yield raw, session
 
+    def replay_export(
+        root: Path,
+        *,
+        client: object | None = None,
+        only_cascade_ids: frozenset[str] | None = None,
+    ) -> Iterable[ParsedSession]:
+        # Retained replay re-parses through the parser module's own export seam;
+        # it must reproduce the same synthetic conversion as live intake.
+        for cascade_id in sorted(only_cascade_ids or ()):
+            yield _synthetic_session(cascade_id)
+
     monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", export)
+    monkeypatch.setattr(antigravity, "iter_language_server_exports", replay_export)
+
+
+def _synthetic_session(cascade_id: str) -> ParsedSession:
+    return parse_markdown_export(
+        f"### User Input\n\nQuestion from {cascade_id}.\n\n### Planner Response\n\nAnswer.\n",
+        AntigravitySessionSummary(cascade_id=cascade_id),
+    )
 
 
 def _source_conservation(archive_root: Path) -> SourceConservationReport:

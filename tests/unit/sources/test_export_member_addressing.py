@@ -816,12 +816,17 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     real_zip = tmp_path / "real.zip"
     _write_member(real_zip, [_session("one")])
     member_path = f"{real_zip}:conversations.json"
-    row = _row(member_path, payload=b"{}", source_index=0)
+    # The recorded raw bytes are the whole one-element member, as acquisition retained them.
+    row = _row(member_path, payload=zipfile.ZipFile(real_zip).read("conversations.json"), source_index=0)
     receipt = str(row["captured_coordinate"])
     assert archive_debt._source_artifact_exists(member_path) is False
     assert blob_integrity._source_path_availability(member_path)[0] is False
     assert archive_debt._source_artifact_exists(member_path, receipt) is True
-    assert blob_integrity._source_path_availability(member_path, captured_coordinate=receipt)[0] is True
+    assert (
+        blob_integrity._source_path_availability(member_path, captured_coordinate=receipt, raw_evidence=row)[0] is True
+    )
+    # A container name alone proves neither the recorded unit nor its bytes.
+    assert blob_integrity._source_path_availability(member_path, captured_coordinate=receipt)[0] is None
 
 
 def test_zip_coordinate_candidates_preserve_every_colon_boundary() -> None:
