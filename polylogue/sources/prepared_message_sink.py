@@ -1455,6 +1455,10 @@ class SqliteMessageStore:
         )
         try:
             self.conn.execute("PRAGMA journal_mode = DELETE")
+            # Scratch for one process: admission trusts the in-memory content
+            # seal of the closed file, never a store that outlived a crash, so
+            # syncing each commit to stable storage buys nothing.
+            self.conn.execute("PRAGMA synchronous = OFF")
             # The schema is created inside the store's one transaction: as separate
             # autocommit statements each CREATE paid its own journal and fsync, per
             # prepared artifact, before any row was spooled.

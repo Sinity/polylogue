@@ -8251,11 +8251,12 @@ class PreparedSessionSourceRead:
         with self._seal.original_rows("source", sql, parameters) as rows:
             for (rowid,) in rows:
                 check_compute_cancelled()
-                if self._seal.source_row_is_touched(table, rowid):
-                    continue
-                image = self._seal.retain_tier_row("source", table, rowid)
-                if image is not None:
-                    self._seal.load_source_row(image)
+                with self._seal.verified_namespace():
+                    if self._seal.source_row_is_touched(table, rowid):
+                        continue
+                    image = self._seal.retain_tier_row("source", table, rowid)
+                    if image is not None:
+                        self._seal.load_source_row(image)
 
     @property
     def archive_root(self) -> Path:
