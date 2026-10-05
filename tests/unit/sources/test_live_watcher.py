@@ -2392,8 +2392,10 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     debt = cursor.list_convergence_debt()
     assert len(debt) == 1
     assert debt[0].stage == "convergence"
-    assert debt[0].subject_type == "session_id"
-    assert "second-session" in debt[0].subject_id
+    # Debt is keyed by the unit the converger failed on: on the retained
+    # route that is the source observation, before any session exists.
+    assert debt[0].subject_type == "source_path"
+    assert debt[0].subject_id == str(second_path)
 
 
 def test_full_parse_progress_groups_bounds_files_by_count(
