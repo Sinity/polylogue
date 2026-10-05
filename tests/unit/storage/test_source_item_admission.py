@@ -151,22 +151,22 @@ def test_late_membership_error_rolls_back_raw_and_membership_together(
 ) -> None:
     """A failure after the raw and membership rows exist rolls both back.
 
-    The container coordinate is the last durable effect before receipt
-    consumption; failing it must leave neither the raw nor its membership.
+    Receipt consumption is the last effect of one admission; failing it must
+    leave neither the raw nor its membership edge behind.
     """
-    from polylogue.storage.sqlite.archive_tiers import source_write
+    from polylogue.storage import blob_publication
 
-    conn, plan, member = _captured_zip_archive(tmp_path)
+    conn, _generation, item_id, plan = _archive(tmp_path)
 
     def late_failure(*_args: object, **_kwargs: object) -> None:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
-        raise ValueError("late container coordinate failure")
+        raise ValueError("late receipt consumption failure")
 
-    monkeypatch.setattr(source_write, "record_raw_container_coordinate", late_failure)
+    monkeypatch.setattr(blob_publication, "consume_blob_publication_receipt", late_failure)
     conn.execute("BEGIN")
-    with pytest.raises(ValueError, match="late container coordinate failure"):
-        execute_source_item_admission(conn, plan, member)
+    with pytest.raises(ValueError, match="late receipt consumption failure"):
+        execute_source_item_admission(conn, plan, _member(item_id))
 
     assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
     assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (0,)

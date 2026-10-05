@@ -59,6 +59,9 @@ def _stage_raw(seal: PreparedIndexMutation, raw_id: str, *, allocation: bool = T
         parameters,
         table="raw_sessions",
         writable_targets=(("raw_sessions", (values[0],)),),
+        # raw_sessions feeds the frontier journal, which keys its insert on
+        # the exact prepared primary key cell.
+        prepared_cells=dict(zip(("raw_id", "origin", "source_path", "blob_hash"), values, strict=True)),
         allocation_parameter=0 if allocation else None,
     ) as cursor:
         rowid = cursor.lastrowid
@@ -209,7 +212,7 @@ def test_source_only_blob_reference_transient_delete_requires_exact_original_key
             assert image is not None
             seal.load_source_row(image)
             values = dict(zip(image.columns, image.cells, strict=True))
-            key = tuple(values[name] for name in ("blob_hash", "ref_type", "ref_id"))
+            key = tuple(values[name] for name in ("blob_hash", "ref_type", "ref_id", "source_path"))
             with seal.source_statement(
                 "DELETE FROM blob_refs WHERE rowid=1",
                 table="blob_refs",
@@ -474,6 +477,7 @@ def test_source_only_original_full_normalization_requires_complete_current_censu
                     (None, *raw_parameters, *fingerprint_parameters),
                     table="raw_membership_census",
                     writable_targets=(("raw_membership_census", (values["raw_id"],)),),
+                    prepared_cells={"raw_id": values["raw_id"], "parser_fingerprint": fingerprint},
                     allocation_parameter=0,
                 ):
                     pass
