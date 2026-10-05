@@ -28,6 +28,7 @@ from polylogue.archive.query.unit_results import query_unit_envelope, query_unit
 from polylogue.core.enums import BranchType, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -39,7 +40,7 @@ _HASH = b"x" * 32
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)

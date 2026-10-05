@@ -42,6 +42,7 @@ def _bootstrapped(path: Path) -> Path:
     # Tier files live inside a canonical archive root; the fixture writer
     # refuses tier files that predate the root's format marker.
     if not (path.parent / ".polylogue-format.json").exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
         bootstrap_archive_root(path.parent)
     return path
 
@@ -204,11 +205,11 @@ def test_child_first_converges_to_the_same_edge(tmp_path: Path) -> None:
     Red if ``_refill_inbound_dispatch_block_ids`` stops running on the parent
     write, or if the inbound resolution loop stops binding the block.
     """
-    first = _index_conn(tmp_path / "parent-first.db")
+    first = _index_conn(tmp_path / "parent-first" / "index.db")
     _write_parent(first, _parent_records([("call_1", "a1")]))
     child_first_edge = dict(_link(first, _write_child(first, "a1")))
 
-    second = _index_conn(tmp_path / "child-first.db")
+    second = _index_conn(tmp_path / "child-first" / "index.db")
     child_id = _write_child(second, "a1")
     pending = _link(second, child_id)
     assert pending["resolved_dst_session_id"] is None
@@ -496,7 +497,7 @@ def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) ->
             """SELECT l.parent_tool_use_block_id, l.method, json_extract(l.evidence_json, '$.dispatch_reason'),
                       (SELECT b.block_id FROM blocks b WHERE b.tool_id = 'call_1' AND b.block_type = 'tool_use')
                FROM session_links l JOIN sessions s ON s.session_id = l.src_session_id
-               WHERE s.provider_session_id = 'agent-a1'""",
+               WHERE s.native_id = 'agent-a1'""",
         ).fetchall()
 
     assert len(edge) == 1
