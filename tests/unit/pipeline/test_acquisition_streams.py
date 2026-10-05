@@ -135,6 +135,7 @@ async def test_iter_raw_record_stream_forwards_drive_progress_and_observations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.frozen_clock_modules("polylogue.pipeline.services.acquisition_streams")
 async def test_ordinary_zip_reobservation_proves_exact_membership_without_clock_order(
     tmp_path: Path,
     frozen_clock: FrozenClock,
