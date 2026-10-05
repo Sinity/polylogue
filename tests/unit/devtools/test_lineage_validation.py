@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -169,6 +170,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 semantic_type TEXT,
                 tool_input TEXT,
                 language TEXT,
+                name TEXT,
                 tool_result_is_error INTEGER,
                 tool_result_exit_code INTEGER,
                 tool_result_outcome_unknown_reason TEXT,
@@ -308,7 +310,7 @@ def test_hand_built_index_declares_every_production_column_of_route_backed_table
 def _make_writer_candidate(root: Path) -> Path:
     root.mkdir()
     db = root / "index.db"
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)

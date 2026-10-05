@@ -28,6 +28,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.hermes_lifecycle import TOOL_START
 from tests.infra.hook_carriers import materialize_hook_carriers
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _STATE_DB_SCHEMA = """
 CREATE TABLE schema_version(version INTEGER NOT NULL);
@@ -185,7 +186,7 @@ async def test_healthy_state_db_reaches_healthy_verdict_through_named_freshness(
                 "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (1, 'root', 'user', 'hi', 2.0)"
             )
 
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 
