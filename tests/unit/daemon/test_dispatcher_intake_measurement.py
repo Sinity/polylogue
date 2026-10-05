@@ -114,6 +114,8 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     Both arms parse through the processor's own preparation route.
     """
     files = _jsonl_files(corpus_root)
+    # The fixture writer's lease names an existing archive root; it bootstraps the tiers.
+    archive_root.mkdir(parents=True, exist_ok=True)
 
     async def run() -> tuple[Any, float]:
         async with prepared_live_batch_processor(
