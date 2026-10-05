@@ -3957,11 +3957,16 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
     source_root = workspace_env["data_root"] / "claude-projects"
     source_root.mkdir(parents=True)
     (source_root / "a.jsonl").write_text("{}\n", encoding="utf-8")
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    # The daemon watcher writes its cursor through the writer it is given.
+    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
     watcher = LiveWatcher(
         archive,
         (WatchSource(name="claude-code", root=source_root),),
         cursor=CursorStore(archive_root / "index.db"),
+        write_coordinator=coordinator,
     )
 
     async def failing_ingest(*_args: object, **_kwargs: object) -> object:
@@ -3977,6 +3982,7 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
     finally:
         watcher.stop()
         await archive.close()
+        assert await coordinator.shutdown(timeout=float("inf"))
     assert outcomes
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
     assert {result.transient for result in outcomes.values()} == {transient}
