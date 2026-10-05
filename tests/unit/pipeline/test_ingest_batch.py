@@ -63,10 +63,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.index_writer import (
     close_fixture_index_connection,
+    fixture_index_connection,
     fixture_index_mutation_scope,
     write_fixture_index_session,
     write_fixture_ingest_payload,
@@ -384,7 +384,7 @@ def _attachment_ref_tuple(
 
 
 def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         c_msg = _message_tuple(
             "msg-c",
             "codex-session:child",
@@ -412,7 +412,7 @@ def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
 
 
 def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         p_msg = _message_tuple(
             "msg-p",
             "codex-session:parent",
@@ -454,7 +454,7 @@ def test_write_session_preserves_existing_parent_fk(tmp_path: Path) -> None:
 
 
 def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         archive = _session_data(
             "codex-session:replace",
             content_hash="hash-v1",
@@ -588,7 +588,7 @@ def test_write_session_replaces_runtime_rows_on_content_change(tmp_path: Path) -
 
 
 def test_write_session_append_mode_preserves_existing_messages(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         initial = _session_data(
             "codex-session:append",
             content_hash="hash-v1",
@@ -648,7 +648,7 @@ def test_write_session_append_dedupes_whitespace_padded_native_id(tmp_path: Path
     compares the raw provider id, it admits the duplicate and the generated
     message id makes INSERT OR REPLACE overwrite the original message.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         initial = _session_data(
             "codex-session:append-whitespace-id",
             content_hash="hash-initial",
@@ -706,7 +706,7 @@ def test_write_session_append_dedupes_whitespace_padded_native_id(tmp_path: Path
 
 
 def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         initial = _session_data(
             "codex-session:append-raw-link",
             content_hash="hash-v1",
@@ -757,7 +757,7 @@ def test_write_session_append_no_delta_refreshes_raw_link(tmp_path: Path) -> Non
 
 def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
     """force_write with identical content updates current message time columns."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         archive = _session_data(
             "codex-session:force",
             content_hash="same-hash",
@@ -810,7 +810,7 @@ def test_write_session_force_write_updates_message_time(tmp_path: Path) -> None:
 
 def test_write_session_force_write_replaces_older_freshness(tmp_path: Path) -> None:
     """Raw convergence force writes may replace a newer stale index row."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         newer = _session_data(
             "codex-session:force-stale",
             content_hash="hash-newer",
@@ -887,7 +887,7 @@ def test_write_session_freshness_tie_keeps_acquired_attachment(tmp_path: Path) -
     the live archive was, 157/157 times, the revision that lost the fetched
     bytes.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         fetched = _session_data(
             "aistudio-drive:tie",
@@ -967,7 +967,7 @@ def test_write_session_freshness_tie_keeps_acquired_attachment(tmp_path: Path) -
 
 def test_write_session_freshness_tie_allows_attachment_improvement(tmp_path: Path) -> None:
     """The tie-break only blocks regressions -- ties/improvements still write."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         unfetched = _session_data(
             "aistudio-drive:improve",
             content_hash="hash-unfetched",
@@ -1090,7 +1090,7 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
     )
 
     with (
-        open_connection(archive_root / "index.db") as conn,
+        fixture_index_connection(archive_root / "index.db") as conn,
         sqlite3.connect(str(source_db_path)) as source_conn,
     ):
         first_session = _session_data(
@@ -1200,7 +1200,7 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
     tied_timestamp = "2026-07-18T17:46:10Z"
 
     with (
-        open_connection(archive_root / "index.db") as conn,
+        fixture_index_connection(archive_root / "index.db") as conn,
         sqlite3.connect(str(source_db_path)) as source_conn,
     ):
         first_session = _session_data(
@@ -1256,7 +1256,7 @@ def test_write_session_freshness_tie_regression_without_lineage_still_blocks(tmp
     ``blob_publisher`` is still supplied (attachments require one to write
     inline bytes at all) -- ``source_conn`` alone is what gates lineage
     governance."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         session_id = "aistudio-drive:tie-no-lineage"
         tied_timestamp = "2026-07-18T17:46:10Z"
@@ -1323,7 +1323,7 @@ def test_write_session_freshness_tie_with_distinct_messages_is_not_skipped(tmp_p
     above is the other half of the pair: with the SAME message set it must
     still be skipped, so this cannot be satisfied by disabling the tie-break.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         session_id = "aistudio-drive:tie-distinct-messages"
         tied_timestamp = "2026-07-18T17:46:10Z"
@@ -1393,7 +1393,7 @@ def test_write_session_freshness_tie_with_a_revised_semantic_field_is_not_skippe
     reads the incoming message as already held, skips the replacement, and
     leaves the old model on the stored message.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         blob_publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         session_id = "aistudio-drive:tie-revised-model"
         tied_timestamp = "2026-07-18T17:46:10Z"
@@ -1448,7 +1448,7 @@ def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path
     payload = b"chatgpt dat asset bytes"
     blob_hash, size = store.write_from_bytes(payload)
 
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         session = _session_data(
             "chatgpt-export:conv-1",
             content_hash="hash-precomputed",
@@ -1521,7 +1521,7 @@ def test_write_session_records_an_excised_inline_attachment_unavailable(tmp_path
     payload = b"attachment bytes the operator excised"
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
     publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "archive" / "index.db") as conn:
         session = _session_data(
             "chatgpt-export:conv-excised",
             content_hash="hash-excised-inline",
@@ -1560,7 +1560,7 @@ def test_write_session_records_an_excised_precomputed_attachment_unavailable(tmp
     """
     payload = b"chatgpt asset bytes excised after acquisition"
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
-    with open_connection(tmp_path / "archive" / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
+    with fixture_index_connection(tmp_path / "archive" / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
         session = _session_data(
             "chatgpt-export:conv-precomputed",
             content_hash="hash-excised-precomputed",
@@ -1654,7 +1654,7 @@ def test_write_session_reserves_a_worker_published_blob_until_its_reference_comm
 
     monkeypatch.setattr(publication, "consume_blob_publication_receipt", consume_after_reference)
 
-    with open_connection(archive_root / "index.db") as conn:
+    with fixture_index_connection(archive_root / "index.db") as conn:
         changed, _counts = write_fixture_ingest_payload(
             conn,
             _precomputed_blob_session(blob_hash, size),
@@ -1685,7 +1685,7 @@ def test_write_session_refuses_a_worker_published_blob_gc_reclaimed(tmp_path: Pa
     blob_hash, size = store.write_from_bytes(b"reclaimed carrier bytes")
     store.blob_path(blob_hash).unlink()
     publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
-    with open_connection(tmp_path / "archive" / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "archive" / "index.db") as conn:
         with pytest.raises(AdoptedBlobEvictedError) as refused:
             write_fixture_ingest_payload(conn, _precomputed_blob_session(blob_hash, size), blob_publisher=publisher)
         assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
@@ -1723,7 +1723,7 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
     records the resulting hash back onto the event.
     """
     full_text = "full sidecar output " * 200
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         session = _session_data(
             "claude-code-session:sidecar-1",
@@ -1787,7 +1787,7 @@ def test_write_session_counts_no_refused_sidecar_blob(tmp_path: Path) -> None:
     full_text = "excised sidecar output " * 200
     source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
     publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "archive" / "index.db") as conn:
         _changed, counts = write_fixture_ingest_payload(
             conn, _excised_sidecar_session("claude-code-session:sidecar-excised", full_text), blob_publisher=publisher
         )
@@ -1832,7 +1832,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
     fails if the second write is counted as new bytes instead of a dedup hit.
     """
     full_text = "identical build log content\n" * 300
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         first = _session_data(
             "claude-code-session:sidecar-dedup-a",
@@ -1904,7 +1904,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
 
 def test_write_session_skips_sidecar_blob_for_debt_events(tmp_path: Path) -> None:
     """Debt (unmatched) sidecar events never trigger a blob write -- there is no owning block/bytes."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
         debt_event = ParsedSessionEvent(
             event_type="claude_tool_result_sidecar",
@@ -1944,7 +1944,7 @@ def test_write_session_skips_sidecar_blob_for_debt_events(tmp_path: Path) -> Non
 
 def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: Path) -> None:
     """Parser-owned auto-tags still converge when the content hash is unchanged."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         first = _session_data(
             "codex-session:unchanged-tags",
             content_hash="same-hash",
@@ -1996,7 +1996,7 @@ def test_write_session_upserts_ingest_flags_when_content_is_unchanged(tmp_path: 
 
 
 def test_write_session_refreshes_raw_link_when_content_is_unchanged(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         first = _session_data(
             "codex-session:unchanged-raw-link",
             content_hash="same-hash",
@@ -2046,7 +2046,7 @@ def test_write_session_refreshes_raw_link_when_content_is_unchanged(tmp_path: Pa
 
 def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> None:
     """Duplicate source files for the same session must not replace fuller rows."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         fuller = _session_data(
             "codex-session:duplicate",
             content_hash="hash-full",
@@ -2114,7 +2114,7 @@ def test_write_session_skips_shorter_duplicate_raw_source(tmp_path: Path) -> Non
 
 def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) -> None:
     """Equal-count changed content is still fresher evidence and must update."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         existing = _session_data(
             "codex-session:duplicate-equal",
             content_hash="hash-existing",
@@ -2189,7 +2189,7 @@ def test_write_session_skips_equal_count_duplicate_raw_source(tmp_path: Path) ->
 
 
 def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         native = _session_data(
             "codex-session:dom-precedence",
             content_hash="hash-native",
@@ -2277,7 +2277,7 @@ def test_write_session_dom_fallback_does_not_replace_native_source(tmp_path: Pat
 
 
 def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_link(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         native = _session_data(
             "codex-session:same-content-dom-precedence",
             content_hash="same-hash",
@@ -2333,7 +2333,7 @@ def test_write_session_same_content_dom_fallback_does_not_refresh_native_raw_lin
 
 
 def test_write_session_native_source_replaces_dom_fallback_even_when_shorter(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         dom_fallback = _session_data(
             "codex-session:native-over-dom",
             content_hash="hash-dom-fallback",
@@ -2476,7 +2476,7 @@ def test_write_session_native_browser_precedence_matrix(
             ],
         )
 
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         changed_initial, _counts_initial = write_fixture_ingest_payload(
             conn,
             payload(initial_kind, initial_count, "raw-initial", updated_at="2026-04-03T00:00:00Z"),
@@ -2566,7 +2566,7 @@ def test_write_session_browser_precedence_tracks_three_arrivals(
             ],
         )
 
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         outcomes = [
             write_fixture_ingest_payload(conn, payload(kind, count, title, updated_at, f"raw-{index}"))
             for index, (kind, count, title, updated_at) in enumerate(arrivals)
@@ -2589,7 +2589,7 @@ def test_write_session_browser_precedence_tracks_three_arrivals(
 
 def test_write_session_skips_new_with_zero_messages(tmp_path: Path) -> None:
     """A new session with zero messages is skipped, not left as a manifest-only row."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         empty = _session_data(
             "codex-session:empty-manifest",
             content_hash="hash-empty",
@@ -2615,7 +2615,7 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
     The guard only blocks *new* sessions from being created without messages.
     Replacing existing content with empty content is a legitimate content update.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         msg = _message_tuple(
             "msg-1",
             "codex-session:keep",
@@ -2643,6 +2643,17 @@ def test_write_session_allows_existing_upsert_even_without_messages(tmp_path: Pa
 
         assert changed is True
         assert counts["skipped_sessions"] == 0
+
+
+def _seed_source_raw(archive_root: Path, payload: bytes) -> str:
+    """Retain a raw in the Source tier; accepted-head reparse reads its lineage there."""
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        return archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=f"/synthetic/{sha256(payload).hexdigest()[:12]}.jsonl",
+            acquired_at_ms=1_767_000_000_000,
+        )
 
 
 def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path: Path) -> None:
@@ -2673,7 +2684,8 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
     Mutation that fails this: reverting the ``accepted_raw_id`` comparison
     back to a bare existence check (``governed is not None: return True``).
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
+        raw_accepted = _seed_source_raw(tmp_path, b'{"synthetic":"frozen-empty"}')
         # Simulate the historical defect: a session was written (long ago,
         # ``force_write=True`` standing in for whatever historical write
         # path/bug left this content behind) with zero messages for raw
@@ -2683,7 +2695,7 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
         stub = _session_data(
             "codex-session:frozen-empty",
             content_hash="hash-stub-empty",
-            raw_id="raw-accepted",
+            raw_id=raw_accepted,
             message_tuples=[],
         )
         write_fixture_ingest_payload(conn, stub, force_write=True)
@@ -2691,8 +2703,8 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
             "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
             "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
             "acquisition_generation, decided_at_ms) VALUES "
-            "('codex:frozen-empty','codex-session:frozen-empty','raw-accepted','sr',?,'byte',1,0,1)",
-            (b"\x09" * 32,),
+            "('codex:frozen-empty','codex-session:frozen-empty',?,'sr',?,'byte',1,0,1)",
+            (raw_accepted, b"\x09" * 32),
         )
         conn.commit()
 
@@ -2707,7 +2719,7 @@ def test_write_session_allows_rewrite_of_its_own_accepted_revision_head(tmp_path
         corrective = _session_data(
             "codex-session:frozen-empty",
             content_hash="hash-corrected",
-            raw_id="raw-accepted",
+            raw_id=raw_accepted,
             message_tuples=[real_msg],
         )
         changed, counts = write_fixture_ingest_payload(conn, corrective)
@@ -2728,7 +2740,7 @@ def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_
     governed session_id must still be refused -- the accepted-raw carve-out
     must not reopen the door to an arbitrary competing/losing raw
     overwriting the winner."""
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
         winner = _session_data(
             "codex-session:governed",
             content_hash="hash-winner",
@@ -2795,13 +2807,14 @@ def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_
     Mutation that fails this: reverting to ``SELECT accepted_raw_id ...
     LIMIT 1`` and comparing only that single arbitrary row.
     """
-    with open_connection(tmp_path / "index.db") as conn:
+    with fixture_index_connection(tmp_path / "index.db") as conn:
+        raw_incoming = _seed_source_raw(tmp_path, b'{"synthetic":"parallel-incoming"}')
         conn.execute(
             "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
             "accepted_source_revision, accepted_content_hash, accepted_frontier_kind, accepted_frontier, "
             "acquisition_generation, decided_at_ms) VALUES "
-            "('codex:parallel-a','codex-session:parallel','raw-incoming','sr',?,'byte',1,0,1)",
-            (b"\x0b" * 32,),
+            "('codex:parallel-a','codex-session:parallel',?,'sr',?,'byte',1,0,1)",
+            (raw_incoming, b"\x0b" * 32),
         )
         conn.execute(
             "INSERT INTO raw_revision_heads (logical_source_key, session_id, accepted_raw_id, "
@@ -2815,7 +2828,7 @@ def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_
         incoming = _session_data(
             "codex-session:parallel",
             content_hash="hash-incoming",
-            raw_id="raw-incoming",
+            raw_id=raw_incoming,
             message_tuples=[
                 _message_tuple(
                     "msg-incoming",
@@ -2895,7 +2908,7 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
         source_setup_conn.commit()
 
     with (
-        open_connection(archive_root / "index.db") as conn,
+        fixture_index_connection(archive_root / "index.db") as conn,
         sqlite3.connect(str(source_db_path)) as source_conn,
     ):
         ambiguous_msg = _message_tuple(
@@ -3036,7 +3049,7 @@ def _seed_retained_raw(root: Path, *, origin: Origin, source_path: str, payload:
 def _publication_mode(monkeypatch: pytest.MonkeyPatch, mode: str = "off") -> None:
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(schema_validation="advisory", sinex_mode=mode),
+        lambda *_args, **_kwargs: SimpleNamespace(schema_validation="advisory", sinex_mode=mode),
     )
 
 

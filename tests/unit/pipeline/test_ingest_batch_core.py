@@ -29,8 +29,7 @@ from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.connection import open_connection
-from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.index_writer import fixture_index_connection, write_fixture_ingest_payload
 
 _COHORT_SIZE = 12
 _LINEAGE_COLUMNS = (
@@ -92,7 +91,7 @@ def _ingest_drive_cohort(
     ArchiveBlobPublisher.open = counting_open  # type: ignore[method-assign]
     try:
         with (
-            open_connection(archive_root / "index.db") as conn,
+            fixture_index_connection(archive_root / "index.db") as conn,
             sqlite3.connect(str(archive_root / "source.db")) as source_conn,
         ):
             for revision, raw_id in enumerate(raw_ids):
