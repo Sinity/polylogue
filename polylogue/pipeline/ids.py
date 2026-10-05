@@ -1462,7 +1462,10 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
     Parser normalization maintains the complementary invariant: a missing
     native id is never replaced with an array-position-derived value before
     reaching this function. Parser-local occurrence keys may use position,
-    but they are not persisted as ``provider_message_id``.
+    but they are not persisted as ``provider_message_id``. A provider value
+    that two distinct records repeat (a Codex ``call_id`` on a call and its
+    output) is qualified by the record's declared side before it becomes a
+    ``provider_message_id``, so a native id names exactly one message.
     """
     native_id = message.provider_message_id.strip()
     if native_id:
