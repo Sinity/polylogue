@@ -9621,6 +9621,11 @@ class PreparedIndexMutation:
         if sql_settled:
             for owner in native_sql_children(self):
                 sql_settled = settle(partial(owner.release_settled_parent_lifetimes, self)) and sql_settled
+        writer_scope = self._pending_index_scope
+        if writer_scope is None and self._accepted_index_commit is not None:
+            writer_scope = self._accepted_index_commit._scope
+        if sql_settled and writer_scope is not None:
+            sql_settled = settle(writer_scope.return_borrowed_writer) and sql_settled
         if sql_settled and self._publication_payload_cleanup is not None and settle(self._publication_payload_cleanup):
             self._publication_payload_cleanup = None
         if sql_settled and self._publication_payload_cleanup is None and self._mutation_custody is not None:
@@ -9994,6 +9999,8 @@ class IndexMutationScope:
     _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
     _user_admission_custody: ArchiveWriteCustody | None = field(default=None, init=False, repr=False)
     _writer_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
+    # True when this scope registered the owner for a caller's unowned handle.
+    _writer_owner_borrowed: bool = field(default=False, init=False, repr=False)
     _custody: ArchiveWriteCustody | None = field(default=None, init=False, repr=False)
     _writer_version: int | None = field(default=None, init=False, repr=False)
     _initial_changes: int = field(default=0, init=False, repr=False)
@@ -10017,6 +10024,7 @@ class IndexMutationScope:
         # caller. Capture that existing caller lifetime once; never replace
         # or detach a registered parent's live child.
         owner = native_sql_owner_for_connection(self.conn)
+        borrowed = owner is None
         if owner is None:
             # BEGIN IMMEDIATE has already exercised SQLite's actual closed-
             # handle and creator-thread checks on this same connection.
@@ -10034,11 +10042,33 @@ class IndexMutationScope:
             self._writer_version = int(cursor.fetchone()[0])
         self._initial_changes = self.conn.total_changes
         self._writer_owner = owner
+        self._writer_owner_borrowed = borrowed
         self._writer_owner.retain_lifetime(self)
         self._writer_owner.retain_lifetime(seal)
         self._custody = custody
         seal._retain_mutation_custody(custody)
         seal._pending_index_scope = self
+
+    def return_borrowed_writer(self) -> None:
+        """Hand a caller's idle handle back unowned once its seal has settled.
+
+        The owner this scope registered for an unowned caller connection
+        retains the lease's archive custody. Left in place, the caller's
+        long-lived handle would hold that custody's file lock after the lease
+        ends and block every later writer of the archive. A handle with any
+        other live obligation keeps its owner until the caller settles it.
+        """
+        owner = self._writer_owner
+        seal = self.seal
+        if not self._writer_owner_borrowed or owner is None or seal is None:
+            return
+        if not owner.idle_handoff_ready((self, seal)):
+            return
+        for dependency in (self, seal):
+            if any(item is dependency for item in owner._lifetime_dependencies):
+                owner.release_lifetime(dependency)
+        owner.handoff()
+        self._writer_owner_borrowed = False
 
     @property
     def commit_receipt(self) -> IndexCommitReceipt:
