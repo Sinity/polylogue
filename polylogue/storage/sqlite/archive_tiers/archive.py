@@ -3195,7 +3195,6 @@ class ArchiveStore:
         bulk_build: bool = False,
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
-        skip_already_applied: bool = False,
         prepared_by_raw_id: dict[str, PreparedRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
         preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]]
@@ -3222,7 +3221,6 @@ class ArchiveStore:
                 bulk_build=bulk_build,
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
-                skip_already_applied=skip_already_applied,
                 prepared_by_raw_id=prepared_by_raw_id,
                 prepared_required_raw_ids=prepared_required_raw_ids,
                 preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,

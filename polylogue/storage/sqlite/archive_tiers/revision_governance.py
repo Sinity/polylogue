@@ -160,8 +160,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
     SessionSourceRead,
-    _json_dumps,
-    _next_session_event_position,
     _retain_stale_session_observations,
     recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
@@ -200,7 +198,6 @@ from polylogue.core.timestamp_authority import (
     normalize_session_timestamps,
     session_evidence_timestamps,
 )
-from polylogue.core.timestamps import to_epoch_ms
 from polylogue.pipeline.ids import (
     SessionRevisionProjection,
     bound_session_content_hash,
@@ -3231,63 +3228,6 @@ def defer_raw_revision_adoption(
         record_revision_application_sync(store._conn, receipt, decided_at_ms=decided_at_ms)
 
 
-# Event types whose payload summarizes the WHOLE parsed input rather than a
-# point in the conversation. ``merge_parsed_session_chunks`` reduces these to
-# one event per composed session; the index must carry the same single row.
-_CHAIN_SUMMARY_EVENT_TYPES = ("claude_parse_coverage",)
-
-
-def _reconcile_chain_summary_events(
-    store: RawRevisionGovernanceHost,
-    *,
-    session_id: str,
-    aggregate: ParsedSession,
-) -> None:
-    """Store each whole-input summary event as the chain's content hash describes it.
-
-    ``merge_parsed_session_chunks`` reduces a declared summary type to one
-    event carrying the chain's totals, the chain's newest timestamp, and a
-    slot after every point-in-conversation event; that reduction is what
-    ``aggregate_content_hash`` covers. A tail-only write appends the newly
-    accepted chunk's own events and leaves the prefix's chunk-local row
-    where it is, so reduce the stored row on all three axes. Iterating the
-    aggregate's own event order keeps two summary types in the order the
-    reduction gave them.
-    """
-    for composed in aggregate.session_events:
-        event_type = composed.event_type
-        if event_type not in _CHAIN_SUMMARY_EVENT_TYPES:
-            continue
-        positions = [
-            int(row[0])
-            for row in store._conn.execute(
-                "SELECT position FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY position",
-                (session_id, event_type),
-            ).fetchall()
-        ]
-        if not positions:
-            continue
-        store._conn.execute(
-            "DELETE FROM session_events WHERE session_id = ? AND event_type = ? AND position != ?",
-            (session_id, event_type, positions[-1]),
-        )
-        store._conn.execute(
-            """
-            UPDATE session_events
-               SET payload_json = ?, occurred_at_ms = ?, position = ?
-             WHERE session_id = ? AND event_type = ? AND position = ?
-            """,
-            (
-                _json_dumps(composed.payload),
-                to_epoch_ms(composed.timestamp, numeric_unit="seconds"),
-                _next_session_event_position(store._conn, session_id),
-                session_id,
-                event_type,
-                positions[-1],
-            ),
-        )
-
-
 def apply_raw_revision_replay(
     store: RawRevisionGovernanceHost,
     plan: RevisionReplayPlan,
@@ -3302,7 +3242,6 @@ def apply_raw_revision_replay(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    skip_already_applied: bool = False,
     prepared_by_raw_id: dict[str, PreparedRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]] | None = None,
@@ -3348,29 +3287,6 @@ def apply_raw_revision_replay(
     relaxes ``assert_session_fts_exact_sync`` to its trigger-presence-only
     check, since the bulk-build caller repopulates ``messages_fts``
     archive-wide exactly once at readiness instead.
-
-    ``skip_already_applied`` (polylogue-de2a, default ``False`` so every
-    existing caller is byte-for-byte unchanged) skips the index write --
-    not the parse, not the bookkeeping/receipt writes -- for every
-    ``plan.accepted_raw_ids`` entry at or before the logical source's
-    current ``raw_revision_heads.accepted_raw_id``. Without this, every
-    single live append replays the WHOLE accumulated chain from its
-    proven baseline through every previously accepted append: each of
-    those historical positions is already durably indexed from an
-    earlier call, so re-running ``_index_parsed_for_retained_raw`` for
-    them is redundant ``INSERT OR REPLACE`` churn against ``messages``/
-    ``blocks`` that re-triggers their ``messages_fts`` insert triggers
-    for content that never changed. A long-lived session accumulating N
-    small live appends over its lifetime pays O(N) redundant historical
-    writes on its Nth append and O(N^2) cumulatively over its life --
-    this is the confirmed root cause of the multi-minute/multi-hour
-    writer-gate holds in polylogue-de2a (observed 860s and 9297s single
-    holds), which in turn starved every other periodic write actor (FTS
-    merge, WAL checkpoint) for the entire hold. Only the live append
-    path opts in; the backfill/restore/membership replay paths keep the
-    full self-healing re-apply (their content may predate a parser fix
-    and legitimately need every historical position rewritten, and they
-    run far less often than a live append).
     """
 
     if not manage_transaction:
@@ -3413,156 +3329,78 @@ def apply_raw_revision_replay(
     for raw_id in plan.accepted_raw_ids:
         if raw_id not in preacquired_attachment_blobs_by_raw_id:
             raise PreparedSessionWriteRefusedError(f"revision replay lacks prepared attachments for {raw_id}")
-    session_ids: set[str] = set()
     with store.index_mutation_scope() if manage_transaction else nullcontext():
-        existing_head = prepared_outcome.existing_head
         if prepared_outcome.suppressed:
             aggregate = aggregate_sessions[0]
             return str(make_session_id(aggregate.source_name, aggregate.provider_session_id)), ()
-        # Captured before any clearing below (the quarantined-membership
-        # fold path nulls ``existing_head`` further down): the previous
-        # run's accepted tip is exactly the boundary between "already
-        # durably indexed" and "new tail" for THIS byte chain. If it
-        # isn't present in the current chain at all (a fresh chain, a
-        # cleared/superseded membership head, or a discontinuity), the
-        # lookup below naturally falls back to "no skip" -- every
-        # position gets indexed, identical to today's behavior.
-        previously_accepted_raw_id = str(existing_head[1]) if existing_head is not None else None
-        already_indexed_upto = -1
-        if skip_already_applied and previously_accepted_raw_id is not None:
-            try:
-                already_indexed_upto = plan.accepted_raw_ids.index(previously_accepted_raw_id)
-            except ValueError:
-                already_indexed_upto = -1
         retires_existing_head = prepared_outcome.retires_existing_head
         # Byte-governed evidence outranks a quarantined semantic head.
         # Retire that head only after the session writer actually writes;
         # suppression preserves both the prior session and its authority.
-        for raw_id in plan.accepted_raw_ids[: already_indexed_upto + 1]:
-            # Already durably written by an earlier accepted replay
-            # of this exact byte chain (see ``skip_already_applied``
-            # above) -- its session_id is deterministic from its own
-            # parsed content, so recover it without re-running the
-            # write.
-            parsed = parsed_by_raw_id[raw_id]
-            session_ids.add(str(make_session_id(parsed.source_name, parsed.provider_session_id)))
-        pending_raw_ids = plan.accepted_raw_ids[already_indexed_upto + 1 :]
-        if pending_raw_ids:
-            # One chain is one session, so the writer sees one session: the
-            # chunks still to be indexed are composed by the same reduction
-            # that produced ``aggregate_content_hash``. Writing each chunk
-            # separately made the persisted read model disagree with that
-            # hash -- every chunk-local summary event (Claude's
-            # ``claude_parse_coverage``, a complete-input summary) landed as
-            # its own row, so the index described the stream schedule rather
-            # than the session.
-            full_replace = already_indexed_upto < 0
-            composed_sessions = (
-                [prepared_aggregate_session]
-                if full_replace and prepared_aggregate_session is not None
-                else (
-                    [parsed_by_raw_id[pending_raw_ids[0]]]
-                    if len(pending_raw_ids) == 1
-                    else merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
-                )
+        pending_raw_ids = plan.accepted_raw_ids
+        # One chain is one session, so the writer sees one session composed
+        # by the same reduction that produced ``aggregate_content_hash``.
+        # Writing each chunk separately made the persisted read model
+        # disagree with that hash -- every chunk-local summary event
+        # (Claude's ``claude_parse_coverage``) landed as its own row.
+        composed_session = aggregate_sessions[0]
+        # A composed aggregate consumes its exact carrier and enrolled
+        # current-row view; otherwise the chain's own chunk claims compose.
+        composed_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]]
+        if prepared_aggregate_session is not None:
+            if preacquired_aggregate_attachment_blobs is None:
+                raise PreparedSessionWriteRefusedError("prepared aggregate requires its original attachment claim view")
+            composed_attachment_blobs = preacquired_aggregate_attachment_blobs
+        else:
+            composed_attachment_blobs = _PreparedAttachmentChain(
+                preacquired_attachment_blobs_by_raw_id[raw_id] for raw_id in reversed(pending_raw_ids)
             )
-            if len(composed_sessions) != 1:
-                raise RuntimeError("one logical revision chain did not compose to exactly one session")
-            composed_session = composed_sessions[0]
-            winner = aggregate_sessions[0]
-            if already_indexed_upto >= 0:
-                # A tail write merges into the stored session, but the header
-                # is decided over the whole chain: the writer overwrites the
-                # stored title, reported totals, and declared models with the
-                # values it is given. Without this the newest chunk's own
-                # (weaker or equal) title replaced the chain winner, and the
-                # tail's own cost and duration replaced the chain totals --
-                # a $2 tail on a $1 session stored $2 and cleared the first
-                # model's cost share.
-                chain_header = {
-                    "title": winner.title,
-                    "title_source": winner.title_source,
-                    "title_ref": winner.title_ref,
-                    "reported_cost_usd": winner.reported_cost_usd,
-                    "reported_duration_ms": winner.reported_duration_ms,
-                    "models_used": winner.models_used,
-                }
-                if any(getattr(composed_session, name) != value for name, value in chain_header.items()):
-                    composed_session = composed_session.model_copy(update=chain_header)
-            # A full replacement consumes its exact aggregate carrier and
-            # its enrolled current-row view. A genuine tail still borrows the
-            # original pending chunk rows and their original acquired claims.
-            composed_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]]
-            if full_replace and prepared_aggregate_session is not None:
-                if preacquired_aggregate_attachment_blobs is None:
-                    raise PreparedSessionWriteRefusedError(
-                        "prepared aggregate requires its original attachment claim view"
-                    )
-                composed_attachment_blobs = preacquired_aggregate_attachment_blobs
-            else:
-                composed_attachment_blobs = _PreparedAttachmentChain(
-                    preacquired_attachment_blobs_by_raw_id[raw_id] for raw_id in reversed(pending_raw_ids)
-                )
-            # The chain's newest accepted raw carries the composed write:
-            # ``sessions.raw_id`` and the reparse receipt then name the tip
-            # the head row is about to advertise.
-            tip_raw_id = pending_raw_ids[-1]
-            # ``prepared_aggregate_rows`` describes the exact composed
-            # full-replace session, including an attached SessionShard. The
-            # older raw-id map remains a single-chunk shortcut only.
-            resolved_prepared: PreparedRows | None = None
-            if full_replace and prepared_aggregate_rows is not None:
-                resolved_prepared = prepared_aggregate_rows
-            elif full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
-                resolved_prepared = prepared_by_raw_id.get(tip_raw_id)
-            index_started = time.perf_counter()
-            result = _index_parsed_for_retained_raw(
-                store,
-                composed_session,
-                raw_id=tip_raw_id,
-                source_index=0 if full_replace else -1,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=False,
-                preacquired_attachment_blobs=composed_attachment_blobs,
-                finalize_raw_parse=False,
-                revision_authoritative=True,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-                fresh_build=fresh_build,
-                fresh_build_batch=fresh_build_batch,
-                defer_fts_rebuild=not bulk_build,
-                prepared=resolved_prepared,
-                prepared_required=tip_raw_id in prepared_required_raw_ids or prepared_write is not None,
-                prepared_write=prepared_write,
-                content_hash=aggregate_content_hash.hex() if full_replace else None,
-            )
-            if write_result is not None:
-                write_result(result)
-            if stage_timings_s is not None:
-                key = f"{stage_timing_prefix}.index_parsed_write"
-                stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
-            if result.publication_refused:
-                return result.session_id, ()
-            session_ids.add(result.session_id)
-            if not full_replace:
-                # An appended tail carries its own composed summary event
-                # while the prefix's is already stored; the whole chain's
-                # reduction is the one that matches the head content hash.
-                _reconcile_chain_summary_events(
-                    store,
-                    session_id=result.session_id,
-                    aggregate=aggregate_sessions[0],
-                )
-        if len(session_ids) != 1:
-            raise RuntimeError("one logical revision chain produced multiple session ids")
-        session_id = next(iter(session_ids))
+        # The chain's newest accepted raw carries the composed write:
+        # ``sessions.raw_id`` and the reparse receipt then name the tip
+        # the head row is about to advertise.
+        tip_raw_id = pending_raw_ids[-1]
+        # ``prepared_aggregate_rows`` describes the exact composed session.
+        # The raw-id map remains a single-chunk shortcut only.
+        resolved_prepared: PreparedRows | None = None
+        if prepared_aggregate_rows is not None:
+            resolved_prepared = prepared_aggregate_rows
+        elif len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
+            resolved_prepared = prepared_by_raw_id.get(tip_raw_id)
+        index_started = time.perf_counter()
+        result = _index_parsed_for_retained_raw(
+            store,
+            composed_session,
+            raw_id=tip_raw_id,
+            source_index=0,
+            stage_timings_s=stage_timings_s,
+            stage_timing_prefix=stage_timing_prefix,
+            manage_transaction=False,
+            preacquired_attachment_blobs=composed_attachment_blobs,
+            finalize_raw_parse=False,
+            revision_authoritative=True,
+            bulk_fts=bulk_fts,
+            bulk_build=bulk_build,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
+            defer_fts_rebuild=not bulk_build,
+            prepared=resolved_prepared,
+            prepared_required=tip_raw_id in prepared_required_raw_ids or prepared_write is not None,
+            prepared_write=prepared_write,
+            content_hash=aggregate_content_hash.hex(),
+        )
+        if write_result is not None:
+            write_result(result)
+        if stage_timings_s is not None:
+            key = f"{stage_timing_prefix}.index_parsed_write"
+            stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
+        if result.publication_refused:
+            return result.session_id, ()
+        session_id = result.session_id
         if retires_existing_head:
             store._conn.execute(
                 "DELETE FROM raw_revision_heads WHERE logical_source_key = ?",
                 (plan.logical_source_key,),
             )
-            existing_head = None
         store._conn.execute(
             "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
             (aggregate_content_hash, session_id),
