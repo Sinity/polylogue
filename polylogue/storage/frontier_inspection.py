@@ -1948,4 +1948,29 @@ def read_frontier_coverage_for_archive(archive_root: Path) -> dict[str, object]:
         attach_readonly_database(conn, archive_root / "ops.db", alias="ops_tier")
         with closing(conn.execute("BEGIN")):
             pass
+        _require_attached_tier_versions(conn)
         return frontier_inspection_projection(conn, archive_root=archive_root)
+
+
+def _require_attached_tier_versions(conn: sqlite3.Connection) -> None:
+    """Refuse an attached durable Source tier this runtime's schema cannot read.
+
+    The Index reader validates its own tier on open; an attached tier carries
+    no such check, so a newer or older Source would otherwise be read as if
+    it held the current schema and report a misleading frontier.
+    """
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import _schema_skew_remedy
+
+    with closing(conn.execute("PRAGMA source_tier.user_version")) as cursor:
+        found = int(cursor.fetchone()[0])
+    expected = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    if found != expected:
+        raise SchemaSkew(
+            tier=ArchiveTier.SOURCE.value,
+            expected=expected,
+            found=found,
+            remedy=_schema_skew_remedy(ArchiveTier.SOURCE),
+        )
