@@ -59,7 +59,7 @@ from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED, REFUSED_UNATTEMP
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.walk_faults import WalkFault, WalkRefusedError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 
 
 class FakeAdapter:
@@ -1541,26 +1541,22 @@ async def test_raw_discovery_moves_past_a_cooled_down_poison_in_the_fair_dispatc
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Mutation: reset discovery each pass, and the cooled-down head starves the healthy raw."""
-    bootstrap_archive_root(tmp_path)
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        valid = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"v",
-            source_path="valid.json",
-            acquired_at_ms=1,
-        )
-        poison = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"p",
-            source_path="poison.json",
-            acquired_at_ms=1,
-        )
-        healthy = archive.write_raw_payload(
-            provider=Provider.CHATGPT,
-            payload=b"h",
-            source_path="healthy.json",
-            acquired_at_ms=1,
-        )
+
+    def seed() -> tuple[str, ...]:
+        # Bootstrap and raw writes take the synchronous lease; keep them off the loop.
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return tuple(
+                archive.write_raw_payload(
+                    provider=Provider.CHATGPT,
+                    payload=payload,
+                    source_path=source_path,
+                    acquired_at_ms=1,
+                )
+                for payload, source_path in ((b"v", "valid.json"), (b"p", "poison.json"), (b"h", "healthy.json"))
+            )
+
+    valid, poison, healthy = run_off_event_loop(seed)
 
     class FakeRawObservationDerivation:
         def terminal_decode_refusals(self, keys: Sequence[str]) -> dict[str, RetainedRawDecodeRefusalError]:

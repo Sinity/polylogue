@@ -28,6 +28,8 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
     conn = connect_measured(db)
+    # The archive writer reads rows by column name, as on production connections.
+    conn.row_factory = sqlite3.Row
     try:
         session = ParsedSession(
             source_name=Provider.CODEX,

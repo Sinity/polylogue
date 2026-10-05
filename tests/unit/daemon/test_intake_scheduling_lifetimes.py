@@ -109,6 +109,10 @@ async def test_valid_only_raw_pages_keep_the_service_moving_then_become_idle(
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
 
+        def terminal_decode_refusals(self, _keys: Sequence[str]) -> dict[str, Exception]:
+            # No retained raw in this fixture refuses to decode.
+            return {}
+
     monkeypatch.setattr(raw_inspection, "RawObservationInspection", ValidPages)
     discovery = RawMaterializationDiscovery(tmp_path)
 
@@ -184,6 +188,10 @@ def test_a_resweep_pages_promptly_only_after_resting_nine_sweep_durations(
 
         def inspect(self, _frame: object, keys: Sequence[str]) -> dict[str, str]:
             return dict.fromkeys(keys, "valid")
+
+        def terminal_decode_refusals(self, _keys: Sequence[str]) -> dict[str, Exception]:
+            # No retained raw in this fixture refuses to decode.
+            return {}
 
     monkeypatch.setattr(raw_inspection, "RawObservationInspection", ValidPages)
     discovery = RawMaterializationDiscovery(tmp_path)

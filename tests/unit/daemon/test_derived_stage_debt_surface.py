@@ -8,7 +8,6 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.convergence_harness import (
     ConvergenceArchive,
@@ -25,9 +24,8 @@ async def test_insight_readiness_ignores_poisoned_operation_debt(tmp_path: Path)
     root.mkdir()
 
     def build() -> ConvergenceArchive:
-        # Fixture ingest writes archive tiers; the synchronous lease must not block the loop.
-        with write_lease("test.debt-surface-fixture", archive_root=root):
-            return build_converged_archive(root, rich_convergence_sources())
+        # Fixture ingest takes the synchronous writer lease itself; it must not block the loop.
+        return build_converged_archive(root, rich_convergence_sources())
 
     archive = run_off_event_loop(build)
     index_db = archive.root / "index.db"
