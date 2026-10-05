@@ -56,7 +56,6 @@ from tests.infra.workload_artifacts import (
     current_seeded_archive_reachability,
     gc_seeded_archive_artifacts,
     seal_fixture_tree,
-    seeded_archive_cache_lease,
     seeded_archive_key,
     validate_seeded_archive_reachability,
 )
@@ -301,18 +300,6 @@ def small_specs() -> tuple[CorpusSpec, ...]:
 _SMALL_SPECS = small_specs()
 
 
-@pytest.fixture(scope="module")
-def c03_artifact() -> Iterator[SeededArchiveArtifact]:
-    """The default c03 artifact for this module's read-only and clone consumers.
-
-    It resolves through the shared seeded-archive cache, so a warm cache costs
-    a validation rather than a build. A test that mutates the published tree,
-    links its leaves, or exercises the build itself owns a small private build.
-    """
-    with seeded_archive_cache_lease():
-        yield build_seeded_archive()
-
-
 def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) -> None:
     """The six-tier artifact check must not silently omit audit.db.
 
@@ -364,10 +351,10 @@ def test_profile_identity_controls_published_artifact_reuse(tmp_path: Path) -> N
 
 
 def test_seeded_archive_manifest_is_the_canonical_corpus_artifact_manifest(
-    c03_artifact: SeededArchiveArtifact,
+    c03_seeded_artifact: SeededArchiveArtifact,
 ) -> None:
     """Artifact identity is shared without turning the manifest into an oracle."""
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
 
     assert isinstance(artifact.manifest, CorpusArtifactManifest)
     assert artifact.manifest.key == seeded_archive_key((c03_semantic_corpus_spec(),)).value
@@ -600,11 +587,11 @@ def test_seeded_archive_rejects_unsupported_cache_node_and_rebuilds(tmp_path: Pa
 
 
 def test_clone_retains_pending_output_after_short_write(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     destination = tmp_path / "partial-clone"
 
     def fail_write(fd: int, data: bytes) -> None:
@@ -627,11 +614,11 @@ def test_clone_retains_pending_output_after_short_write(
 
 
 def test_clone_rejects_tampered_copy_and_retains_pending_output(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import tests.infra.workload_artifacts as artifacts
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     destination = tmp_path / "tampered-clone"
     original_copy = artifacts._copy_tree
 
@@ -670,9 +657,9 @@ def test_seeded_archive_key_changes_with_source_semantics(monkeypatch: pytest.Mo
 
 
 def test_seeded_archive_clone_is_private_full_root_and_preserves_base(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path
 ) -> None:
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     base_manifest = artifact.root.joinpath("manifest.json").read_bytes()
     marker_relative = Path(".maintenance-state/durable-change-trains/source-002.json")
     base_marker = artifact.root.joinpath(marker_relative).read_bytes()
@@ -710,11 +697,11 @@ def test_seeded_archive_clone_is_private_full_root_and_preserves_base(
 
 
 def test_seeded_archive_copy_fallback_populates_destination_owned_train(
-    c03_artifact: SeededArchiveArtifact,
+    c03_seeded_artifact: SeededArchiveArtifact,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
 
     def reject_reflink(*args: object, **kwargs: object) -> None:
         raise subprocess.CalledProcessError(1, ["cp"])
@@ -729,9 +716,9 @@ def test_seeded_archive_copy_fallback_populates_destination_owned_train(
 
 
 def test_seeded_archive_clone_leaves_unrelated_siblings_live(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path
 ) -> None:
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     parent = tmp_path / "consumer-work"
     sibling = parent / "unrelated-sibling"
     sibling.mkdir(parents=True)
@@ -742,9 +729,9 @@ def test_seeded_archive_clone_leaves_unrelated_siblings_live(
 
 
 def test_seeded_archive_clone_preserves_caller_directory_modes(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path
 ) -> None:
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     parent = tmp_path / "consumer-work"
     parent.mkdir(mode=0o750)
     ancestor_mode = stat.S_IMODE(tmp_path.stat().st_mode)
@@ -759,12 +746,12 @@ def test_seeded_archive_clone_preserves_caller_directory_modes(
 
 
 def test_seeded_archive_reflink_and_copy_clones_are_equivalent(
-    c03_artifact: SeededArchiveArtifact,
+    c03_seeded_artifact: SeededArchiveArtifact,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     attempted: list[list[str]] = []
     real_run = subprocess.run
 
@@ -2089,9 +2076,9 @@ def test_query_only_lease_refuses_mutated_or_replaced_source(tmp_path: Path, mut
 
 
 def test_query_only_lease_allows_only_authenticated_read_use_and_finalization(
-    c03_artifact: SeededArchiveArtifact,
+    c03_seeded_artifact: SeededArchiveArtifact,
 ) -> None:
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
 
     with lease.open() as archive:
@@ -2744,9 +2731,9 @@ def test_memoized_reuse_takes_no_filesystem_capability(tmp_path: Path, monkeypat
     assert build_seeded_archive(_SMALL_SPECS, cache_root=cache_root).root == published.root
 
 
-def test_artifact_manifest_records_its_own_construction_cost(c03_artifact: SeededArchiveArtifact) -> None:
+def test_artifact_manifest_records_its_own_construction_cost(c03_seeded_artifact: SeededArchiveArtifact) -> None:
     """Every published artifact carries bytes, files, rows and build seconds."""
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     resources = artifact.manifest.resources
 
     assert resources.file_count == len(artifact.manifest.files)
@@ -2776,7 +2763,7 @@ def test_immutable_tree_artifact_records_its_construction_cost(tmp_path: Path) -
 
 
 def test_artifact_resources_are_authenticated_and_outside_artifact_identity(
-    c03_artifact: SeededArchiveArtifact,
+    c03_seeded_artifact: SeededArchiveArtifact,
 ) -> None:
     """Measurement binds to the manifest digest but never to the cache key.
 
@@ -2786,7 +2773,7 @@ def test_artifact_resources_are_authenticated_and_outside_artifact_identity(
     """
     import dataclasses
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     key = seeded_archive_key((c03_semantic_corpus_spec(),))
 
     assert "build_seconds" not in json.dumps(dataclasses.asdict(key))
@@ -2820,7 +2807,7 @@ def test_artifact_resource_measurement_refuses_semantic_metadata() -> None:
 
 
 def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Substituting the recorded measurement changes what the seeder reports.
 
@@ -2831,7 +2818,7 @@ def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
 
     from tests.infra import benchmark_archives
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     planted = dataclasses.replace(
         artifact,
         manifest=dataclasses.replace(
@@ -2859,14 +2846,14 @@ def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
 
 
 def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
-    c03_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    c03_seeded_artifact: SeededArchiveArtifact, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A tier that did not construct its declared message population is not usable."""
     import dataclasses
 
     from tests.infra import benchmark_archives
 
-    artifact = c03_artifact
+    artifact = c03_seeded_artifact
     undersized = dataclasses.replace(
         artifact,
         manifest=dataclasses.replace(
