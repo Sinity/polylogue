@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from builtins import BaseExceptionGroup
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -192,15 +191,17 @@ def test_scratch_cleanup_preserves_primary_and_distinct_faults(
         yield {"origin": "codex", "session_id": "s", "tool_command": "foo"}
         raise primary
 
-    with pytest.raises(BaseException) as caught:
+    from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
+
+    # The scratch custody owner reports a failed close as typed unsettled
+    # custody that carries the close fault and chains the fold's own fault;
+    # neither is dropped, and the scratch stays retained until SQL settles.
+    with pytest.raises(NativeConnectionSettlementError) as caught:
         module.build_command_shape_usage(rows(), CommandShapeUsageQuery(), materialized_at="now")
-    if same_failure:
-        assert caught.value is primary
-    else:
-        assert isinstance(caught.value, BaseExceptionGroup)
-        assert caught.value.exceptions == (primary, cleanup)
+    assert caught.value.failure is cleanup
+    assert caught.value.__cause__ is primary
     assert closed
-    assert list(tmp_path.iterdir()) == []
+    assert [path.name.startswith("polylogue-command-shapes-") for path in tmp_path.iterdir()] == [True]
 
 
 @pytest.mark.parametrize(("offset", "limit"), [(0, 10**100), (10**100, 1), (-1, None), (0, -1), (-2, 1), (1, -1)])
