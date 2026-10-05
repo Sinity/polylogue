@@ -158,9 +158,8 @@ Options:
   --set TEXT...                   Set metadata key value
   --add-tag TEXT                  Add tags (comma-separated)
   --plain                         Force non-interactive plain output
-  --no-daemon                     Refuse daemon-served reads for this
-                                  invocation (reads will fail if they require
-                                  the daemon).
+  --no-daemon                     Refuse daemon-served reads; daemon-only
+                                  reads fail.
   -v, --verbose                   Verbose output
   --diagnose                      Explain CLI parser decisions on stderr
                                   before running. Useful when query-first
