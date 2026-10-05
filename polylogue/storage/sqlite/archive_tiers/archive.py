@@ -4704,6 +4704,7 @@ class ArchiveStore:
             self._conn.commit()
         return ArchiveReadInsights(
             self._conn,
+            checkpoint=self.check_operation_read,
             normalize_origin=_origin_value,
             iso_from_milliseconds=_iso_from_ms,
             tags_relation=self._tags_relation,

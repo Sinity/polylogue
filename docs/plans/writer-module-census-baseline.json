@@ -12,6 +12,11 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/analysis/command_shapes.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/analysis/delegation_work_evidence_materializer.py",
     "tiers": [
       "index"
