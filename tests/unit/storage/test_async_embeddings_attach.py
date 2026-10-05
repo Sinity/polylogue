@@ -214,7 +214,7 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
             with pytest.raises(BaseExceptionGroup) as caught:
                 async with backend.read_pool(size=3):
                     pytest.fail("a refused pool was published")
-            assert caught.value.exceptions[0] is primary
+            assert caught.value.exceptions[0] is primary, caught.value.exceptions
             assert isinstance(caught.value.exceptions[1], OSError)
             assert readiness_probe[0]._connection is None and not readiness_probe[0]._thread.is_alive()
             assert len(close_attempts) == 3 and set(close_attempts) == set(handles)
@@ -262,7 +262,7 @@ def test_failed_writer_configuration_keeps_actual_handle_until_backend_retiremen
         try:
             with pytest.raises(BaseExceptionGroup) as caught:
                 await backend.begin()
-            assert caught.value.exceptions[0] is primary
+            assert caught.value.exceptions[0] is primary, caught.value.exceptions
             assert isinstance(caught.value.exceptions[1], OSError)
             conn = handles[0]
             assert backend._txn_conn is None

@@ -816,7 +816,7 @@ def test_a_first_save_issues_no_replace_prelude_deletes(tmp_path: Path, fresh: b
             fresh_build_batch=seen if fresh else None,
         )
     conn.commit()
-    assert _prelude_deletes(statements) == set()
+    assert _prelude_deletes(statements) == set(), _prelude_deletes(statements)
 
     statements.clear()
     revised = _session("prelude-alpha", n_pairs=1)
