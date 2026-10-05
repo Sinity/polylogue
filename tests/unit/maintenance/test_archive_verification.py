@@ -11,7 +11,6 @@ import shutil
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -32,7 +31,6 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
-from polylogue.pipeline.services.ingest_batch import _persist_batch_raw_state_updates, _RawIngestOutcome
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
@@ -53,6 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -601,12 +600,14 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
     boundary must retain ``validation_status = 'failed'`` on that raw before
     the operator-facing coverage route runs. I1 then asks the one durable
     typing ladder and reports the ``validation_rejected`` escape class instead
-    of claiming the logical source has no typed state.
+    of claiming the logical source has no typed state. The disposition is
+    persisted through the repository write the production validation flow
+    uses (``validation_flow`` -> ``mark_raw_validated``).
 
     Anti-vacuity: clearing the boundary's durable validation disposition
     restores the pre-fix shape and makes I1 red again.
     """
-    _seed_coherent_archive(tmp_path)
+    run_off_event_loop(lambda: _seed_coherent_archive(tmp_path))
     source_path = tmp_path / "source.db"
     source_conn = _connect(source_path)
     try:
@@ -624,29 +625,13 @@ async def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path:
         source_conn.close()
 
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="failed",
-        validation_error="strict schema validation rejected the raw",
-        parse_error=None,
-        error="strict schema validation rejected the raw",
-        had_sessions=False,
-        outcome_code="validation_rejected",
-        retryable=False,
-        evidence_ref="schema_validation_strict",
-        remediation="repair the source schema",
-        diagnostic="missing required session field",
-    )
     try:
-        await _persist_batch_raw_state_updates(
-            SimpleNamespace(repository=repository),
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: outcome.error or "worker failure"},
-            validation_mode="strict",
+        await repository.mark_raw_validated(
+            raw_id,
+            status="failed",
+            error="strict schema validation rejected the raw",
+            provider="codex",
+            mode="strict",
         )
     finally:
         await repository.close()
