@@ -595,6 +595,10 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPla
 
 
 def _append_owner(archive_root: Path) -> object:
+    # Append acquisition writes the Source tier of a bootstrapped root; a test
+    # that built its own tiers keeps them.
+    if not (archive_root / "source.db").exists():
+        run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
     cursor = CursorStore(archive_root / "append.sqlite")
     return SimpleNamespace(
         _cursor=cursor,
@@ -1099,10 +1103,6 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not classify source-only JSONL")),
     )
     monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
-    )
-    monkeypatch.setattr(
         "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not detect source-only provider")),
     )
@@ -1283,9 +1283,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     )
     set_degraded(DegradedReason(code="schema_version_mismatch", message="index unavailable", derived_only=True))
     for target in (
-        "polylogue.sources.live.batch.iter_zip_entry_raw_data",
         "polylogue.sources.source_acquisition_components.sniff_zip_provider",
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
         "polylogue.sources.source_acquisition_components.iter_entry_payloads",
         "polylogue.sources.source_acquisition_components.classify_artifact",
     ):
@@ -2684,12 +2682,6 @@ def test_threshold_crossing_strong_sidecar_is_excluded_before_streaming(
     )
     monkeypatch.setattr("polylogue.sources.live.batch._STREAMING_FULL_INGEST_BYTES", 1)
     monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.detect_provider_from_path_evidence",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("strong sidecar reached JSON provider detection")
-        ),
-    )
     monkeypatch.setattr(
         "polylogue.sources.live.batch_support.detect_provider_from_path_evidence",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
