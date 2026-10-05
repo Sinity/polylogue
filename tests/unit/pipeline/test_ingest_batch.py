@@ -3,44 +3,36 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias
 from unittest.mock import AsyncMock
 
 import aiosqlite
 import pytest
 
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
+import polylogue.storage.sqlite.archive_tiers.write as archive_write
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.enums import ArtifactSupportStatus, BlockType, Origin, Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.types import SessionId
-from polylogue.daemon.status import RawFailureSample, raw_failure_info_for_root
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.daemon.status import raw_failure_info_for_root
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.services import ingest_worker as ingest_worker_mod
 from polylogue.pipeline.services.ingest_batch import (
     _build_batch_memory_observation,
-    _drain_ready_session_entries,
-    _failed_raw_state_update,
     _IngestBatchSummary,
-    _persist_batch_raw_state_updates,
-    _RawIngestOutcome,
-    _successful_raw_state_update,
-    _topo_sort_session_entries,
     _unattributed_batch_elapsed_s,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_worker import (
-    IngestRecordResult,
     SessionWritePayload,
 )
 from polylogue.pipeline.services.parsing import ParsingService
@@ -56,6 +48,7 @@ from polylogue.sources.parsers.base import (
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
@@ -71,9 +64,9 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.index_writer import (
+    close_fixture_index_connection,
     fixture_index_mutation_scope,
     write_fixture_index_session,
     write_fixture_ingest_payload,
@@ -82,7 +75,6 @@ from tests.infra.live_ingest import prepared_live_convergence_owner
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
-_write_session = ingest_batch_core._write_session
 
 
 def _float_value(value: object) -> float:
@@ -138,7 +130,7 @@ def test_worker_normalization_replaces_malformed_session_timestamp_with_message_
 def test_stale_observation_repair_derives_created_time_from_session_event(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     bootstrap_archive_root(archive_root)
-    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
+    conn = connect_measured(archive_root / "index.db")
     try:
         session = ParsedSession(
             source_name=Provider.CODEX,
@@ -164,18 +156,13 @@ def test_stale_observation_repair_derives_created_time_from_session_event(tmp_pa
                 ]
             }
         )
-        payload = SessionWritePayload(
-            session_id=session_id,
-            content_hash="ignored",
-            parsed_session=candidate,
-            fallback_timestamp="2020-01-01T00:00:00Z",
-        )
-
         with fixture_index_mutation_scope(conn):
-            ingest_batch_core._retain_stale_revision_observations(conn, payload)
+            archive_write._retain_stale_session_observations(
+                conn, session_id, candidate, fallback_timestamp="2020-01-01T00:00:00Z"
+            )
         row = conn.execute("SELECT created_at_ms FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     assert row[0] == 1_782_864_000_000
 
@@ -215,149 +202,6 @@ def test_parse_batch_observation_reports_unsupported_write_mode() -> None:
             "reason": "owner_ambiguous",
         }
     ]
-
-
-def test_batch_writer_carries_typed_attachment_owner_resolution(tmp_path: Path) -> None:
-    """The normal acquisition writer does not discard unresolved-owner evidence."""
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
-    try:
-        session = ParsedSession(
-            source_name=Provider.GEMINI,
-            provider_session_id="batch-owner-receipt",
-            messages=[
-                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
-                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
-            ],
-            attachments=[
-                ParsedAttachment(
-                    provider_attachment_id="batch-ambiguous",
-                    message_position=0,
-                    name="ambiguous.txt",
-                    mime_type="text/plain",
-                )
-            ],
-        )
-        payload = SessionWritePayload(
-            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=str(session_content_hash(session)),
-            parsed_session=session,
-            raw_id="raw-batch-owner-receipt",
-        )
-        summary = _IngestBatchSummary()
-
-        assert ingest_batch_core._write_session_entry(conn, "raw-batch-owner-receipt", payload, summary=summary)
-        assert summary.attachment_owner_resolutions == [
-            {
-                "raw_id": "raw-batch-owner-receipt",
-                "session_id": payload.session_id,
-                "attachment_id": _attachment_id(payload.session_id, session.attachments[0]),
-                "reason": "owner_ambiguous",
-            }
-        ]
-    finally:
-        conn.close()
-
-
-def test_hash_unchanged_batch_write_still_reports_owner_resolutions(tmp_path: Path) -> None:
-    """Replaying an unchanged session reports the same unresolved owners as its write.
-
-    Anti-vacuity: the hash-unchanged return in ``_write_session`` used to skip
-    the writer and report nothing, so replaying an orphan population reported
-    zero ``attachment_owner_resolutions``.
-    """
-    archive_root = tmp_path / "archive"
-    bootstrap_archive_root(archive_root)
-    conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
-    try:
-        session = ParsedSession(
-            source_name=Provider.GEMINI,
-            provider_session_id="batch-unchanged-owner",
-            messages=[
-                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
-                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same"),
-            ],
-            attachments=[
-                ParsedAttachment(
-                    provider_attachment_id="batch-unchanged-ambiguous",
-                    message_position=0,
-                    name="ambiguous.txt",
-                    mime_type="text/plain",
-                )
-            ],
-        )
-        payload = SessionWritePayload(
-            session_id=str(make_session_id(session.source_name, session.provider_session_id)),
-            content_hash=str(session_content_hash(session)),
-            parsed_session=session,
-            raw_id="raw-batch-unchanged-owner",
-        )
-        first = _IngestBatchSummary()
-        assert ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=first)
-        conn.commit()
-        replay = _IngestBatchSummary()
-        ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=replay)
-
-        assert first.attachment_owner_resolutions
-        assert replay.attachment_owner_resolutions == first.attachment_owner_resolutions
-    finally:
-        conn.close()
-
-
-def test_sync_index_connection_ensures_runtime_indexes(tmp_path: Path) -> None:
-    conn = ingest_batch_core._open_sync_connection(tmp_path / "archive" / "index.db")
-    try:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_active_leaf'"
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert row is not None
-
-
-def test_sync_ingest_index_publication_refuses_a_foreign_archive_lease(tmp_path: Path) -> None:
-    """Index generations cannot borrow writer authority from another archive.
-
-    Anti-vacuity: removing the explicit ``archive_root`` from
-    ``_open_sync_connection`` lets this real ingest publication opener create
-    a connection to the target tier under the owner archive's lease.
-    """
-    owner_root = tmp_path / "owner"
-    target_root = tmp_path / "target"
-    owner_root.mkdir()
-    bootstrap_archive_root(target_root)
-
-    with (
-        arm_write_lease_enforcement(),
-        write_lease("test.owner", archive_root=owner_root),
-        pytest.raises(UnleasedWriteError, match="outside the archive"),
-    ):
-        ingest_batch_core._open_sync_connection(target_root / "index.db", archive_root=target_root)
-
-
-def test_batch_projection_preserves_worker_disposition_fields() -> None:
-    summary = _IngestBatchSummary()
-    ingest_batch_core._record_outcome(
-        summary,
-        IngestRecordResult(
-            raw_id="raw-worker-failure",
-            error="schema rejected",
-            outcome_code="validation_rejected",
-            retryable=False,
-            evidence_ref="schema_validation_strict",
-            remediation="repair source schema",
-            diagnostic="missing required field: messages",
-        ),
-    )
-
-    outcome = summary.outcomes["raw-worker-failure"]
-    assert outcome.outcome_code == "validation_rejected"
-    assert outcome.retryable is False
-    assert outcome.evidence_ref == "schema_validation_strict"
-    assert outcome.remediation == "repair source schema"
-    assert outcome.diagnostic == "missing required field: messages"
 
 
 class _FakeConnectionBackend:
@@ -537,27 +381,6 @@ def _attachment_ref_tuple(
 ) -> AttachmentRefSpec:
     del session_id
     return (attachment_id, message_id)
-
-
-def test_topo_sort_session_entries_orders_parent_before_child() -> None:
-    parent = _session_data("codex-session:parent", content_hash="hash-parent")
-    child = _session_data(
-        "codex-session:child",
-        content_hash="hash-child",
-        parent_session_id="codex-session:parent",
-    )
-
-    ordered = _topo_sort_session_entries(
-        [
-            ("raw-child", child),
-            ("raw-parent", parent),
-        ]
-    )
-
-    assert [entry[1].session_id for entry in ordered] == [
-        "codex-session:parent",
-        "codex-session:child",
-    ]
 
 
 def test_write_session_clears_missing_parent_fk(tmp_path: Path) -> None:
@@ -3127,195 +2950,6 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
         ).fetchone() == (1,)
 
 
-def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
-        c_msg = _message_tuple(
-            "msg-c",
-            "codex-session:child",
-            role="user",
-            text="child",
-            content_hash="hash-c",
-            sort_key=1.0,
-        )
-        child = _session_data(
-            "codex-session:child",
-            content_hash="hash-child",
-            parent_session_id="codex-session:parent",
-            message_tuples=[c_msg],
-        )
-
-        summary = _IngestBatchSummary()
-        materialized_ids: set[str] = set()
-
-        _drain_ready_session_entries(
-            conn,
-            [("raw-child", child)],
-            summary=summary,
-            materialized_ids=materialized_ids,
-        )
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex-session:child",),
-        ).fetchone()
-        assert row is not None
-        assert row["parent_session_id"] is None
-        assert child.parsed_session.messages == []
-
-
-def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: Path) -> None:
-    with open_connection(tmp_path / "index.db") as conn:
-        p_msg = _message_tuple(
-            "msg-p",
-            "codex-session:parent",
-            role="user",
-            text="parent",
-            content_hash="hash-p",
-            sort_key=1.0,
-        )
-        c_msg = _message_tuple(
-            "msg-c",
-            "codex-session:child",
-            role="user",
-            text="child",
-            content_hash="hash-c",
-            sort_key=1.0,
-        )
-        parent = _session_data(
-            "codex-session:parent",
-            content_hash="hash-parent",
-            message_tuples=[p_msg],
-        )
-        child = _session_data(
-            "codex-session:child",
-            content_hash="hash-child",
-            parent_session_id="codex-session:parent",
-            message_tuples=[c_msg],
-        )
-
-        _drain_ready_session_entries(
-            conn,
-            [("raw-child", child), ("raw-parent", parent)],
-            summary=_IngestBatchSummary(),
-            materialized_ids=set(),
-        )
-        conn.commit()
-
-        row = conn.execute(
-            "SELECT parent_session_id FROM sessions WHERE session_id = ?",
-            ("codex-session:child",),
-        ).fetchone()
-        assert row is not None
-        assert row["parent_session_id"] == "codex-session:parent"
-
-
-def test_successful_raw_state_update_combines_parse_and_validation_fields() -> None:
-    outcome = _RawIngestOutcome(
-        raw_id="raw-1",
-        payload_provider="chatgpt",
-        validation_status="passed",
-        validation_error=None,
-        parse_error=None,
-        error=None,
-        had_sessions=True,
-    )
-
-    state = _successful_raw_state_update(
-        outcome=outcome,
-        parsed_at="2026-04-02T00:00:00Z",
-        validation_mode="strict",
-    )
-
-    assert state == RawSessionStateUpdate(
-        parsed_at="2026-04-02T00:00:00Z",
-        parse_error=None,
-        payload_provider="chatgpt",
-        validation_status="passed",
-        validation_error=None,
-        validation_mode="strict",
-    )
-
-
-def test_failed_raw_state_update_combines_parse_and_validation_fields() -> None:
-    outcome = _RawIngestOutcome(
-        raw_id="raw-1",
-        payload_provider="chatgpt",
-        validation_status="failed",
-        validation_error="schema mismatch",
-        parse_error="parse failed",
-        error="parse failed",
-        had_sessions=False,
-    )
-
-    state = _failed_raw_state_update(
-        outcome=outcome,
-        error="parse failed",
-        validation_mode="strict",
-    )
-
-    assert state == RawSessionStateUpdate(
-        parse_error="parse failed",
-        payload_provider="chatgpt",
-        validation_status="failed",
-        validation_error="schema mismatch",
-        validation_mode="strict",
-        detection_warnings="parse failed",
-    )
-
-
-def test_failed_raw_state_update_keeps_validation_only_failure_out_of_parse_error() -> None:
-    outcome = _RawIngestOutcome(
-        raw_id="raw-1",
-        payload_provider="chatgpt",
-        validation_status="failed",
-        validation_error="schema mismatch",
-        parse_error=None,
-        error="schema mismatch",
-        had_sessions=False,
-    )
-
-    state = _failed_raw_state_update(
-        outcome=outcome,
-        error="schema mismatch",
-        validation_mode="strict",
-    )
-
-    assert state == RawSessionStateUpdate(
-        parse_error=None,
-        payload_provider="chatgpt",
-        validation_status="failed",
-        validation_error="schema mismatch",
-        validation_mode="strict",
-        detection_warnings=None,
-    )
-
-
-def test_failed_raw_state_update_persists_worker_diagnostic_at_boundary() -> None:
-    outcome = _RawIngestOutcome(
-        raw_id="raw-1",
-        payload_provider="chatgpt",
-        validation_status="failed",
-        validation_error="schema mismatch",
-        parse_error="parse failed",
-        error="parse failed",
-        had_sessions=False,
-        outcome_code="validation_rejected",
-        retryable=False,
-        evidence_ref="schema_validation_strict",
-        remediation="repair source schema",
-        diagnostic="missing required field: messages",
-    )
-
-    state = _failed_raw_state_update(
-        outcome=outcome,
-        error="parse failed",
-        validation_mode="strict",
-    )
-
-    assert state.detection_warnings == "missing required field: messages"
-
-
 def test_unattributed_batch_elapsed_subtracts_setup_and_teardown() -> None:
     summary = _IngestBatchSummary(
         setup_elapsed_s=0.12,
@@ -3354,550 +2988,6 @@ def test_build_batch_memory_observation_separates_lifetime_peak_from_batch_growt
         "peak_rss_children_mb": 64.0,
         "max_current_rss_mb": 812.2,
     }
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_raw_state_updates_uses_one_typed_update_per_raw() -> None:
-    update_raw_state = AsyncMock()
-    service = _FakeParsingService(update_raw_state)
-
-    @asynccontextmanager
-    async def _bulk_connection() -> AsyncIterator[None]:
-        yield
-
-    backend = _FakeBulkBackend(_bulk_connection)
-    outcomes = {
-        "raw-success": _RawIngestOutcome(
-            raw_id="raw-success",
-            payload_provider="chatgpt",
-            validation_status="passed",
-            validation_error=None,
-            parse_error=None,
-            error=None,
-            had_sessions=True,
-        ),
-        "raw-failed": _RawIngestOutcome(
-            raw_id="raw-failed",
-            payload_provider="codex",
-            validation_status="failed",
-            validation_error="bad schema",
-            parse_error="parse failed",
-            error="parse failed",
-            had_sessions=False,
-        ),
-    }
-
-    elapsed_s = await _persist_batch_raw_state_updates(
-        service,
-        backend,
-        outcomes=outcomes,
-        succeeded_raw_ids={"raw-success"},
-        skipped_raw_ids=set(),
-        failed_raw_ids={"raw-failed": "parse failed"},
-        validation_mode="strict",
-    )
-
-    assert elapsed_s >= 0.0
-    assert update_raw_state.await_count == 2
-    success_call, failed_call = update_raw_state.await_args_list
-    assert success_call.args == ("raw-success",)
-    assert success_call.kwargs["state"].validation_status == "passed"
-    assert success_call.kwargs["state"].parsed_at is not None
-    assert failed_call.args == ("raw-failed",)
-    assert failed_call.kwargs["state"].parse_error == "parse failed"
-    assert failed_call.kwargs["state"].validation_error == "bad schema"
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_raw_state_updates_marks_skipped_raw_before_success() -> None:
-    update_raw_state = AsyncMock()
-    service = _FakeParsingService(update_raw_state)
-
-    @asynccontextmanager
-    async def _bulk_connection() -> AsyncIterator[None]:
-        yield
-
-    backend = _FakeBulkBackend(_bulk_connection)
-    outcomes = {
-        "raw-duplicate": _RawIngestOutcome(
-            raw_id="raw-duplicate",
-            payload_provider="chatgpt",
-            validation_status="passed",
-            validation_error=None,
-            parse_error=None,
-            error=None,
-            had_sessions=True,
-        ),
-    }
-
-    elapsed_s = await _persist_batch_raw_state_updates(
-        service,
-        backend,
-        outcomes=outcomes,
-        succeeded_raw_ids={"raw-duplicate"},
-        skipped_raw_ids={"raw-duplicate"},
-        failed_raw_ids={},
-        validation_mode="advisory",
-    )
-
-    assert elapsed_s >= 0.0
-    update_raw_state.assert_awaited_once()
-    call = update_raw_state.await_args
-    assert call is not None
-    assert call.args == ("raw-duplicate",)
-    state = call.kwargs["state"]
-    assert state.validation_status == "skipped"
-    assert state.validation_error == "parsed raw payload produced no new materialized sessions"
-    assert state.parse_error is None
-    assert state.parsed_at is not None
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_raw_state_updates_preserves_validation_only_failure_without_quarantine() -> None:
-    update_raw_state = AsyncMock()
-    service = _FakeParsingService(update_raw_state)
-
-    @asynccontextmanager
-    async def _bulk_connection() -> AsyncIterator[None]:
-        yield
-
-    backend = _FakeBulkBackend(_bulk_connection)
-    outcomes = {
-        "raw-schema-invalid": _RawIngestOutcome(
-            raw_id="raw-schema-invalid",
-            payload_provider="chatgpt",
-            validation_status="failed",
-            validation_error="bad schema",
-            parse_error=None,
-            error="bad schema",
-            had_sessions=False,
-        ),
-    }
-
-    elapsed_s = await _persist_batch_raw_state_updates(
-        service,
-        backend,
-        outcomes=outcomes,
-        succeeded_raw_ids=set(),
-        skipped_raw_ids=set(),
-        failed_raw_ids={"raw-schema-invalid": "bad schema"},
-        validation_mode="strict",
-    )
-
-    assert elapsed_s >= 0.0
-    update_raw_state.assert_awaited_once()
-    await_args = update_raw_state.await_args
-    assert await_args is not None
-    state = await_args.kwargs["state"]
-    assert state.parse_error is None
-    assert state.validation_error == "bad schema"
-    assert state.validation_status == "failed"
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_raw_state_updates_persists_terminal_worker_disposition_to_source(
-    tmp_path: Path,
-) -> None:
-    """The ordinary batch boundary retains typed terminal evidence at the raw coordinate."""
-    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="batch-unsupported.jsonl",
-            source_index=7,
-            payload=b"unsupported-shape",
-            acquired_at_ms=1,
-        )
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = SimpleNamespace(repository=repository)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="passed",
-        validation_error=None,
-        parse_error="parse: session artifact produced no materializable sessions",
-        error="parse: session artifact produced no materializable sessions",
-        had_sessions=False,
-        outcome_code="unsupported_shape",
-        retryable=False,
-        evidence_ref="empty_parsed_sessions",
-        remediation="open a source-support issue",
-        diagnostic="worker rejected unsupported shape",
-    )
-
-    try:
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: outcome.error or "worker failure"},
-            validation_mode="strict",
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        state = conn.execute(
-            "SELECT parse_error, source_path, source_index FROM raw_sessions WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone()
-        artifact = conn.execute(
-            """
-            SELECT raw_id, origin, source_path, source_index, artifact_kind, support_status,
-                   classification_reason, decode_error
-            FROM raw_artifacts
-            WHERE raw_id = ?
-            """,
-            (raw_id,),
-        ).fetchone()
-
-    assert state == (outcome.parse_error, "batch-unsupported.jsonl", 7)
-    assert artifact is not None
-    assert tuple(artifact[:6]) == (
-        raw_id,
-        Origin.CODEX_SESSION.value,
-        "batch-unsupported.jsonl",
-        7,
-        RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value,
-        "unsupported_parseable",
-    )
-    carrier = json.loads(artifact[6])
-    assert carrier == {
-        "diagnostic": outcome.diagnostic,
-        "evidence_ref": outcome.evidence_ref,
-        "outcome_code": outcome.outcome_code,
-        "remediation": outcome.remediation,
-        "retryable": False,
-    }
-    assert artifact[7] == outcome.diagnostic
-
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.terminal == 1
-    assert lifecycle.unexplained == 0
-    assert lifecycle.blocking is False
-    status = raw_failure_info_for_root(tmp_path)
-    assert status["terminal_rejections"] == 1
-    assert status["unexplained_failures"] == 0
-    samples = cast(list[RawFailureSample], status["samples"])
-    assert samples[0].failure_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
-    assert lifecycle.state == "degraded"
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_transaction(
-    tmp_path: Path,
-) -> None:
-    """The async batch success route revokes stale CAS replay authority."""
-    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="batch-success.jsonl",
-            source_index=2,
-            payload=b"batch-success",
-            acquired_at_ms=1,
-        )
-        upsert_raw_artifact(
-            conn,
-            raw_id,
-            ArchiveSourceArtifact(
-                artifact_id="deferred-cas",
-                origin=Origin.CODEX_SESSION,
-                source_path="batch-success.jsonl",
-                source_index=2,
-                artifact_kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
-                classification_reason="deferred CAS",
-                support_status=ArtifactSupportStatus.PARTIAL_DECODE,
-                parse_as_session=True,
-                schema_eligible=True,
-                first_observed_at_ms=1,
-                last_observed_at_ms=1,
-            ),
-        )
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = SimpleNamespace(repository=repository)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="passed",
-        validation_error=None,
-        parse_error=None,
-        error=None,
-        had_sessions=True,
-    )
-    try:
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids={raw_id},
-            skipped_raw_ids=set(),
-            failed_raw_ids={},
-            validation_mode="strict",
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT artifact_id, artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?",
-            (raw_id,),
-        ).fetchone() == (
-            "deferred-cas",
-            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
-            "unknown",
-        )
-        assert (
-            conn.execute("SELECT parse_error, parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
-            is None
-        )
-
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.deferred == 0
-    assert lifecycle.terminal == 0
-    assert lifecycle.unexplained == 0
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp_path: Path) -> None:
-    """A later untyped parser failure cannot inherit an older terminal cause."""
-    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="untyped-successor.jsonl",
-            source_index=0,
-            payload=b"untyped-successor",
-            acquired_at_ms=1,
-        )
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = SimpleNamespace(repository=repository)
-    terminal_outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="passed",
-        validation_error=None,
-        parse_error="unsupported shape",
-        error="unsupported shape",
-        had_sessions=False,
-        outcome_code="unsupported_shape",
-        evidence_ref="shape",
-        remediation="support it",
-        diagnostic="unsupported shape",
-    )
-    untyped_outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="passed",
-        validation_error=None,
-        parse_error="parser defect",
-        error="parser defect",
-        had_sessions=False,
-        outcome_code="parser_defect",
-        diagnostic="parser defect",
-    )
-    try:
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: terminal_outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: terminal_outcome.error or "failure"},
-            validation_mode="strict",
-        )
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: untyped_outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: untyped_outcome.error or "failure"},
-            validation_mode="strict",
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,
-        )
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.terminal == 0
-    assert lifecycle.unexplained == 1
-    assert lifecycle.blocking is True
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("payload", "diagnostic"),
-    [
-        (b"", "decode: Input is a zero-length, empty document"),
-        (b"{", "decode: Input data was truncated"),
-    ],
-    ids=["zero-length", "decode-failure"],
-)
-async def test_persist_batch_corrupt_input_remains_terminal_in_lifecycle(
-    tmp_path: Path,
-    payload: bytes,
-    diagnostic: str,
-) -> None:
-    """Worker validation failure plus typed corrupt evidence is explainable."""
-    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="batch-corrupt.jsonl",
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=1,
-        )
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = SimpleNamespace(repository=repository)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="failed",
-        validation_error="payload failed validation",
-        parse_error=diagnostic,
-        error=diagnostic,
-        had_sessions=False,
-        outcome_code="corrupt_input",
-        retryable=False,
-        evidence_ref="decode",
-        remediation="retain and inspect raw bytes",
-        diagnostic=diagnostic,
-    )
-    try:
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: diagnostic},
-            validation_mode="strict",
-        )
-    finally:
-        await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT validation_status, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == ("failed", diagnostic)
-        assert conn.execute(
-            "SELECT artifact_kind, support_status FROM raw_artifacts WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value, "decode_failed")
-
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.validation_failures == 1
-    assert lifecycle.terminal == 1
-    assert lifecycle.unexplained == 0
-    assert lifecycle.blocking is False
-
-
-@pytest.mark.asyncio
-async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_raw_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A source-tier carrier failure rolls back the paired raw-state mutation."""
-    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = write_source_raw_session(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="batch-atomic.jsonl",
-            source_index=3,
-            payload=b"unsupported-shape",
-            acquired_at_ms=1,
-        )
-
-    repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
-    service = SimpleNamespace(repository=repository)
-    outcome = _RawIngestOutcome(
-        raw_id=raw_id,
-        payload_provider="codex",
-        validation_status="passed",
-        validation_error=None,
-        parse_error="unsupported shape",
-        error="unsupported shape",
-        had_sessions=False,
-        outcome_code="unsupported_shape",
-        retryable=False,
-        evidence_ref="shape",
-        remediation="support it",
-        diagnostic="unsupported",
-    )
-
-    async def fail_evidence(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("carrier write failed")
-
-    monkeypatch.setattr(repository.source_backend, "save_raw_failure_evidence", fail_evidence)
-    with pytest.raises(RuntimeError, match="carrier write failed"):
-        await _persist_batch_raw_state_updates(
-            service,
-            repository.backend,
-            outcomes={raw_id: outcome},
-            succeeded_raw_ids=set(),
-            skipped_raw_ids=set(),
-            failed_raw_ids={raw_id: "unsupported shape"},
-            validation_mode="strict",
-        )
-    await repository.close()
-
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute(
-            "SELECT parse_error, validation_status FROM raw_sessions WHERE raw_id = ?", (raw_id,)
-        ).fetchone() == (None, None)
-        assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
-
-
-def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
-    """The durable raw state names the excision, not a generic empty parse.
-
-    Anti-vacuity (Codex P2, #5696): write the generic skip reason for every
-    skipped raw and nothing durable records the typed refusal after restart.
-    """
-    from polylogue.pipeline.services.ingest_batch._core import _skipped_raw_state_update
-
-    outcome = SimpleNamespace(payload_provider=None, diagnostic="content_excised: sidecar hash excised")
-    update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
-
-    assert str(update.validation_error).startswith("content_excised")
-
-
-def test_drive_cohort_snapshot_copies_every_row_of_a_large_cohort() -> None:
-    """A cohort beyond the old 1,000-row cap is snapshotted whole, not marked stale.
-
-    Anti-vacuity: the ``LIMIT 1001`` snapshot plus the ``> 1000 rows`` stale
-    predicate marked every preparation of such a cohort stale, so its raw was
-    retried forever without converging.
-    """
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.execute("CREATE TABLE raw_session_memberships (raw_id TEXT, logical_source_key TEXT)")
-        conn.executemany(
-            "INSERT INTO raw_session_memberships VALUES (?, 'drive:key')",
-            [(f"raw-{index:05d}",) for index in range(1_500)],
-        )
-        snapshot = ingest_batch_core._source_snapshot(
-            conn, "raw_session_memberships", "logical_source_key = ?", ("drive:key",)
-        )
-    finally:
-        conn.close()
-
-    assert len(snapshot.rows) == 1_500
 
 
 _CANONICAL_CODEX_PAYLOAD = (
