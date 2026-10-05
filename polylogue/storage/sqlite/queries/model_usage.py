@@ -22,8 +22,18 @@ import aiosqlite
 
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 
+# Correlated and grouped session-cost readers use the same priced population.
+# The alias is fixed to the model-usage relation named by those SQL owners.
+MODEL_USAGE_CATALOG_SUM_SQL = """
+CASE WHEN MIN(u.provider_lanes_complete) = 1
+          AND COUNT(u.catalog_cost_usd) = COUNT(CASE
+              WHEN u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens > 0
+                   OR u.catalog_cost_usd IS NOT NULL THEN u.model_name END)
+     THEN SUM(u.catalog_cost_usd) END
+""".strip()
+
 _MODEL_USAGE_BATCH_SQL = """
-SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
 FROM session_model_usage
 WHERE session_id IN ({placeholders})
 ORDER BY session_id, model_name
@@ -33,6 +43,7 @@ ORDER BY session_id, model_name
 def _row_to_model_usage_totals(row: sqlite3.Row) -> ModelUsageTotals:
     return ModelUsageTotals(
         model_name=row["model_name"],
+        provider_lanes_complete=bool(row["provider_lanes_complete"]),
         input_tokens=int(row["input_tokens"] or 0),
         output_tokens=int(row["output_tokens"] or 0),
         cache_read_tokens=int(row["cache_read_tokens"] or 0),
@@ -82,4 +93,4 @@ def sync_model_usage_batch(
     return dict(result)
 
 
-__all__ = ["get_model_usage_batch", "sync_model_usage_batch"]
+__all__ = ["MODEL_USAGE_CATALOG_SUM_SQL", "get_model_usage_batch", "sync_model_usage_batch"]

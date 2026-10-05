@@ -343,6 +343,7 @@ from polylogue.storage.sqlite.connection_profile import (
     readonly_temp_staging,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.queries.model_usage import MODEL_USAGE_CATALOG_SUM_SQL
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.query_watch import (
@@ -3239,9 +3240,9 @@ class ArchiveStore:
             SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (
                        SELECT smu.model_name
                        FROM session_model_usage smu
@@ -4022,7 +4023,7 @@ class ArchiveStore:
         except KeyError:
             return None
         rows = self._conn.execute(
-            """
+            f"""
             SELECT s.session_id, s.origin, s.root_session_id, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.tool_use_count, s.thinking_count,
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
@@ -4030,10 +4031,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.input_row_count, sp.input_content_hash, sp.materializer_version,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
@@ -4211,10 +4212,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
@@ -4244,8 +4245,8 @@ class ArchiveStore:
                    s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
                    sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -6569,8 +6570,8 @@ class ArchiveStore:
                        s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
                        s.display_name,
                        sp.terminal_state,
-                       (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                       (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                       (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                       (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                        COALESCE(
                            (
                                SELECT json_group_array(swd.path)

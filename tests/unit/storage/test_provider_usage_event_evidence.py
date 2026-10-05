@@ -6,6 +6,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
@@ -378,5 +380,157 @@ def test_session_grain_usage_event_is_not_reported_as_a_failed_attribution(tmp_p
         assert len(rows) == 1
         assert rows[0]["source_message_provider_id"] is None
         assert rows[0]["source_message_resolution"] == "session"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("unmapped", ["total_tokens", "reasoning_output_tokens"])
+@pytest.mark.parametrize("cumulative", [False, True])
+def test_unmappable_provider_usage_stays_unpriced_through_append_and_rebuild(
+    tmp_path: Path,
+    unmapped: str,
+    cumulative: bool,
+) -> None:
+    from polylogue.archive.semantic.cost_compute import compute_session_cost
+    from polylogue.storage.derived.session.profile_cost import read_model_usage_batch_sync
+    from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollup
+    from polylogue.storage.usage import session_usage_costs_for_connection, session_usage_reconciliation_for_connection
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="unmapped-usage",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, model_name="gpt-4o", text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "model": "gpt-4o",
+                    "total_token_usage" if cumulative else "last_token_usage": {unmapped: 10},
+                },
+            )
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = _write(conn, session)
+
+        def cost() -> float | None:
+            row = conn.execute(
+                "SELECT catalog_cost_usd FROM session_model_usage WHERE session_id = ? AND model_name = 'gpt-4o'",
+                (session_id,),
+            ).fetchone()
+            assert row is not None
+            return None if row[0] is None else float(row[0])
+
+        assert cost() is None
+        appended = session.model_copy(
+            update={
+                "messages": [],
+                "session_events": [
+                    ParsedSessionEvent(
+                        event_type="token_count",
+                        payload={"model": "gpt-4o", "last_token_usage": {"input_tokens": 20}},
+                    )
+                ],
+            }
+        )
+        write_parsed_session_to_archive(conn, appended, merge_append=True)
+        assert cost() is None
+        reconcile_session_usage_rollup(conn, session_id)
+        assert cost() is None
+        assert len(_usage_rows(conn, session_id)) == 2
+        rows = read_model_usage_batch_sync(conn, [session_id])[session_id]
+        assert not rows[0].provider_lanes_complete
+        summary = compute_session_cost(None, model_usage=rows, estimate_if_missing=False)
+        assert summary.cost_confidence == "partial"
+        assert summary.total_input_tokens == 20
+        canonical = session_usage_costs_for_connection(conn, [session_id])[session_id]
+        assert canonical.availability == "unpriced"
+        assert canonical.catalog_api_equivalent_usd is None
+        assert not canonical.to_dict()["provider_lanes_complete"]
+        reconciled = session_usage_reconciliation_for_connection(conn, session_id=session_id)
+        assert reconciled.reconciled_tokens_evidence.value_state == "unknown"
+        assert reconciled.catalog_cost_evidence.value_state == "unknown"
+    finally:
+        conn.close()
+
+
+def test_complete_provider_lanes_accept_a_new_catalog_price(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.archive.semantic import pricing
+    from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollup
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="new-catalog-price",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, model_name="new-price-model", text="answer")
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count",
+                payload={
+                    "model": "new-price-model",
+                    "total_token_usage": {"input_tokens": 20},
+                },
+            )
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = _write(conn, session)
+
+        def row() -> tuple[float | None, int]:
+            found = conn.execute(
+                "SELECT catalog_cost_usd, provider_lanes_complete FROM session_model_usage WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            assert found is not None
+            return tuple(found)
+
+        assert row() == (None, 1)
+        monkeypatch.setitem(
+            pricing.PRICING,
+            "new-price-model",
+            pricing.ModelPricing(source_name="test", input_usd_per_1m=1.0, output_usd_per_1m=2.0),
+        )
+        reconcile_session_usage_rollup(conn, session_id)
+        assert row() == (20 / 1_000_000, 1)
+    finally:
+        conn.close()
+
+
+def test_session_summary_refuses_incomplete_catalog_total_and_preserves_provider_money(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="partial-catalog-summary",
+        messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, model_name="gpt-4o", text="answer")],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="token_count", payload={"model": "gpt-4o", "last_token_usage": {"input_tokens": 20}}
+            ),
+            ParsedSessionEvent(
+                event_type="token_count", payload={"model": "gpt-4o-mini", "last_token_usage": {"total_tokens": 10}}
+            ),
+        ],
+    )
+    conn = sqlite3.connect(tmp_path / "index.db")
+    conn.row_factory = sqlite3.Row
+    try:
+        session_id = _write(conn, session)
+        conn.commit()
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as store:
+            summary = store.read_summary(session_id)
+            assert summary.total_cost_usd is None
+            assert summary.cost_provenance is None
+            (insight,) = store.list_session_cost_insights(session_id=session_id)
+            assert insight.estimate.status == "unavailable"
+        conn.execute("UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?", (0.25, session_id))
+        conn.commit()
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as store:
+            assert store.read_summary(session_id).total_cost_usd == 0.25
     finally:
         conn.close()

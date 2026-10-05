@@ -1587,11 +1587,11 @@ def test_provider_usage_model_vanishing_on_reingest_leaves_no_stale_rollup(tmp_p
 
 
 def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reasoning() -> None:
-    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
+    from polylogue.storage.usage import provider_usage_disjoint_lanes
 
     # Codex reports input INCLUSIVE of cached and output INCLUSIVE of reasoning.
     # input=1000 (900 of it cached), output=120 (80 of it reasoning), cache_write=10.
-    fresh_input, output, cache_read, cache_write = _provider_usage_disjoint_lanes(1000, 120, 900, 10)
+    fresh_input, output, cache_read, cache_write = provider_usage_disjoint_lanes(1000, 120, 900, 10)
     assert (fresh_input, output, cache_read, cache_write) == (100, 120, 900, 10)
     # Disjoint reconstruction: fresh_input + cache_read == the provider's input,
     # so the cached portion is billed on exactly one lane, not two.
@@ -1599,7 +1599,7 @@ def test_provider_usage_disjoint_lanes_subtracts_cached_and_does_not_re_add_reas
     # Output is passed through unchanged — reasoning is already inside it.
     assert output == 120
     # Guard: if cached somehow exceeds input, fresh input clamps to 0 (never negative).
-    assert _provider_usage_disjoint_lanes(20, 10, 30, 0)[0] == 0
+    assert provider_usage_disjoint_lanes(20, 10, 30, 0)[0] == 0
 
 
 def test_provider_usage_events_roll_up_simple_last_usage_when_no_cumulative_total(tmp_path: Path) -> None:

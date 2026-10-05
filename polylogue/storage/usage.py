@@ -22,6 +22,7 @@ from polylogue.archive.semantic.pricing import (
     CATALOG_PROVENANCE,
     PRICING,
     _normalize_model,
+    catalog_cost_for_tokens,
     estimate_cost,
 )
 from polylogue.archive.semantic.subscription_pricing import (
@@ -57,6 +58,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+from polylogue.storage.sqlite.queries.model_usage import MODEL_USAGE_CATALOG_SUM_SQL
 
 UsageReportDetail = Literal["headline", "full"]
 
@@ -82,6 +84,8 @@ class UsageProjectionModel:
     cost_usd: float | None
     state: UsageProjectionState
     missing_reasons: tuple[str, ...] = ()
+    cumulative: bool = False
+    provider_lanes_complete: bool = field(kw_only=True)
 
     @property
     def total_tokens(self) -> int:
@@ -154,35 +158,30 @@ def provider_usage_event_identity(row: Mapping[str, object]) -> tuple[str, str, 
     return ("provider_message", provider_message_id, event_type, model_name)
 
 
-def _projection_event_lanes(row: Mapping[str, object]) -> tuple[int, int, int, int]:
-    """Return disjoint lanes for one event, preferring provider lane totals."""
-    total_input = _projection_int(row, "total_input_tokens")
-    total_output = _projection_int(row, "total_output_tokens")
-    total_cache_read = _projection_int(row, "total_cached_input_tokens")
-    total_cache_write = _projection_int(row, "total_cache_write_tokens")
-    if any(
-        _projection_value(row, name) is not None
-        for name in (
-            "total_input_tokens",
-            "total_output_tokens",
-            "total_cached_input_tokens",
-            "total_cache_write_tokens",
-        )
-    ):
-        # Codex totals include cache in input.  The stored projection's input
-        # lane is deliberately uncached input, so the two lanes cannot overlap.
-        return (
-            max(total_input - total_cache_read, 0),
-            total_output,
-            total_cache_read,
-            total_cache_write,
-        )
-    return (
-        _projection_int(row, "last_input_tokens"),
-        _projection_int(row, "last_output_tokens"),
-        _projection_int(row, "last_cached_input_tokens"),
-        _projection_int(row, "last_cache_write_tokens"),
+def provider_usage_disjoint_lanes(
+    input_with_cached: int,
+    output_with_reasoning: int,
+    cache_read: int,
+    cache_write: int,
+) -> tuple[int, int, int, int]:
+    """Map provider-inclusive input/output counters to disjoint priced lanes."""
+    return max(input_with_cached - cache_read, 0), output_with_reasoning, cache_read, cache_write
+
+
+def _projection_event_lanes(row: Mapping[str, object]) -> tuple[tuple[int, int, int, int], bool, bool]:
+    """Return disjoint lanes, cumulative scope, and missing lane evidence."""
+    total_names = ("total_input_tokens", "total_output_tokens", "total_cached_input_tokens", "total_cache_write_tokens")
+    last_names = ("last_input_tokens", "last_output_tokens", "last_cached_input_tokens", "last_cache_write_tokens")
+    cumulative = str(_projection_value(row, "provider_event_type") or "") == "token_count" and any(
+        _projection_value(row, name) is not None for name in total_names
     )
+    names = total_names if cumulative else last_names
+    lanes = tuple(_projection_int(row, name) for name in names)
+    input_tokens, output_tokens, cache_read, cache_write = lanes
+    if cumulative or str(_projection_value(row, "provider_event_type") or "") == "token_count":
+        lanes = provider_usage_disjoint_lanes(input_tokens, output_tokens, cache_read, cache_write)
+    missing = not any(_projection_value(row, name) is not None for name in names)
+    return (lanes[0], lanes[1], lanes[2], lanes[3]), cumulative, missing
 
 
 def project_provider_usage_events(
@@ -190,88 +189,64 @@ def project_provider_usage_events(
     *,
     origin: str,
 ) -> tuple[UsageProjectionModel, ...]:
-    """Fold provider usage events once into model-split session projections.
+    """Fold provider events into model projections with exact pricing evidence.
 
-    Cumulative ``token_count`` rows are session-global: only the latest such
-    row contributes.  Delta rows are summed per model.  Pricing is resolved
-    through the canonical catalog and a non-zero cache lane requires a
-    non-zero catalog cache rate; otherwise the result is typed incomplete.
+    The latest cumulative token_count supersedes the session's delta buckets.
+    Each session's buckets are replaced once without scanning other sessions.
+    Unmappable evidence remains incomplete; measured zero remains measured.
     """
-    del origin  # retained in the public signature for rollup composition
-    grouped: dict[tuple[str, str | None], list[int]] = {}
+    del origin
+    grouped: dict[str, dict[str | None, tuple[list[int], bool]]] = {}
     latest_cumulative: dict[str, tuple[int, str | None, tuple[int, int, int, int]]] = {}
+    latest_unmapped: dict[str, int] = {}
     for row in events:
         session_id = str(_projection_value(row, "session_id") or "")
         if not session_id:
             continue
-        model_raw = _projection_value(row, "model_name")
-        model = _normalize_model_name(model_raw) or None
-        lanes = _projection_event_lanes(row)
-        key = (session_id, model)
-        if str(_projection_value(row, "provider_event_type") or "") == "token_count" and any(
-            _projection_value(row, name) is not None
-            for name in (
-                "total_input_tokens",
-                "total_output_tokens",
-                "total_cached_input_tokens",
-                "total_cache_write_tokens",
-            )
-        ):
+        model = _normalize_model_name(_projection_value(row, "model_name")) or None
+        lanes, cumulative, missing = _projection_event_lanes(row)
+        if missing:
+            latest_unmapped[session_id] = max(latest_unmapped.get(session_id, -1), _projection_int(row, "position"))
+        if cumulative:
             position = _projection_int(row, "position")
             prior = latest_cumulative.get(session_id)
             if prior is None or position >= prior[0]:
                 latest_cumulative[session_id] = (position, model, lanes)
             continue
-        bucket = grouped.setdefault(key, [0, 0, 0, 0])
+        models = grouped.setdefault(session_id, {})
+        bucket, previous_missing = models.setdefault(model, ([0, 0, 0, 0], False))
         for index, value in enumerate(lanes):
             bucket[index] += value
+        models[model] = bucket, previous_missing or missing
 
     for session_id, (_, model, lanes) in latest_cumulative.items():
-        # A session-global cumulative supersedes all deltas and prior model
-        # attribution.  Keeping one bucket prevents lineage/model double-add.
-        grouped = {key: value for key, value in grouped.items() if key[0] != session_id}
-        grouped[(session_id, model)] = list(lanes)
+        grouped[session_id] = {
+            model: (list(lanes), latest_unmapped.get(session_id, -1) > latest_cumulative[session_id][0])
+        }
 
     result: list[UsageProjectionModel] = []
-    for (session_id, model), raw_lanes in sorted(grouped.items()):
-        input_tokens, output_tokens, cache_read, cache_write = raw_lanes
-        reasons: list[str] = []
-        pricing = PRICING.get(_normalize_model(model)) if model else None
-        cost: float | None = None
-        if model is None:
-            reasons.append("missing_model")
-        elif pricing is None:
-            reasons.append("missing_model_price")
-        elif (
-            cache_read
-            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
-            and pricing.cache_read_usd_per_1m == 0
-        ):
-            reasons.append("missing_cache_read_price")
-        elif (
-            cache_write
-            and (pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0)
-            and pricing.cache_write_usd_per_1m == 0
-        ):
-            reasons.append("missing_cache_write_price")
-        else:
-            cost = round(
-                estimate_cost(input_tokens, output_tokens, model, cache_read, cache_write),
-                6,
+    for session_id, models in sorted(grouped.items()):
+        for model, (bucket_lanes, missing) in sorted(models.items(), key=lambda item: item[0] or ""):
+            input_tokens, output_tokens, cache_read, cache_write = bucket_lanes
+            cost, reasons = catalog_cost_for_tokens(model, input_tokens, output_tokens, cache_read, cache_write)
+            if missing:
+                cost = None
+                reasons = (*reasons, "missing_token_lanes")
+            result.append(
+                UsageProjectionModel(
+                    session_id=session_id,
+                    model_name=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
+                    cost_usd=cost,
+                    state="complete" if not reasons else "incomplete",
+                    missing_reasons=reasons,
+                    cumulative=session_id in latest_cumulative,
+                    provider_lanes_complete=not missing,
+                )
             )
-        result.append(
-            UsageProjectionModel(
-                session_id=session_id,
-                model_name=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                cache_write_tokens=cache_write,
-                cost_usd=cost,
-                state="complete" if not reasons else "incomplete",
-                missing_reasons=tuple(reasons),
-            )
-        )
     return tuple(result)
 
 
@@ -320,7 +295,7 @@ def rollup_usage_projections(
             state="incomplete" if bucket.incomplete else "complete",
             incomplete_session_count=bucket.incomplete,
         )
-        for (origin, model), bucket in sorted(grouped.items())
+        for (origin, model), bucket in sorted(grouped.items(), key=lambda item: (item[0][0], item[0][1] or ""))
     )
 
 
@@ -1595,8 +1570,6 @@ def _stale_provider_rollup_stats(
     and avoids sorting or materializing the provider-event table.
     """
 
-    from polylogue.storage.sqlite.archive_tiers.write import _provider_usage_disjoint_lanes
-
     latest_rows = conn.execute(
         """
         /* provider_usage_stale_latest */
@@ -1670,7 +1643,7 @@ def _stale_provider_rollup_stats(
         model_name = _normalize_model_name(row["model_name"]) or sole_model or ""
         if not model_name:
             continue
-        expected[session_id][model_name] = _provider_usage_disjoint_lanes(
+        expected[session_id][model_name] = provider_usage_disjoint_lanes(
             _int(row["total_input_tokens"]),
             _int(row["total_output_tokens"]),
             _int(row["total_cached_input_tokens"]),
@@ -1723,9 +1696,7 @@ def _stale_provider_rollup_stats(
             for index, value in enumerate(last_values[:5]):
                 bucket[index] += value
         for model_name, totals in summed_by_model.items():
-            expected[session_id][model_name] = _provider_usage_disjoint_lanes(
-                totals[0], totals[1], totals[2], totals[3]
-            )
+            expected[session_id][model_name] = provider_usage_disjoint_lanes(totals[0], totals[1], totals[2], totals[3])
 
     actual_rows = conn.execute(
         """
@@ -2656,7 +2627,7 @@ def _model_usage_tokens_evidence(
 ) -> EvidenceValue[int]:
     fact_ref = _session_usage_fact_ref(session_id, "exact-total-tokens")
     source_ref = _session_usage_source_ref(session_id, "session_model_usage")
-    known = bool(rows)
+    known = bool(rows) and all(row.provider_lanes_complete for row in rows)
     return EvidenceValue(
         family=SESSION_USAGE_RECONCILED_TOKENS_FAMILY.family,
         fact_ref=fact_ref,
@@ -2676,6 +2647,9 @@ def _model_usage_tokens_evidence(
             observed_count=1 if known else 0,
             supported_count=1 if known else 0,
             complete=known,
+            exclusions=(CoverageExclusion(subject_ref=source_ref, reason="incomplete-provider-lanes"),)
+            if rows and not known
+            else (),
         ),
         freshness=FreshnessProvenance(state="fresh", evaluated_at=observed_at),
     )
@@ -2753,6 +2727,7 @@ def _catalog_cost_evidence(
             tokens_evidence.value_state == "known"
             and len(priced_rows) == len(model_usage_rows)
             and bool(model_usage_rows)
+            and all(row.provider_lanes_complete for row in model_usage_rows)
         )
     else:
         priced_rows = ()
@@ -2762,39 +2737,28 @@ def _catalog_cost_evidence(
     value: float | None = None
     exclusions: tuple[CoverageExclusion, ...] = ()
     if priceable:
-        assert tokens_evidence.value is not None  # narrowed by value_state == "known" above
-        # Price each token category at its own catalog rate -- input, output,
-        # and cache read/write are priced very differently (output is
-        # typically several times an input token's rate), so collapsing the
-        # reconciled *total* into a single input_tokens argument would
-        # systematically misprice any session with real output/cache volume.
         if priced_rows:
-            value = round(
-                sum(
-                    estimate_cost(
-                        input_tokens=row.input_tokens,
-                        output_tokens=row.output_tokens,
-                        cache_read_tokens=row.cache_read_tokens,
-                        cache_write_tokens=row.cache_write_tokens,
-                        model=normalized,
-                    )
-                    for row, normalized in priced_rows
-                ),
-                6,
+            costs = tuple(
+                catalog_cost_for_tokens(
+                    normalized, row.input_tokens, row.output_tokens, row.cache_read_tokens, row.cache_write_tokens
+                )[0]
+                for row, normalized in priced_rows
             )
         else:
-            value = round(
-                estimate_cost(
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    model=normalized_model or "",
-                ),
-                6,
+            costs = (
+                catalog_cost_for_tokens(
+                    normalized_model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+                )[0],
             )
+        priceable = all(cost is not None for cost in costs)
+        if priceable:
+            value = round(sum(cost for cost in costs if cost is not None), 6)
+        else:
+            exclusions = (CoverageExclusion(subject_ref=source_ref, reason="incomplete-catalog-price"),)
     elif tokens_evidence.value_state != "known":
         exclusions = (CoverageExclusion(subject_ref=source_ref, reason="reconciled-tokens-unknown"),)
+    elif any(not row.provider_lanes_complete for row in model_usage_rows):
+        exclusions = (CoverageExclusion(subject_ref=source_ref, reason="incomplete-provider-lanes"),)
     else:
         exclusions = (CoverageExclusion(subject_ref=source_ref, reason="unpriced-model"),)
     return EvidenceValue(
@@ -2931,6 +2895,7 @@ class SessionUsageCost:
     """
 
     session_id: str
+    provider_lanes_complete: bool = field(kw_only=True)
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
@@ -2957,6 +2922,7 @@ class SessionUsageCost:
     def to_dict(self) -> dict[str, object]:
         return {
             "session_id": self.session_id,
+            "provider_lanes_complete": self.provider_lanes_complete,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "cache_read_tokens": self.cache_read_tokens,
@@ -3007,15 +2973,18 @@ def session_usage_costs_for_connection(
             SELECT s.session_id, s.reported_cost_usd,
                    COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
                                     COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                                    OR u.catalog_cost_usd IS NOT NULL
                               THEN u.model_name END) AS model_count,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                    COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
                    COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                    SUM(u.provider_cost_usd) AS provider_cost_usd,
-                   SUM(u.catalog_cost_usd) AS catalog_cost_usd,
+                   {MODEL_USAGE_CATALOG_SUM_SQL} AS catalog_cost_usd,
+                   SUM(CASE WHEN u.provider_lanes_complete = 0 THEN 1 ELSE 0 END) AS incomplete_provider_lanes,
                    COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
                                     COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                                    OR u.catalog_cost_usd IS NOT NULL
                               THEN u.catalog_cost_usd END) AS priced_model_count,
                    SUM(u.cost_credits) AS stored_credits,
                    GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
@@ -3067,7 +3036,10 @@ def session_usage_costs_for_connection(
                 provider_money = float(row["reported_cost_usd"])
             else:
                 provider_money = None
-            catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
+            incomplete_provider_lanes = int(row["incomplete_provider_lanes"] or 0)
+            catalog_complete = (
+                model_count > 0 and int(row["priced_model_count"] or 0) == model_count and not incomplete_provider_lanes
+            )
             catalog_cost = (
                 None
                 if not catalog_complete or row["catalog_cost_usd"] is None
@@ -3080,6 +3052,10 @@ def session_usage_costs_for_connection(
                 availability = "provider_money"
                 provenance = "origin_reported"
                 exactness = "exact"
+            elif incomplete_provider_lanes:
+                availability = "unpriced"
+                provenance = "unknown"
+                exactness = "unknown"
             elif model_count == 0:
                 availability = "no_tokens"
                 provenance = "unknown"
@@ -3101,6 +3077,7 @@ def session_usage_costs_for_connection(
                 credits = credits_by_session.get(session_id)
             result[session_id] = SessionUsageCost(
                 session_id=session_id,
+                provider_lanes_complete=not incomplete_provider_lanes,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens,
@@ -3196,7 +3173,7 @@ def build_session_usage_reconciliation(
         cache_read_tokens=winning_cache_read_tokens,
         cache_write_tokens=winning_cache_write_tokens,
         normalized_model=reconciled_model,
-        model_usage_rows=model_usage_rows if model_usage_evidence.value_state == "known" else (),
+        model_usage_rows=model_usage_rows,
         observed_at=observed_at,
     )
     legacy_cost = _legacy_cost_evidence(
@@ -3293,5 +3270,6 @@ __all__ = [
     "origin_usage_report_from_connection",
     "session_usage_reconciliation_for_connection",
     "project_provider_usage_events",
+    "provider_usage_disjoint_lanes",
     "rollup_usage_projections",
 ]

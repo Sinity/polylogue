@@ -9,6 +9,7 @@ module's docstring for the current writer-module declaration.
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import pickle
@@ -38,6 +39,7 @@ import ijson
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.revision_authority import is_work_event_raw_id
+from polylogue.archive.semantic.pricing import catalog_cost_for_tokens
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import (
@@ -119,6 +121,7 @@ from polylogue.storage.fts.sql import (
     insert_session_identity_rows_sql,
     insert_session_rows_sql,
 )
+from polylogue.storage.io_phase_metrics import close_connection_cursor
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -147,7 +150,11 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     open_session_shard,
 )
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_sessions
-from polylogue.storage.usage import provider_usage_event_identity
+from polylogue.storage.usage import (
+    UsageProjectionModel,
+    project_provider_usage_events,
+    provider_usage_event_identity,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -9628,179 +9635,78 @@ def _provider_usage_event_has_evidence(event: ParsedSessionEvent, row: tuple[obj
     )
 
 
-def _provider_usage_disjoint_lanes(
-    input_with_cached: int,
-    output_with_reasoning: int,
-    cache_read: int,
-    cache_write: int,
-) -> tuple[int, int, int, int]:
-    """Map Codex ``token_count`` totals onto disjoint billing lanes.
-
-    Codex (OpenAI) reports ``input_tokens`` *inclusive* of
-    ``cached_input_tokens`` and ``output_tokens`` *inclusive* of
-    ``reasoning_output_tokens``. Verified across the full real corpus
-    (1.84M token_count events): ``cached <= input`` on 100% of rows, and
-    ``total == input + output`` on 98.9% (reasoning is a subset of output,
-    not an additional term).
-
-    The cost model (`archive/semantic/pricing.py:_cost_components`) bills
-    ``input`` and ``cache_read`` as *separate additive lanes* — the Anthropic
-    convention where ``input`` means fresh/uncached input. So the cached
-    portion must be subtracted out of ``input`` or it is billed twice: once at
-    the full input rate and again at the discounted cache-read rate. On the
-    real archive cached is ~96% of Codex input, so the double-count inflated
-    Codex input cost by roughly 8x. Likewise ``reasoning`` is already inside
-    ``output``; adding it again over-counts output.
-
-    Returns ``(fresh_input, output, cache_read, cache_write)`` with fresh input
-    clamped at zero (defensive; ``input >= cached`` holds on every observed row).
-    """
-    fresh_input = max(input_with_cached - cache_read, 0)
-    return fresh_input, output_with_reasoning, cache_read, cache_write
-
-
-def _provider_usage_row_has_lane_totals(
-    total_input: int | None,
-    total_output: int | None,
-    total_cache_read: int | None,
-    total_cache_write: int | None,
-    total_reasoning: int | None,
-) -> bool:
-    """Return true when a cumulative row can be mapped to additive lanes.
-
-    Codex reports reasoning as part of output. A row that carries only
-    ``total_reasoning_output_tokens`` is useful evidence, but it cannot replace
-    the latest cumulative input/output/cache lanes without zeroing the rollup.
-    """
-
-    _ = total_reasoning
-    return any(value is not None for value in (total_input, total_output, total_cache_read, total_cache_write))
-
-
-def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
-    """Fold provider-reported token-count totals into model usage rows.
-
-    Codex ``token_count`` rows carry a *session-global* cumulative running total
-    in their ``total_*`` columns — the counter spans the whole session, not a
-    single model. So the cumulative is taken as one session-wide latest value
-    (the highest-position ``token_count`` row that carries any ``total_*``),
-    attributed to the model named on that row, and written as a single rollup.
-    Partitioning the cumulative by model and summing would double-count, because
-    each model's "latest cumulative" already includes every prior model's
-    tokens (#2472).
-
-    Older/simple token-count rows only expose request-scoped ``last_token_usage``
-    (Claude-style per-message per-model deltas); when no cumulative ``total_*``
-    appears at all, those are summed per model. Unknown-model events only fall
-    back to a session model when exactly one model row exists, keeping
-    multi-model sessions auditable rather than guessed.
-    """
-
-    rows = conn.execute(
+def _provider_usage_projections(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    start_position: int | None = None,
+) -> tuple[UsageProjectionModel, ...]:
+    """Stream the selected event authority through the canonical domain fold."""
+    models = _provider_usage_existing_models(conn, session_id)
+    sole_model = models[0] if len(models) == 1 else None
+    cursor = conn.execute(
         """
-        SELECT provider_event_type, model_name, position,
+        SELECT ?, provider_event_type, model_name, position,
                last_input_tokens, last_output_tokens, last_cached_input_tokens,
                last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
                total_input_tokens, total_output_tokens, total_cached_input_tokens,
                total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
         FROM session_provider_usage_events
-        WHERE session_id = ?
-          AND provider_event_type = 'token_count'
+        WHERE session_id = ? AND provider_event_type = 'token_count'
+          AND (? IS NULL OR position >= ?)
         ORDER BY position
         """,
-        (session_id,),
-    ).fetchall()
-    if not rows:
-        return
+        (session_id, session_id, start_position, start_position),
+    )
+    names = (
+        "session_id",
+        "provider_event_type",
+        "model_name",
+        "position",
+        "last_input_tokens",
+        "last_output_tokens",
+        "last_cached_input_tokens",
+        "last_cache_write_tokens",
+        "last_reasoning_output_tokens",
+        "last_total_tokens",
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cached_input_tokens",
+        "total_cache_write_tokens",
+        "total_reasoning_output_tokens",
+        "total_tokens",
+    )
 
-    existing_models = [
-        str(row[0]).strip()
-        for row in conn.execute(
-            "SELECT model_name FROM session_model_usage WHERE session_id = ? ORDER BY model_name",
-            (session_id,),
-        ).fetchall()
-        if row[0] and str(row[0]).strip()
-    ]
+    def events() -> Iterator[dict[str, object]]:
+        for row in cursor:
+            values = dict(zip(names, row, strict=True))
+            values["model_name"] = str(values["model_name"] or "").strip() or sole_model
+            if values["model_name"] is not None:
+                yield values
 
-    # The cumulative is session-global, so we keep a single latest cumulative
-    # for the whole session (rows are ordered by position, so the last row that
-    # carries any total_* wins = highest position) attributed to the model named
-    # on that row. summed_last_* stays per-model for Claude-style per-message
-    # reporting, and is only used when no cumulative total appears at all.
-    latest_total: tuple[int, int, int, int, int, int] | None = None
-    latest_total_model = ""
-    summed_last_by_model: dict[str, list[int]] = {}
+    primary: BaseException | None = None
+    try:
+        return project_provider_usage_events(events(), origin="")
+    except BaseException as failure:
+        primary = failure
+        raise
+    finally:
+        try:
+            close_connection_cursor(conn, cursor)
+        except BaseException as cleanup:
+            if primary is None or cleanup is primary:
+                raise
+            raise builtins.BaseExceptionGroup(
+                "Usage projection and cursor cleanup failed", [primary, cleanup]
+            ) from None
 
-    for row in rows:
-        model_name = str(row[1]).strip() if row[1] else ""
-        if not model_name:
-            model_name = existing_models[0] if len(existing_models) == 1 else ""
-        if not model_name:
-            continue
 
-        last_input = int(row[3] or 0)
-        last_output = int(row[4] or 0)
-        last_cache_read = int(row[5] or 0)
-        last_cache_write = int(row[6] or 0)
-        last_reasoning = int(row[7] or 0)
-        total_input = int(row[9] or 0)
-        total_output = int(row[10] or 0)
-        total_cache_read = int(row[11] or 0)
-        total_cache_write = int(row[12] or 0)
-        total_reasoning = int(row[13] or 0)
-        total_tokens = int(row[14] or 0)
-
-        if _provider_usage_row_has_lane_totals(*(row[index] for index in range(9, 14))):
-            latest_total = (
-                total_input,
-                total_output,
-                total_cache_read,
-                total_cache_write,
-                total_reasoning,
-                total_tokens,
-            )
-            latest_total_model = model_name
-            continue
-
-        if any(row[index] is not None for index in range(3, 9)):
-            bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
-            bucket[0] += last_input
-            bucket[1] += last_output
-            bucket[2] += last_cache_read
-            bucket[3] += last_cache_write
-            bucket[4] += last_reasoning
-
-    if latest_total is not None:
-        # Session-global cumulative: one rollup for the latest model. The
-        # cumulative already subsumes every per-request last_*, so summed_last
-        # rows are intentionally not written (writing them too double-counts).
-        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            latest_total[0], latest_total[1], latest_total[2], latest_total[3]
-        )
-        _upsert_provider_usage_model_rollup(
-            conn,
-            session_id,
-            latest_total_model,
-            input_tokens=lane_input,
-            output_tokens=lane_output,
-            cache_read_tokens=lane_cache_read,
-            cache_write_tokens=lane_cache_write,
-        )
-        return
-
-    for model_name, summed_totals in summed_last_by_model.items():
-        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
-        )
-        _upsert_provider_usage_model_rollup(
-            conn,
-            session_id,
-            model_name,
-            input_tokens=lane_input,
-            output_tokens=lane_output,
-            cache_read_tokens=lane_cache_read,
-            cache_write_tokens=lane_cache_write,
-        )
+def _aggregate_provider_usage_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:
+    """Persist the canonical complete-session provider event projection."""
+    for projection in _provider_usage_projections(conn, session_id):
+        if projection.model_name is None:
+            continue  # The unresolved event remains durable evidence, without guessed attribution.
+        _upsert_provider_usage_model_rollup(conn, projection)
 
 
 def _aggregate_appended_provider_usage_into_model_usage(
@@ -9809,109 +9715,22 @@ def _aggregate_appended_provider_usage_into_model_usage(
     *,
     start_position: int,
 ) -> None:
-    """Fold only newly appended provider usage events into model usage rows."""
-
-    rows = conn.execute(
-        """
-        SELECT model_name, position,
-               last_input_tokens, last_output_tokens, last_cached_input_tokens,
-               last_cache_write_tokens, last_reasoning_output_tokens, last_total_tokens,
-               total_input_tokens, total_output_tokens, total_cached_input_tokens,
-               total_cache_write_tokens, total_reasoning_output_tokens, total_tokens
-        FROM session_provider_usage_events
-        WHERE session_id = ?
-          AND provider_event_type = 'token_count'
-          AND position >= ?
-        ORDER BY position
-        """,
-        (session_id, start_position),
-    ).fetchall()
-    if not rows:
-        return
-
-    existing_models = _provider_usage_existing_models(conn, session_id)
-    # The cumulative total_* is session-global (see the full-write aggregator).
-    # The highest-position appended row that carries any total_* therefore holds
-    # the authoritative running total for the *whole* session, including rows
-    # before start_position, so we keep one session-wide latest cumulative
-    # rather than partitioning it per model (#2472).
-    latest_total: tuple[int, int, int, int, int, int] | None = None
-    latest_total_model = ""
-    summed_last_by_model: dict[str, list[int]] = {}
-
-    for row in rows:
-        model_name = _provider_usage_model_name(row[0], existing_models)
-        if not model_name:
+    """Fold the append window canonically and retain the original persistence law."""
+    for projection in _provider_usage_projections(conn, session_id, start_position=start_position):
+        model = projection.model_name
+        if model is None:
             continue
-
-        last_input = int(row[2] or 0)
-        last_output = int(row[3] or 0)
-        last_cache_read = int(row[4] or 0)
-        last_cache_write = int(row[5] or 0)
-        last_reasoning = int(row[6] or 0)
-        total_input = int(row[8] or 0)
-        total_output = int(row[9] or 0)
-        total_cache_read = int(row[10] or 0)
-        total_cache_write = int(row[11] or 0)
-        total_reasoning = int(row[12] or 0)
-        total_tokens = int(row[13] or 0)
-
-        if _provider_usage_row_has_lane_totals(*(row[index] for index in range(8, 13))):
-            latest_total = (
-                total_input,
-                total_output,
-                total_cache_read,
-                total_cache_write,
-                total_reasoning,
-                total_tokens,
+        if projection.cumulative:
+            _upsert_provider_usage_model_rollup(conn, projection)
+            _clear_stale_cumulative_rollups(conn, session_id, keep_model=model)
+        elif not _provider_usage_has_cumulative_total(conn, session_id, model):
+            _increment_provider_usage_model_rollup(conn, projection)
+        elif "missing_token_lanes" in projection.missing_reasons:
+            conn.execute(
+                "UPDATE session_model_usage SET catalog_cost_usd = NULL, provider_lanes_complete = 0 "
+                "WHERE session_id = ? AND model_name = ?",
+                (session_id, model),
             )
-            latest_total_model = model_name
-            continue
-
-        if any(row[index] is not None for index in range(2, 8)):
-            bucket = summed_last_by_model.setdefault(model_name, [0, 0, 0, 0, 0])
-            bucket[0] += last_input
-            bucket[1] += last_output
-            bucket[2] += last_cache_read
-            bucket[3] += last_cache_write
-            bucket[4] += last_reasoning
-
-    if latest_total is not None:
-        # Overwrite the single session-global cumulative rollup. If the model
-        # switched since a prior append window, the earlier model's cumulative
-        # rollup is now stale (the new cumulative already subsumes it); clear
-        # those stale origin_reported cumulative rows so they are not summed
-        # back in alongside the new latest.
-        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            latest_total[0], latest_total[1], latest_total[2], latest_total[3]
-        )
-        _upsert_provider_usage_model_rollup(
-            conn,
-            session_id,
-            latest_total_model,
-            input_tokens=lane_input,
-            output_tokens=lane_output,
-            cache_read_tokens=lane_cache_read,
-            cache_write_tokens=lane_cache_write,
-        )
-        _clear_stale_cumulative_rollups(conn, session_id, keep_model=latest_total_model)
-        return
-
-    for model_name, summed_totals in summed_last_by_model.items():
-        if _provider_usage_has_cumulative_total(conn, session_id, model_name):
-            continue
-        lane_input, lane_output, lane_cache_read, lane_cache_write = _provider_usage_disjoint_lanes(
-            summed_totals[0], summed_totals[1], summed_totals[2], summed_totals[3]
-        )
-        _increment_provider_usage_model_rollup(
-            conn,
-            session_id,
-            model_name,
-            input_tokens=lane_input,
-            output_tokens=lane_output,
-            cache_read_tokens=lane_cache_read,
-            cache_write_tokens=lane_cache_write,
-        )
 
 
 def _provider_usage_existing_models(conn: sqlite3.Connection, session_id: str) -> list[str]:
@@ -9923,13 +9742,6 @@ def _provider_usage_existing_models(conn: sqlite3.Connection, session_id: str) -
         ).fetchall()
         if row[0] and str(row[0]).strip()
     ]
-
-
-def _provider_usage_model_name(model_name: object, existing_models: Sequence[str]) -> str:
-    resolved = str(model_name).strip() if model_name else ""
-    if resolved:
-        return resolved
-    return existing_models[0] if len(existing_models) == 1 else ""
 
 
 def _provider_usage_has_cumulative_total(conn: sqlite3.Connection, session_id: str, model_name: str) -> bool:
@@ -9968,16 +9780,17 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     not the test -- a message that reported an explicit zero is a measurement
     of zero, and exempting its model kept a whole stale cumulative on the row.
 
-    A row already at zero cannot hold a stale cumulative, and it is never below
-    its message totals (the message aggregate only raises a row), so only the
-    rows that carry tokens are compared with their messages.
+    Rows with tokens or unmappable provider evidence are compared with their
+    messages. The new cumulative supersedes that earlier incomplete evidence
+    even when its additive lanes were zero.
     """
     stored_rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
         FROM session_model_usage
         WHERE session_id = ? AND model_name != ?
-          AND input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
+          AND (input_tokens + output_tokens + cache_read_tokens + cache_write_tokens > 0
+               OR provider_lanes_complete = 0)
         """,
         (session_id, keep_model),
     ).fetchall()
@@ -10002,7 +9815,7 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
     for row in stored_rows:
         model_name = str(row[0])
         totals = message_totals.get(model_name, (0, 0, 0, 0))
-        if (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals:
+        if (int(row[1] or 0), int(row[2] or 0), int(row[3] or 0), int(row[4] or 0)) == totals and row[5]:
             continue
         catalog_cost = _price_provider_usage_tokens(
             conn,
@@ -10019,7 +9832,8 @@ def _clear_stale_cumulative_rollups(conn: sqlite3.Connection, session_id: str, *
                 output_tokens = ?,
                 cache_read_tokens = ?,
                 cache_write_tokens = ?,
-                catalog_cost_usd = ?
+                catalog_cost_usd = ?,
+                provider_lanes_complete = 1
             WHERE session_id = ? AND model_name = ?
             """,
             (*totals, None if catalog_cost is None else catalog_cost.value, session_id, model_name),
@@ -10040,23 +9854,12 @@ def _price_provider_usage_tokens(
     Return a catalog-computed cost. Provider-reported dollars use a separate
     ``ProviderCost`` write path and can never enter this function.
     """
-    from polylogue.archive.semantic.pricing import PRICING, _normalize_model, estimate_cost
-
-    normalized = _normalize_model(model_name)
-    billable = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-    pricing = PRICING.get(normalized)
-    if pricing is None or billable <= 0:
-        return None
-    # A zero cache rate is also the catalog's sentinel for an omitted rate.
-    # Do not persist a complete-looking cost for a paid model while silently
-    # assigning its cached lanes a zero price.
-    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
-        if cache_read_tokens and pricing.cache_read_usd_per_1m == 0.0:
-            return None
-        if cache_write_tokens and pricing.cache_write_usd_per_1m == 0.0:
-            return None
-    cost_usd = estimate_cost(input_tokens, output_tokens, model_name, cache_read_tokens, cache_write_tokens)
-    return CatalogCost(cost_usd)
+    if input_tokens + output_tokens + cache_read_tokens + cache_write_tokens <= 0:
+        return None  # This scalar-only caller has no observation proving measured zero.
+    cost_usd, _ = catalog_cost_for_tokens(
+        model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    )
+    return None if cost_usd is None else CatalogCost(cost_usd)
 
 
 def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
@@ -10070,7 +9873,7 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
     """
     rows = conn.execute(
         """
-        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
         FROM session_model_usage
         WHERE session_id = ?
         """,
@@ -10078,6 +9881,8 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
     ).fetchall()
     changed = 0
     for row in rows:
+        if not row[5]:
+            continue
         model_name = str(row[0] or "").strip()
         if not model_name:
             continue
@@ -10101,110 +9906,72 @@ def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
     return changed
 
 
-def _upsert_provider_usage_model_rollup(
-    conn: sqlite3.Connection,
-    session_id: str,
-    model_name: str,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-    cache_write_tokens: int,
-) -> None:
-    input_tokens = max(int(input_tokens), 0)
-    output_tokens = max(int(output_tokens), 0)
-    cache_read_tokens = max(int(cache_read_tokens), 0)
-    cache_write_tokens = max(int(cache_write_tokens), 0)
-    catalog_cost = _price_provider_usage_tokens(
-        conn,
-        model_name,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        cache_read_tokens=cache_read_tokens,
-        cache_write_tokens=cache_write_tokens,
-    )
+def _upsert_provider_usage_model_rollup(conn: sqlite3.Connection, projection: UsageProjectionModel) -> None:
     conn.execute(
         """
         INSERT INTO session_model_usage (
-            session_id, model_name,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            catalog_cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            session_id, model_name, input_tokens, output_tokens, cache_read_tokens,
+            cache_write_tokens, catalog_cost_usd, provider_lanes_complete
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id, model_name) DO UPDATE SET
-            input_tokens       = excluded.input_tokens,
-            output_tokens      = excluded.output_tokens,
-            cache_read_tokens  = excluded.cache_read_tokens,
+            input_tokens = excluded.input_tokens,
+            output_tokens = excluded.output_tokens,
+            cache_read_tokens = excluded.cache_read_tokens,
             cache_write_tokens = excluded.cache_write_tokens,
-            catalog_cost_usd   = excluded.catalog_cost_usd
+            catalog_cost_usd = excluded.catalog_cost_usd,
+            provider_lanes_complete = excluded.provider_lanes_complete
         """,
         (
-            session_id,
-            model_name,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            None if catalog_cost is None else catalog_cost.value,
+            projection.session_id,
+            projection.model_name,
+            projection.input_tokens,
+            projection.output_tokens,
+            projection.cache_read_tokens,
+            projection.cache_write_tokens,
+            projection.cost_usd,
+            int(projection.provider_lanes_complete),
         ),
     )
 
 
 def _increment_provider_usage_model_rollup(
     conn: sqlite3.Connection,
-    session_id: str,
-    model_name: str,
-    *,
-    input_tokens: int,
-    output_tokens: int,
-    cache_read_tokens: int,
-    cache_write_tokens: int,
+    projection: UsageProjectionModel,
 ) -> None:
-    input_tokens = max(int(input_tokens), 0)
-    output_tokens = max(int(output_tokens), 0)
-    cache_read_tokens = max(int(cache_read_tokens), 0)
-    cache_write_tokens = max(int(cache_write_tokens), 0)
     existing = conn.execute(
-        """
-        SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
-        FROM session_model_usage
-        WHERE session_id = ? AND model_name = ?
-        """,
-        (session_id, model_name),
+        """SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, provider_lanes_complete
+           FROM session_model_usage WHERE session_id = ? AND model_name = ?""",
+        (projection.session_id, projection.model_name),
     ).fetchone()
-    total_input = int((existing[0] if existing else 0) or 0) + input_tokens
-    total_output = int((existing[1] if existing else 0) or 0) + output_tokens
-    total_cache_read = int((existing[2] if existing else 0) or 0) + cache_read_tokens
-    total_cache_write = int((existing[3] if existing else 0) or 0) + cache_write_tokens
-    catalog_cost = _price_provider_usage_tokens(
-        conn,
-        model_name,
-        input_tokens=total_input,
-        output_tokens=total_output,
-        cache_read_tokens=total_cache_read,
-        cache_write_tokens=total_cache_write,
+    lanes = tuple(
+        int((existing[index] if existing else 0) or 0) + value
+        for index, value in enumerate(
+            (
+                projection.input_tokens,
+                projection.output_tokens,
+                projection.cache_read_tokens,
+                projection.cache_write_tokens,
+            )
+        )
     )
-    conn.execute(
-        """
-        INSERT INTO session_model_usage (
-            session_id, model_name,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-            catalog_cost_usd
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(session_id, model_name) DO UPDATE SET
-            input_tokens       = excluded.input_tokens,
-            output_tokens      = excluded.output_tokens,
-            cache_read_tokens  = excluded.cache_read_tokens,
-            cache_write_tokens = excluded.cache_write_tokens,
-            catalog_cost_usd   = excluded.catalog_cost_usd
-        """,
-        (
-            session_id,
-            model_name,
-            total_input,
-            total_output,
-            total_cache_read,
-            total_cache_write,
-            None if catalog_cost is None else catalog_cost.value,
+    cost, reasons = catalog_cost_for_tokens(projection.model_name, *lanes)
+    provider_lanes_complete = projection.provider_lanes_complete and (existing is None or bool(existing[4]))
+    if not provider_lanes_complete:
+        cost = None
+        reasons = (*reasons, "missing_token_lanes")
+    _upsert_provider_usage_model_rollup(
+        conn,
+        UsageProjectionModel(
+            session_id=projection.session_id,
+            model_name=projection.model_name,
+            input_tokens=lanes[0],
+            output_tokens=lanes[1],
+            cache_read_tokens=lanes[2],
+            cache_write_tokens=lanes[3],
+            cost_usd=cost,
+            state="incomplete" if cost is None else "complete",
+            missing_reasons=reasons,
+            provider_lanes_complete=provider_lanes_complete,
         ),
     )
 
@@ -10338,8 +10105,7 @@ def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session
 
     The UPSERT only overwrites an existing row when the new message-walked
     token total is >= what is already stored (monotonic-safe), so a
-    provider-usage-event cumulative rollup (``_upsert_provider_usage_model_
-    rollup``/``_increment_provider_usage_model_rollup``, typically far larger
+    provider-usage-event cumulative rollup (``_upsert_provider_usage_model_rollup``, typically far larger
     for Codex since messages rarely carry its per-message usage) is never
     clobbered by a smaller/zero message-walk result on a later unrelated
     write. Before polylogue-shnc this was scoped by ``cost_provenance =
@@ -10452,7 +10218,8 @@ def _reconcile_session_model_usage_rows(conn: sqlite3.Connection, session_id: st
             cache_write_tokens = 0,
             message_count = 0,
             provider_cost_usd = NULL,
-            catalog_cost_usd = NULL
+            catalog_cost_usd = NULL,
+            provider_lanes_complete = 1
         WHERE session_id = ?
         """,
         (session_id,),
