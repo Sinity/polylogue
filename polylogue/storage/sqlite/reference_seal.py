@@ -2635,8 +2635,10 @@ class PreparedIndexMutation:
             with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
                 if cursor.fetchone():
                     return False
-        parsed = _relevant_ref(ref.wire_ref)
-        return parsed is not None and _resolve_target(conn, parsed) is None
+        # The anchored target itself must no longer resolve. A removed session's
+        # token can fall through to a surviving prefix sibling; that sibling is
+        # a different object, not evidence that the removed target remains.
+        return _relevant_ref(ref.wire_ref) is not None and not _still_resolves(conn, ref)
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
