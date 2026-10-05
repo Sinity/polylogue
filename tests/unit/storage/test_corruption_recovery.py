@@ -17,12 +17,10 @@ import pytest
 @pytest.mark.slow
 class TestCorruptionRecovery:
     def test_zeroed_header(self, tmp_path: Path) -> None:
-        """Overwriting the SQLite header with zeros causes polylogue to reinitialize.
+        """A zeroed SQLite header is refused, and the damaged file is left intact.
 
-        polylogue's open_connection uses a thread-local connection cache.  When
-        the header is zeroed SQLite treats the file as a brand-new database, so
-        the connection layer re-creates the schema rather than raising.  The
-        invariant is: the database is usable afterward and the schema tables exist.
+        Re-creating the schema over a damaged archive file would destroy the
+        evidence a recovery needs; opening it raises instead and writes nothing.
         """
         from polylogue.storage.sqlite.connection import _clear_connection_cache, open_connection
 
@@ -38,11 +36,10 @@ class TestCorruptionRecovery:
         db.write_bytes(bytes(data))
         _clear_connection_cache()
 
-        # polylogue auto-recovers: schema is re-initialized, DB is usable.
-        with open_connection(db) as conn:
-            result = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            table_names = {row[0] for row in result}
-            assert "sessions" in table_names
+        with pytest.raises(sqlite3.DatabaseError):
+            with open_connection(db):
+                pass
+        assert db.read_bytes() == bytes(data)
 
     def test_truncated_file(self, tmp_path: Path) -> None:
         """Truncating a DB file to 50% produces a clean error or recovery."""
