@@ -6193,7 +6193,10 @@ def revision_replay_terminal_raw_ids(plan: RevisionReplayPlan) -> tuple[str, ...
             ApplicationDecision.SUPERSEDED,
         }
     }
-    return tuple(raw_id for raw_id in plan.accepted_raw_ids if raw_id in terminal)
+    # A superseded full is decided by this replay without being accepted; the
+    # Index records its application, so its parse is acknowledged with the rest.
+    ordered = (*plan.accepted_raw_ids, *(application.raw_id for application in plan.applications))
+    return tuple(dict.fromkeys(raw_id for raw_id in ordered if raw_id in terminal))
 
 
 def prepare_revision_replay_outcome(
