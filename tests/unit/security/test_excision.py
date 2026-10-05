@@ -64,7 +64,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.excision_embeddings import seed_excision_session as _seed_session
 from tests.infra.excision_execution import execute_excision, recover_excision
-from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
+from tests.infra.sync_as_async import AsyncConnectionView
 
 
 def _seed_marker_carriers(
@@ -83,7 +83,7 @@ def _seed_marker_carriers(
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
-        asyncio.run(append_accepted_marker_input(_AsyncConnection(conn), accepted))
+        asyncio.run(append_accepted_marker_input(AsyncConnectionView(conn), accepted))
     from tests.infra.excision_embeddings import seed_excision_marker_witnesses
 
     seed_excision_marker_witnesses(archive_root, (pending, accepted))
