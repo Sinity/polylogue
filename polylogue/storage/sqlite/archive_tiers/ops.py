@@ -83,6 +83,17 @@ OPS_TABLE_DISPOSITIONS: dict[str, OpsTableDisposition] = {
         "context scheduler", "one admission decision per candidate item", True, "retain"
     ),
     "schema_identity": OpsTableDisposition("schema bootstrap", "one derived-schema identity", True, "retain"),
+    # Frontier inspection: a lost journal or certificate only forces the next
+    # inspection to run in full mode; no accepted state is lost.
+    "raw_frontier_cursor_changes": OpsTableDisposition(
+        "frontier inspection", "one journal row per changed cursor path", False, "retain"
+    ),
+    "raw_frontier_cursor_journal_control": OpsTableDisposition(
+        "frontier inspection", "one retained-floor watermark for the cursor journal", False, "retain"
+    ),
+    "raw_frontier_inspection": OpsTableDisposition(
+        "frontier inspection", "one coverage certificate for the accepted frontier", False, "retain"
+    ),
 }
 # Batch aggregation is a terminal run state distinct from both success and
 # failure: completed siblings and retryable failed siblings remain visible.

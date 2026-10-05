@@ -13,6 +13,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import (
     RETENTION_RECEIPT_HISTORY,
@@ -93,6 +94,18 @@ def _hold_lease(
     with RebuildLease(Path(root)):
         ready.set()
         release.wait(_CHILD_HOLD_TIMEOUT_S)
+
+
+def _write_prepared_session(archive: ArchiveStore, session: ParsedSession) -> str:
+    """Prepare before the archive's Index transaction scope, then publish inside it."""
+    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
+    from tests.infra.index_writer import write_fixture_index_session
+
+    prepared = prepare_session_write(archive._conn, session, merge_append=False)
+    with archive.index_mutation_scope():
+        return write_fixture_index_session(
+            archive._conn, session, prepared_write=prepared, content_hash=prepared.input_content_hash.hex()
+        )
 
 
 def _archive(root: Path) -> None:
@@ -964,8 +977,7 @@ def test_promotion_refuses_candidate_that_orphans_a_resolved_durable_message_ref
         generation_id=preserving_candidate.generation_id,
         owner_id=preserving_candidate.owner_id,
     ) as candidate_archive:
-        with candidate_archive.index_mutation_scope():
-            write_fixture_index_session(candidate_archive._conn, session)
+        _write_prepared_session(candidate_archive, session)
     with store.prepare_promotion(preserving_candidate) as prepared:
         with write_lease("test.promote-preserving-candidate", archive_root=tmp_path):
             promoted = store.promote(preserving_candidate, prepared)
@@ -1482,7 +1494,6 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
     _archive(tmp_path)
     store = IndexGenerationStore.for_archive_root(tmp_path)
     generation = store.create(owner_id="operator", source_snapshot="snapshot-cache")
-    from tests.infra.index_writer import write_fixture_index_session
     from tests.infra.reference_sessions import reference_session
 
     with write_lease("test.seed-promotion-cache", archive_root=tmp_path):
@@ -1496,8 +1507,8 @@ def test_promotion_settles_operation_cache_before_artifact_validation(
                 if inactive
                 else ArchiveStore.open_existing(tmp_path, read_only=False)
             )
-            with archive, archive.index_mutation_scope():
-                write_fixture_index_session(archive._conn, reference_session(marker))
+            with archive:
+                _write_prepared_session(archive, reference_session(marker))
     seen: list[str] = []
     actual_materialize = cast(
         Callable[[sqlite3.Connection], object], vars(artifacts)["materialize_artifact_observations"]
@@ -1706,15 +1717,13 @@ def test_promotion_preparation_retains_primary_and_one_native_cleanup_attempt(
         retained_native_settlement_owners_on_current_thread,
     )
     from tests.infra.archive_templates import bootstrap_archive_root
-    from tests.infra.index_writer import write_fixture_index_session
     from tests.infra.reference_sessions import reference_session
     from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
     with write_lease("test.promotion-native-proof", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-            with archive.index_mutation_scope():
-                session_id = write_fixture_index_session(archive._conn, reference_session("proof-target"))
+            session_id = _write_prepared_session(archive, reference_session("proof-target"))
             archive.save_annotation("proof-anchor", "session", session_id, "Retain the target")
             archive.commit()
     store = IndexGenerationStore.for_archive_root(tmp_path)
@@ -1783,15 +1792,13 @@ def test_proof_snapshot_failure_rolls_back_once_and_preserves_both_errors(
 ) -> None:
     from polylogue.storage.sqlite import connection_profile, reference_seal
     from tests.infra.archive_templates import bootstrap_archive_root
-    from tests.infra.index_writer import write_fixture_index_session
     from tests.infra.reference_sessions import reference_session
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
     with write_lease("test.promotion-snapshot-cleanup", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-            with archive.index_mutation_scope():
-                session_id = write_fixture_index_session(archive._conn, reference_session("snapshot-target"))
+            session_id = _write_prepared_session(archive, reference_session("snapshot-target"))
             archive.save_annotation("snapshot-anchor", "session", session_id, "Retain the target")
             archive.commit()
     store = IndexGenerationStore.for_archive_root(tmp_path)
