@@ -19,8 +19,7 @@ from polylogue.config import Config, Source
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.pipeline.services.ingest_batch import _core as ingest
-from polylogue.pipeline.services.ingest_batch._models import _IngestWorkerRequest, _PreparedIngestUnit
-from polylogue.pipeline.services.ingest_worker import IngestRecordResult
+from polylogue.pipeline.services.ingest_batch._models import _PreparedIngestUnit
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources import DriveFile
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -175,15 +174,19 @@ async def test_drive_preparation_leaves_real_writer_available(
 
     client = DriveClient(block if blocked_phase == "download" else lambda: None)
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
-    original = ingest._run_ingest_record
+    # Parsing runs in the retained Raw owner's preparation (derivation
+    # compute), which must hold no writer lease.
+    from polylogue.storage.derived.raw import RawObservationDerivation
 
-    def parse(record: RawSessionRecord, request: _IngestWorkerRequest) -> IngestRecordResult:
+    original = RawObservationDerivation.compute
+
+    def parse(self: RawObservationDerivation, *args: Any, **kwargs: Any) -> Any:
         assert current_write_lease() is None
         if blocked_phase == "parser":
             block()
-        return original(record, request)
+        return original(self, *args, **kwargs)
 
-    monkeypatch.setattr(ingest, "_run_ingest_record", parse)
+    monkeypatch.setattr(RawObservationDerivation, "compute", parse)
     from polylogue.storage.artifacts import inspection
 
     inspect_artifact = inspection.inspect_raw_artifact
