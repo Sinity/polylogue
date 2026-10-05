@@ -26,7 +26,7 @@ cd polylogue
 nix develop -c polylogue demo tour
 ```
 
-The tour creates a throwaway archive, imports synthetic provider-shaped artifacts through the normal parsers, verifies declared constructs, runs canonical query/read/analysis paths, and writes a report, transcript, command outputs, and recording source. It requires no private transcript or provider account.
+The tour creates a throwaway archive, imports synthetic provider-shaped artifacts through the normal parsers, verifies declared constructs, runs canonical query/read/analysis paths, and writes a report, transcript, command outputs, and recording source. It requires no private transcript or provider account. After its one-shot seed writer settles, the tour starts its own resident daemon for the synthetic archive, with filesystem watching, source catchup, browser capture and paid embeddings disabled. It waits for that child's declared listener binding before measuring query latency and stops and physically waits for the child on every exit. Seed, verification, daemon startup and shutdown remain included in the full tour duration.
 
 For a concrete, published example of the evidence boundary, cite [What Happened After a Structured Tool Failure?](findings/claim-vs-evidence.md). It states the claim, structural oracle, sample frame, and limitations together.
 

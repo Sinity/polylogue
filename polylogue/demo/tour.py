@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shlex
 import shutil
 import subprocess
@@ -14,6 +13,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from polylogue.operations.demo_resident import demo_resident
 from polylogue.scenarios import DEMO_CODEX_LINEAGE_FORK_SESSION_ID
 
 from .models import DemoSeedResult, DemoTourResult, DemoTourStep
@@ -91,65 +91,65 @@ def run_demo_tour(
 
     steps: list[DemoTourStep] = []
     first_result_s = 0.0
-    # Deliberately re-based *after* seeding/verification: those are one-time
-    # cold-start archive-construction costs (fixture materialization, ingest,
-    # embedding synthesis), not query latency. The budget below exists to
-    # catch a slow *query*, so its clock must start where the narrated query
-    # steps start, not at the top of the whole tour (polylogue-3ycw --
-    # a cold environment measured 70.9s against the 30s budget here even
-    # though every individual narrated step took 4.6-5.3s; the gap was
-    # entirely pre-query setup time being charged to the query budget).
-    query_phase_start = time.perf_counter()
-    env = _tour_env(resolved_archive)
-    origin_count = len({session_id.split(":", 1)[0] for session_id in seed.session_ids})
-    command_specs = (
-        (
-            "claim versus receipt",
-            ("demo", "receipts"),
+    with demo_resident(resolved_archive) as env:
+        # Deliberately re-based *after* seeding/verification: those are one-time
+        # cold-start archive-construction costs (fixture materialization, ingest,
+        # embedding synthesis), not query latency. The budget below exists to
+        # catch a slow *query*, so its clock must start where the narrated query
+        # steps start, not at the top of the whole tour (polylogue-3ycw --
+        # a cold environment measured 70.9s against the 30s budget here even
+        # though every individual narrated step took 4.6-5.3s; the gap was
+        # entirely pre-query setup time being charged to the query budget).
+        query_phase_start = time.perf_counter()
+        origin_count = len({session_id.split(":", 1)[0] for session_id in seed.session_ids})
+        command_specs = (
             (
-                "Start with a falsifiable disagreement: assistant prose claims the tests pass, while the "
-                "provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only "
-                "'error' control demonstrates why keyword matching is not the oracle."
+                "claim versus receipt",
+                ("demo", "receipts"),
+                (
+                    "Start with a falsifiable disagreement: assistant prose claims the tests pass, while the "
+                    "provider-normalized tool result says exit 1. A later run repairs the result, and a prose-only "
+                    "'error' control demonstrates why keyword matching is not the oracle."
+                ),
             ),
-        ),
-        (
-            "failed actions aggregate",
-            ("actions where is_error:true | group by tool | count",),
             (
-                "Now aggregate the same structural field across providers. This query counts normalized "
-                "failed actions; it does not search prose for the word 'error'."
+                "failed actions aggregate",
+                ("actions where is_error:true | group by tool | count",),
+                (
+                    "Now aggregate the same structural field across providers. This query counts normalized "
+                    "failed actions; it does not search prose for the word 'error'."
+                ),
             ),
-        ),
-        (
-            "composed lineage",
-            ("--id", DEMO_CODEX_LINEAGE_FORK_SESSION_ID, "read", "--view", "chronicle"),
             (
-                "Read a fork as one logical chronicle: inherited parent messages remain attributable to "
-                "their origin while the fork contributes only its divergent tail."
+                "composed lineage",
+                ("--id", DEMO_CODEX_LINEAGE_FORK_SESSION_ID, "read", "--view", "chronicle"),
+                (
+                    "Read a fork as one logical chronicle: inherited parent messages remain attributable to "
+                    "their origin while the fork contributes only its divergent tail."
+                ),
             ),
-        ),
-        (
-            "archive facets",
-            ("analyze", "--facets"),
             (
-                f"Only after inspecting evidence, zoom out to the archive across {origin_count} origins, with "
-                "deferred families labeled rather than silently guessed."
+                "archive facets",
+                ("analyze", "--facets"),
+                (
+                    f"Only after inspecting evidence, zoom out to the archive across {origin_count} origins, with "
+                    "deferred families labeled rather than silently guessed."
+                ),
             ),
-        ),
-    )
-    for index, (name, args, explanation) in enumerate(command_specs, start=1):
-        step, rendered = _run_cli_step(
-            name=name,
-            args=args,
-            explanation=explanation,
-            env=env,
-            archive_root=resolved_archive,
-            output_path=command_output_dir / f"{index:02d}-{_slug(name)}.txt",
         )
-        steps.append(step)
-        transcript_parts.append(rendered)
-        if index == 1:
-            first_result_s = time.perf_counter() - query_phase_start
+        for index, (name, args, explanation) in enumerate(command_specs, start=1):
+            step, rendered = _run_cli_step(
+                name=name,
+                args=args,
+                explanation=explanation,
+                env=env,
+                archive_root=resolved_archive,
+                output_path=command_output_dir / f"{index:02d}-{_slug(name)}.txt",
+            )
+            steps.append(step)
+            transcript_parts.append(rendered)
+            if index == 1:
+                first_result_s = time.perf_counter() - query_phase_start
 
     total_duration_s = time.perf_counter() - start
     problems = _tour_problems(
@@ -188,13 +188,6 @@ def _tour_report_payload(result: DemoTourResult) -> dict[str, object]:
     """Return measured tour results without self-attested proof metadata."""
 
     return result.to_payload()
-
-
-def _tour_env(archive_root: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    env["POLYLOGUE_ARCHIVE_ROOT"] = str(archive_root)
-    env["POLYLOGUE_FORCE_PLAIN"] = "1"
-    return env
 
 
 def _run_cli_step(

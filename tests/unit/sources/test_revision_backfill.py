@@ -341,6 +341,47 @@ def _bundle(*sessions: dict[str, object]) -> bytes:
     return json.dumps(list(sessions), sort_keys=True).encode()
 
 
+@pytest.mark.parametrize("native_id,session_count", [("native-singleton", 1), (None, 1), (None, 2)])
+def test_source_census_preserves_acquired_grouped_identity(
+    tmp_path: Path, native_id: str | None, session_count: int
+) -> None:
+    """Parser cardinality cannot turn grouped acquired bytes into a native revision."""
+    bootstrap_archive_root(tmp_path)
+    sessions = tuple(
+        _chatgpt_session(native_id or f"grouped-{index}", "original retained message") for index in range(session_count)
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CHATGPT,
+            payload=_bundle(*sessions),
+            source_path="synthetic/conversations.json",
+            native_id=native_id,
+            acquired_at_ms=1,
+        )
+    result = census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    assert result.scanned == 1
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive.raw_native_id(raw_id) == native_id
+        members = archive.source_connection.execute(
+            "SELECT logical_source_key, provider_session_id FROM raw_session_memberships WHERE raw_id=? ORDER BY logical_source_key",
+            (raw_id,),
+        ).fetchall()
+        if native_id is None:
+            assert [tuple(row) for row in members] == [
+                (f"chatgpt-export:grouped-{index}", f"grouped-{index}") for index in range(session_count)
+            ]
+        else:
+            assert members == []
+        receipt = archive.source_connection.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id=?", (raw_id,)
+        ).fetchone()
+        assert receipt is not None and receipt[0] == "complete"
+        assert parser_census_logical_keys(receipt[1]) == tuple(
+            f"chatgpt-export:{native_id or f'grouped-{index}'}" for index in range(session_count)
+        )
+        assert archive.count_sessions() == 0
+
+
 def test_owned_empty_generation_uses_cold_build_policy_and_finishes_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2846,12 +2887,14 @@ def _append_chain_archive(root: Path) -> tuple[str, str]:
             payload=newest,
             source_path="chain.jsonl",
             acquired_at_ms=1,
+            native_id="chain",
         )
         baseline_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
             payload=baseline,
             source_path="chain.jsonl",
             acquired_at_ms=2,
+            native_id="chain",
         )
     return baseline_raw_id, newest_raw_id
 
@@ -2889,6 +2932,7 @@ def _growing_chain_archive(root: Path, *, turns: int) -> list[str]:
                     payload=capture,
                     source_path="chain.jsonl",
                     acquired_at_ms=acquired_at_ms,
+                    native_id="chain",
                 )
             )
     return raw_ids
@@ -2928,7 +2972,11 @@ def test_byte_proof_refuses_a_head_between_forks(monkeypatch: pytest.MonkeyPatch
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = {
             name: archive.write_raw_payload(
-                provider=Provider.CODEX, payload=payload, source_path="chain.jsonl", acquired_at_ms=index + 1
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path="chain.jsonl",
+                acquired_at_ms=index + 1,
+                native_id="chain",
             )
             for index, (name, payload) in enumerate(
                 (
@@ -3037,6 +3085,7 @@ def _independent_growing_chains(root: Path, *, chains: int, turns: int) -> dict[
                     payload=capture,
                     source_path=f"{session}.jsonl",
                     acquired_at_ms=chain * 100 + acquired_at_ms,
+                    native_id=session,
                 )
                 for acquired_at_ms, capture in enumerate(captures, start=1)
             ]
@@ -3128,7 +3177,7 @@ def test_census_skips_parse_for_byte_proven_superseded_revisions_at_scale(
     proven-superseded snapshots. Measured on this exact shape: 52->2 parse
     calls (1 unique raw parsed instead of 51), ~3.3x wall-time reduction for
     the cohort (see PR body for the before/after numbers)."""
-    raw_ids = build_revision_chain_corpus(tmp_path, **REVISION_CHAIN_SHAPE)
+    raw_ids = build_revision_chain_corpus(tmp_path, native_singleton=True, **REVISION_CHAIN_SHAPE)
     original = revision_backfill._parse_retained_raw
     parse_calls: list[str] = []
 
@@ -3324,8 +3373,8 @@ def test_census_batching_reduces_commit_count(tmp_path: Path) -> None:
     fires) rather than a raw connection-level commit count."""
     unbatched_root = tmp_path / "unbatched"
     batched_root = tmp_path / "batched"
-    build_independent_raw_corpus(unbatched_root, raw_count=9, avg_payload_bytes=1_000)
-    build_independent_raw_corpus(batched_root, raw_count=9, avg_payload_bytes=1_000)
+    build_independent_raw_corpus(unbatched_root, raw_count=9, avg_payload_bytes=1_000, native_singletons=True)
+    build_independent_raw_corpus(batched_root, raw_count=9, avg_payload_bytes=1_000, native_singletons=True)
 
     import unittest.mock as mock
 
@@ -3379,7 +3428,7 @@ def test_unbatched_census_persists_parser_observed_receipt_before_close(tmp_path
     finds no row.
     """
     root = tmp_path / "archive"
-    raw_id = build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000)[0]
+    raw_id = build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000, native_singletons=True)[0]
 
     census = census_historical_revision_evidence(root, selected_raw_ids=[raw_id])
 
@@ -3403,7 +3452,7 @@ def test_census_batch_crash_loses_at_most_one_batch_and_resumes_cleanly(
     raw_count = 10
     batch_size = 4
     root = tmp_path / "archive"
-    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000, native_singletons=True)
 
     original_bind = ArchiveStore.bind_raw_revision
     calls = 0
@@ -3464,7 +3513,7 @@ def test_backfill_resumes_after_replay_batch_crash_discards_whole_batch_cleanly(
     raw_count = 10
     batch_size = 4
     root = tmp_path / "archive"
-    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000)
+    build_independent_raw_corpus(root, raw_count=raw_count, avg_payload_bytes=1_000, native_singletons=True)
 
     original_apply = ArchiveStore.apply_raw_revision_replay
     calls = 0
@@ -4435,6 +4484,7 @@ def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial:
             ),
             source_path=f"{parent_native_id}.jsonl",
             acquired_at_ms=1,
+            native_id=parent_native_id,
         )
         for index in range(n_children):
             child_native_id = f"achild{index}"
@@ -4449,6 +4499,7 @@ def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial:
                 ),
                 source_path=f"{child_native_id}.jsonl",
                 acquired_at_ms=2 + index,
+                native_id=child_native_id,
             )
 
 
@@ -4515,6 +4566,7 @@ def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_pa
                 payload=_codex_session_payload(native_id, ["only-message"], forked_from_id="never-ingested-parent"),
                 source_path=f"{native_id}.jsonl",
                 acquired_at_ms=1,
+                native_id=native_id,
             )
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
             revision_backfill._census_historical_revision_evidence(
