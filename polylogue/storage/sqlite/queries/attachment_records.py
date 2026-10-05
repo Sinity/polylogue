@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime
 
@@ -237,24 +238,42 @@ async def get_attachments_batch(
     return result
 
 
-async def get_attachment_library_page(
-    conn: aiosqlite.Connection,
+def attachment_library_page_sql(
     *,
     limit: int,
     offset: int,
-    mime_filter: str = "",
-    session_filter: str = "",
-    state_filter: str = "",
-) -> list[tuple[AttachmentRecord, str, str | None]]:
-    """Read one bounded attachment-library page without session hydration."""
+    mime_filter: str,
+    session_filter: str,
+    state_filter: str,
+    segments: tuple[tuple[str, int | None, int | None], ...] = (),
+) -> tuple[str, tuple[object, ...]]:
+    """Lower one library window after canonical transcript membership."""
     clauses = ["r.session_id = s.session_id"]
     args: list[object] = []
+    if session_filter:
+        # Each admitted reference has a physical message owner. Drive the
+        # scoped relation from canonical segments instead of walking all refs.
+        relation = """
+        FROM json_each(?) AS segment
+        JOIN messages m ON m.session_id = json_extract(segment.value, '$[0]')
+          AND (json_extract(segment.value, '$[1]') IS NULL
+               OR (m.position, m.variant_index) <=
+                  (json_extract(segment.value, '$[1]'), json_extract(segment.value, '$[2]')))
+        JOIN attachment_refs r ON r.message_id = m.message_id AND r.session_id = m.session_id
+        JOIN attachments a ON a.attachment_id = r.attachment_id
+        JOIN sessions s ON s.session_id = r.session_id
+        """
+        args.append(json.dumps(segments))
+    else:
+        relation = """
+        FROM attachments a
+        JOIN attachment_refs r ON a.attachment_id = r.attachment_id
+        JOIN sessions s ON s.session_id = r.session_id
+        LEFT JOIN messages m ON m.message_id = r.message_id AND m.session_id = r.session_id
+        """
     if mime_filter:
         clauses.append("instr(COALESCE(a.media_type, ''), ?) > 0")
         args.append(mime_filter)
-    if session_filter:
-        clauses.append("r.session_id = ?")
-        args.append(session_filter)
     if state_filter:
         clauses.append(
             "(CASE WHEN a.blob_hash IS NULL THEN 'missing-blob' "
@@ -270,26 +289,58 @@ async def get_attachment_library_page(
     # Newest session first, then transcript order. Within one message the
     # session read orders by attachment ID; ``attachment_refs.position`` is an
     # identity coordinate, not a display ordinal.
-    cursor = await conn.execute(
-        f"""
+    sql = f"""
         SELECT a.attachment_id, a.media_type AS mime_type, a.byte_count AS size_bytes,
                NULL AS path, a.blob_hash, a.acquisition_status, a.display_name,
                r.source_url, r.caption, r.message_id, r.session_id,
                r.upload_origin, r.direction, r.producer_ref,
                s.title, s.origin,
                {_NATIVE_ID_COLUMNS}
-        FROM attachments a
-        JOIN attachment_refs r ON a.attachment_id = r.attachment_id
-        JOIN sessions s ON s.session_id = r.session_id
-        LEFT JOIN messages m ON m.message_id = r.message_id
+        {relation}
         WHERE {" AND ".join(clauses)}
         ORDER BY s.sort_key_ms DESC, s.session_id,
                  m.position, m.variant_index, a.attachment_id, r.ref_id
         LIMIT ? OFFSET ?
-        """,
-        [*args, max(0, limit), max(0, offset)],
+        """
+    return sql, (*args, max(0, limit), max(0, offset))
+
+
+async def get_attachment_library_page(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int,
+    offset: int,
+    mime_filter: str = "",
+    session_filter: str = "",
+    state_filter: str = "",
+) -> list[tuple[AttachmentRecord, str, str | None]]:
+    """Read one bounded library page under the caller's held read snapshot."""
+    segments: tuple[tuple[str, int | None, int | None], ...] = ()
+    if session_filter:
+        from polylogue.core.errors import DatabaseError
+        from polylogue.storage.sqlite.queries.message_query_reads import _lineage_segments
+
+        plan, completeness = await _lineage_segments(conn, session_filter)
+        if not completeness.complete:
+            raise DatabaseError(
+                f"attachment library membership has incomplete lineage: {completeness.truncation_reason}"
+            )
+        segments = tuple(
+            (segment.session_id, segment.end[0], segment.end[1])
+            if segment.end is not None
+            else (segment.session_id, None, None)
+            for segment in plan
+        )
+    sql, args = attachment_library_page_sql(
+        limit=limit,
+        offset=offset,
+        mime_filter=mime_filter,
+        session_filter=session_filter,
+        state_filter=state_filter,
+        segments=segments,
     )
-    rows = await cursor.fetchall()
+    async with conn.execute(sql, args) as cursor:
+        rows = await cursor.fetchall()
     return [
         (
             _build_attachment_record(row, session_id=str(row["session_id"])),
