@@ -19,9 +19,7 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
-from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
 class _RejectUnboundedRead:
@@ -671,21 +669,20 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     _first_parent, first_child = _write_carryover_chain(first_root)
     _second_parent, second_child = _write_carryover_chain(second_root, session_prefix="second-")
 
-    original_census = ArchiveStore.replace_raw_membership_census
+    from polylogue.sources import revision_backfill
+
+    original_census = revision_backfill.apply_prepared_revision_census
     census_calls = 0
 
-    def require_source_transaction(
-        archive: ArchiveStore,
-        raw_id: str,
-        sessions: list[ParsedSession] | None,
-        **kwargs: Any,
-    ) -> None:
+    def require_source_transaction(seal: Any, prepared: Any) -> Any:
+        # The canonical census publishes on its own dedicated Source writer
+        # transaction (``publish_prepared_revision_source``), never inside the
+        # caller's index batch.
         nonlocal census_calls
         census_calls += 1
-        assert kwargs.get("manage_transaction", True) is True
-        original_census(archive, raw_id, sessions, **kwargs)
+        return original_census(seal, prepared)
 
-    monkeypatch.setattr(ArchiveStore, "replace_raw_membership_census", require_source_transaction)
+    monkeypatch.setattr(revision_backfill, "apply_prepared_revision_census", require_source_transaction)
 
     result = await ingest_one_shot_archive(
         archive_root,

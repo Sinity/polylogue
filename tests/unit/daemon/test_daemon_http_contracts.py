@@ -1034,10 +1034,12 @@ class TestBoundedArchiveQueryExecutor:
         assert kernel.snapshot().by_class("interactive-read").used_units == 0
 
     @pytest.mark.uses_real_clock("an admitted mutation uses the actual writer worker")
-    def test_mutating_route_uses_writer_worker_without_compute_admission(self, tmp_path: Path) -> None:
+    def test_mutating_route_uses_writer_worker_without_compute_admission(
+        self, tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+    ) -> None:
         from polylogue.daemon.http import _StandaloneWriteRuntime
 
-        runtime = _StandaloneWriteRuntime(tmp_path)
+        runtime = _StandaloneWriteRuntime(tmp_path, compute_adapter=bounded_compute_adapter)
         handler = _make_handler("POST", "/api/user/tags")
         handler.server.write_bridge = runtime.bridge
         kernel = handler.server.execution_kernel
@@ -1109,7 +1111,9 @@ class TestBoundedArchiveQueryExecutor:
 
         assert asyncio.run(harness.close()).clean
 
-    def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
+    def test_server_close_preserves_borrowed_write_runtime(
+        self, tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+    ) -> None:
         from polylogue.daemon.http import _StandaloneWriteRuntime
         from polylogue.daemon.services import ServiceCapability, ServiceProfile
         from tests.infra.daemon_service_harness import ServiceHarness
@@ -1119,7 +1123,7 @@ class TestBoundedArchiveQueryExecutor:
             capabilities={ServiceCapability.API},
         )
         harness.require_selected("api_server")
-        borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed")
+        borrowed_runtime = _StandaloneWriteRuntime(tmp_path / "borrowed", compute_adapter=bounded_compute_adapter)
         try:
             server = harness.api_server(tmp_path / "server", write_bridge=borrowed_runtime.bridge)
             server.server_close()

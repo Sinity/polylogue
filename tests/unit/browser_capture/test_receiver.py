@@ -1704,21 +1704,20 @@ def test_selected_message_candidate_persists_through_the_daemon_actuator(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.write_lease import write_lease
     from tests.infra.daemon_operations import running_daemon_operations
+    from tests.infra.live_ingest import write_index_session
 
     archive_root = tmp_path / "archive"
     message_ref = "chatgpt-export:conv-123:n:turn-1"
     spool = tmp_path / "spool"
     write_capture_envelope(BrowserCaptureEnvelope.model_validate(_payload()), spool_path=spool)
     with write_lease("test.capture-intelligence"), ArchiveStore(archive_root) as archive:
-        archive.write_raw_and_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="conv-123",
                 messages=[ParsedMessage(provider_message_id="turn-1", role=Role.USER, text="selected message")],
             ),
-            payload=b"synthetic capture evidence",
-            source_path=str(spool / "chatgpt" / "conv-123.json"),
-            acquired_at_ms=0,
         )
     with running_daemon_operations(archive_root) as stack:
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)

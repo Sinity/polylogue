@@ -4121,8 +4121,8 @@ def test_archive_bounded_query_translates_a_cancelled_handle_interrupt() -> None
     handler the ``OperationalError`` escapes and the route classifies it as
     ``sqlite_error`` (HTTP 500) instead of ``DaemonOperationCancelled`` (408).
     """
+    from polylogue.core import compute as execution
     from polylogue.core.compute import CancellationHandle, DaemonOperationCancelled
-    from polylogue.daemon import execution
     from polylogue.daemon.http import DaemonAPIHandler
 
     class _Archive:

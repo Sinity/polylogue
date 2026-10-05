@@ -26,6 +26,7 @@ from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.compute_owner import owned_compute_adapter
 
 
 def _write_claude_code_session(path: Path, session_id: str, n_messages: int) -> None:
@@ -93,17 +94,18 @@ def test_convergence_produces_consistent_final_archive_state(
         _write_claude_code_session(p, session_id, n_msgs)
         files.append(p)
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _MinimalPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="test", root=corpus_root.parent),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="test-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = _MinimalPolylogue(tmp_path, db_path)
+        processor = LiveBatchProcessor(
+            cast(Any, polylogue),
+            (WatchSource(name="test", root=corpus_root.parent),),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="test-v1",
+            converger=converger,
+        )
 
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+        metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
 
     # ── Ingest completeness ──────────────────────────────────────────
     assert metrics.failed_file_count == 0, f"Unexpected ingest failures: {metrics.failed_file_count}"

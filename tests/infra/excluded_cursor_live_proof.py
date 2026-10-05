@@ -20,13 +20,13 @@ from unittest.mock import patch
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.operations.operation_context import open_operation_read
 from polylogue.pipeline.ids import session_content_hash, session_id
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 def _codex_records(
@@ -294,37 +294,48 @@ def _run_case(
     bypass_frontier_gate: bool = False,
 ) -> dict[str, Any]:
     polylogue = SimpleNamespace(archive_root=root, backend=SimpleNamespace(db_path=root / "index.db"))
-    # The daemon wires a read snapshot for off-writer existing-session
-    # preparation; without it every prepared path stays deferred.
-    watcher = LiveWatcher(
-        cast(Any, polylogue),
-        (WatchSource(name="codex", root=source_root),),
-        cursor=cursor,
-        read_snapshot=open_operation_read,
+    record = cursor.get_record(path)
+    fingerprint_changed_before_catch_up = (
+        record is not None and bool(record.excluded) and record.parser_fingerprint != parser_fingerprint
     )
-    try:
-        record = cursor.get_record(path)
-        fingerprint_changed_before_catch_up = (
-            record is not None and bool(record.excluded) and record.parser_fingerprint != parser_fingerprint
-        )
-        metrics_holder: list[object] = []
-        original_ingest = watcher._ingest_files
+    metrics_holder: list[object] = []
 
-        async def capture_ingest(*args: Any, **kwargs: Any) -> object:
-            metrics = await original_ingest(*args, **kwargs)
-            metrics_holder.append(metrics)
-            return metrics
-
-        with patch("polylogue.sources.live.watcher._PARSER_FINGERPRINT", parser_fingerprint):
-            frontier_patch = (
-                patch("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
-                if bypass_frontier_gate
-                else nullcontext()
+    async def admit() -> None:
+        # The daemon wires its Raw convergence owner for off-writer
+        # existing-session preparation; without it every prepared path stays
+        # deferred.
+        async with prepared_live_convergence_owner(root) as owner:
+            watcher = LiveWatcher(
+                cast(Any, polylogue),
+                (WatchSource(name="codex", root=source_root),),
+                cursor=cursor,
+                append_runner=owner.ingest_append_plans,
+                retained_runner=owner.ingest_retained_raw_ids,
+                convergence_runner=owner.run_convergence_sync,
             )
-            with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
-                asyncio.run(_admit_one_page(watcher, source_root))
-    finally:
-        watcher.stop()
+            try:
+                original_ingest = watcher._ingest_files
+
+                async def capture_ingest(*args: Any, **kwargs: Any) -> object:
+                    metrics = await original_ingest(*args, **kwargs)
+                    metrics_holder.append(metrics)
+                    return metrics
+
+                with patch("polylogue.sources.live.watcher._PARSER_FINGERPRINT", parser_fingerprint):
+                    frontier_patch = (
+                        patch(
+                            "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
+                            lambda _root: None,
+                        )
+                        if bypass_frontier_gate
+                        else nullcontext()
+                    )
+                    with frontier_patch, patch.object(watcher, "_ingest_files", capture_ingest):
+                        await _admit_one_page(watcher, source_root)
+            finally:
+                watcher.stop()
+
+    asyncio.run(admit())
     return _case_summary(
         case_id=case_id,
         path=path,

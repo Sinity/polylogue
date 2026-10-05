@@ -162,7 +162,6 @@ def test_terminal_metadata_transfer_failure_keeps_original_bound_document_for_re
 def test_pre_document_sink_failure_preserves_original_deletion_and_terminal_uncertainty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.daemon import operation_runtime
 
     root = tmp_path / "archive"
     with running_daemon_operations(root, seed_archive=_seed_target) as daemon:
@@ -177,7 +176,7 @@ def test_pre_document_sink_failure_preserves_original_deletion_and_terminal_unce
                 raise OSError("synthetic product creation fault")
             return original(suffix=suffix, prefix=prefix, dir=dir, text=text)
 
-        monkeypatch.setattr(operation_runtime.tempfile, "mkstemp", fail_product_file)
+        monkeypatch.setattr(tempfile, "mkstemp", fail_product_file)
         result = daemon.client.operation(
             "mutation.session.excision",
             {

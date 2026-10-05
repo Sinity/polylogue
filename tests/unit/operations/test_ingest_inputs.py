@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,9 +35,10 @@ def test_spool_failed_close_retains_exact_artifact_until_creator_settles(
                 raise sqlite3.OperationalError("synthetic private spool close failure")
             super().close()
 
-    def connect(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+    def connect(database: str, *args: Any, **kwargs: Any) -> sqlite3.Connection:
         kwargs["factory"] = FailingClose
-        return actual_connect(database, *args, **kwargs)
+        connection: sqlite3.Connection = actual_connect(database, *args, **kwargs)
+        return connection
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     try:
@@ -253,14 +255,16 @@ def test_machine_zip_enumeration_preserves_the_accepted_decoder_identity(tmp_pat
             ]
             assert len(records) == 1
             record = records[0]
-            coordinate = record.plan.request.captured_zip_coordinate
+            coordinate = record.admission.request.captured_zip_coordinate
             assert coordinate is not None
             assert coordinate.decoder_fingerprint == fingerprint
             assert coordinate.container_blob_hash == item.blob_hash
             assert item.captured_identity is not None
             assert coordinate.canonical_container == item.captured_identity.canonical_source_path
-            assert record.plan.raw_id == captured_zip_member_raw_id(coordinate, record.plan.request.blob_hash.hex())
-            identities.append(record.plan.raw_id)
+            assert record.admission.raw_id == captured_zip_member_raw_id(
+                coordinate, record.admission.request.blob_hash.hex()
+            )
+            identities.append(record.admission.raw_id)
         assert identities[0] != identities[1]
     finally:
         publisher.discard_pending()
@@ -272,7 +276,6 @@ def test_actual_retained_input_page_uses_one_settled_byte_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member_count: int
 ) -> None:
     import subprocess
-    from typing import Any
 
     source = tmp_path / "exports"
     source.mkdir()

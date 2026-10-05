@@ -16,6 +16,7 @@ from polylogue.core.enums import AssertionKind
 from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
 from polylogue.operations.mutation_transaction import StartedBoundMutation, _authorized_removal_apply
 from polylogue.storage.io_phase_metrics import connection_cursor
+from polylogue.storage.sqlite.archive_tiers.source_write import PreparedParserSingletonWitness
 from polylogue.storage.sqlite.archive_tiers.user_write import assertion_upsert_statement, prepare_assertion_row
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
@@ -157,6 +158,7 @@ def run(root: Path) -> dict[str, object]:
                     prepared_cells: dict[str, KnownTierCell] | None,
                     allocation_parameter: int | None,
                     generated_primary_key: bool,
+                    parser_singleton_witness: PreparedParserSingletonWitness | None,
                     binding_cells: tuple[KnownTierCell, ...],
                 ) -> Iterator[sqlite3.Cursor]:
                     nonlocal attempts
@@ -172,6 +174,7 @@ def run(root: Path) -> dict[str, object]:
                         prepared_cells=prepared_cells,
                         allocation_parameter=allocation_parameter,
                         generated_primary_key=generated_primary_key,
+                        parser_singleton_witness=parser_singleton_witness,
                         binding_cells=binding_cells,
                     ) as cursor:
                         yield cursor

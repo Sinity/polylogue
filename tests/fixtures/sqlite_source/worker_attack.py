@@ -62,7 +62,8 @@ class RacingConnection(sqlite3.Connection):
 
 def connect(database: str, *args: Any, **kwargs: Any) -> sqlite3.Connection:
     if source.name not in str(database):
-        return real_connect(database, *args, **kwargs)
+        connection: sqlite3.Connection = real_connect(database, *args, **kwargs)
+        return connection
     if attack.startswith("main-"):
         return swap_main(real_connect, database, *args, factory=RacingConnection, **kwargs)
     conn = real_connect(database, *args, factory=RacingConnection, **kwargs)

@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import asyncio
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
-from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
-from polylogue.sources import revision_backfill
-from polylogue.sources.revision_backfill import (
-    PreparedMembershipReplay,
-    PreparedRetainedAggregate,
-    PreparedRetainedInput,
-    PreparedRevisionReplayResult,
-    RetainedPreparationRetryableError,
-    RevisionCensusResult,
-)
-from polylogue.storage.derived.raw import RawObservationReplacement
+from polylogue.core.enums import Provider
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGeneration
-from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
-from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,111 +59,67 @@ def replay_retained_components(
 ) -> RetainedReplayRun:
     """Run the real captured preparation/publication route without fallback.
 
-    Preparatory source census and byte-classification passes must change their
-    durable input binding. A refused attempt with no progress is surfaced;
-    this harness never adds a timeout, a retry count or a substitute result.
+    The canonical daemon owner settles preparatory Source phases and replays
+    each selected retained component on its admitted compute creator. It binds
+    to the registered cold-build generation itself; a fixture naming another
+    destination is refused rather than redirected. A refused attempt with no
+    progress surfaces the owner's typed error; this harness never adds a
+    timeout, a retry count or a substitute result.
     """
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
     with readonly_connection_context(archive_root / "source.db") as source:
         retained = tuple(str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions ORDER BY rowid"))
     selected = frozenset(selected_raw_ids) if selected_raw_ids is not None else None
     seeds = tuple(raw_id for raw_id in retained if selected is None or raw_id in selected)
+    cold_build = active_cold_build_generation(archive_root)
+    registered = None if cold_build is None else cold_build.generation
     if owned_generation is not None:
         if active_index_path is not None and active_index_path.resolve() != Path(owned_generation.index_path).resolve():
             raise ValueError("retained fixture Index differs from its exact owned generation")
-        active_index_path = Path(owned_generation.index_path)
-    adapter = make_raw_observation_derivation(
-        archive_root, index_db_path=active_index_path, owned_generation=owned_generation
-    )
-    frame = raw_observation_frame(archive_root, raw_ids=seeds, index_db_path=active_index_path)
-    receipts: list[PreparedRevisionReplayResult | RevisionCensusResult] = []
-    failures: list[RetainedPreparationRetryableError] = []
-    original_apply = revision_backfill.apply_prepared_revision_replay
-    original_census = revision_backfill.apply_prepared_revision_census
+        if registered is None or Path(registered.index_path).resolve() != Path(owned_generation.index_path).resolve():
+            raise ValueError("retained fixture generation is not the registered cold-build destination")
+    elif active_index_path is not None:
+        expected = (
+            ArchiveLocation.resolve(archive_root).active_index_path
+            if registered is None
+            else Path(registered.index_path)
+        )
+        if active_index_path.resolve() != expected.resolve():
+            raise ValueError("retained fixture Index is not the owner's actual destination")
 
-    def census(
-        archive_root: Path,
-        *,
-        active_index_path: Path,
-        selected_raw_ids: list[str],
-        prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
-        classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None,
-    ) -> RevisionCensusResult:
-        try:
-            result = original_census(
-                archive_root,
-                active_index_path=active_index_path,
-                selected_raw_ids=selected_raw_ids,
-                prepared_inputs=prepared_inputs,
-                classification_proofs=classification_proofs,
+    async def run() -> tuple[PreparedRevisionReplayResult, ...]:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            return await owner.replay_retained_raw_ids(seeds)
+
+    receipts: tuple[PreparedRevisionReplayResult | RevisionCensusResult, ...] = tuple(asyncio.run(run()))
+    return RetainedReplayRun(receipts)
+
+
+async def publish_retained_payload(
+    archive_root: Path,
+    *,
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+) -> tuple[str, tuple[str, ...]]:
+    """Acquire real provider bytes, then publish them through the canonical owner.
+
+    Returns the acquired raw ID and the session IDs its retained replay wrote.
+    This replaces seeding a raw row beside an independently supplied parse: the
+    indexed session is whatever the retained bytes actually parse to.
+    """
+
+    def acquire() -> str:
+        bootstrap_archive_root(archive_root)
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=provider, payload=payload, source_path=source_path, acquired_at_ms=acquired_at_ms
             )
-        except RetainedPreparationRetryableError as failure:
-            failures.append(failure)
-            raise
-        receipts.append(result)
-        return result
 
-    def apply(
-        archive_root: Path,
-        *,
-        active_index_path: Path,
-        selected_raw_ids: list[str],
-        prepared_inputs: Mapping[str, PreparedRetainedInput],
-        prepared_aggregates: Mapping[str, PreparedRetainedAggregate],
-        prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
-        prepared_replay_plans: Mapping[str, tuple[str, ...]],
-        prepared_membership_plans: Mapping[str, PreparedMembershipReplay],
-        bulk_fts: bool = True,
-        exact_fts_audit: bool = False,
-    ) -> PreparedRevisionReplayResult:
-        try:
-            result = original_apply(
-                archive_root,
-                active_index_path=active_index_path,
-                selected_raw_ids=selected_raw_ids,
-                prepared_inputs=prepared_inputs,
-                prepared_aggregates=prepared_aggregates,
-                prepared_writes=prepared_writes,
-                prepared_replay_plans=prepared_replay_plans,
-                prepared_membership_plans=prepared_membership_plans,
-                bulk_fts=bulk_fts,
-                exact_fts_audit=exact_fts_audit,
-            )
-        except RetainedPreparationRetryableError as failure:
-            failures.append(failure)
-            raise
-        receipts.append(result)
-        return result
-
-    visited: set[str] = set()
-    with pytest.MonkeyPatch.context() as observe:
-        observe.setattr(revision_backfill, "apply_prepared_revision_replay", apply)
-        observe.setattr(revision_backfill, "apply_prepared_revision_census", census)
-        for raw_id in seeds:
-            if raw_id in visited:
-                continue
-            while True:
-                check_compute_cancelled()
-                replacement = adapter.compute(frame, raw_id, replay_current=True)
-                before = adapter._binding(replacement.raw_ids)
-                started = False
-                previous_failures = len(failures)
-
-                def publish(replacement: RawObservationReplacement = replacement) -> bool:
-                    nonlocal started
-                    started = True
-                    return adapter.publish(frame, replacement)
-
-                try:
-                    with write_lease("synthetic-retained-replay", archive_root=archive_root):
-                        published = publish()
-                finally:
-                    if not started:
-                        replacement.close()
-                if published:
-                    visited.update(replacement.raw_ids)
-                    break
-                if adapter._binding(replacement.raw_ids) == before:
-                    if len(failures) > previous_failures:
-                        raise failures[-1]
-                    raise RetainedPreparationRetryableError("canonical retained publication refused without progress")
-    return RetainedReplayRun(tuple(receipts))
+    raw_id = await run_archive_fixture_write(archive_root, acquire)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        receipts = await owner.replay_retained_raw_ids((raw_id,))
+    written = tuple(sorted({key for receipt in receipts for key in receipt.written_session_ids}))
+    return raw_id, written

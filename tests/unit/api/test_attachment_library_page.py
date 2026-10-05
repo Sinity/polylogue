@@ -12,7 +12,7 @@ from polylogue import Polylogue
 from tests.infra.index_writer import write_fixture_index_session
 
 if TYPE_CHECKING:
-    from polylogue.api.runtime import RuntimeServices
+    from polylogue.services import RuntimeServices
     from polylogue.storage.runtime import AttachmentRecord
 
 

@@ -1172,13 +1172,16 @@ class TestAttachmentBlobHashesAreExcisedToo:
 
         source_conn = sqlite3.connect(tmp_path / "source.db")
         try:
-            write_source_blob_refs(
-                source_conn,
-                raw_id,
-                lambda refs=(ArchiveSourceBlobRef(blob_hash=attachment_blob_hash, ref_type="attachment", source_path="attachment.png", size_bytes=42, acquired_at_ms=1_000),): (
-                    iter(refs)
+            attachment_refs = (
+                ArchiveSourceBlobRef(
+                    blob_hash=attachment_blob_hash,
+                    ref_type="attachment",
+                    source_path="attachment.png",
+                    size_bytes=42,
+                    acquired_at_ms=1_000,
                 ),
             )
+            write_source_blob_refs(source_conn, raw_id, lambda: iter(attachment_refs))
             source_conn.commit()
         finally:
             source_conn.close()
@@ -1248,7 +1251,7 @@ def test_started_excision_effects_settle_before_sink_and_preserve_outside(
     actual_source_apply = KnownTierMutationPermit.apply_source_statements
     compiled = []
 
-    def source_apply(permit, connection):
+    def source_apply(permit: KnownTierMutationPermit, connection: sqlite3.Connection) -> Any:
         with permit._seal._owned_cursor(
             permit._seal._scratch,
             "SELECT compiled_actions FROM temp.known_tier_statements WHERE tier='source' "
@@ -1278,7 +1281,7 @@ def test_started_excision_effects_settle_before_sink_and_preserve_outside(
     failure = SinkFailureError("exact effect sink failure")
     reached = []
 
-    def sink(summary, literal):
+    def sink(summary: Any, literal: Any) -> Any:
         with sqlite3.connect(tmp_path / "index.db") as index:
             assert index.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall() == [(outside,)]
             assert index.execute("SELECT message_id FROM messages WHERE session_id=?", (selected,)).fetchall() == []
@@ -1370,17 +1373,19 @@ def test_started_excision_refuses_before_any_domain_effect(
     if fault == "wrong_arguments":
         actual_apply = excision_module._apply_started_session_excision
 
-        def wrong(started, args, *, actuator):
+        def wrong(started: Any, args: Any, *, actuator: Any) -> Any:
             return actual_apply(started, replace(args, reason="foreign reason"), actuator=actuator)
 
         monkeypatch.setattr(excision_module, "_apply_started_session_excision", wrong)
-        failure_type = ReferenceSealError
+        failure_type: type[BaseException] = ReferenceSealError
     else:
         actual_prepare = PreparedIndexMutation.prepare_excision_embeddings_child
 
-        def cancel(seal):
+        def cancel(seal: PreparedIndexMutation) -> Any:
             child = actual_prepare(seal)
-            compute_cancel.get().set()
+            cancel_event = compute_cancel.get()
+            assert cancel_event is not None
+            cancel_event.set()
             cancelled.append(True)
             return child
 
@@ -1390,6 +1395,7 @@ def test_started_excision_refuses_before_any_domain_effect(
         execute_excision(tmp_path, selected, reason="original reason")
     if fault == "precommit_cancel":
         assert cancelled == [True]
+        assert isinstance(caught.value, BaseExceptionGroup)
         assert len(caught.value.exceptions) == 2
         assert tuple(type(error) for error in caught.value.exceptions) == (
             asyncio.CancelledError,
@@ -1438,7 +1444,7 @@ def test_started_source_compiled_dependency_does_not_authorize_outside_rows(
     guarded = []
     sink = []
 
-    def cursor(seal, connection, sql, parameters=()):
+    def cursor(seal: Any, connection: sqlite3.Connection, sql: str, parameters: Any = ()) -> Any:
         custody = current_sql_custody()
         permit = None if custody is None else custody.known_tier_authority
         if (
@@ -1460,7 +1466,9 @@ def test_started_source_compiled_dependency_does_not_authorize_outside_rows(
             parameters = (outside_raw,)
         return actual_cursor(seal, connection, sql, parameters)
 
-    def consume(permit, connection, table, phase, operation, old_rowid, new_rowid):
+    def consume(
+        permit: Any, connection: Any, table: str, phase: Any, operation: Any, old_rowid: Any, new_rowid: Any
+    ) -> Any:
         if table == "raw_container_coordinates":
             guarded.append((phase, operation))
         return actual_consume(permit, connection, table, phase, operation, old_rowid, new_rowid)
@@ -1513,7 +1521,7 @@ def test_frozen_index_marker_cells_refuse_changed_native_witness_before_effects(
     original_for_excision = PreparedIndexMutation.for_excision
     changed = False
 
-    def for_excision(*args, **kwargs):
+    def for_excision(*args: Any, **kwargs: Any) -> Any:
         nonlocal changed
         if not changed:
 

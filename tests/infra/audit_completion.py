@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 from polylogue.storage.sqlite.audit_continuity import (
     EXCISION_SOURCE_COMMIT_KIND,
@@ -21,7 +22,7 @@ def absent_embeddings_intent() -> dict[str, object]:
     return {"incarnation": None, "namespace": None, "outputs": [], "present": False, "rows": [], "schema_version": None}
 
 
-def make_source_completion_control(tmp_path: Path):
+def make_source_completion_control(tmp_path: Path) -> tuple[Path, Any, dict[str, Any], Callable[..., Any]]:
     """Begin a real audited Excision before installing its Source command."""
     from polylogue.operations.audit import AuditRepository
     from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_write_connection
@@ -74,7 +75,7 @@ def make_source_completion_control(tmp_path: Path):
     }
     repository = AuditRepository.for_archive_root(tmp_path)
 
-    def install(value: dict[str, object], *, rollback: bool = False):
+    def install(value: dict[str, object], *, rollback: bool = False) -> Any:
         raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 
         def chunks() -> Generator[bytes, None, None]:

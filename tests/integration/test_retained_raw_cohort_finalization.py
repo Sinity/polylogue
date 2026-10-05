@@ -288,7 +288,10 @@ async def test_resident_byte_aggregate_preserves_acquired_claims_from_both_origi
             if any(message.provider_message_id == "followup" for message in session.messages)
             else "attachment"
         )
-        assert session.active_leaf_message_provider_id == expected_leaf
+        assert session.active_leaf_message_provider_id == expected_leaf, (
+            session.active_leaf_message_provider_id,
+            [message.provider_message_id for message in session.messages],
+        )
         normalized = derive_tool_outcomes(
             normalize_active_branch(list(session.messages)), session.session_events, origin=Origin.GROK_EXPORT
         )

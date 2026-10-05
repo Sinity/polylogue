@@ -55,7 +55,9 @@ def _connect(path: Path) -> sqlite3.Connection:
 
 
 @pytest.mark.asyncio
-async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(tmp_path: Path) -> None:
+async def test_raw_materialization_hands_current_output_to_the_canonical_session_derivation(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Raw admission targets its actual output after releasing the writer lease.
 
     Anti-vacuity: removing the raw-to-session query or calling the profile
@@ -73,11 +75,7 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
             acquired_at_ms=1,
         )
 
-    result = converge_raw_observations(
-        archive_root,
-        source_roots=(),
-        limit=1,
-    )
+    result = converge_raw_observations(archive_root, source_roots=(), limit=1, compute_adapter=bounded_compute_adapter)
     assert result.done == 1 and result.failed == 0
     session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
     assert session_ids == ("codex-session:raw-profile-handoff",)
@@ -236,7 +234,9 @@ async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
         await coordinator.shutdown(timeout=1.0)
 
 
-def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(tmp_path: Path) -> None:
+def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_current_heads(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """Raw-to-profile handoff follows authoritative heads, not residual session rows.
 
     Anti-vacuity: querying ``sessions`` by raw component alone includes the
@@ -274,11 +274,7 @@ def test_raw_materialized_session_ids_exclude_stale_component_sessions_without_c
             source_path="split.json",
             acquired_at_ms=1,
         )
-    result = converge_raw_observations(
-        archive_root,
-        source_roots=(),
-        limit=1,
-    )
+    result = converge_raw_observations(archive_root, source_roots=(), limit=1, compute_adapter=bounded_compute_adapter)
     assert result.done == 1 and result.failed == 0
     with sqlite3.connect(archive_root / "index.db") as index:
         index.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", ("chatgpt-export:stale",))

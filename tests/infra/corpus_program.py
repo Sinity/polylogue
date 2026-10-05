@@ -20,6 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Protocol, TypedDict, cast
 
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
+from tests.infra.compute_owner import owned_compute_adapter
 
 if TYPE_CHECKING:
     from polylogue.daemon.convergence import FileState
@@ -1031,8 +1032,11 @@ class ProductionCorpusRuntime:
         if parse_result.parse_failures:
             self.last_results.append(parse_result)
             raise CorpusConvergenceRejectedError(parse_result)
-        converger = DaemonConverger(make_default_convergence_stages(self.archive_root / "index.db"))
-        states = {path: converger.converge_file(path) for path in paths}
+        with owned_compute_adapter() as compute:
+            converger = DaemonConverger(
+                make_default_convergence_stages(self.archive_root / "index.db", compute_adapter=compute)
+            )
+            states = {path: converger.converge_file(path) for path in paths}
         result: CorpusConvergenceResult = {"parse": parse_result, "convergence": states}
         self.last_results.append(result)
         if any(state.error_count or not state.converged for state in states.values()):

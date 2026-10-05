@@ -109,7 +109,9 @@ async def test_shared_owner_cannot_be_replaced_before_its_worker_physically_sett
     def held(archive: ArchiveStore) -> int:
         started.set()
         assert release.wait(5)
-        return int(archive.index_connection.execute("SELECT 1").fetchone()[0])
+        index = archive.index_connection
+        assert index is not None
+        return int(index.execute("SELECT 1").fetchone()[0])
 
     pending = asyncio.create_task(
         execute_archive_read(

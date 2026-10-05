@@ -35,6 +35,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import put_query, put_query_name
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.live_ingest import write_index_session
 
 
@@ -80,10 +81,11 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
         put_query_name(conn, name="codex-watch", query_hash=query.query_hash, watch=True, updated_at_ms=2)
         conn.commit()
 
-    stages = make_default_convergence_stages(archive_root / "index.db")
-    standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
-    converger = DaemonConverger(stages=(standing_stage,))
-    states, _timings = converger.converge_sessions((session_id,))
+    with owned_compute_adapter() as compute:
+        stages = make_default_convergence_stages(archive_root / "index.db", compute_adapter=compute)
+        standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
+        converger = DaemonConverger(stages=(standing_stage,))
+        states, _timings = converger.converge_sessions((session_id,))
     assert states[session_id].stages["standing-queries"].value == "done"
 
     with sqlite3.connect(archive_root / "user.db") as conn:
@@ -166,12 +168,13 @@ def _saved_view_writer(archive_root: Path) -> Iterator[Callable[..., Awaitable[d
 
 
 def _converge(archive_root: Path, session_ids: tuple[str, ...]) -> None:
-    stages = make_default_convergence_stages(archive_root / "index.db")
-    standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
-    converger = DaemonConverger(stages=(standing_stage,))
-    states, _timings = converger.converge_sessions(session_ids)
-    for session_id in session_ids:
-        assert states[session_id].stages["standing-queries"].value == "done"
+    with owned_compute_adapter() as compute:
+        stages = make_default_convergence_stages(archive_root / "index.db", compute_adapter=compute)
+        standing_stage = next(stage for stage in stages if stage.name == "standing-queries")
+        converger = DaemonConverger(stages=(standing_stage,))
+        states, _timings = converger.converge_sessions(session_ids)
+        for session_id in session_ids:
+            assert states[session_id].stages["standing-queries"].value == "done"
 
 
 @pytest.mark.asyncio

@@ -332,8 +332,10 @@ def test_public_work_event_uses_resident_owner_and_preserves_duplicate_result(tm
             ).fetchone()[0]
             == 1
         )
+        index_connection = archive.index_connection
+        assert index_connection is not None
         assert (
-            archive.index_connection.execute(
+            index_connection.execute(
                 "SELECT COUNT(*) FROM session_events WHERE session_id=?", (session_id,)
             ).fetchone()[0]
             == 1
@@ -378,8 +380,10 @@ def test_empty_message_work_event_does_not_read_transcript_occurrences(
             (message.native_id, message.role, tuple(block.text for block in message.blocks))
             for message in stored.messages
         ] == [("original", "user", ("original transcript",))]
+        index_connection = archive.index_connection
+        assert index_connection is not None
         assert (
-            archive.index_connection.execute(
+            index_connection.execute(
                 "SELECT COUNT(*) FROM session_events WHERE session_id=?", (session_id,)
             ).fetchone()[0]
             == 1

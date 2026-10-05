@@ -21,16 +21,17 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.message.roles import Role
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.replay_lineage import LineageGraph, LineageNode, codex_lineage_payload, seed_lineage_graph
+from tests.infra.retained_replay import replay_retained_components
 
 CHILD = "codex-session:s01"
 PARENT = "codex-session:s00"
@@ -109,7 +110,7 @@ def truncated_child(tmp_path: Path) -> Path:
             write_order=(0, 1),
         ),
     )
-    backfill_historical_revision_evidence(root)
+    replay_retained_components(root)
     assert _child_edge(root)[0] == PARENT, "the fixture must start with a recomposed prefix"
 
     _write(root, _contender("s00"))
@@ -118,7 +119,9 @@ def truncated_child(tmp_path: Path) -> Path:
     return root
 
 
-def test_lineage_prefix_debt_is_drained_by_its_stage(truncated_child: Path) -> None:
+def test_lineage_prefix_debt_is_drained_by_its_stage(
+    truncated_child: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """One drain pass re-derives the child's prefix and clears the row.
 
     Anti-vacuity: drop ``make_lineage_prefix_recompose_stage`` from
@@ -135,7 +138,7 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(truncated_child: Path) -> N
     assert _child_edge(root)[0] is None, "no ordinary write re-resolves the child"
 
     _make_retry_due(root)
-    assert daemon_cli._drain_convergence_debt_once(root / "index.db") == 1
+    assert daemon_cli._drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 1
 
     parent, anchor = _child_edge(root)
     assert parent == PARENT
@@ -143,7 +146,9 @@ def test_lineage_prefix_debt_is_drained_by_its_stage(truncated_child: Path) -> N
     assert _debt(root) == []
 
 
-def test_lineage_prefix_debt_survives_live_contradiction(truncated_child: Path) -> None:
+def test_lineage_prefix_debt_survives_live_contradiction(
+    truncated_child: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """A row is never cleared while the contradiction still blocks recompose.
 
     Anti-vacuity: make the stage report convergence without proving the prefix
@@ -158,7 +163,7 @@ def test_lineage_prefix_debt_survives_live_contradiction(truncated_child: Path) 
 
     root = truncated_child
     _make_retry_due(root)
-    assert daemon_cli._drain_convergence_debt_once(root / "index.db") == 1
+    assert daemon_cli._drain_convergence_debt_once(root / "index.db", compute_adapter=bounded_compute_adapter) == 1
 
     assert _child_edge(root)[0] is None
     rows = _debt(root)
@@ -199,7 +204,7 @@ def test_parent_rewrite_on_the_replay_route_never_strands_a_child(tmp_path: Path
             write_order=(0, 1),
         ),
     )
-    backfill_historical_revision_evidence(root)
+    replay_retained_components(root)
     complete = ["s00-tail-0", "s00-tail-1", "s00-tail-2", "s01-tail-0", "s01-tail-1"]
     assert _composed_texts(root, CHILD) == complete
 
@@ -216,7 +221,9 @@ def test_parent_rewrite_on_the_replay_route_never_strands_a_child(tmp_path: Path
     assert _debt(root) == []
 
 
-def test_hook_paste_debt_is_retried_for_its_session_and_cleared(tmp_path: Path) -> None:
+def test_hook_paste_debt_is_retried_for_its_session_and_cleared(
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
+) -> None:
     """The registered session callback applies retained hook evidence.
 
     Anti-vacuity: omit the hook-paste stage or leave its session callbacks
@@ -275,7 +282,7 @@ def test_hook_paste_debt_is_retried_for_its_session_and_cleared(tmp_path: Path) 
     )
     _make_retry_due(root)
 
-    assert daemon_cli._drain_convergence_debt_once(index_db) == 1
+    assert daemon_cli._drain_convergence_debt_once(index_db, compute_adapter=bounded_compute_adapter) == 1
 
     with sqlite3.connect(index_db) as conn:
         message = conn.execute(

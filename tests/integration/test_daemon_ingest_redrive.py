@@ -14,15 +14,19 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.daemon.api_auth import resolve_api_auth_token
+from polylogue.daemon.operation_runtime import DaemonOperationRuntime
 from polylogue.daemon.services import ServiceCapability, ServiceProfile
 from polylogue.daemon.socket_path import daemon_socket_path
 from polylogue.daemon_client import DaemonClient
 from polylogue.operations.audit import AuditRepository
-from polylogue.operations.daemon_ingest import IngestExecution
+from polylogue.operations.daemon_ingest import IngestExecution, SourceReceiptSpool
 from polylogue.operations.daemon_protocol import daemon_operation_spec
 from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import IngestHistoricalReceiptV2
+from polylogue.operations.operation_context import PinnedOperationRead
+from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.revision_backfill import RetainedSessionRead
 from polylogue.storage.archive_identity import ArchiveLocation
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.daemon_service_harness import ServiceHarness
@@ -916,10 +920,10 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
     await _die_after_acceptance(archive_root, source, monkeypatch)
     source.unlink()
 
-    writer = _StandaloneWriteRuntime(archive_root)
     from polylogue.core.compute import BoundedComputeAdapter
 
     kernel = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=0)
+    writer = _StandaloneWriteRuntime(archive_root, compute_adapter=kernel)
     runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge, compute_adapter=kernel)
     try:
         await asyncio.to_thread(runtime.start_accepted_ingest_redrive)
@@ -940,20 +944,22 @@ async def test_materialize_publishes_parser_complete_raw_and_reports_original_wr
     original = IngestExecution.materialize
     reached: list[str] = []
 
-    async def materialize(self: IngestExecution, generation_id: str):
+    async def materialize(self: IngestExecution, generation_id: str) -> SourceReceiptSpool:
         receipt = await self.receipt(generation_id)
         try:
             raw_ids = receipt.raw_page()
         finally:
             receipt.close()
         assert len(raw_ids) == 1
-        owner = self.runtime.raw_observation_owner
+        runtime = self.runtime
+        assert isinstance(runtime, DaemonOperationRuntime)
+        owner = runtime.raw_observation_owner
         await owner.converge_raw_id(raw_ids[0])
 
-        def original_state(pinned):
+        def original_state(pinned: PinnedOperationRead) -> tuple[int, int]:
             source_conn = pinned.archive.source_connection
             index_conn = pinned.archive.index_connection
-            assert source_conn is not None and index_conn is not None
+            assert index_conn is not None
             census = source_conn.execute(
                 "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", raw_ids
             ).fetchone()[0]
@@ -979,6 +985,7 @@ async def test_materialize_publishes_parser_complete_raw_and_reports_original_wr
     audit = AuditRepository.for_archive_root(archive_root)
     with audit.settled_machine_read():
         history = audit.historical_machine_receipt(operation_id)
+    assert isinstance(history, IngestHistoricalReceiptV2)
     assert history.summary.parse_projection_known
     assert history.summary.changed_session_count == 1
     assert history.summary.changed_message_count == history.summary.processed_message_count == 2
@@ -994,7 +1001,7 @@ async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
     reached: list[tuple[int, int]] = []
     failures: list[BaseException] = []
 
-    async def materialize(self: IngestExecution, generation_id: str):
+    async def materialize(self: IngestExecution, generation_id: str) -> SourceReceiptSpool:
         receipt = await self.receipt(generation_id)
         try:
             raw_ids = receipt.raw_page()
@@ -1040,7 +1047,7 @@ async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
     original = revision_backfill.prepare_retained_non_json_artifact
     reached: list[str] = []
 
-    def prepare(reader, raw_id, *, directory):
+    def prepare(reader: RetainedSessionRead, raw_id: str, *, directory: Path) -> PreparedJsonl:
         descriptor = reader.raw_revision_descriptor(raw_id)
         assert Path(descriptor[2]).suffix == ".capture"
         artifact = original(reader, raw_id, directory=directory)

@@ -22,6 +22,7 @@ from polylogue.storage.derived.session import storage as session_storage
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
+from tests.infra.compute_owner import owned_compute_adapter
 
 
 class _SessionIdOnly:
@@ -56,7 +57,11 @@ def test_lineage_prefix_recompose_stage_is_registered(tmp_path: Path) -> None:
     Anti-vacuity: drop the registration and the membership assertion goes red;
     register a stage without the session pair and the callable assertions do.
     """
-    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+    with owned_compute_adapter() as compute:
+        stages_by_name = {
+            stage.name: stage
+            for stage in make_default_convergence_stages(tmp_path / "index.db", compute_adapter=compute)
+        }
 
     stage = stages_by_name[IDENTITY_INVALIDATION_DEBT_STAGE]
     assert callable(stage.check_sessions)
@@ -65,7 +70,11 @@ def test_lineage_prefix_recompose_stage_is_registered(tmp_path: Path) -> None:
 
 
 def test_default_convergence_stages_leave_derived_domains_to_typed_owners(tmp_path: Path) -> None:
-    stages_by_name = {stage.name: stage for stage in make_default_convergence_stages(tmp_path / "index.db")}
+    with owned_compute_adapter() as compute:
+        stages_by_name = {
+            stage.name: stage
+            for stage in make_default_convergence_stages(tmp_path / "index.db", compute_adapter=compute)
+        }
 
     assert "raw_parse_recovery" not in stages_by_name
     assert "fts" not in stages_by_name
@@ -208,7 +217,8 @@ def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     monkeypatch.setattr("polylogue.sinex.service.PublicationService", CapturePublicationService)
     monkeypatch.setattr("polylogue.sinex.transport.resolve_configured_transport", lambda: object())
 
-    make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
+    with owned_compute_adapter() as compute:
+        make_default_convergence_stages(tmp_path / "external-generation" / "index.db", compute_adapter=compute)
 
     assert captured["source_db_path"] == configured_root / "source.db"
 

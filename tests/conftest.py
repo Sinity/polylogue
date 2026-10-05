@@ -45,6 +45,7 @@ pytest_plugins = (
     "tests.infra.frozen_clock",
     "tests.infra.clock_guard",
     "tests.infra.durability_faults",
+    "tests.infra.compute_owner",
 )
 
 if TYPE_CHECKING:

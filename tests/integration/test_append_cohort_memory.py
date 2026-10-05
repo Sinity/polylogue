@@ -23,7 +23,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -31,13 +30,13 @@ import pytest
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
-from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.append_cohort_memory_counter import append_cohort_memory_counter
+from tests.infra.live_ingest import run_owned_append_plans
 
 
 def _codex_record(session_id: str, message_id: str, text: str) -> bytes:
@@ -200,7 +199,7 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
                 escaped = warm_executor.submit(counter.record, "thread-affinity-canary")
                 with pytest.raises(AssertionError, match="escaped the invoking thread"):
                     escaped.result()
-                result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+                result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
                 counter.snapshot("quiescent")
 
     receipt = counter.workload_receipt(
@@ -265,7 +264,7 @@ def test_watcher_append_does_not_reclassify_an_established_cohort(tmp_path: Path
     with patch.object(
         ArchiveStore, "classify_raw_revision_cohort_for_live_watch", side_effect=AssertionError("cohort route removed")
     ):
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == [plan]
 
@@ -276,7 +275,7 @@ def test_watcher_append_counter_preserves_multi_plan_batch(tmp_path: Path) -> No
     second = _seed_cohort_and_append_plan(tmp_path, session_id="append-memory-proof-second")
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [first, second])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [first, second])
 
     assert result.succeeded == [first, second]
     assert counter.batch_count == 1
@@ -290,7 +289,7 @@ def test_watcher_append_defers_incomplete_cohort_after_historical_classification
     plan = _seed_cohort_and_append_plan(tmp_path, full_authority=RawRevisionAuthority.ASSERTED)
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]
@@ -312,7 +311,7 @@ def test_watcher_append_reclassifies_when_nonempty_plan_omits_current_append(tmp
     plan = _seed_partially_classified_cohort_and_append_plan(tmp_path)
 
     with append_cohort_memory_counter() as counter:
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+        result = run_owned_append_plans(tmp_path, _owner(tmp_path), [plan])
 
     assert result.succeeded == []
     assert result.deferred == [plan]

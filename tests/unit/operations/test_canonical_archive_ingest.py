@@ -513,21 +513,21 @@ async def test_one_shot_ingest_settles_a_source_that_produced_no_sessions() -> N
 
 
 @pytest.mark.asyncio
-async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_stage(
+async def test_one_shot_teardown_settles_the_writer_before_stopping_the_capture_stage(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A cancelled caller must not invalidate an admitted writer's carrier.
 
-    The writer consumes its preparation through ``LiveParseStage.pop_path``;
-    stopping the stage first can terminate workers and discard that result
-    while the writer still owns the archive. Anti-vacuity: restoring the old
-    ``parse_stage.shutdown()`` -> coordinator-idle order reverses ``events``.
+    An admitted writer may still consume the capture stage's prepared SQLite
+    captures; stopping the stage first can discard them while the writer still
+    owns the archive. Anti-vacuity: restoring a ``sqlite_capture_stage.shutdown()``
+    -> coordinator-idle order reverses ``events``.
     """
     import polylogue.operations.canonical_archive_ingest as canonical
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.parse_prefetch import LiveParseStage
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
     source_path = tmp_path / "external-source" / "session.jsonl"
     source_path.parent.mkdir()
@@ -537,13 +537,13 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
     )
     events: list[str] = []
     original_idle = canonical._wait_for_coordinator_idle
-    original_shutdown = LiveParseStage.shutdown
+    original_shutdown = LiveSQLiteCaptureStage.shutdown
 
     async def wait_idle(coordinator: object) -> None:
         await original_idle(coordinator)  # type: ignore[arg-type]
         events.append("writer_settled")
 
-    def shutdown(self: LiveParseStage) -> None:
+    def shutdown(self: LiveSQLiteCaptureStage) -> None:
         events.append("stage_shutdown")
         original_shutdown(self)
 
@@ -551,7 +551,7 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
         raise RuntimeError("caller cancelled after writer admission")
 
     monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", wait_idle)
-    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(LiveSQLiteCaptureStage, "shutdown", shutdown)
     monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
 
     with pytest.raises(RuntimeError, match="caller cancelled"):
@@ -565,7 +565,7 @@ async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_st
 
 
 @pytest.mark.asyncio
-async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fails(
+async def test_one_shot_teardown_stops_the_capture_stage_when_the_settle_wait_fails(
     tmp_path: Path,
     one_shot_workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -578,7 +578,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
     """
     import polylogue.operations.canonical_archive_ingest as canonical
     from polylogue.sources.live.batch import LiveBatchProcessor
-    from polylogue.sources.live.parse_prefetch import LiveParseStage
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 
     source_path = tmp_path / "external-source" / "session.jsonl"
     source_path.parent.mkdir()
@@ -587,7 +587,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
         encoding="utf-8",
     )
     events: list[str] = []
-    original_shutdown = LiveParseStage.shutdown
+    original_shutdown = LiveSQLiteCaptureStage.shutdown
     from polylogue import Polylogue
 
     original_close = Polylogue.close
@@ -595,7 +595,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
     async def failing_wait(coordinator: object) -> None:
         raise RuntimeError("settle wait interrupted")
 
-    def shutdown(self: LiveParseStage) -> None:
+    def shutdown(self: LiveSQLiteCaptureStage) -> None:
         events.append("stage_shutdown")
         original_shutdown(self)
 
@@ -607,7 +607,7 @@ async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fail
         raise RuntimeError("caller cancelled after writer admission")
 
     monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", failing_wait)
-    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(LiveSQLiteCaptureStage, "shutdown", shutdown)
     monkeypatch.setattr(Polylogue, "close", close)
     monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
 
