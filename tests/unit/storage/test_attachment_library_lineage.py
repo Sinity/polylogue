@@ -64,7 +64,7 @@ async def test_library_refuses_incomplete_lineage_instead_of_complete_child_tail
         # The archive writer's synchronous lease must not block this event loop.
         seeded = seed_attachment_library_lineage_archive(tmp_path)
         with (
-            write_lease("test.attachment-library-lineage-fault"),
+            write_lease("test.attachment-library-lineage-fault", archive_root=tmp_path),
             ArchiveStore.open_existing(tmp_path, read_only=False) as archive,
         ):
             if fault == "missing":

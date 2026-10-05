@@ -29,6 +29,7 @@ from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.index_writer import write_fixture_index_session
 
@@ -398,53 +399,62 @@ async def test_orphaned_attachment_ref_is_swept_not_left_unreachable(
     attachment_id = _attachment_id("", attachment)
 
     db_path = tmp_path / "index.db"
-    conn = _connect(db_path)
 
-    # First ingest: attachment lands on message m0 and is reachable.
-    first_session = _session_with_attachment(attachment)
-    write_fixture_index_session(conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session))
-
-    row = conn.execute(
-        "SELECT acquisition_status, ref_count FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
-    ).fetchone()
-    assert row is not None
-    assert row["acquisition_status"] == "acquired"
-    assert row["ref_count"] == 1
-
-    # Second ingest of the SAME session (full replace, no merge_append): the
-    # provider's message set no longer includes m0 (e.g. it was renumbered,
-    # or excluded as a duplicate native id on this pass), so the attachment
-    # -- which still names message_provider_id="m0" -- can no longer be
-    # resolved to any message this time and _write_attachments skips
-    # re-writing its ref. The attachment_refs row for it was already dropped
-    # by the full replace's message CASCADE.
-    second_session = ParsedSession(
-        source_name=first_session.source_name,
-        provider_session_id=first_session.provider_session_id,
-        title=first_session.title,
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                text="a different message, m0 is gone",
-                position=0,
-                variant_index=0,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="a different message, m0 is gone")],
+    def ingest_then_orphan() -> None:
+        # The fixture writer's synchronous lease must not block this event loop.
+        conn = _connect(db_path)
+        try:
+            # First ingest: attachment lands on message m0 and is reachable.
+            first_session = _session_with_attachment(attachment)
+            write_fixture_index_session(
+                conn, first_session, preacquired_attachment_blobs=_preacquired(store, first_session)
             )
-        ],
-        attachments=[attachment],
-    )
-    write_fixture_index_session(conn, second_session, force_replace=True)
 
-    surviving_row = conn.execute(
-        "SELECT 1 FROM attachments WHERE attachment_id = ?",
-        (attachment_id,),
-    ).fetchone()
-    assert surviving_row is None, (
-        "orphaned attachment row (acquired, real bytes) must be garbage-collected "
-        "once its last ref is dropped, not left permanently unreachable"
-    )
+            row = conn.execute(
+                "SELECT acquisition_status, ref_count FROM attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+            assert row is not None
+            assert row["acquisition_status"] == "acquired"
+            assert row["ref_count"] == 1
+
+            # Second ingest of the SAME session (full replace, no merge_append): the
+            # provider's message set no longer includes m0 (e.g. it was renumbered,
+            # or excluded as a duplicate native id on this pass), so the attachment
+            # -- which still names message_provider_id="m0" -- can no longer be
+            # resolved to any message this time and _write_attachments skips
+            # re-writing its ref. The attachment_refs row for it was already dropped
+            # by the full replace's message CASCADE.
+            second_session = ParsedSession(
+                source_name=first_session.source_name,
+                provider_session_id=first_session.provider_session_id,
+                title=first_session.title,
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="a different message, m0 is gone",
+                        position=0,
+                        variant_index=0,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="a different message, m0 is gone")],
+                    )
+                ],
+                attachments=[attachment],
+            )
+            write_fixture_index_session(conn, second_session, force_replace=True)
+
+            surviving_row = conn.execute(
+                "SELECT 1 FROM attachments WHERE attachment_id = ?",
+                (attachment_id,),
+            ).fetchone()
+            assert surviving_row is None, (
+                "orphaned attachment row (acquired, real bytes) must be garbage-collected "
+                "once its last ref is dropped, not left permanently unreachable"
+            )
+        finally:
+            conn.close()
+
+    run_off_event_loop(ingest_then_orphan)
 
     async with aiosqlite.connect(db_path) as aconn:
         aconn.row_factory = aiosqlite.Row

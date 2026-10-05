@@ -19,14 +19,14 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     list_assertions_for_target,
     upsert_assertion,
 )
-from tests.infra.daemon_operations import daemon_serving_archive
+from tests.infra.daemon_operations import async_daemon_serving_archive
 from tests.infra.storage_records import db_setup
 
 
 @pytest.mark.asyncio
 async def test_post_then_list_round_trips_through_user_db(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             posted = await poly.post_blackboard_note(
                 kind="finding",
@@ -47,7 +47,7 @@ async def test_post_then_list_round_trips_through_user_db(workspace_env: dict[st
 @pytest.mark.asyncio
 async def test_post_mirrors_agent_metadata_into_assertion(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             await poly.post_blackboard_note(
                 kind="handoff",
@@ -83,7 +83,7 @@ async def test_post_mirrors_agent_metadata_into_assertion(workspace_env: dict[st
 @pytest.mark.asyncio
 async def test_list_decodes_assertion_backed_blackboard_body(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             posted = await poly.post_blackboard_note(
                 kind="finding",
@@ -107,7 +107,7 @@ async def test_list_decodes_assertion_backed_blackboard_body(workspace_env: dict
     finally:
         conn.close()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             notes = await poly.list_blackboard_notes()
 
@@ -121,7 +121,7 @@ async def test_list_decodes_assertion_backed_blackboard_body(workspace_env: dict
 @pytest.mark.asyncio
 async def test_list_filters_by_kind_scope_and_unresolved(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             await poly.post_blackboard_note(kind="finding", title="f", content="c", scope_repo="polylogue")
             await poly.post_blackboard_note(kind="blocker", title="b", content="c", scope_repo="sinex")
@@ -140,7 +140,7 @@ async def test_list_filters_by_kind_scope_and_unresolved(workspace_env: dict[str
 @pytest.mark.asyncio
 async def test_post_rejects_unknown_kind(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             with pytest.raises(ValueError, match="kind must be one of"):
                 await poly.post_blackboard_note(kind="bogus", title="t", content="c")
@@ -149,6 +149,6 @@ async def test_post_rejects_unknown_kind(workspace_env: dict[str, Path]) -> None
 @pytest.mark.asyncio
 async def test_list_on_fresh_archive_is_empty(workspace_env: dict[str, Path]) -> None:
     db_path = db_setup(workspace_env)
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.list_blackboard_notes() == []

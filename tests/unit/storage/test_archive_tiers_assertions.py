@@ -1768,23 +1768,27 @@ def test_candidate_reviews_survive_remirror_without_becoming_authoritative(tmp_p
         conn.close()
 
 
-class _PauseAfterCandidateLookup:
-    """Exercise the production upsert through a second real SQLite connection."""
+def _pause_after_candidate_lookup(
+    conn: sqlite3.Connection, looked_up: threading.Event, release: threading.Event
+) -> sqlite3.Connection:
+    """Hold the production upsert on its own connection just after its candidate lookup.
 
-    def __init__(self, conn: sqlite3.Connection, looked_up: threading.Event, release: threading.Event) -> None:
-        self._conn = conn
-        self._looked_up = looked_up
-        self._release = release
+    The writer runs its statements on the connection's own cursors, so the
+    pause hooks SQLite's statement trace: the statement after the lookup
+    waits until the test releases it.
+    """
+    lookup_seen = False
 
-    def execute(self, sql: str, parameters: tuple[object, ...] = ()) -> sqlite3.Cursor:
-        cursor = self._conn.execute(sql, parameters)
+    def trace(sql: str) -> None:
+        nonlocal lookup_seen
+        if lookup_seen and not looked_up.is_set():
+            looked_up.set()
+            release.wait(timeout=5)
         if "SELECT created_at_ms, status FROM assertions" in sql:
-            self._looked_up.set()
-            assert self._release.wait(timeout=5), "test did not release detector replay"
-        return cursor
+            lookup_seen = True
 
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
+    conn.set_trace_callback(trace)
+    return conn
 
 
 def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path) -> None:
@@ -1823,7 +1827,7 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
             try:
                 assert detector.execute("PRAGMA busy_timeout").fetchone()[0] == WRITE_CONNECTION_PROFILE.busy_timeout_ms
                 upsert_assertion(
-                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    _pause_after_candidate_lookup(detector, looked_up, release_detector),
                     assertion_id=candidate.assertion_id,
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
@@ -1938,7 +1942,7 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
                 detector.execute("BEGIN")
                 assert detector.in_transaction
                 upsert_assertion(
-                    _PauseAfterCandidateLookup(detector, looked_up, release_detector),  # type: ignore[arg-type]
+                    _pause_after_candidate_lookup(detector, looked_up, release_detector),
                     assertion_id=candidate.assertion_id,
                     target_ref=candidate.target_ref,
                     kind=candidate.kind,
