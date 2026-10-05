@@ -38,7 +38,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import MessageOwnerResolution, session_content_hash
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
 from polylogue.storage.io_phase_metrics import connect_measured
@@ -591,6 +591,9 @@ def test_an_unsealed_shard_is_refused(tmp_path: Path) -> None:
         open_session_shard(tmp_path / "unsealed.db")
 
 
+_EMPTY_OWNER_RESOLUTION = MessageOwnerResolution((), {}, frozenset(), {}, frozenset(), frozenset(), {}, frozenset())
+
+
 def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> None:
     builder = SessionShardBuilder(tmp_path / "many.db")
 
@@ -602,6 +605,7 @@ def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> No
                 message_rows=(),
                 block_rows=(),
                 content_identities=(),
+                owner_resolution=_EMPTY_OWNER_RESOLUTION,
             )
         )
 
