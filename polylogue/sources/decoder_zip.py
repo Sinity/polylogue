@@ -274,8 +274,29 @@ def process_zip(
         zf = custody.enter_context(zipfile.ZipFile(physical.stream))
         entries = zf.infolist()
         admission = zip_member_admission(zf, zip_path, entries, provider_hint)
+
+        def member_skipped(entry: zipfile.ZipInfo, reason: str) -> None:
+            # Every member the parse route does not turn into sessions gets
+            # the same typed disposition the acquisition route records.
+            emit(
+                "sources.zip.member_skipped",
+                outcome="skipped",
+                reason=reason,
+                source_path=f"{zip_path}:{entry.filename}",
+            )
+
         for entry_ordinal, info in enumerate(entries):
-            if next(iter(validator.filter_entries((info,), allowed_path=admission.allowed_path)), None) is None:
+            if (
+                next(
+                    iter(
+                        validator.filter_entries(
+                            (info,), allowed_path=admission.allowed_path, on_unselected=member_skipped
+                        )
+                    ),
+                    None,
+                )
+                is None
+            ):
                 continue
             name = info.filename
             entry_provider_hint = admission.entry_provider_hint(zf, info)
@@ -307,9 +328,11 @@ def process_zip(
             if path_classification is not None and not path_classification.parse_as_session:
                 if path_declaration_refuses_session(entry_provider_hint, name):
                     # Declared raw-only evidence is never probed for sessions.
+                    member_skipped(info, "declared raw-only artifact")
                     continue
                 session_artifact = zip_entry_session_artifact(zf, info, provider=entry_provider_hint)
                 if session_artifact is None:
+                    member_skipped(info, "non-session path without positive session evidence")
                     continue
             entry_should_group = entry_provider_hint in GROUP_PROVIDERS
             ctx = _ParseContext(
@@ -358,6 +381,7 @@ def process_zip(
                 with release_captures_on_refusal(store) as captures:
                     if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
                         captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
+                    emitted_sessions = 0
                     with open_bound_member(zf, info, ctx.bound_provider, profile_identity=profile) as handle:
                         for raw, session in emitter.emit(
                             handle,
@@ -369,7 +393,10 @@ def process_zip(
                                 if raw.addressing_mode is None:
                                     raw = raw.model_copy(update={"addressing_mode": MemberAddressingMode.WHOLE_MEMBER})
                                 raw = _captured_zip_record(raw, member_context)
+                            emitted_sessions += 1
                             yield raw, session
+                    if not emitted_sessions:
+                        member_skipped(info, "member parsed to no sessions")
             except ContentExcisedError as exc:
                 # An excised member is skipped; the archive's other members
                 # still ingest. Not a cursor failure: nothing to retry.
