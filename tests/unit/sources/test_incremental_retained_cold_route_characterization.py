@@ -239,7 +239,14 @@ def test_live_retained_and_owned_cold_routes_publish_one_interpretation(tmp_path
     cold = _snapshot(cold_root)
 
     assert live == cold, {key: (live[key], cold[key]) for key in live if live[key] != cold[key]}
-    assert cold_before_promotion == cold
+    # A cold build has no live Source authority: its replay leaves the parse
+    # unacknowledged, and promotion, its commit point, acknowledges it.
+    # Anti-vacuity: drop the promotion stamp and ``cold`` keeps the
+    # unparsed raw, so the live/cold equality above goes red.
+    assert cold_before_promotion["raw_terminal"] == ((0, 0, 0, None),)
+    assert {key: value for key, value in cold_before_promotion.items() if key != "raw_terminal"} == {
+        key: value for key, value in cold.items() if key != "raw_terminal"
+    }
     # One interpretation: live intake enriches from retained archive evidence
     # exactly as retained replay does, so title and content hash agree, and a
     # byte-proven raw is governed by its revision on every route.
