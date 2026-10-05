@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.live_batch import prepared_live_batch_processor
 from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
@@ -133,18 +135,30 @@ def _session_tree(root: Path, session_id: str, outputs: list[tuple[str, str]]) -
     return paths
 
 
-async def _ingest(workspace_env: dict[str, Path], root: Path, files: list[Path], *, cursor_name: str) -> None:
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
+async def _ingest(workspace_env: dict[str, Path], root: Path, files: list[Path], *, fresh_cursor: bool = False) -> None:
+    """Ingest through the real live batch processor and its canonical Raw owner.
+
+    ``fresh_cursor`` forgets these files' watcher cursors first (the disposable
+    ops tier), so an unchanged file is genuinely reacquired rather than skipped
+    at end-of-file: re-ingest then depends on the excision marker, not on the
+    cursor, to keep excised content out.
+    """
+    archive_root = workspace_env["archive_root"]
+    if fresh_cursor:
+        spellings = [str(path) for path in files] + [str(path.resolve()) for path in files]
+        marks = ",".join("?" for _ in spellings)
+        with closing(sqlite3.connect(archive_root / "ops.db")) as ops:
+            ops.execute(
+                f"DELETE FROM ingest_cursor WHERE source_path IN ({marks}) OR canonical_source_path IN ({marks})",
+                (*spellings, *spellings),
+            )
+            ops.commit()
+    async with prepared_live_batch_processor(
+        archive_root,
         (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=CursorStore(workspace_env["data_root"] / cursor_name),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
+    ) as processor:
         await processor.ingest_files(files, emit_event=False)
-    finally:
-        await archive.close()
 
 
 def _sha(text: str) -> bytes:
@@ -204,7 +218,6 @@ async def _ingest_a_and_b(workspace_env: dict[str, Path]) -> tuple[Path, dict[st
             tree_a["transcript"],
             tree_b["transcript"],
         ],
-        cursor_name="cursor.db",
     )
     return root, tree_a, tree_b
 
@@ -287,7 +300,6 @@ async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict
         workspace_env,
         root,
         [parent_sidecar, subagent_sidecar, orphan_sidecar, parent, subagent],
-        cursor_name="cursor.db",
     )
     session = _session_row(archive_root, _SESSION_A)
     assert session is not None
@@ -450,7 +462,7 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict
         workspace_env,
         root,
         [tree_c["toolu_c_shared"], tree_a["transcript"], tree_c["transcript"]],
-        cursor_name="cursor-reingest.db",
+        fresh_cursor=True,
     )
 
     assert _session_row(archive_root, _SESSION_A) is None, "re-ingesting A's export resurrected it"
