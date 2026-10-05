@@ -1472,10 +1472,13 @@ class RawObservationDerivation(RawObservationInspection):
                                 prepared_membership_keys = tuple(
                                     key for key in expanded_membership_keys if not is_work_event_raw_id(key)
                                 )
+                                # Membership-keyed sessions are ordered with the
+                                # byte-typed ones, so a parent replays before its
+                                # children whichever authority keys either.
                                 prepared_replay_schedule = _lineage_aware_replay_schedule(
                                     {
                                         logical_key
-                                        for logical_key in prepared_logical_keys
+                                        for logical_key in (*prepared_logical_keys, *prepared_membership_keys)
                                         if not is_work_event_raw_id(logical_key)
                                     },
                                     source_read,

@@ -1765,7 +1765,7 @@ def apply_prepared_revision_replay(
                     "prepared work-event envelope acquired transcript membership publication"
                 )
             replay_schedule = prepared_replay_schedule
-            if set(replay_schedule.order) != logical_keys.difference(work_event_keys):
+            if set(replay_schedule.order) != (logical_keys | membership_keys).difference(work_event_keys):
                 raise RetainedPreparationRetryableError(
                     "prepared retained replay schedule has another selected key set"
                 )
@@ -1920,7 +1920,7 @@ def apply_prepared_revision_replay(
                 byte_replayed_keys.add(logical_key)
             from polylogue.storage.sqlite.archive_tiers.revision_governance import apply_prepared_membership_index
 
-            for logical_key in sorted(membership_keys):
+            for logical_key in (key for key in replay_schedule.order if key in membership_keys):
                 if logical_key in refused_keys:
                     continue
                 membership_plan = prepared_membership_plans.get(logical_key)

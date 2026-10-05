@@ -8603,12 +8603,18 @@ class PreparedSessionSourceRead:
             f"SELECT rowid FROM raw_sessions WHERE logical_source_key IN ({marks})",
             parameters,
         )
+        self._load_matches(
+            "raw_session_memberships",
+            f"SELECT rowid FROM raw_session_memberships WHERE logical_source_key IN ({marks})",
+            parameters,
+        )
         after: str | None = None
         while True:
             with self._seal.source_rows(
-                f"SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
-                "AND (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
-                (*parameters, after, after),
+                f"SELECT raw_id FROM (SELECT raw_id FROM raw_sessions WHERE logical_source_key IN ({marks}) "
+                f"UNION SELECT raw_id FROM raw_session_memberships WHERE logical_source_key IN ({marks})) "
+                "WHERE (? IS NULL OR raw_id>?) ORDER BY raw_id LIMIT 256",
+                (*parameters, *parameters, after, after),
             ) as rows:
                 page = rows.fetchall()
             if not page:

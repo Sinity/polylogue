@@ -4996,12 +4996,19 @@ def _raw_revision_rebuild_logical_keys(
 
 
 def _raw_replay_representative_query(keys: Sequence[str]) -> tuple[str, tuple[object, ...]]:
+    """Rank each key's raws, whether the raw's revision key or its membership names it."""
     marks = ",".join("?" for _ in keys)
+    order = raw_receipt_order_sql("raw_sessions")
     return (
-        "SELECT logical_source_key, raw_id FROM raw_sessions "
-        f"WHERE logical_source_key IN ({marks}) "
-        f"ORDER BY logical_source_key, {raw_receipt_order_sql('raw_sessions')} DESC, raw_id ASC",
-        tuple(keys),
+        "SELECT logical_source_key, raw_id FROM ("
+        f"SELECT raw_sessions.logical_source_key AS logical_source_key, raw_sessions.raw_id AS raw_id, {order} AS rank "
+        f"FROM raw_sessions WHERE raw_sessions.logical_source_key IN ({marks}) "
+        "UNION "
+        f"SELECT m.logical_source_key, raw_sessions.raw_id, {order} "
+        "FROM raw_session_memberships AS m JOIN raw_sessions ON raw_sessions.raw_id = m.raw_id "
+        f"WHERE m.logical_source_key IN ({marks})"
+        ") ORDER BY logical_source_key, rank DESC, raw_id ASC",
+        (*keys, *keys),
     )
 
 
