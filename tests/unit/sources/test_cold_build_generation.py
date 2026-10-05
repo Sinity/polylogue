@@ -757,8 +757,11 @@ def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None
     register_cold_build_generation(generation)
     try:
         metrics = asyncio.run(_ingest_paths(tmp_path, root, [session, sidecar]))
-        assert metrics.succeeded_file_count == 1, metrics
-        assert metrics.excluded_file_count == 1, metrics
+        # Live acquisition is source-only: it retains both files' bytes and
+        # leaves the sidecar's classification to retained replay, while the
+        # baseline still records intake's own exclusion for it.
+        assert metrics.failed_file_count == 0, metrics
+        assert metrics.new_sessions == (("codex", "codex-session:kept-session"),), metrics
         decisions = {row.path: row for row in generation.source_baseline.decisions}
         assert decisions[str(sidecar)].disposition == "excluded"
         assert decisions[str(sidecar)].reason == "intake_excluded:declared artifact rule: not parsed as a session"
@@ -974,10 +977,12 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     real_revision = production_baseline._revision
     reads = 0
 
-    def measured_revision(path: Path, *, cancelled: Any = None, location: Any = None) -> tuple[str, int]:
+    def measured_revision(
+        path: Path, *, cancelled: Any = None, location: Any = None, source_binding: Any = None
+    ) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path, cancelled=cancelled, location=location)
+        digest, _size = real_revision(path, cancelled=cancelled, location=location, source_binding=source_binding)
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)
