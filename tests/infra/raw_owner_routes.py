@@ -188,7 +188,9 @@ async def supplied_live_owners(processor: LiveBatchProcessor) -> AsyncIterator[L
     the slots are restored before the owners physically settle.
     """
     async with live_owner_set(_owner_archive_root(processor)) as owners:
-        slots = owners.processor_slots()
+        # A slot a test already filled (a recording or failing runner) is its
+        # declared seam and stays in place; only empty slots receive owners.
+        slots = {slot: value for slot, value in owners.processor_slots().items() if getattr(processor, slot) is None}
         previous = {slot: getattr(processor, slot) for slot in slots}
         for slot, value in slots.items():
             setattr(processor, slot, value)
@@ -219,6 +221,8 @@ async def seed_membership_census_async(
     parser_fingerprint: str,
     censused_at_ms: int = 1,
     revision_authority: RawRevisionAuthority | None = None,
+    detail: str = "",
+    retire_full_revision_governance: bool = False,
 ) -> None:
     """Record membership census receipts through the canonical prepared Source route.
 
@@ -245,7 +249,9 @@ async def seed_membership_census_async(
                             list(sessions),
                             parser_fingerprint=parser_fingerprint,
                             censused_at_ms=censused_at_ms,
+                            detail=detail,
                             revision_authority=revision_authority,
+                            retire_full_revision_governance=retire_full_revision_governance,
                         )
                 permit = seal.prepare_source_mutation()
 
@@ -273,6 +279,8 @@ def seed_membership_census(
     parser_fingerprint: str,
     censused_at_ms: int = 1,
     revision_authority: RawRevisionAuthority | None = None,
+    detail: str = "",
+    retire_full_revision_governance: bool = False,
 ) -> None:
     """Synchronous form of :func:`seed_membership_census_async`."""
     asyncio.run(
@@ -282,6 +290,8 @@ def seed_membership_census(
             parser_fingerprint=parser_fingerprint,
             censused_at_ms=censused_at_ms,
             revision_authority=revision_authority,
+            detail=detail,
+            retire_full_revision_governance=retire_full_revision_governance,
         )
     )
 
