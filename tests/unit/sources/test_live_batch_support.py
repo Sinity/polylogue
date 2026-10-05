@@ -959,9 +959,11 @@ def test_claude_append_retry_preserves_legacy_null_acquisition_identity(tmp_path
     assert plan.native_id_hint == native_id
     assert plan.acquisition_native_id_hint is None
 
-    legacy_plan = replace(plan, native_id_hint=None, acquisition_native_id_hint=None)
-    first = ingest_append_with_owner(owner, [legacy_plan])
-    assert first.succeeded == [legacy_plan]
+    # Claude append rows carry no acquisition identity (native_id NULL), and
+    # every plan carries its logical session: acquisition refuses a plan
+    # without one. A retry must keep the NULL-identity raw it acquired.
+    first = ingest_append_with_owner(owner, [plan])
+    assert first.succeeded == [plan]
     assert first.failed == []
     with sqlite3.connect(tmp_path / "source.db") as conn:
         before_retry = conn.execute("SELECT raw_id, native_id FROM raw_sessions WHERE source_index = -1").fetchall()
