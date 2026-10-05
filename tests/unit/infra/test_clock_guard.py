@@ -74,8 +74,8 @@ def writable_checkout(tmp_path_factory: pytest.TempPathFactory) -> Path:
     Managed runs execute from a readonly copy of the declared source, so a
     proof module cannot be added to the checkout itself. The copy keeps the
     same Git object store, the exact executed bytes of every declared file and
-    the original virtualenv, so the nested ``devtools test`` admits it like
-    the real checkout.
+    its own environment over the original installed dependencies, so the
+    nested ``devtools test`` admits it like the real checkout.
     """
     root = Path(__file__).resolve().parents[3]
     destination = tmp_path_factory.mktemp("clock-guard-checkout") / "checkout"
@@ -84,7 +84,8 @@ def writable_checkout(tmp_path_factory: pytest.TempPathFactory) -> Path:
         check=True,
         capture_output=True,
     )
-    subprocess.run(["git", "-C", str(destination), "checkout", "--quiet", "--detach", "HEAD"], check=True)
+    # A branch of its own: devtools refuses a run on the clone's default branch.
+    subprocess.run(["git", "-C", str(destination), "checkout", "--quiet", "-b", "clock-guard-proof"], check=True)
     listed = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=root,
@@ -99,7 +100,14 @@ def writable_checkout(tmp_path_factory: pytest.TempPathFactory) -> Path:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
         shutil.copymode(source, target)
-    (destination / ".venv").symlink_to(root / ".venv")
+    # Devtools refuses an interpreter, or import paths, that resolve into
+    # another checkout, so the copy owns its environment: a reflinked copy of
+    # the executed checkout's installed dependencies.
+    subprocess.run(
+        ["cp", "-a", "--reflink=auto", str(root / ".venv"), str(destination / ".venv")],
+        check=True,
+        capture_output=True,
+    )
     return destination
 
 
@@ -113,7 +121,17 @@ def _managed_collection(module: Path, *, root: Path, state: Path) -> subprocess.
     """
     history = state / "history.jsonl"
     result = subprocess.run(
-        [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module), "--json"],
+        [
+            str(root / ".venv" / "bin" / "python"),
+            "-m",
+            "devtools",
+            "test",
+            "--collect-only",
+            "--rootdir",
+            str(root),
+            str(module),
+            "--json",
+        ],
         cwd=root,
         capture_output=True,
         text=True,
