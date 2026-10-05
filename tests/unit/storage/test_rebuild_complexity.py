@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, PassCursor, converge
 from polylogue.operations.raw_observation_derivation import raw_observation_frame
 from polylogue.sources import revision_backfill
@@ -63,6 +64,9 @@ def _run(
             DerivationRegistry((RawObservationDerivation(root, compute_adapter=compute),)),
             raw_observation_frame(root, raw_ids=raw_ids),
             budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
+            # Each publication enters the owner's writer admission, as the
+            # daemon's derivation publisher does; preparation stays outside it.
+            publisher=lambda domain, publish: admit_stage_write(f"test.rebuild.{domain}", publish),
             cursor=cursor,
         ),
     )
