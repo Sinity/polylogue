@@ -39,6 +39,7 @@ from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.parsers.drive import looks_like as drive_looks_like
 from polylogue.sources.parsers.drive import parse_chunked_prompt
+from polylogue.sources.parsers.grok import parse_native_response_stream
 from polylogue.sources.parsers.local_agent import (
     looks_like_gemini_cli,
     looks_like_hermes,
@@ -46,6 +47,7 @@ from polylogue.sources.parsers.local_agent import (
     parse_hermes,
 )
 from polylogue.sources.parsers.otel_genai import parse as parse_otel_genai
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -61,7 +63,7 @@ _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -105,6 +107,23 @@ def _action_states(conn: sqlite3.Connection, session_id: str) -> list[tuple[str 
 
 def _write(conn: sqlite3.Connection, session: ParsedSession) -> str:
     return write_fixture_index_session(conn, session)
+
+
+def _grok_outcome(error: object = None, *, reported: bool = False) -> ParsedSession:
+    result: dict[str, object] = {"text": "original tool reply"}
+    if reported:
+        result["is_error"] = error
+    return parse_native_response_stream(
+        {"conversationId": "grok-outcome"},
+        [
+            {
+                "responseId": "response",
+                "sender": "assistant",
+                "toolResponses": [{"toolId": "call", "toolName": "search", "input": {}, **result}],
+            }
+        ],
+        "grok-outcome",
+    )
 
 
 # --------------------------------------------------------------------------
@@ -422,6 +441,20 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[Path], ParsedSession], Triple, str
         "codex-unsupported-exit-code-type",
         Provider.CODEX,
         lambda _root: parse_codex(_codex_records('{"exit_code": "0"}'), "codex-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "grok-absent-report",
+        Provider.GROK,
+        lambda _root: _grok_outcome(),
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        "outcome_unknown",
+    ),
+    (
+        "grok-unsupported-error-shape",
+        Provider.GROK,
+        lambda _root: _grok_outcome("maybe", reported=True),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),

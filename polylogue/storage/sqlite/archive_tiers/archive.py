@@ -20,11 +20,12 @@ import sqlite3
 import threading
 import time
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, ExitStack, contextmanager
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial, wraps
+from io import Reader
 from pathlib import Path
 from types import TracebackType
 from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoReturn, ParamSpec, TypedDict, TypeVar, cast
@@ -32,7 +33,7 @@ from typing import IO, TYPE_CHECKING, Any, BinaryIO, Concatenate, Literal, NoRet
 from .source_items import SourceItemAdmission
 
 if TYPE_CHECKING:
-    from polylogue.storage.index_generation import ActiveWriterLease
+    from polylogue.storage.index_generation import ActiveWriterLease, IndexGeneration
     from polylogue.storage.sqlite.reference_seal import (
         IndexMutationDestination,
         IndexMutationScope,
@@ -107,6 +108,7 @@ from polylogue.archive.query.predicate import (
     QueryPredicate,
     QuerySequencePredicate,
 )
+from polylogue.archive.query.spec import split_csv
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
     RawRevisionAuthority,
@@ -139,6 +141,7 @@ from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     UnsupportedInsightFilterError,
 )
+from polylogue.core.identity_law import attachment_acquisition_coordinate
 from polylogue.core.json import require_json_value
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
@@ -152,7 +155,7 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, PreparedBlobPublicationClaim
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.derived.session.records import SessionProfileRecord
 from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
@@ -167,7 +170,7 @@ from polylogue.storage.fts.sql import (
     delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
@@ -207,6 +210,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     ActiveByteRevisionChainError,
     ArchiveRawParsedWriteResult,
     MembershipReplayConflictError,
+    PreparedRevisionAdoption,
+    PreparedRevisionReplayOutcome,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
     _index_parsed_for_retained_raw,
@@ -222,6 +227,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     admit_raw_and_parsed_result,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
+    admit_work_event_raw,
     apply_raw_membership_classification,
     apply_raw_revision_replay,
     bind_raw_revision,
@@ -263,7 +269,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_observation_order,
     raw_revision_observed_at_ms,
     raw_revision_rebuild_logical_keys,
-    raw_revision_replay_adoptable,
     raw_revision_replay_plan,
     record_raw_failure_evidence,
     release_provisional_full_revisions,
@@ -274,7 +279,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     write_raw_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
-    write_work_event_raw_and_parsed_result,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
@@ -350,6 +354,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
+    READ_CONNECTION_PROFILE,
     WRITE_CONNECTION_PROFILE,
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
@@ -358,8 +363,10 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     open_source_tier_write_connection,
     readonly_connection_context,
+    readonly_temp_staging,
     write_connection_pragma_statements,
 )
+from polylogue.storage.sqlite.queries.model_usage import MODEL_USAGE_CATALOG_SUM_SQL
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
@@ -449,6 +456,14 @@ class IndexStatus(TypedDict):
 
     exists: bool
     count: int
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveSessionIdentity:
+    """Selected session identity without full-summary metadata collections."""
+
+    session_id: str
+    origin: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -619,26 +634,34 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
             "inactive candidate generations may read frozen blobs but may not publish or replace blob bytes"
         )
 
-    def _queue(self, prepared: PreparedBlob) -> NoReturn:
-        del prepared
+    def _queue(self, prepared: PreparedBlob, claim: PreparedBlobPublicationClaim | None = None) -> NoReturn:
+        del prepared, claim
         self._refuse()
 
-    def prepare_from_path(self, source: Path, *, heartbeat: Heartbeat | None = None) -> NoReturn:
-        del source, heartbeat
+    def prepare_from_path(
+        self, source: Path, *, heartbeat: Heartbeat | None = None, staging_directory: Path | None = None
+    ) -> NoReturn:
+        del source, heartbeat, staging_directory
         self._refuse()
 
-    def prepare_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> NoReturn:
-        del source, heartbeat
+    def prepare_from_fileobj(
+        self, source: Reader[bytes], *, heartbeat: Heartbeat | None = None, staging_directory: Path | None = None
+    ) -> NoReturn:
+        del source, heartbeat, staging_directory
         self._refuse()
 
-    def prepare_from_bytes(self, data: bytes) -> NoReturn:
-        del data
+    def prepare_from_bytes(self, data: bytes, *, staging_directory: Path | None = None) -> NoReturn:
+        del data, staging_directory
         self._refuse()
 
     def prepare_from_writer(
-        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+        staging_directory: Path | None = None,
     ) -> NoReturn:
-        del write, heartbeat
+        del write, heartbeat, staging_directory
         self._refuse()
 
     def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> NoReturn:
@@ -694,7 +717,7 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
             )
         return blob_hash, size_bytes
 
-    def flush(self) -> tuple[()]:
+    def flush(self, *, reference_seal: PreparedIndexMutation | None = None) -> tuple[()]:
         return ()
 
     def discard_pending(self) -> None:
@@ -780,35 +803,55 @@ def stage_index_session_deletions(
         mutation_scope.note_deleted_session(session_id)
         mutation_scope.note_lineage_change(session_id)
         # Must run before the blocks rows are removed below.
-        conn.execute(delete_session_rows_sql(1), (session_id,))
-        conn.execute(delete_session_identity_rows_sql(1), (session_id,))
-    conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
-    conn.execute(
-        "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)",
-        (FTS_BULK_SESSION_WRITE_GUARD,),
-    )
+        with connection_cursor(conn, delete_session_rows_sql(1), (session_id,)):
+            pass
+        with connection_cursor(conn, delete_session_identity_rows_sql(1), (session_id,)):
+            pass
+    with connection_cursor(conn, "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')"):
+        pass
+    with connection_cursor(
+        conn, "INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES (?)", (FTS_BULK_SESSION_WRITE_GUARD,)
+    ):
+        pass
+    primary: BaseException | None = None
     try:
         for session_id in session_ids:
             mutation_scope.require_new_work(conn)
-            conn.execute("DELETE FROM action_pairs WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,))
-            # attachment_refs cascades from sessions, so the refs
-            # vanish with no Python code observing it. Their
-            # attachments rows would survive with a stale ref_count
-            # and no reachable ref -- what archive verification
-            # reports as an error. Read the ids before the delete;
-            # after it there is nothing left to join through.
+            with connection_cursor(conn, "DELETE FROM action_pairs WHERE session_id = ?", (session_id,)):
+                pass
+            with connection_cursor(conn, "DELETE FROM delegation_facts WHERE parent_session_id = ?", (session_id,)):
+                pass
+            # These revision projections deliberately have no sessions foreign
+            # key. Retire only this selected session's accepted head and
+            # application history in the same owned deletion transaction.
+            with connection_cursor(conn, "DELETE FROM raw_revision_heads WHERE session_id = ?", (session_id,)):
+                pass
+            with connection_cursor(conn, "DELETE FROM raw_revision_applications WHERE session_id = ?", (session_id,)):
+                pass
+            # attachment_refs cascades from sessions. Capture exact candidates
+            # before that cascade, then refresh only those same attachments.
             orphan_candidates = session_attachment_ids(conn, session_id)
-            cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            with connection_cursor(conn, "DELETE FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
+                removed = int(cursor.rowcount)
             refresh_and_sweep_attachment_rows(conn, orphan_candidates)
-            if int(cursor.rowcount) > 0:
+            if removed > 0:
                 deleted_session_ids.append(session_id)
+    except BaseException as failure:
+        primary = failure
+        raise
     finally:
-        conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
-        conn.execute(
-            "DELETE FROM derived_refresh_guard WHERE guard_name = ?",
-            (FTS_BULK_SESSION_WRITE_GUARD,),
-        )
+        cleanup_failures: list[BaseException] = []
+        for guard in ("session-write", FTS_BULK_SESSION_WRITE_GUARD):
+            try:
+                with connection_cursor(conn, "DELETE FROM derived_refresh_guard WHERE guard_name = ?", (guard,)):
+                    pass
+            except BaseException as cleanup:
+                cleanup_failures.append(cleanup)
+        if cleanup_failures:
+            failures = ([primary] if primary is not None else []) + cleanup_failures
+            if len(failures) == 1:
+                raise failures[0]
+            raise BaseExceptionGroup("Index session deletion and guard retirement failed", failures) from primary
     return tuple(deleted_session_ids)
 
 
@@ -827,6 +870,7 @@ class ArchiveStore:
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
+        owned_read_generation: IndexGeneration | None = None,
         defer_secondary_indexes: bool = False,
         active_cold_build: bool = False,
         durable_writer: bool = False,
@@ -848,6 +892,14 @@ class ArchiveStore:
             raise ValueError("durable_writer requires an owned inactive writable generation")
         if active_cold_build and (read_only or owned_inactive_generation is not None or source_tier_acquisition):
             raise ValueError("the active cold-build shape requires a plain writable active-generation open")
+        if owned_read_generation is not None:
+            if not read_only or frozen_index_path is None:
+                raise ValueError("an owned build reader requires its actual frozen Index path")
+            if Path(owned_read_generation.archive_root).resolve(strict=True) != archive_root.resolve(
+                strict=True
+            ) or Path(owned_read_generation.index_path).resolve(strict=True) != frozen_index_path.resolve(strict=True):
+                raise ValueError("owned build reader differs from its original generation")
+        self._owned_read_generation = owned_read_generation
         self._active_cold_build_requested = active_cold_build
         self._active_cold_build_engaged = False
         self._writer_owner_pid = os.getpid()
@@ -1226,6 +1278,7 @@ class ArchiveStore:
                     timeout=read_timeout,
                     opened_main_fd=opened_index_fd,
                     validate_schema=False,
+                    profile=replace(READ_CONNECTION_PROFILE, temp_store="FILE"),
                 )
             except sqlite3.OperationalError as exc:
                 # A read-only open of an index tier that is not there is the
@@ -1281,6 +1334,15 @@ class ArchiveStore:
                 write_profile = COLD_BUILD_ACTIVE_WRITE_CONNECTION_PROFILE
             pragma_statements = write_connection_pragma_statements(write_profile)
         self._conn.row_factory = sqlite3.Row
+        # One comparator belongs to this actual frame. SQLite retires
+        # its callback when this owner's connection closes, after its cursors.
+        from polylogue.archive.query.sorting import compare_numeric_order_values
+
+        def compare_result_number(left: str, right: str) -> int:
+            self.check_operation_read()
+            return compare_numeric_order_values(left, right)
+
+        self._conn.create_collation("polylogue_result_number", compare_result_number)
         for statement in pragma_statements:
             self._conn.execute(statement)
         if read_only and validate_index_layout:
@@ -1290,7 +1352,11 @@ class ArchiveStore:
             generation_id = (
                 resolved_index.parent.name if resolved_index.parent.parent.name == ".index-generations" else None
             )
-            assert_readable_archive_layout(self._conn, generation_id=generation_id)
+            assert_readable_archive_layout(
+                self._conn,
+                generation_id=generation_id,
+                owned_inactive_generation=self._owned_read_generation,
+            )
         if not read_only and not self._pinned_read and not skip_runtime_index_ensure:
             # Fresh-bootstrap and same-version reopen both skip runtime-index
             # ensure elsewhere (initialize_archive_tier only replays DDL once,
@@ -1670,6 +1736,21 @@ class ArchiveStore:
         )
 
     @classmethod
+    def open_owned_inactive_read(cls, generation: IndexGeneration) -> ArchiveStore:
+        """Read an original owned build before its reader indexes are restored."""
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+        destination = IndexMutationDestination.owned_inactive(generation)
+        destination.validate()
+        return cls(
+            Path(generation.archive_root),
+            initialize=False,
+            read_only=True,
+            frozen_index_path=destination.index_path,
+            owned_read_generation=generation,
+        )
+
+    @classmethod
     def open_active_cold_build(cls, archive_root: Path) -> ArchiveStore:
         """Open the active generation for a cold build (polylogue-6xcqj).
 
@@ -1793,7 +1874,13 @@ class ArchiveStore:
             for filename in ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
         )
 
-    def set_read_progress_guard(self, guard: Callable[[], int], *, n_opcodes: int = 2000) -> None:
+    def set_read_progress_guard(
+        self,
+        guard: Callable[[], int],
+        *,
+        n_opcodes: int = 2000,
+        check_cancelled: Callable[[], None] | None = None,
+    ) -> None:
         """Install a SQLite progress handler on the index read connection.
 
         ``guard`` returning nonzero aborts the active statement with
@@ -1804,9 +1891,16 @@ class ArchiveStore:
         """
         self._conn.set_progress_handler(guard, n_opcodes)
         self._operation_read_guard = (guard, n_opcodes)
+        self._operation_read_checkpoint = check_cancelled
         for connection in (self._source_conn, self.operation_vector_connection):
             if connection is not None:
                 connection.set_progress_handler(guard, n_opcodes)
+
+    def check_operation_read(self) -> None:
+        """Check Python work without inventing SQLite progress measurements."""
+        checkpoint = getattr(self, "_operation_read_checkpoint", None)
+        if checkpoint is not None:
+            checkpoint()
 
     def configure_operation_read_connection(self, connection: sqlite3.Connection) -> None:
         """Extend the current read budget to a newly acquired sibling handle."""
@@ -1819,6 +1913,7 @@ class ArchiveStore:
 
         self._conn.set_progress_handler(None, 0)
         self._operation_read_guard = None
+        self._operation_read_checkpoint = None
         for connection in (self._source_conn, self.operation_vector_connection):
             if connection is not None:
                 connection.set_progress_handler(None, 0)
@@ -2266,7 +2361,7 @@ class ArchiveStore:
             attachment.__exit__(None, None, None)
 
     @_archive_mutator
-    def append_work_event(
+    def admit_work_event(
         self,
         *,
         session_id: str,
@@ -2276,22 +2371,50 @@ class ArchiveStore:
         summary: str,
         timestamp: str | None = None,
     ) -> dict[str, object]:
-        """Append one agent event through the normal raw and parsed ingest seam."""
-        from polylogue.coordination.work_events import validate_work_event_id, validate_work_event_type
-        from polylogue.core.sources import provider_from_origin
+        """Acquire one typed event; its supplied retained owner publishes the Index."""
+        from polylogue.coordination.work_events import (
+            WorkEventProvenanceRefusedError,
+            validate_work_event_id,
+            validate_work_event_type,
+        )
+        from polylogue.core.sources import origin_provider_fiber
         from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 
         event_id = validate_work_event_id(event_id)
         event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
         existing = self._conn.execute(
-            "SELECT native_id, origin FROM sessions WHERE session_id = ?",
+            "SELECT native_id, origin, raw_id FROM sessions WHERE session_id = ?",
             (resolved,),
         ).fetchone()
         if existing is None:
             raise KeyError(f"session not found: {resolved}")
         native_id, origin = str(existing[0]), str(existing[1])
-        provider = provider_from_origin(Origin.from_string(origin))
+        fiber = origin_provider_fiber(Origin.from_string(origin))
+        if len(fiber) == 1:
+            provider = fiber[0]
+        else:
+            target_raw_id = existing[2]
+            if not isinstance(target_raw_id, str):
+                raise WorkEventProvenanceRefusedError(resolved, "target has no retained acquisition")
+            source = self._ensure_source_conn()
+            target_source = source.execute(
+                "SELECT origin FROM raw_sessions WHERE raw_id=?", (target_raw_id,)
+            ).fetchone()
+            if target_source is None or target_source[0] != origin:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition has another origin")
+            # Read the canonical observations, not the first-observation cache.
+            # Two rows prove ambiguity; no full observation collection is needed.
+            modes = source.execute(
+                "SELECT capture_mode FROM raw_capture_observations WHERE raw_id=? "
+                "ORDER BY first_observed_at_ms,capture_mode LIMIT 2",
+                (target_raw_id,),
+            ).fetchall()
+            if len(modes) != 1:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition mode is absent or ambiguous")
+            provider = Provider.from_string(str(modes[0][0]))
+            if provider not in fiber:
+                raise WorkEventProvenanceRefusedError(resolved, "target acquisition mode has another origin")
         event_payload = {**payload, "event_id": event_id, "summary": summary}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
         # The event carries no header. The writer recognizes the work-event
@@ -2318,7 +2441,7 @@ class ArchiveStore:
         ).encode("utf-8")
         raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
         self._require_writable("write source.db and index.db evidence")
-        result = write_work_event_raw_and_parsed_result(
+        admitted_raw_id = admit_work_event_raw(
             self,
             session,
             payload=raw_payload,
@@ -2327,10 +2450,10 @@ class ArchiveStore:
         )
         return {
             "event_id": event_id,
-            "session_id": result.session_id,
+            "session_id": resolved,
             "event_type": event_type,
             "summary": summary,
-            "content_changed": result.content_changed,
+            "raw_id": admitted_raw_id,
         }
 
     def _consume_index_blob_receipts(self) -> None:
@@ -2436,7 +2559,9 @@ class ArchiveStore:
                 ArchiveSourceBlobRef(
                     blob_hash=blob_hash,
                     ref_type="attachment",
-                    source_path=source_path,
+                    source_path=attachment_acquisition_coordinate(
+                        attachment.provider_file_id, attachment.provider_attachment_id
+                    ),
                     size_bytes=size,
                     acquired_at_ms=acquired_at_ms,
                     publication_receipt_id=self._blob_publisher.receipt_id(hash_hex),
@@ -2714,7 +2839,7 @@ class ArchiveStore:
         split_index: int,
         addressing_mode: MemberAddressingMode | str | None,
         content_identity: str | None = None,
-        captured_coordinate: CapturedZipMemberCoordinate | None = None,
+        captured_coordinate: CapturedZipMemberCoordinate,
     ) -> None:
         self._require_writable("record source.db container coordinate")
         record_raw_container_coordinate(
@@ -3118,18 +3243,13 @@ class ArchiveStore:
     def raw_membership_decision_pending(self, raw_id: str) -> bool:
         return raw_membership_decision_pending(self, raw_id)
 
-    def raw_revision_replay_adoptable(self, sessions: Sequence[ParsedSession]) -> bool:
-        return raw_revision_replay_adoptable(self, sessions)
-
     @_archive_mutator
     def defer_raw_revision_adoption(
         self,
-        logical_source_key: str,
-        raw_ids: Sequence[str],
-        sessions: Sequence[ParsedSession],
+        prepared: PreparedRevisionAdoption,
     ) -> None:
-        self._require_writable("defer source.db revision adoption")
-        return defer_raw_revision_adoption(self, logical_source_key, raw_ids, sessions)
+        self._require_writable("defer Index revision adoption")
+        return defer_raw_revision_adoption(self, prepared)
 
     @_archive_mutator
     def apply_raw_revision_replay(
@@ -3137,6 +3257,7 @@ class ArchiveStore:
         plan: RevisionReplayPlan,
         parsed_by_raw_id: dict[str, ParsedSession],
         *,
+        prepared_outcome: PreparedRevisionReplayOutcome,
         acquired_at_ms: int,
         stage_timings_s: dict[str, float] | None = None,
         stage_timing_prefix: str = "revision_replay",
@@ -3150,12 +3271,12 @@ class ArchiveStore:
         prepared_required_raw_ids: frozenset[str] = frozenset(),
         preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]]
         | None = None,
-        preacquired_attachment_refs_by_raw_id: Mapping[str, Callable[[], Iterable[ArchiveSourceBlobRef]]] | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
-        prepared_pending_session: ParsedSession | None = None,
+        preacquired_aggregate_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
         prepared_aggregate_rows: PreparedRows | None = None,
         prepared_write: PreparedSessionWrite | None = None,
         prepared_aggregate_content_hash: bytes | None = None,
+        write_result: Callable[[ArchiveRawParsedWriteResult], None] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         with self._retained_replay_exclusion(manage_transaction=manage_transaction):
@@ -3163,6 +3284,7 @@ class ArchiveStore:
                 self,
                 plan,
                 parsed_by_raw_id,
+                prepared_outcome=prepared_outcome,
                 acquired_at_ms=acquired_at_ms,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
@@ -3175,12 +3297,12 @@ class ArchiveStore:
                 prepared_by_raw_id=prepared_by_raw_id,
                 prepared_required_raw_ids=prepared_required_raw_ids,
                 preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
-                preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
                 prepared_aggregate_session=prepared_aggregate_session,
-                prepared_pending_session=prepared_pending_session,
+                preacquired_aggregate_attachment_blobs=preacquired_aggregate_attachment_blobs,
                 prepared_aggregate_rows=prepared_aggregate_rows,
                 prepared_write=prepared_write,
                 prepared_aggregate_content_hash=prepared_aggregate_content_hash,
+                write_result=write_result,
             )
 
     @_archive_mutator
@@ -3747,12 +3869,30 @@ class ArchiveStore:
                             OR lower(COALESCE(qs.title, '')) LIKE ?
                             OR lower(COALESCE(qs.git_repository_url, '')) LIKE ?
                             OR lower(COALESCE(qs.git_branch, '')) LIKE ?
+                            OR (qs.parent_session_id IS NOT NULL AND lower(?) LIKE ?)
                           )
                     )
+                    OR lower(?) LIKE ?
+                    OR lower(CASE WHEN t.session_count > 1 THEN ? ELSE ? END) LIKE ?
                 )
                 """.strip()
             )
-            params.extend([like, like, like, like, like])
+            params.extend(
+                [
+                    like,
+                    like,
+                    like,
+                    like,
+                    like,
+                    "\n".join((_ARCHIVE_THREAD_LINEAGE_SIGNAL, _ARCHIVE_THREAD_PARENT_SIGNAL)),
+                    like,
+                    "\n".join(_ARCHIVE_THREAD_SUPPORT_SIGNALS),
+                    like,
+                    ConfidenceBand.STRONG.value,
+                    ConfidenceBand.MODERATE.value,
+                    like,
+                ]
+            )
         if since_ms is not None:
             where.append("t.created_at_ms >= ?")
             params.append(since_ms)
@@ -3787,12 +3927,12 @@ class ArchiveStore:
         if row is None:
             return None
         session_rows = self._conn.execute(
-            """
+            f"""
             SELECT s.session_id, s.parent_session_id, s.origin, s.title,
                    s.message_count, s.word_count, s.tool_use_count,
                    s.created_at_ms, s.updated_at_ms, s.git_repository_url,
                    s.git_branch, sp.first_message_at, sp.last_message_at,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd))
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL})
                       FROM session_model_usage u WHERE u.session_id = s.session_id)
                      AS profile_total_cost_usd
             FROM thread_sessions ts
@@ -3851,9 +3991,9 @@ class ArchiveStore:
             )
             for index, session in enumerate(session_rows)
         )
-        lineage_signals: tuple[str, ...] = ("archive_threads", "archive_thread_sessions")
+        lineage_signals: tuple[str, ...] = _ARCHIVE_THREAD_SUPPORT_SIGNALS
         if any(session["parent_session_id"] is not None for session in session_rows):
-            lineage_signals = (*lineage_signals, "explicit_lineage")
+            lineage_signals = (*lineage_signals, _ARCHIVE_THREAD_LINEAGE_SIGNAL)
         payload = ThreadPayload(
             start_time=_iso_from_ms(start_ms),
             end_time=_iso_from_ms(end_ms),
@@ -3922,9 +4062,9 @@ class ArchiveStore:
             SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (
                        SELECT smu.model_name
                        FROM session_model_usage smu
@@ -4017,7 +4157,7 @@ class ArchiveStore:
             SELECT s.origin AS source_name,
                    u.model_name AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -4373,7 +4513,7 @@ class ArchiveStore:
                    s.origin AS source_name,
                    COALESCE(u.model_name, '') AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
-                   COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), 0.0) AS stored_cost_usd,
+                   COALESCE(SUM(u.provider_cost_usd), {MODEL_USAGE_CATALOG_SUM_SQL}, 0.0) AS stored_cost_usd,
                    COALESCE(SUM(u.cost_credits), 0.0) AS stored_credits,
                    COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                    COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
@@ -4617,21 +4757,12 @@ class ArchiveStore:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
-        if tag is not None:
-            where.append(
-                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
-            )
-            params.append(tag)
-        if repo is not None:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM session_repos filter_session_repos "
-                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
-                "WHERE filter_session_repos.session_id = s.session_id "
-                "AND filter_repos.repo_name = ?"
-                ")"
-            )
-            params.append(repo)
+        scope, scope_params = _session_filter_clause(
+            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+        )
+        if scope:
+            where.append(scope)
+            params.extend(scope_params)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -4714,7 +4845,7 @@ class ArchiveStore:
         except KeyError:
             return None
         rows = self._conn.execute(
-            """
+            f"""
             SELECT s.session_id, s.origin, s.root_session_id, s.title, s.created_at_ms, s.updated_at_ms,
                    s.message_count, s.word_count, s.tool_use_count, s.thinking_count,
                    sp.workflow_shape, sp.workflow_shape_confidence, sp.terminal_state,
@@ -4722,10 +4853,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.input_row_count, sp.input_content_hash, sp.materializer_version,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
@@ -4813,21 +4944,12 @@ class ArchiveStore:
             }.get(tier, "search_text")
             where.append(f"sp.{search_column} LIKE ?")
             params.append(f"%{query}%")
-        if tag is not None:
-            where.append(
-                f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
-            )
-            params.append(tag)
-        if repo is not None:
-            where.append(
-                "EXISTS ("
-                "SELECT 1 FROM session_repos filter_session_repos "
-                "JOIN repos filter_repos ON filter_repos.repo_id = filter_session_repos.repo_id "
-                "WHERE filter_session_repos.session_id = s.session_id "
-                "AND filter_repos.repo_name = ?"
-                ")"
-            )
-            params.append(repo)
+        scope, scope_params = _session_filter_clause(
+            "s", tags=split_csv(tag), repo_names=split_csv(repo), tags_relation=self._tags_relation, prefix=""
+        )
+        if scope:
+            where.append(scope)
+            params.extend(scope_params)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -4866,10 +4988,10 @@ class ArchiveStore:
                    sp.terminal_state_confidence, sp.duration_ms, sp.substantive_count,
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
@@ -4897,8 +5019,8 @@ class ArchiveStore:
                    s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
                    s.display_name,
                    sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    COALESCE(
                        (
                            SELECT json_group_array(swd.path)
@@ -5192,7 +5314,12 @@ class ArchiveStore:
         return self._read_insights().list_tool_usage_insights(query)
 
     def list_tool_episode_insights(self, query: ToolEpisodeQuery | None = None) -> list[ToolEpisodeInsight]:
-        return self._read_insights().list_tool_episode_insights(query)
+        reader = self._read_insights()
+        result = reader.list_tool_episode_insights(query)
+        self.operation_degraded_components = tuple(
+            dict.fromkeys((*self.operation_degraded_components, *reader.degraded_components))
+        )
+        return result
 
     def list_command_shape_usage(self, query: CommandShapeUsageQuery | None = None) -> list[CommandShapeUsage]:
         """Report normalized command-shape usage from canonical actions."""
@@ -7068,14 +7195,18 @@ class ArchiveStore:
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
-    ) -> Iterator[ArchiveSessionSummary]:
+    ) -> Generator[ArchiveSessionSummary, None, None]:
         """Stream session summaries ordered like the normal archive recency view.
 
         One cursor serves the whole read, fetched in batches of
         :data:`SUMMARY_FETCH_BATCH`; ``limit=None`` streams the matched scope.
         """
-        where, params = _session_filter_clause(
-            "s",
+        where, order_by, params = self._session_selection_query_parts(
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
             origin=origin,
             origins=origins,
             excluded_origins=excluded_origins,
@@ -7106,62 +7237,57 @@ class ArchiveStore:
             until_ms=until_ms,
             boolean_predicate=boolean_predicate,
             root=root,
-            tags_relation=self._tags_relation,
+            session_id=session_id,
+            since_session_id=since_session_id,
         )
-        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
-        if session_id is not None:
-            try:
-                resolved_id = self.resolve_session_id(session_id)
-            except KeyError:
-                return
-            where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
-            params.append(resolved_id)
-        order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
-        params.extend([-1 if limit is None else limit, 0 if sample else offset])
-        cursor = self._conn.execute(
-            f"""
-            SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.parent_session_id, s.branch_type,
-                   s.session_kind,
-                   s.message_count, s.word_count, s.reported_duration_ms,
-                   s.tool_use_count, s.thinking_count, s.paste_count,
-                   s.user_message_count, s.authored_user_message_count,
-                   s.assistant_message_count, s.system_message_count,
-                   s.tool_message_count, s.user_word_count, s.authored_user_word_count,
-                   s.assistant_word_count,
-                   s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
-                   s.display_name,
-                   sp.terminal_state,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   COALESCE(
-                       (
-                           SELECT json_group_array(swd.path)
-                           FROM session_working_dirs swd
-                           WHERE swd.session_id = s.session_id
-                           ORDER BY swd.position, swd.path
-                       ),
-                       '[]'
-                   ) AS working_directories_json,
-                   COALESCE(
-                       json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
-                       '[]'
-                   ) AS tags_json
-            FROM sessions s
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            LEFT JOIN {self._tags_relation} st
-              ON st.session_id = s.session_id
-             AND st.tag_source = 'user'
-            {where}
-            GROUP BY s.session_id
-            {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            params,
-        )
-        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
-            for row in rows:
-                yield _summary_from_row(row, self._conn)
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                       s.parent_session_id, s.branch_type,
+                       s.session_kind,
+                       s.message_count, s.word_count, s.reported_duration_ms,
+                       s.tool_use_count, s.thinking_count, s.paste_count,
+                       s.user_message_count, s.authored_user_message_count,
+                       s.assistant_message_count, s.system_message_count,
+                       s.tool_message_count, s.user_word_count, s.authored_user_word_count,
+                       s.assistant_word_count,
+                       s.title_source, s.title_ref, s.git_branch, s.git_repository_url, s.provider_project_ref,
+                       s.display_name,
+                       sp.terminal_state,
+                       (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd,
+                       (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                       COALESCE(
+                           (
+                               SELECT json_group_array(swd.path)
+                               FROM session_working_dirs swd
+                               WHERE swd.session_id = s.session_id
+                               ORDER BY swd.position, swd.path
+                           ),
+                           '[]'
+                       ) AS working_directories_json,
+                       COALESCE(
+                           json_group_array(st.tag) FILTER (WHERE st.tag IS NOT NULL),
+                           '[]'
+                       ) AS tags_json
+                FROM sessions s
+                LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+                LEFT JOIN {self._tags_relation} st
+                  ON st.session_id = s.session_id
+                 AND st.tag_source = 'user'
+                {where}
+                GROUP BY s.session_id
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    yield _summary_from_row(row, self._conn)
+        finally:
+            cursor.close()
 
     def list_summaries(self, *, limit: int = 50, **filters: Any) -> list[ArchiveSessionSummary]:
         """List one page of session summaries; see :meth:`iter_summaries`."""
@@ -7209,7 +7335,7 @@ class ArchiveStore:
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
         root: bool | None = None,
-    ) -> Iterator[ArchiveSessionSearchHit]:
+    ) -> Generator[ArchiveSessionSearchHit, None, None]:
         """Stream block-text search hits with snippets over one cursor.
 
         ``limit=None`` streams every hit; rows are fetched in batches of
@@ -7276,41 +7402,45 @@ class ArchiveStore:
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
         params.extend([-1 if limit is None else limit, offset])
-        cursor = self._conn.execute(
-            f"""
-            SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
-                   b.search_text AS fallback_text,
-                   snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
-                   rank
-            FROM messages_fts
-            JOIN blocks b ON b.rowid = messages_fts.rowid
-            JOIN sessions s ON s.session_id = b.session_id
-            WHERE messages_fts MATCH ?
-            {where}
-            {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            params,
-        )
-        index = offset
-        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
-            for row in rows:
-                index += 1
-                yield (
-                    ArchiveSessionSearchHit(
-                        rank=index,
-                        session_id=str(row["session_id"]),
-                        block_id=str(row["block_id"]),
-                        message_id=str(row["message_id"]),
-                        origin=str(row["origin"]),
-                        title=str(row["title"]) if row["title"] is not None else None,
-                        snippet=_highlight_search_snippet(
-                            str(row["snippet"] or ""),
-                            fallback=str(row["fallback_text"] or ""),
-                            query=match_query,
-                        ),
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
+                       b.search_text AS fallback_text,
+                       snippet(messages_fts, 0, '[', ']', '...', 12) AS snippet,
+                       rank
+                FROM messages_fts
+                JOIN blocks b ON b.rowid = messages_fts.rowid
+                JOIN sessions s ON s.session_id = b.session_id
+                WHERE messages_fts MATCH ?
+                {where}
+                {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                params,
+            )
+            index = offset
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    index += 1
+                    yield (
+                        ArchiveSessionSearchHit(
+                            rank=index,
+                            session_id=str(row["session_id"]),
+                            block_id=str(row["block_id"]),
+                            message_id=str(row["message_id"]),
+                            origin=str(row["origin"]),
+                            title=str(row["title"]) if row["title"] is not None else None,
+                            snippet=_highlight_search_snippet(
+                                str(row["snippet"] or ""),
+                                fallback=str(row["fallback_text"] or ""),
+                                query=match_query,
+                            ),
+                        )
                     )
-                )
+        finally:
+            cursor.close()
 
     def search_summaries(self, query: str, *, limit: int = 20, **filters: Any) -> list[ArchiveSessionSearchHit]:
         """Return one page of block-text search hits; see :meth:`iter_search_summaries`."""
@@ -7515,19 +7645,150 @@ class ArchiveStore:
             params.append(max(int(limit), 0))
         rows = self._conn.execute(
             f"""
-            SELECT b.session_id, MIN(rank) AS best_rank
-            FROM messages_fts
-            JOIN blocks b ON b.rowid = messages_fts.rowid
-            {_sessions_join_if_filtered(where)}
-            WHERE messages_fts MATCH ?
-            {where}
-            GROUP BY b.session_id
-            ORDER BY best_rank, b.session_id
+            SELECT s.session_id
+            FROM sessions s
+            JOIN ({_session_text_match_relation(actions_only=False)}) selected_text
+              ON selected_text.session_id=s.session_id
+            WHERE 1 {where}
+            ORDER BY selected_text.selected_rank,s.session_id
             {limit_clause}
             """,
             params,
         ).fetchall()
         return tuple(str(row["session_id"]) for row in rows)
+
+    @contextmanager
+    def scoped_search_population(self, session_ids: Iterable[str]) -> Iterator[None]:
+        """Own disk-backed scope and lane ranks on the canonical read frame."""
+        try:
+            with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+                cursor.execute("CREATE TEMP TABLE scoped_search_sessions (session_id TEXT PRIMARY KEY)")
+                cursor.execute(
+                    "CREATE TEMP TABLE scoped_search_lane_hits ("
+                    "lane TEXT NOT NULL, session_id TEXT NOT NULL, ordinal INTEGER NOT NULL, "
+                    "block_id TEXT NOT NULL, message_id TEXT NOT NULL, origin TEXT NOT NULL, "
+                    "title TEXT, snippet TEXT NOT NULL, PRIMARY KEY (lane, session_id))"
+                )
+                cursor.execute(
+                    "CREATE TEMP TABLE scoped_search_order (session_id TEXT PRIMARY KEY, "
+                    "unmeasured INTEGER NOT NULL, sort_value TEXT NOT NULL COLLATE polylogue_result_number, "
+                    "sort_time INTEGER NOT NULL, "
+                    "sort_id TEXT NOT NULL, sort_ordinal INTEGER NOT NULL) STRICT"
+                )
+                cursor.executemany(
+                    "INSERT OR IGNORE INTO scoped_search_sessions VALUES (?)", ((sid,) for sid in session_ids)
+                )
+            yield
+        finally:
+            self._conn.set_progress_handler(None, 0)
+            try:
+                with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_order")
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_lane_hits")
+                    cursor.execute("DROP TABLE IF EXISTS temp.scoped_search_sessions")
+            finally:
+                self.configure_operation_read_connection(self._conn)
+
+    def iter_scoped_search_session_ids(self) -> Generator[str, None, None]:
+        with closing(self._conn.cursor()) as cursor:
+            cursor.execute("SELECT session_id FROM scoped_search_sessions ORDER BY session_id")
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                yield from (str(row[0]) for row in rows)
+
+    def settle_scoped_search_lane(self, lane: str, hits: Iterable[ArchiveSessionSearchHit]) -> None:
+        """Exhaust one lane and retain its first actual witness per scoped session."""
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.executemany(
+                """INSERT OR IGNORE INTO scoped_search_lane_hits
+                   SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                   WHERE EXISTS (SELECT 1 FROM scoped_search_sessions WHERE session_id = ?)""",
+                (
+                    (
+                        lane,
+                        hit.session_id,
+                        ordinal,
+                        hit.block_id,
+                        hit.message_id,
+                        hit.origin,
+                        hit.title,
+                        hit.snippet,
+                        hit.session_id,
+                    )
+                    for ordinal, hit in enumerate(hits, start=1)
+                ),
+            )
+
+    def discard_scoped_search_lane(self, lane: str) -> None:
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.execute("DELETE FROM scoped_search_lane_hits WHERE lane = ?", (lane,))
+
+    def settle_scoped_search_order(self, keys: Iterable[tuple[str, bool, int | float, int, str, int]]) -> None:
+        """Stage exact current comparator values without retaining candidates."""
+        with readonly_temp_staging(self._conn), closing(self._conn.cursor()) as cursor:
+            cursor.executemany(
+                "INSERT INTO scoped_search_order VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    (sid, unmeasured, str(value), time, tie_id, ordinal)
+                    for sid, unmeasured, value, time, tie_id, ordinal in keys
+                ),
+            )
+
+    def iter_scoped_search_hits(
+        self,
+        *,
+        hybrid: bool,
+        explicit_sort: bool = False,
+        reverse: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> Generator[ArchiveSessionSearchHit, None, None]:
+        """Order fully settled session lane ranks, then apply the session window."""
+        ordering = "score DESC, session_id" if hybrid else "vector_rank, session_id"
+        order_join = ""
+        if explicit_sort:
+            direction = "ASC" if reverse else "DESC"
+            ordering = (
+                f"unmeasured ASC, sort_value {direction}, sort_time {direction}, sort_id {direction}, sort_ordinal ASC"
+            )
+            order_join = "JOIN scoped_search_order USING (session_id)"
+        with closing(self._conn.cursor()) as cursor:
+            cursor.execute(
+                f"""WITH lane_ranks AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY lane ORDER BY ordinal, session_id) AS lane_rank
+                    FROM scoped_search_lane_hits
+                ), scores AS (
+                    SELECT session_id, SUM(1.0 / ({_archive_query_reads.HYBRID_RRF_K} + lane_rank)) AS score,
+                           MAX(CASE WHEN lane = 'text' THEN lane_rank END) AS text_rank,
+                           MAX(CASE WHEN lane = 'action' THEN lane_rank END) AS action_rank,
+                           MAX(CASE WHEN lane = 'vector' THEN lane_rank END) AS vector_rank
+                    FROM lane_ranks GROUP BY session_id
+                ), selected AS (
+                    SELECT *, ROW_NUMBER() OVER (ORDER BY {ordering}) AS result_rank
+                    FROM scores {order_join} ORDER BY {ordering} LIMIT ? OFFSET ?
+                ), witnesses AS (
+                    SELECT *, ROW_NUMBER() OVER (PARTITION BY session_id
+                        ORDER BY CASE lane WHEN 'text' THEN 0 WHEN 'action' THEN 1 ELSE 2 END) AS witness_rank
+                    FROM lane_ranks
+                )
+                SELECT chosen.*, witness.block_id, witness.message_id, witness.origin, witness.title, witness.snippet
+                FROM selected chosen JOIN witnesses witness USING (session_id)
+                WHERE witness.witness_rank = 1 ORDER BY chosen.result_rank""",
+                (-1 if limit is None else max(limit, 0), offset),
+            )
+            while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+                for row in rows:
+                    yield ArchiveSessionSearchHit(
+                        rank=int(row["result_rank"]),
+                        session_id=str(row["session_id"]),
+                        block_id=str(row["block_id"]),
+                        message_id=str(row["message_id"]),
+                        origin=str(row["origin"]),
+                        title=row["title"],
+                        snippet=str(row["snippet"]),
+                        lane_ranks={lane: row[f"{lane}_rank"] for lane in ("text", "action", "vector")}
+                        if hybrid
+                        else None,
+                    )
 
     def semantic_summaries(
         self,
@@ -7621,10 +7882,12 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = m.session_id
             LEFT JOIN blocks b
               ON b.message_id = m.message_id
+             AND b.block_type = 'text'
              AND b.position = (
                  SELECT MIN(position)
                  FROM blocks
                  WHERE message_id = m.message_id
+                   AND block_type = 'text'
                    AND text IS NOT NULL
              )
             {where}
@@ -8095,77 +8358,130 @@ class ArchiveStore:
             sort_direction=sort_direction,
         )
 
-    def stats(
+    def _session_selection_query_parts(
+        self, *, limit: int | None, offset: int, sample: bool, sort: str | None, reverse: bool, **filters: Any
+    ) -> tuple[str, str, list[object]]:
+        session_id = filters.pop("session_id", None)
+        since_session_id = filters.pop("since_session_id", None)
+        where, params = _session_filter_clause("s", tags_relation=self._tags_relation, **filters)
+        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        if session_id is not None:
+            try:
+                resolved_id = self.resolve_session_id(session_id)
+            except KeyError:
+                where = f"{where} AND 0" if where else "WHERE 0"
+            else:
+                where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
+                params.append(resolved_id)
+        order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
+        params.extend([-1 if limit is None else limit, 0 if sample else offset])
+        return where, order_by, params
+
+    def iter_session_identities(
         self,
         *,
-        origin: str | None = None,
-        origins: tuple[str, ...] = (),
-        excluded_origins: tuple[str, ...] = (),
-        tags: tuple[str, ...] = (),
-        excluded_tags: tuple[str, ...] = (),
-        repo_names: tuple[str, ...] = (),
-        project_refs: tuple[str, ...] = (),
-        has_types: tuple[str, ...] = (),
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        has_paste: bool = False,
-        tool_terms: tuple[str, ...] = (),
-        excluded_tool_terms: tuple[str, ...] = (),
-        action_terms: tuple[str, ...] = (),
-        excluded_action_terms: tuple[str, ...] = (),
-        action_sequence: tuple[str, ...] = (),
-        action_text_terms: tuple[str, ...] = (),
-        referenced_paths: tuple[str, ...] = (),
-        cwd_prefix: str | None = None,
-        typed_only: bool = False,
-        message_type: str | None = None,
-        title: str | None = None,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        max_words: int | None = None,
-        since_ms: int | None = None,
-        until_ms: int | None = None,
-        since_session_id: str | None = None,
-        session_ids: tuple[str, ...] = (),
-        root: bool | None = None,
-    ) -> ArchiveStats:
-        """Return archive-level stats from filtered archive index sessions."""
-        where, params = _session_filter_clause(
-            "s",
-            origin=origin,
-            origins=origins,
-            excluded_origins=excluded_origins,
-            tags=tags,
-            excluded_tags=excluded_tags,
-            repo_names=repo_names,
-            project_refs=project_refs,
-            has_types=has_types,
-            has_tool_use=has_tool_use,
-            has_thinking=has_thinking,
-            has_paste=has_paste,
-            tool_terms=tool_terms,
-            excluded_tool_terms=excluded_tool_terms,
-            action_terms=action_terms,
-            excluded_action_terms=excluded_action_terms,
-            action_sequence=action_sequence,
-            action_text_terms=action_text_terms,
-            referenced_paths=referenced_paths,
-            cwd_prefix=cwd_prefix,
-            typed_only=typed_only,
-            message_type=message_type,
-            title=title,
-            min_messages=min_messages,
-            max_messages=max_messages,
-            min_words=min_words,
-            max_words=max_words,
-            since_ms=since_ms,
-            until_ms=until_ms,
-            root=root,
-            tags_relation=self._tags_relation,
+        query: str = "",
+        actions_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        sample: bool = False,
+        sort: str | None = None,
+        reverse: bool = False,
+        **filters: Any,
+    ) -> Generator[ArchiveSessionIdentity, None, None]:
+        """Stream the canonical selected scope without loading unused metadata.
+
+        The caller owns the read snapshot and cancellation guard. One owned
+        cursor preserves selection order and closes when iteration stops.
+        """
+        relation, params = self._selected_session_relation(
+            query=query,
+            actions_only=actions_only,
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
+            **filters,
         )
-        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
-        where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
+        with closing(self._conn.execute(f"SELECT s.session_id,s.origin {relation}", params)) as cursor:
+            for row in cursor:
+                yield ArchiveSessionIdentity(str(row[0]), str(row[1]))
+
+    def _selected_session_relation(
+        self,
+        *,
+        query: str = "",
+        actions_only: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
+        sort: str | None = None,
+        reverse: bool = False,
+        sample: bool = False,
+        **filters: Any,
+    ) -> tuple[str, list[object]]:
+        """Share exact structural/lexical membership, order and caller window."""
+        where, order, params = self._session_selection_query_parts(
+            limit=limit, offset=offset, sample=sample, sort=sort, reverse=reverse, **filters
+        )
+        source = "sessions s"
+        if query:
+            match_query = normalize_fts5_query(query)
+            if match_query is None:
+                where = f"{where} AND 0" if where else "WHERE 0"
+            else:
+                _ensure_messages_fts_ready(self._conn)
+                source += f" JOIN ({_session_text_match_relation(actions_only=actions_only, reverse=reverse)}) selected_text ON selected_text.session_id=s.session_id"
+                params.insert(0, match_query)
+                if sort is None and not sample:
+                    direction = "DESC" if reverse else "ASC"
+                    order = f"ORDER BY selected_text.selected_rank {direction},s.session_id {direction}"
+        return f"FROM {source} {where} {order} LIMIT ? OFFSET ?", params
+
+    def aggregate_sessions(
+        self,
+        mode: str,
+        *,
+        query: str = "",
+        actions_only: bool = False,
+        group_by: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+        sort: str | None = None,
+        reverse: bool = False,
+        sample: bool = False,
+        **filters: Any,
+    ) -> ArchiveStats | dict[str, int] | int:
+        """Reduce the same distinct selected relation consumed by scalar reads.
+
+        A requested window belongs to membership, before reduction. An omitted
+        limit remains unbounded; presentation page defaults are not totals.
+        """
+        relation, params = self._selected_session_relation(
+            query=query,
+            actions_only=actions_only,
+            limit=limit,
+            offset=offset,
+            sample=sample,
+            sort=sort,
+            reverse=reverse,
+            **filters,
+        )
+        selected = f"SELECT s.session_id {relation}"
+        selected_where = f"WHERE s.session_id IN ({selected})"
+        if mode == "count":
+            row = self._conn.execute(f"SELECT count(*) FROM sessions s {selected_where}", params).fetchone()
+            return int(row[0])
+        if mode == "stats":
+            return self._stats_for_selection(selected_where, params)
+        if mode == "stats_by":
+            if not group_by:
+                raise ValueError("stats_by requires a group_by field")
+            return self._stats_by_for_selection(group_by, selected_where, params)
+        raise ValueError(f"aggregate mode is not declared: {mode!r}")
+
+    def _stats_for_selection(self, where: str, params: list[object]) -> ArchiveStats:
+        """Reduce a supplied SQL session relation without reconstructing membership."""
         row = self._conn.execute(
             f"""
             SELECT COUNT(*) AS total_sessions,
@@ -8277,6 +8593,84 @@ class ArchiveStore:
             db_size_bytes=self.index_db_path.stat().st_size if self.index_db_path.exists() else 0,
         )
 
+    def _stats_by_for_selection(self, group_by: str, where: str, params: list[object]) -> dict[str, int]:
+        rows = self._conn.execute(_stats_by_sql(group_by, where, tags_relation=self._tags_relation), params).fetchall()
+        results = {str(row["group_key"]): int(row["count"] or 0) for row in rows if row["group_key"] is not None}
+        return results
+
+    def stats(
+        self,
+        *,
+        origin: str | None = None,
+        origins: tuple[str, ...] = (),
+        excluded_origins: tuple[str, ...] = (),
+        tags: tuple[str, ...] = (),
+        excluded_tags: tuple[str, ...] = (),
+        repo_names: tuple[str, ...] = (),
+        project_refs: tuple[str, ...] = (),
+        has_types: tuple[str, ...] = (),
+        has_tool_use: bool = False,
+        has_thinking: bool = False,
+        has_paste: bool = False,
+        tool_terms: tuple[str, ...] = (),
+        excluded_tool_terms: tuple[str, ...] = (),
+        action_terms: tuple[str, ...] = (),
+        excluded_action_terms: tuple[str, ...] = (),
+        action_sequence: tuple[str, ...] = (),
+        action_text_terms: tuple[str, ...] = (),
+        referenced_paths: tuple[str, ...] = (),
+        cwd_prefix: str | None = None,
+        typed_only: bool = False,
+        message_type: str | None = None,
+        title: str | None = None,
+        min_messages: int | None = None,
+        max_messages: int | None = None,
+        min_words: int | None = None,
+        max_words: int | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        since_session_id: str | None = None,
+        session_ids: tuple[str, ...] = (),
+        root: bool | None = None,
+    ) -> ArchiveStats:
+        """Return archive-level stats from filtered archive index sessions."""
+        where, params = _session_filter_clause(
+            "s",
+            origin=origin,
+            origins=origins,
+            excluded_origins=excluded_origins,
+            tags=tags,
+            excluded_tags=excluded_tags,
+            repo_names=repo_names,
+            project_refs=project_refs,
+            has_types=has_types,
+            has_tool_use=has_tool_use,
+            has_thinking=has_thinking,
+            has_paste=has_paste,
+            tool_terms=tool_terms,
+            excluded_tool_terms=excluded_tool_terms,
+            action_terms=action_terms,
+            excluded_action_terms=excluded_action_terms,
+            action_sequence=action_sequence,
+            action_text_terms=action_text_terms,
+            referenced_paths=referenced_paths,
+            cwd_prefix=cwd_prefix,
+            typed_only=typed_only,
+            message_type=message_type,
+            title=title,
+            min_messages=min_messages,
+            max_messages=max_messages,
+            min_words=min_words,
+            max_words=max_words,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            root=root,
+            tags_relation=self._tags_relation,
+        )
+        where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
+        where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
+        return self._stats_for_selection(where, params)
+
     def stats_by(
         self,
         group_by: str,
@@ -8349,9 +8743,7 @@ class ArchiveStore:
         )
         where, params = _with_since_session_filter(self._conn, where, params, "s", since_session_id=since_session_id)
         where, params = _with_session_id_filter(where, params, "s", session_ids=session_ids)
-        rows = self._conn.execute(_stats_by_sql(group_by, where, tags_relation=self._tags_relation), params).fetchall()
-        results = {str(row["group_key"]): int(row["count"] or 0) for row in rows if row["group_key"] is not None}
-        return results
+        return self._stats_by_for_selection(group_by, where, params)
 
     def __enter__(self) -> ArchiveStore:
         return self
@@ -8517,6 +8909,18 @@ def _highlight_search_snippet(snippet: str, *, fallback: str, query: str) -> str
         if pattern.search(text):
             return str(pattern.sub(lambda match: f"[{match.group(0)}]", text, count=1))
     return text
+
+
+def _session_text_match_relation(*, actions_only: bool, reverse: bool = False) -> str:
+    """The distinct lexical session relation shared by scope and aggregate reads."""
+    lane = "AND b.block_type IN ('tool_use','tool_result')" if actions_only else ""
+    rank_reduction = "MAX" if reverse else "MIN"
+    return f"""
+        SELECT b.session_id,{rank_reduction}(rank) AS selected_rank
+        FROM messages_fts JOIN blocks b ON b.rowid=messages_fts.rowid
+        WHERE messages_fts MATCH ? {lane}
+        GROUP BY b.session_id
+    """
 
 
 def _summary_order_by(*, sample: bool, sort: str | None, reverse: bool) -> str:
@@ -9703,6 +10107,13 @@ def _thread_member_depth(rows: list[sqlite3.Row], session_id: str) -> int:
     return depth
 
 
+# These are the public archive thread payload's signal vocabulary. SQL search
+# lowers the same declarations before paging; it does not hydrate all roots.
+_ARCHIVE_THREAD_SUPPORT_SIGNALS = ("archive_threads", "archive_thread_sessions")
+_ARCHIVE_THREAD_LINEAGE_SIGNAL = "explicit_lineage"
+_ARCHIVE_THREAD_PARENT_SIGNAL = "parent_session_id"
+
+
 def _archive_thread_member_role(row: sqlite3.Row, thread_id: str) -> str:
     if str(row["session_id"]) == thread_id:
         return "root"
@@ -9712,9 +10123,9 @@ def _archive_thread_member_role(row: sqlite3.Row, thread_id: str) -> str:
 
 
 def _archive_thread_member_support_signals(row: sqlite3.Row) -> tuple[str, ...]:
-    signals = ["archive_thread_sessions"]
+    signals = [_ARCHIVE_THREAD_SUPPORT_SIGNALS[1]]
     if row["parent_session_id"] is not None:
-        signals.append("parent_session_id")
+        signals.append(_ARCHIVE_THREAD_PARENT_SIGNAL)
     return tuple(signals)
 
 

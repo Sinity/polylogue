@@ -36,6 +36,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.security.lifecycle import _request_assertion_id
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.audit_leaf import open_verified_sqlite_read_connection
 from tests.unit.operations.test_mutation_actuators import _seed_archive_session, _seed_raw_authority_blocker
 
 Crash = Literal["before-apply", "after-apply"]
@@ -45,7 +46,7 @@ Crash = Literal["before-apply", "after-apply"]
 class _Scenario:
     name: str
     actuator: Any
-    args: Callable[[Path, ArchiveStore], Any]
+    args: Callable[[Path, ArchiveStore], Any] | None
     applied: Callable[[Path, ArchiveStore], bool]
 
 
@@ -198,7 +199,7 @@ _SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         "raw-authority-blocker-resolve",
         actuators.BlockerResolveActuator(),
-        lambda root, _archive: actuators.BlockerResolveArgs(root, _blocker(root), "acknowledged in crash test"),
+        None,
         lambda root, _archive: _blocker_resolved(root),
     ),
     _Scenario(
@@ -361,6 +362,7 @@ def _crash_mid_mutation(root: Path, scenario: _Scenario, crash: Crash) -> str:
     """Drive the real route to durable intent, optionally apply, then die."""
 
     with ArchiveStore.open_existing(root, read_only=False) as archive:
+        assert scenario.args is not None
         args = scenario.args(root, archive)
         executor = OperationExecutor.for_archive_root(root)
         binding = runtime_operation_binding(scenario.actuator)
@@ -386,12 +388,14 @@ def test_restart_leaves_an_interrupted_mutation_complete_and_unblocked(
 ) -> None:
     root = tmp_path / "archive"
     root.mkdir()
-    _seed_archive_session(root, native_id="bootstrap")
-    operation_id = _crash_mid_mutation(root, scenario, crash)
+    if scenario.name == "raw-authority-blocker-resolve":
+        operation_id = _prepared_blocker_crash_and_restart(root, crash)
+    else:
+        _seed_archive_session(root, native_id="bootstrap")
+        operation_id = _crash_mid_mutation(root, scenario, crash)
+        recover_interrupted_operations(root)
 
-    recover_interrupted_operations(root)
-
-    with sqlite3.connect(root / "audit.db") as conn:
+    with open_verified_sqlite_read_connection(root / "audit.db") as conn:
         status, reason = conn.execute(
             "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
         ).fetchone()
@@ -869,3 +873,81 @@ def test_a_request_is_refused_behind_an_unrouted_file_reset(tmp_path: Path, monk
     assert (root / "scratch.bin").exists()
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         assert "after" not in archive.list_user_tags()
+
+
+def _prepared_blocker_crash_and_restart(root: Path, crash: Crash) -> str:
+    """The original before/after-apply law crosses real preparation owners on restart."""
+    import asyncio
+
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+    from polylogue.storage.sqlite.audit_leaf import open_verified_audit_connection
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> str:
+        def seed() -> None:
+            _seed_archive_session(root, native_id="bootstrap")
+            _blocker(root)
+
+        await run_archive_fixture_write(root, seed)
+        async with prepared_live_convergence_owner(root) as owner:
+
+            def interrupted() -> str:
+                with prepared_frontier_blocker_acknowledgement(
+                    root,
+                    "blocker-crash",
+                    resolution="acknowledged in crash test",
+                    input_demand=owner._compute_adapter.amend_current_input_demand,
+                ) as prepared:
+                    args = actuators.BlockerResolveArgs(root, "blocker-crash", "acknowledged in crash test", prepared)
+                    actuator = actuators.BlockerResolveActuator()
+                    executor = OperationExecutor.for_archive_root(root)
+                    binding = runtime_operation_binding(actuator)
+                    principal = _principal(binding)
+
+                    def intent():
+                        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+                        authorization = executor.authorize_bound(
+                            binding, preview, principal, confirmation_strength="bound_token"
+                        )
+                        begun = executor.begin_bound(binding, preview, authorization, args)
+                        assert begun.operation_id is not None
+                        return begun.operation_id, begun.plan
+
+                    operation_id, plan = admit_stage_write("fixture.blocker.interrupted", intent)
+                if crash == "after-apply":
+                    with prepared_frontier_blocker_acknowledgement(
+                        root,
+                        "blocker-crash",
+                        resolution="acknowledged in crash test",
+                        input_demand=owner._compute_adapter.amend_current_input_demand,
+                    ) as prepared:
+                        args = actuators.BlockerResolveArgs(
+                            root, "blocker-crash", "acknowledged in crash test", prepared
+                        )
+                        receipt = admit_stage_write("fixture.blocker.apply", lambda: actuator.apply(plan, args))
+                        assert receipt.status == "applied"
+                return operation_id
+
+            operation_id = await owner.run_convergence_sync("fixture.blocker.crash", interrupted)
+
+        def mark_dead() -> None:
+            with open_verified_audit_connection(root / "audit.db") as conn:
+                conn.execute(
+                    "UPDATE operation_attempts SET worker_id='pid:999999999:0' WHERE operation_id=?", (operation_id,)
+                )
+                conn.commit()
+
+        await run_archive_fixture_write(root, mark_dead)
+        # A different physically admitted owner performs the real recovery reduction.
+        async with prepared_live_convergence_owner(root) as restarted:
+            await restarted.run_convergence_sync(
+                "fixture.blocker.restart",
+                recover_interrupted_operations,
+                root,
+                input_demand=restarted._compute_adapter.amend_current_input_demand,
+            )
+        return operation_id
+
+    return asyncio.run(run())

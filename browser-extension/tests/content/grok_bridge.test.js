@@ -1,3 +1,4 @@
+import { stagingRuntime, attachmentBytes } from "../infra/capture-staging.js";
 import { Buffer } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -10,6 +11,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
+const assetStreamSource = readFileSync(resolve(testDirectory, "../../src/content/asset_stream.js"), "utf8");
 const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/grok_bridge.js"), "utf8");
 const conversationId = "1f9de430-6505-4d43-935b-ec0dd1c13222";
 const assetBytes = new TextEncoder().encode("polylogue grok asset fixture\n");
@@ -41,6 +43,7 @@ function makeDom(fetchImpl, url = `https://grok.com/c/${conversationId}`) {
   const dom = new JSDOM("<!doctype html><title>Grok fixture</title>", { url, runScripts: "outside-only" });
   openDoms.push(dom);
   const cryptoAdapter = {
+    randomUUID: () => webcrypto.randomUUID(),
     subtle: {
       digest(algorithm, data) {
         return webcrypto.subtle.digest(algorithm, Buffer.from(new dom.window.Uint8Array(data)));
@@ -56,26 +59,30 @@ function installBridge(fetchImpl) {
   const dom = makeDom(fetchImpl);
   const pending = new Map();
   const posted = [];
+  dom.__captureRuntime = stagingRuntime(undefined, { tab_id: 42, document_id: "synthetic-document", provider: "grok" });
+  Object.defineProperty(dom.window, "chrome", { configurable: true, value: { storage: { local: { get: async () => ({ polylogueAmbientSettings: {}, polylogueReceiverPairing: { receiver_id: "neutral", state: "online" } }) } }, runtime: { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sendMessage: dom.__captureRuntime.sendMessage } } });
   Object.defineProperty(dom.window, "postMessage", {
     configurable: true,
     value(data) {
       posted.push(data);
+      dom.window.queueMicrotask(() => dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data })));
       const resolve = pending.get(data?.requestId);
-      if (resolve && (data?.type === "polylogue.grok.nativeFetchResponse" || data?.type === "polylogue.grok.assetFetchResponse")) {
+      if (resolve && (data?.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse" || data?.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.assetFetchResponse")) {
         pending.delete(data.requestId);
         resolve(data);
       }
     },
   });
+  new Script(assetStreamSource).runInContext(dom.getInternalVMContext());
   new Script(bridgeSource).runInContext(dom.getInternalVMContext());
 
   function requestNative(overrides = {}) {
-    const requestId = `native-request-${pending.size + 1}-${posted.length}`;
+    const requestId = overrides.requestId || `native-request-${pending.size + 1}-${posted.length}`;
     const response = new Promise((resolve) => pending.set(requestId, resolve));
     dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
       source: dom.window,
       origin: dom.window.location.origin,
-      data: { type: "polylogue.grok.nativeFetchRequest", requestId, conversationId, ...overrides },
+      data: { type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchRequest", requestId, conversationId, ...overrides },
     }));
     return response;
   }
@@ -83,12 +90,14 @@ function installBridge(fetchImpl) {
   function requestAsset(overrides = {}) {
     const requestId = `asset-request-${pending.size + 1}-${posted.length}`;
     const response = new Promise((resolve) => pending.set(requestId, resolve));
-    dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+    return dom.window.polylogueAssetStream.request({ provider: "grok", requestId, signal: new dom.window.AbortController().signal, start: () => {
+      dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
       source: dom.window,
       origin: dom.window.location.origin,
-      data: { type: "polylogue.grok.assetFetchRequest", requestId, request: { key: "users/u1/asset-1/content", maxBytes: 1024, ...overrides } },
+      data: { type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.assetFetchRequest", requestId, request: { key: "users/u1/asset-1/content", ...overrides } },
     }));
-    return response;
+      return response.then((message) => message.outcome);
+    } }).then((outcome) => ({ outcome }));
   }
 
   return { dom, posted, requestNative, requestAsset };
@@ -99,7 +108,54 @@ afterEach(() => {
 });
 
 describe("Grok bridge conversation fetch contract", () => {
-  it("combines conversation metadata, responses, and inflight skeleton into one capture", async () => {
+  it("posts a native failure reply after an actual provider fetch rejection", async () => {
+    const fetch = vi.fn(async () => { throw new TypeError("synthetic_native_fetch_failed"); });
+    const { requestNative, posted } = installBridge(fetch);
+    expect(await requestNative({ requestId: "native-failed" })).toMatchObject({
+      type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse", requestId: "native-failed", error: "synthetic_native_fetch_failed",
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(posted.filter((message) => message.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse")).toHaveLength(1);
+  });
+
+  it("drains a cancelled native fetch and posts its exact request failure reply", async () => {
+    let started; let drained = false;
+    const began = new Promise((resolve) => { started = resolve; });
+    const fetch = vi.fn(async (_input, { signal }) => {
+      started();
+      try { await new Promise((resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        if (signal.aborted) reject(signal.reason);
+      }); } finally { drained = true; }
+    });
+    const { dom, requestNative, posted } = installBridge(fetch);
+    const request = requestNative({ requestId: "native-cancelled" });
+    await began;
+    dom.window.postMessage({ type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.cancelRequest", requestId: "native-cancelled" }, dom.window.location.origin);
+    expect(await request).toMatchObject({ type: "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse", requestId: "native-cancelled", error: "capture_cancelled" });
+    expect(drained).toBe(true);
+    expect(posted.filter((message) => message.type === "polylogue.page.v2.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.grok.nativeFetchResponse")).toHaveLength(1);
+  });
+
+  it("refuses staging admission before any Grok provider request when physical storage is unavailable", async () => {
+    const fetch = vi.fn(async () => jsonResponse(conversationMetadata()));
+    const { dom, requestNative } = installBridge(fetch);
+    const begin = dom.__captureRuntime.staging.begin.bind(dom.__captureRuntime.staging);
+    dom.__captureRuntime.staging.begin = async (owner, purpose, producerId) => {
+      if (purpose.capture_bundle) throw new dom.window.DOMException("storage full", "QuotaExceededError");
+      return begin(owner, purpose, producerId);
+    };
+    const result = await requestNative();
+    expect(result).toHaveProperty("error");
+    expect(fetch).not.toHaveBeenCalled();
+    const bundles = [];
+    for await (const row of dom.__captureRuntime.store.captures()) if (row.kind === "native-bundle") bundles.push(row);
+    expect(bundles).toHaveLength(1);
+    expect(bundles[0].native_id).toBe(conversationId);
+    expect(bundles[0].replies).toEqual({});
+  });
+
+  it("retains named original conversation, response and inflight replies in one capture bundle", async () => {
     const fetch = vi.fn(async (input) => {
       const url = new URL(String(input), "https://grok.com");
       if (url.pathname === `/rest/app-chat/conversations/${conversationId}`) return jsonResponse(conversationMetadata());
@@ -109,15 +165,17 @@ describe("Grok bridge conversation fetch contract", () => {
       }
       throw new Error(`unexpected request: ${url.pathname}`);
     });
-    const { requestNative } = installBridge(fetch);
+    const { requestNative, dom } = installBridge(fetch);
 
     const result = await requestNative();
     expect(result.capture.ok).toBe(true);
-    const body = JSON.parse(result.capture.body);
-    expect(body.conversationId).toBe(conversationId);
-    expect(body.responses).toHaveLength(2);
-    expect(body.responses[1].message).toBe("hi there");
-    expect(body.inflightResponses).toEqual([{ responseId: "r-3", sender: "ASSISTANT" }]);
+    const stage = dom.__captureRuntime.staging;
+    const body = JSON.parse(await (await stage.file(result.capture.bodyRef.id)).text());
+    const conversation = JSON.parse(await (await stage.file(result.capture.relatedRefs.conversation.id)).text());
+    const nodes = JSON.parse(await (await stage.file(result.capture.relatedRefs.response_nodes.id)).text());
+    expect(conversation.conversationId).toBe(conversationId);
+    expect(body.responses).toHaveLength(2); expect(body.responses[1].message).toBe("hi there");
+    expect(nodes.inflightResponses).toEqual([{ responseId: "r-3", sender: "ASSISTANT" }]);
     // Every request must carry the page's own session cookies.
     for (const call of fetch.mock.calls) {
       expect(call[1].credentials).toBe("include");
@@ -151,7 +209,8 @@ describe("Grok bridge conversation fetch contract", () => {
 
     const result = await requestNative();
     expect(result.capture.ok).toBe(true);
-    expect(JSON.parse(result.capture.body).inflightResponses).toEqual([]);
+    expect(result.capture.relatedRefs).not.toHaveProperty("response_nodes");
+    expect(result.capture.acquisition.response_node_status).toBe(500);
   });
 });
 
@@ -163,20 +222,21 @@ describe("Grok bridge asset acquisition (assets.grok.com requires the grok.com s
       expect(options.credentials).toBe("include");
       return byteResponse(assetBytes);
     });
-    const { requestAsset } = installBridge(fetch);
+    const { requestAsset, dom } = installBridge(fetch);
 
     const result = await requestAsset();
     expect(result.outcome.status).toBe("acquired");
     expect(result.outcome.asset.sha256).toBe(expectedSha256);
-    expect(Buffer.from(result.outcome.asset.base64, "base64").toString("utf8")).toBe("polylogue grok asset fixture\n");
+    expect(Buffer.from(await attachmentBytes(dom.__captureRuntime.staging, result.outcome.asset)).toString("utf8")).toBe("polylogue grok asset fixture\n");
   });
 
-  it("reports too_large without buffering past the requested byte budget", async () => {
+  it("preserves all acquired asset bytes without a byte refusal", async () => {
     const fetch = vi.fn(async () => byteResponse(assetBytes));
-    const { requestAsset } = installBridge(fetch);
+    const { requestAsset, dom } = installBridge(fetch);
 
-    const result = await requestAsset({ maxBytes: 4 });
-    expect(result.outcome.status).toBe("too_large");
+    const result = await requestAsset();
+    expect(result.outcome.status).toBe("acquired");
+    expect(Buffer.from(await attachmentBytes(dom.__captureRuntime.staging, result.outcome.asset))).toEqual(Buffer.from(assetBytes));
   });
 
   it("classifies a 403 (verified live: assets.grok.com without credentials) as signed_url_expired", async () => {

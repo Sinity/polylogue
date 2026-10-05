@@ -87,6 +87,7 @@ def test_native_fork_keeps_parent_edges_without_guessing_selected_leaf(bundle: d
 
 def test_native_absent_and_repeated_ids_keep_private_asset_owner_coordinates(bundle: dict[str, Any]) -> None:
     response = bundle["responses"]["responses"][-1]
+    response["partial"] = True
     bundle["responses"]["responses"] = [deepcopy(response), deepcopy(response)]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert [message.variant_index for message in session.messages] == [0, 1]
@@ -95,12 +96,20 @@ def test_native_absent_and_repeated_ids_keep_private_asset_owner_coordinates(bun
         for asset in session.attachments
         if asset.provider_attachment_id == "file-1" and asset.owner_coordinate is not None
     ] == [(0, 0), (1, 1)]
+    response_events = [event for event in session.session_events if event.event_type == "grok_response_state"]
+    assert [event.owner_coordinate for event in response_events] == [
+        message.owner_coordinate for message in session.messages
+    ]
+    assert [event.payload["partial"] for event in response_events] == [True, True]
     del bundle["responses"]["responses"][0]["responseId"]
     session = grok.parse_native_bundle(bundle, "filename")[0]
     assert session.messages[0].provider_message_id == ""
     assert session.attachments[0].message_provider_id is None
     assert session.attachments[0].owner_coordinate is not None
     assert session.attachments[0].owner_coordinate.physical_key == (0, 0)
+    response_events = [event for event in session.session_events if event.event_type == "grok_response_state"]
+    assert response_events[0].source_message_provider_id is None
+    assert response_events[0].owner_coordinate == session.messages[0].owner_coordinate
 
 
 def test_native_unknown_structures_retain_raw_evidence(bundle: dict[str, Any]) -> None:

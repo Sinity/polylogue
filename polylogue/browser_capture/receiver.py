@@ -7,7 +7,6 @@ import fcntl
 import hashlib
 import hmac
 import io
-import json
 import os
 import re
 import secrets
@@ -21,7 +20,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from polylogue.browser_capture.capture_stream import (
     AttachmentFact,
@@ -36,17 +35,15 @@ from polylogue.browser_capture.capture_stream import (
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_API_SCHEMA,
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
-    BrowserBackfillCheckpointRecord,
-    BrowserBackfillCheckpointRequest,
     BrowserCaptureAcceptedIdentity,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
 )
-from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.durable_fs import atomic_replace, sync_directory
 from polylogue.core.enums import Provider
-from polylogue.core.hashing import hash_text_short
+from polylogue.core.hashing import hash_file, hash_text_short
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -307,9 +304,19 @@ class BrowserCaptureWriteResult:
     replaced: bool
     deduplicated: bool
     dedup_content_hash: str
+    content_hash: str
+    capture_id: str | None
     capture_instance_id: str | None
     accepted_identities: tuple[BrowserCaptureAcceptedIdentity, ...] = ()
     convergence: CaptureConvergence = CaptureConvergence.PUBLISH
+
+    @property
+    def outcome(self) -> Literal["accepted", "noop", "superseded"]:
+        if self.convergence is CaptureConvergence.DUPLICATE:
+            return "noop"
+        if self.convergence is CaptureConvergence.SUPERSEDED:
+            return "superseded"
+        return "accepted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -648,20 +655,6 @@ def _escape_like_suffix(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-# Spool governor (kwsb.1): a hostile or runaway poster sending distinct
-# (provider, provider_session_id) pairs creates a new file per capture —
-# unlike a repeat capture of the SAME session, which replaces its existing
-# file in place and never grows the spool. These bounds cap that growth.
-SPOOL_MAX_FILES = 20_000
-# Capture bytes have no quota of their own: ``stage_capture_body`` reserves
-# each body's declared length on the spool filesystem before writing it, so
-# the only byte refusal is the physical one (``SpoolStorageExhaustedError``).
-
-
-class SpoolQuotaExceededError(RuntimeError):
-    """Raised when writing a new (non-replacing) capture would exceed the spool quota."""
-
-
 class BrowserCaptureSpoolConflictError(RuntimeError):
     """Raised when an existing spool name cannot safely admit a capture.
 
@@ -672,10 +665,8 @@ class BrowserCaptureSpoolConflictError(RuntimeError):
     """
 
 
-# BrowserCaptureHTTPServer is a ThreadingHTTPServer — concurrent POSTs run on
-# separate threads. Without this lock, multiple new-capture writes could all
-# pass _check_spool_quota() before any of them lands (TOCTOU), overshooting
-# the quota under load. Held across check-and-write, not just the check.
+# Serialize admission and publication across request threads; the file lock
+# below supplies the same original custody across receiver processes.
 _SPOOL_WRITE_LOCK = threading.Lock()
 
 
@@ -690,46 +681,6 @@ def _spool_file_lock(spool_root: Path) -> Iterator[None]:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-
-
-@dataclass(frozen=True, slots=True)
-class SpoolUsage:
-    file_count: int
-    total_bytes: int
-
-
-def spool_usage(spool_root: Path) -> SpoolUsage:
-    """Count the artifacts the spool quota is measured against."""
-    file_count = 0
-    total_bytes = 0
-    if spool_root.exists():
-        for path in spool_root.rglob("*.json"):
-            try:
-                total_bytes += path.stat().st_size
-            except OSError:
-                continue
-            file_count += 1
-    return SpoolUsage(file_count=file_count, total_bytes=total_bytes)
-
-
-def _check_spool_quota(
-    spool_root: Path,
-    *,
-    max_files: int,
-    max_bytes: int | None,
-    label: str = "capture spool",
-) -> None:
-    """Callers must pass max_files/max_bytes explicitly (not as defaults
-    bound to the module constants) so tests can monkeypatch SPOOL_MAX_FILES/
-    POST_COMMAND_QUEUE_MAX_* and have it take effect --
-    a default parameter value binds at function-definition time, before
-    any monkeypatch runs."""
-    usage = spool_usage(spool_root)
-    if usage.file_count >= max_files or (max_bytes is not None and usage.total_bytes >= max_bytes):
-        raise SpoolQuotaExceededError(
-            f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
-            f"(limits: {max_files} files, {max_bytes} bytes)"
-        )
 
 
 def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
@@ -762,6 +713,17 @@ def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSumma
             return True
         if incoming_updated < existing_updated:
             return False
+    incoming_observation = incoming.head.provenance
+    existing_observation = existing.head.provenance
+    if (
+        incoming_observation.extension_instance_id is not None
+        and incoming_observation.extension_instance_id == existing_observation.extension_instance_id
+        and incoming_observation.acquisition_sequence is not None
+        and existing_observation.acquisition_sequence is not None
+    ):
+        # These counters share one durable owner. Other instances' clocks and
+        # counters cannot establish ordering within this acquisition history.
+        return incoming_observation.acquisition_sequence > existing_observation.acquisition_sequence
     if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
         return False
     # An absent update timestamp is unknown, not a change from an existing
@@ -771,6 +733,20 @@ def _capture_is_newer_or_richer(incoming: CaptureSummary, existing: CaptureSumma
         (incoming_updated is not None and incoming_updated != existing_updated)
         or incoming_captured != existing_captured
         or incoming_turns != existing_turns
+    )
+
+
+def _same_instance_acquisition_advances(incoming: CaptureSummary, existing: CaptureSummary) -> bool:
+    incoming_observation = incoming.head.provenance
+    existing_observation = existing.head.provenance
+    return (
+        incoming.provider is existing.provider
+        and incoming.provider_session_id == existing.provider_session_id
+        and incoming_observation.extension_instance_id is not None
+        and incoming_observation.extension_instance_id == existing_observation.extension_instance_id
+        and incoming_observation.acquisition_sequence is not None
+        and existing_observation.acquisition_sequence is not None
+        and incoming_observation.acquisition_sequence > existing_observation.acquisition_sequence
     )
 
 
@@ -806,7 +782,9 @@ def summarize_capture_envelope(envelope: BrowserCaptureEnvelope) -> CaptureSumma
 
 def _envelope_bytes(envelope: BrowserCaptureEnvelope) -> bytes:
     payload = envelope.model_dump(mode="json", exclude_none=True)
-    return dumps_bytes(payload, sort_keys=True, indent=2) + b"\n"
+    # Raw provider mapping order remains authoritative for canonical replay.
+    # Streamed admission fingerprints normalize object order independently.
+    return dumps_bytes(payload, indent=2) + b"\n"
 
 
 def write_capture_envelope(
@@ -870,16 +848,14 @@ def admit_staged_capture(
 
     ``summary`` is the streamed summary of ``staged``. A resident artifact of
     the same name is summarized by the same streamed reader under the spool
-    lock, so neither side is held whole. Raises
-    :class:`SpoolQuotaExceededError` before publishing a NEW artifact (one
-    that does not replace an existing same-session file) once the spool's
-    file-count quota is reached — replacing an existing capture never grows the spool and is
-    always allowed. The quota check and the publication are serialized against
-    every other call (see ``_SPOOL_WRITE_LOCK``). The caller discards
-    ``staged`` afterwards; a published file has already been moved away.
+    lock, so neither side is held whole. Admission and publication are
+    serialized across writers. Staging reserves the actual physical storage;
+    valid captures have no count quota. The caller discards ``staged``
+    afterwards; a published file has already been moved away.
     """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     target = capture_artifact_path(summary, root)
+    convergence = CaptureConvergence.PUBLISH
     with _SPOOL_WRITE_LOCK, _spool_file_lock(root):
         replaced = target.exists()
         if replaced:
@@ -892,9 +868,17 @@ def admit_staged_capture(
             convergence = capture_convergence(summary, existing)
             if convergence is CaptureConvergence.NAME_COLLISION:
                 raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
-            if convergence is not CaptureConvergence.PUBLISH:
-                # A duplicate echoes the incoming fingerprint; a superseded
-                # delivery echoes the fingerprint of the revision that stays.
+            refresh_duplicate = (
+                convergence is CaptureConvergence.DUPLICATE
+                and _same_instance_acquisition_advances(summary, existing)
+                and _capture_is_newer_or_richer(summary, existing)
+            )
+            if convergence is not CaptureConvergence.PUBLISH and not refresh_duplicate:
+                # Both receipts identify the bytes and revision that stay.
+                # A previous rename may have succeeded before its directory
+                # barrier failed. Settle that path before acknowledging reuse.
+                sync_directory(root)
+                sync_directory(target.parent)
                 return BrowserCaptureWriteResult(
                     provider=summary.provider.value,
                     provider_session_id=summary.provider_session_id,
@@ -903,11 +887,9 @@ def admit_staged_capture(
                     bytes_written=target.stat().st_size,
                     replaced=True,
                     deduplicated=True,
-                    dedup_content_hash=(
-                        summary.dedup_content_hash
-                        if convergence is CaptureConvergence.DUPLICATE
-                        else existing.dedup_content_hash
-                    ),
+                    dedup_content_hash=existing.dedup_content_hash,
+                    content_hash=hash_file(target),
+                    capture_id=existing.capture_id,
                     capture_instance_id=summary.head.provenance.extension_instance_id,
                     # The retained artifact is `existing`, so the identities
                     # this delivery acknowledges are its identities. Echoing
@@ -917,15 +899,11 @@ def admit_staged_capture(
                     accepted_identities=_accepted_identities(existing, root),
                     convergence=convergence,
                 )
-        else:
-            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=None)
         target.parent.mkdir(parents=True, exist_ok=True)
+        # Establish the provider entry in the durable spool root first.
+        sync_directory(root)
         os.replace(staged.path, target)
-        directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        sync_directory(target.parent)
     return BrowserCaptureWriteResult(
         provider=summary.provider.value,
         provider_session_id=summary.provider_session_id,
@@ -933,11 +911,13 @@ def admit_staged_capture(
         artifact_ref=capture_artifact_ref(summary, root),
         bytes_written=target.stat().st_size,
         replaced=replaced,
-        deduplicated=False,
+        deduplicated=convergence is CaptureConvergence.DUPLICATE,
         dedup_content_hash=summary.dedup_content_hash,
+        content_hash=staged.sha256,
+        capture_id=summary.capture_id,
         capture_instance_id=summary.head.provenance.extension_instance_id,
         accepted_identities=_accepted_identities(summary, root),
-        convergence=CaptureConvergence.PUBLISH,
+        convergence=convergence,
     )
 
 
@@ -1115,106 +1095,19 @@ def existing_capture_state(
     ).model_dump(mode="json", exclude_none=True)
 
 
-def _atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = dumps_bytes(payload, sort_keys=True, indent=2)
-    with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-        temp_path = Path(handle.name)
-        handle.write(raw)
-        handle.write(b"\n")
-    temp_path.replace(path)
-
-
-# ---- Backfill-ledger checkpoint mirror (polylogue-06zm) --------------------
-#
-# The extension's IndexedDB backfill ledger is the fast primary source; a
-# local chrome.storage.local copy already survives an ordinary profile
-# restart (polylogue-jlme.4). This mirror is the second fallback: a
-# receiver-owned, credential-free copy that outlives BOTH of those when a
-# profile is destructively re-seeded or the extension is fully reinstalled,
-# so recovery has a durable place to look beyond the browser profile itself.
-# One JSON file per extension_instance_id, overwritten on every checkpoint
-# (last write wins) -- the service worker is single-threaded and only ever
-# checkpoints its own ledger, so there is exactly one legitimate writer per
-# instance id at a time. The file-count bound still guards against a buggy
-# or hostile caller minting unbounded distinct instance ids.
-BACKFILL_CHECKPOINT_MAX_FILES = 2_000
-BACKFILL_CHECKPOINT_MAX_BYTES = 200 * 1024 * 1024  # 200 MiB
-
-
 def backfill_checkpoint_root(spool_path: Path | None = None) -> Path:
-    """Return the directory that holds mirrored backfill-ledger checkpoints."""
+    """Locate original checkpoint inputs retained for digest-bound inspection.
+
+    New checkpoints use CaptureJobRegistry custody. Existing mirror bytes may
+    contain unique acquired payloads and delivery metadata, so their directory
+    remains an ordinary input to the registry's orphan census and raw reader.
+    """
     root = spool_path if spool_path is not None else BrowserCaptureReceiverConfig.default().spool_path
     return root / BACKFILL_CHECKPOINT_DIRNAME
 
 
-def _backfill_checkpoint_path(root: Path, instance_id: str) -> Path:
-    return root / f"{_safe_token(instance_id)}.json"
-
-
-def write_backfill_checkpoint(
-    request: BrowserBackfillCheckpointRequest,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserBackfillCheckpointRecord:
-    """Persist a credential-free backfill-ledger checkpoint mirror.
-
-    Overwrites any prior checkpoint for the same ``extension_instance_id``
-    (last write wins; see module comment above). Guarded by the same write
-    lock and quota-check pattern the capture spool and post-command queue
-    use, so a concurrent write cannot bypass the quota check (TOCTOU).
-    """
-    root = backfill_checkpoint_root(spool_path)
-    with _SPOOL_WRITE_LOCK:
-        target = _backfill_checkpoint_path(root, request.extension_instance_id)
-        if not target.exists():
-            _check_spool_quota(
-                root,
-                max_files=BACKFILL_CHECKPOINT_MAX_FILES,
-                max_bytes=BACKFILL_CHECKPOINT_MAX_BYTES,
-                label="backfill-checkpoint mirror",
-            )
-        record = BrowserBackfillCheckpointRecord(
-            extension_instance_id=request.extension_instance_id,
-            checkpoint=request.checkpoint,
-            stored_at=datetime.now(UTC).isoformat(),
-        )
-        _atomic_write_json(target, record.model_dump(mode="json"))
-    return record
-
-
-def read_backfill_checkpoint(
-    instance_id: str,
-    *,
-    spool_path: Path | None = None,
-) -> BrowserBackfillCheckpointRecord | None:
-    """Return the mirrored checkpoint for an extension instance, if any."""
-    root = backfill_checkpoint_root(spool_path)
-    path = _backfill_checkpoint_path(root, instance_id)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return None
-    # ValueError covers both json.JSONDecodeError and UnicodeDecodeError from
-    # read_text on a corrupt (non-UTF-8) mirror file.
-    except (OSError, ValueError) as exc:
-        # A corrupt/unreadable mirror is not "no checkpoint": returning None
-        # triggers a full re-backfill, so leave a trace of why.
-        logger.warning(
-            "backfill checkpoint mirror unreadable for %s (%s); extension will re-backfill", instance_id, exc
-        )
-        return None
-    try:
-        return BrowserBackfillCheckpointRecord.model_validate(payload)
-    except Exception as exc:
-        logger.warning("backfill checkpoint mirror invalid for %s (%s); extension will re-backfill", instance_id, exc)
-        return None
-
-
 __all__ = [
     "BACKFILL_CHECKPOINT_DIRNAME",
-    "BACKFILL_CHECKPOINT_MAX_BYTES",
-    "BACKFILL_CHECKPOINT_MAX_FILES",
     "BROWSER_CAPTURE_ALLOW_NO_AUTH_ENV",
     "RECEIVER_ATTESTATION_DOMAIN",
     "RECEIVER_IDENTITY_HEX_CHARS",
@@ -1223,26 +1116,22 @@ __all__ = [
     "BrowserCaptureWriteResult",
     "BrowserCaptureSpoolConflictError",
     "CaptureConvergence",
-    "SpoolUsage",
     "admit_staged_capture",
     "attest_receiver",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
     "capture_convergence",
-    "spool_usage",
     "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",
     "existing_capture_state",
     "load_or_mint_receiver_identity",
     "load_or_mint_receiver_token",
-    "read_backfill_checkpoint",
     "receiver_attestation_proof",
     "receiver_identity",
     "receiver_status_payload",
     "resolve_receiver_auth_token",
     "summarize_capture_envelope",
-    "write_backfill_checkpoint",
     "write_capture_envelope",
     "write_capture_envelope_bytes",
 ]

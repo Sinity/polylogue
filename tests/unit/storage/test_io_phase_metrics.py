@@ -440,3 +440,26 @@ def test_standalone_core_introspection_works_in_a_fresh_native_interpreter() -> 
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "plain introspection settled"
+
+
+@pytest.mark.parametrize("measured", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_statement_context_physically_settles_declared_connection_types(measured: bool, fails: bool) -> None:
+    connection = connect_measured(":memory:") if measured else sqlite3.connect(":memory:")
+    original = OSError("neutral statement consumer failure")
+    try:
+        if fails:
+            with pytest.raises(OSError) as failure:
+                with connection_cursor(connection, "SELECT 7") as cursor:
+                    assert cursor.fetchone() == (7,)
+                    raise original
+            assert failure.value is original
+        else:
+            with connection_cursor(connection, "SELECT 7") as cursor:
+                assert cursor.fetchone() == (7,)
+        with pytest.raises(sqlite3.ProgrammingError):
+            cursor.fetchone()
+        if measured:
+            assert live_connection_cursors(connection) == ()
+    finally:
+        connection.close()

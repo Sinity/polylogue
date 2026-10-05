@@ -383,7 +383,7 @@ class SessionInsightRecordBundle:
     # polylogue-dab/itvd: run/observed-event/context-snapshot rows are no
     # longer materialized into tables (they are computed on read by
     # run_projection_relations.py's CTEs), so the bundle only needs counts
-    # for diagnostics -- building SessionRunRecord/etc. objects here would be
+    # for diagnostics -- building full projection objects here would be
     # pure waste (a full RunProjection compile + search_text join per session)
     # for values nothing ever reads back.
     run_count: int
@@ -832,7 +832,7 @@ def build_session_insight_records(
     # malformed evidence. polylogue-dab/itvd: only the counts are needed here
     # (for diagnostics) -- run/observed-event/
     # context-snapshot rows are no longer materialized into tables, so
-    # building full SessionRunRecord/etc. objects (a search_text join per
+    # building full projection objects (a search_text join per
     # row) would be wasted work.
     from polylogue.analysis.transforms import compile_session_run_projection
 

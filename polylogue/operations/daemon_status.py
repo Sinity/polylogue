@@ -592,50 +592,21 @@ def _frontier_status(
     *,
     ops_db_path: Path | None = None,
 ) -> dict[str, object]:
+    from polylogue.storage.frontier_inspection import frontier_inspection_projection_from_connections
     from polylogue.storage.raw_retention import (
-        RawFrontierIntegrityProjection,
-        combine_raw_frontier_integrity_statuses,
-        missing_source_raw_integrity_status,
-        raw_frontier_integrity_snapshot_from_connections,
+        _raw_frontier_integrity_from_coverage,
         unknown_raw_frontier_integrity_projection,
     )
 
-    if source_conn is None:
-        return unknown_raw_frontier_integrity_projection("source tier is unavailable").to_dict()
-
-    snapshot = raw_frontier_integrity_snapshot_from_connections(
+    if source_conn is None or ops_conn is None or ops_db_path is None:
+        return unknown_raw_frontier_integrity_projection("required frontier tier is unavailable").to_dict()
+    coverage = frontier_inspection_projection_from_connections(
         source_conn,
-        index_conn=index_conn,
-        ops_conn=ops_conn,
-        ops_db_path=ops_db_path,
+        index_conn,
+        ops_conn,
+        archive_root=ops_db_path.parent,
     )
-    missing_status, missing_count, missing_samples, missing_reason = missing_source_raw_integrity_status(
-        materialization
-    )
-    statuses = (snapshot.broken_head_status, missing_status, snapshot.cursor_ahead_status)
-    return RawFrontierIntegrityProjection(
-        available="unknown" not in statuses,
-        overall_status=combine_raw_frontier_integrity_statuses(*statuses),
-        broken_head_status=snapshot.broken_head_status,
-        broken_head_count=snapshot.broken_head_count,
-        broken_head_checked_count=snapshot.broken_head_checked_count,
-        broken_head_samples=snapshot.broken_head_samples,
-        broken_head_reason=snapshot.broken_head_reason,
-        missing_source_raw_status=missing_status,
-        missing_source_raw_count=missing_count,
-        missing_source_raw_samples=missing_samples,
-        missing_source_raw_reason=missing_reason,
-        cursor_ahead_status=snapshot.cursor_ahead_status,
-        cursor_ahead_count=snapshot.cursor_ahead_count,
-        cursor_ahead_checked_count=snapshot.cursor_ahead_checked_count,
-        cursor_head_comparison_count=snapshot.cursor_head_comparison_count,
-        cursor_ahead_comparison_count=snapshot.cursor_ahead_comparison_count,
-        cursor_ahead_samples=snapshot.cursor_ahead_samples,
-        cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
-        cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
-        cursor_authority_deferred_count=snapshot.cursor_authority_deferred_count,
-        cursor_ahead_reason=snapshot.cursor_ahead_reason,
-    ).to_dict()
+    return _raw_frontier_integrity_from_coverage(coverage, materialization).to_dict()
 
 
 def _raw_failure_status(source_conn: sqlite3.Connection | None) -> dict[str, object]:

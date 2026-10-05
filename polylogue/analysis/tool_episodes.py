@@ -20,6 +20,7 @@ class ToolEpisodeInsight(ArchiveInsightModel):
     is_error: int | None = None
     exit_code: int | None = None
     result_state: str
+    outcome_unknown_reason: str | None = None
     context_before: tuple[str, ...] = ()
     context_after: tuple[str, ...] = ()
     next_action: str | None = None

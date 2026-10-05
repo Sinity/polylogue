@@ -703,3 +703,73 @@ def test_publish_many_existing_shards_leave_root_alone(tmp_path: Path, monkeypat
 
     assert (root / "d4").resolve() in fsynced
     assert root not in fsynced, f"an existing-shard batch re-persisted the root; fsynced={fsynced}"
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_nested_prepared_blob_publication_settles_private_file(tmp_path: Path, duplicate: bool) -> None:
+    store = BlobStore(tmp_path / "blobs")
+    payload = b"nested retained attachment"
+    if duplicate:
+        store.write_from_bytes(payload)
+    child = store._prepared_staging_directory(None) / "raw-prepared"
+    child.mkdir(mode=0o700)
+    prepared = store.prepare_from_bytes(payload, staging_directory=child)
+    assert prepared.temporary_path.is_file()
+    assert store.publish_prepared(prepared) == (hashlib.sha256(payload).hexdigest(), len(payload))
+    assert not prepared.temporary_path.exists()
+    assert store.read_all(prepared.hash_hex) == payload
+    store.discard_prepared(prepared)
+    assert child.is_dir()
+
+
+def test_nested_prepared_blob_producer_failure_preserves_primary_and_cleans(tmp_path: Path) -> None:
+    store = BlobStore(tmp_path / "blobs")
+    child = store._prepared_staging_directory(None) / "raw-prepared"
+    child.mkdir(mode=0o700)
+    failure = RuntimeError("synthetic producer failure")
+
+    def fail(writer):
+        writer.write(b"partial attachment")
+        raise failure
+
+    with pytest.raises(RuntimeError) as caught:
+        store.prepare_from_writer(fail, staging_directory=child)
+    assert caught.value is failure
+    assert list(child.iterdir()) == []
+
+
+@pytest.mark.parametrize("invalid_kind", ["foreign", "symlink", "traversal", "public"])
+def test_staging_cleanup_refuses_unowned_directory(tmp_path: Path, invalid_kind: str) -> None:
+    store = BlobStore(tmp_path / "blobs")
+    root = store._prepared_staging_directory(None)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir(mode=0o700)
+    if invalid_kind == "foreign":
+        directory = foreign
+    elif invalid_kind == "symlink":
+        directory = root / "link"
+        directory.symlink_to(foreign, target_is_directory=True)
+    elif invalid_kind == "traversal":
+        child = root / "child"
+        child.mkdir(mode=0o700)
+        directory = child / ".." / ".." / ".." / "foreign"
+    else:
+        directory = root / "public"
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)
+    retained = directory / "retained"
+    retained.write_bytes(b"must survive refusal")
+    with pytest.raises(ValueError):
+        store.discard_staging_path(retained)
+    assert retained.read_bytes() == b"must survive refusal"
+    with pytest.raises(ValueError):
+        store.prepare_from_bytes(b"unadmitted", staging_directory=directory)
+
+
+def test_staging_companion_suffix_cannot_escape_before_cleanup(tmp_path: Path) -> None:
+    store = BlobStore(tmp_path / "blobs")
+    retained = store._prepared_staging_directory(None) / "retained"
+    retained.write_bytes(b"retained")
+    with pytest.raises(ValueError):
+        store.discard_staging_path(retained, companion_suffixes=["/../../outside"])
+    assert retained.read_bytes() == b"retained"

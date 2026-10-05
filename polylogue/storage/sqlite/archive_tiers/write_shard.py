@@ -33,19 +33,24 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 import uuid
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import contextmanager
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast, overload
 from urllib.parse import quote
 
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.iterator_lifetime import settled_iterator
+from polylogue.core.retained_values import TextOperand
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
-from polylogue.storage.io_phase_metrics import connect_measured
+from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
+from polylogue.storage.sqlite.literal_cells import OwnedTextTape, fill_original_text_cell, quote_identifier
 
 #: Bump when the shard's own layout changes shape; it is part of the seal.
 SHARD_LAYOUT_VERSION = 3
@@ -218,6 +223,7 @@ class SessionShardBuilder:
         self._conn = connect_measured(path, isolation_level=None)
         self._sql_closed = False
         self._discard_on_close = True
+        self._text_tapes: list[OwnedTextTape] = []
         from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
         NativeSQLCustodyOwner(self._conn, terminal_parent=self, lifetime_dependencies=current_native_sql_lifetimes())
@@ -298,7 +304,7 @@ class SessionShardBuilder:
     def add_streamed(
         self,
         *,
-        session_id: str,
+        session_id: str | TextOperand,
         session_content_hash: bytes,
         message_rows: Iterator[tuple[object, ...]],
         block_rows: Iterator[tuple[object, ...]],
@@ -321,29 +327,121 @@ class SessionShardBuilder:
 
     def _append_manifest(
         self,
-        session_id: str,
+        session_id: str | TextOperand,
         content_hash: bytes,
         message_lo: int,
         message_hi: int,
         block_lo: int,
         block_hi: int,
     ) -> None:
-        self._conn.execute(
-            "INSERT INTO shard_session VALUES (?, ?, ?, ?, ?, ?)",
+        self._insert_streamed_row(
+            "shard_session",
+            ("session_id", "content_hash", "message_lo", "message_hi", "block_lo", "block_hi"),
             (session_id, content_hash, message_lo, message_hi, block_lo, block_hi),
         )
         self._session_count += 1
 
+    def _insert_streamed_row(self, table: str, columns: tuple[str, ...], row: tuple[object, ...]) -> None:
+        expressions: list[str] = []
+        parameters: list[object] = []
+        staging: list[int] = []
+        try:
+            for value in row:
+                if not isinstance(value, TextOperand):
+                    expressions.append("?")
+                    parameters.append(value)
+                    continue
+                tape = OwnedTextTape(value, self.path.parent, retain_failed=self._text_tapes.append)
+                try:
+                    self._conn.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS polylogue_shard_text_cells "
+                        "(rowid INTEGER PRIMARY KEY, value TEXT NOT NULL)"
+                    ).close()
+                    with connection_cursor(
+                        self._conn,
+                        "INSERT INTO temp.polylogue_shard_text_cells(value) "
+                        "VALUES (CAST(zeroblob(?) AS TEXT)) RETURNING rowid",
+                        (tape.byte_length,),
+                    ) as cursor:
+                        result = cursor.fetchone()
+                    if result is None:
+                        raise RuntimeError("original shard staging did not return its cell")
+                    cell = int(result[0])
+                    staging.append(cell)
+                    fill_original_text_cell(
+                        self._conn,
+                        table="polylogue_shard_text_cells",
+                        column="value",
+                        rowid=cell,
+                        tape=tape,
+                        schema="temp",
+                    )
+                finally:
+                    primary = sys.exception()
+                    try:
+                        try:
+                            tape.close()
+                        except BaseException as cleanup:
+                            self._text_tapes.append(tape)
+                            if primary is not None and cleanup is not primary:
+                                raise BaseExceptionGroup(
+                                    "shard text fill and tape close failed", [primary, cleanup]
+                                ) from primary
+                            raise
+                    finally:
+                        primary = None
+                expressions.append("(SELECT value FROM temp.polylogue_shard_text_cells WHERE rowid=?)")
+                parameters.append(cell)
+            names = ", ".join(quote_identifier(column) for column in columns)
+            self._conn.execute(
+                f"INSERT INTO {quote_identifier(table)} ({names}) SELECT {', '.join(expressions)}", parameters
+            ).close()
+        finally:
+            primary = sys.exception()
+            try:
+                # An unsettled native child owns its staging cell and byte tape.
+                # Original parent close, not DELETE, is its physical retirement.
+                if not self._text_tapes:
+                    try:
+                        for cell in staging:
+                            self._conn.execute(
+                                "DELETE FROM temp.polylogue_shard_text_cells WHERE rowid=?", (cell,)
+                            ).close()
+                    except BaseException as cleanup:
+                        if primary is not None and cleanup is not primary:
+                            raise BaseExceptionGroup(
+                                "shard insertion and staging retirement failed", [primary, cleanup]
+                            ) from primary
+                        raise
+            finally:
+                primary = None
+
     def _append_iter(self, table: str, rows: Iterator[tuple[object, ...]]) -> None:
-        width = len(_bound_columns(_spec(table)))
-        placeholders = ", ".join("?" * width)
+        columns = tuple(column.name for column in _bound_columns(_spec(table)))
+        placeholders = ", ".join("?" * len(columns))
         sql = f"INSERT INTO {table} VALUES ({placeholders})"
-        while True:
-            window = list(islice(rows, 128))
-            if not window:
-                break
-            self._conn.executemany(sql, window)
-            self._next_rowid[table] += len(window)
+        window: list[tuple[object, ...]] = []
+
+        def flush() -> None:
+            if window:
+                self._conn.executemany(sql, window).close()
+                self._next_rowid[table] += len(window)
+                window.clear()
+
+        with settled_iterator(rows) as original_rows:
+            for row in original_rows:
+                check_compute_cancelled()
+                if any(isinstance(value, TextOperand) for value in row):
+                    # A borrowed row is consumed before requesting another;
+                    # existing scalar rows keep their original bounded batch.
+                    flush()
+                    self._insert_streamed_row(table, columns, row)
+                    self._next_rowid[table] += 1
+                else:
+                    window.append(row)
+                    if len(window) == 128:
+                        flush()
+            flush()
 
     def _append(self, table: str, rows: Sequence[tuple[object, ...]]) -> int:
         lo = self._next_rowid[table]
@@ -388,6 +486,15 @@ class SessionShardBuilder:
         if not self._sql_closed:
             close_parent_native_connection(self, self._conn)
             self._sql_closed = True
+        failures: list[BaseException] = []
+        for tape in self._text_tapes:
+            try:
+                tape.close()
+            except BaseException as cleanup:
+                failures.append(cleanup)
+        if failures:
+            raise BaseExceptionGroup("original shard tape retirement failed", failures)
+        self._text_tapes.clear()
         if self._discard_on_close:
             discard_session_shard(self.path)
         retire_native_sql_parent(self)
@@ -632,16 +739,10 @@ def open_session_shard(path: Path) -> SessionShard:
                 raise ShardRefusedError(
                     f"shard {path}: seal claims {session_count} sessions, manifest has {checked_count}"
                 )
-            # A session is addressed by its id, so two entries under one id
-            # would let the writer copy the wrong rowid range for one of
-            # them. Refuse the file rather than pick.
-            previous_id: str | None = None
-            for (session_id,) in conn.execute(
-                "SELECT session_id FROM shard_session INDEXED BY shard_session_id ORDER BY session_id"
-            ):
-                if session_id == previous_id:
-                    raise ShardRefusedError(f"shard {path}: a session id appears twice in the manifest")
-                previous_id = str(session_id)
+            # The sealed manifest preserves original parser output ordinals.
+            # A repeated identity must remain inspectable before the canonical
+            # key selector can refuse it. Identity-addressed writer bindings
+            # independently require exactly one range in ShardSessionMapping.
             owner_count = int(conn.execute("SELECT COUNT(*) FROM shard_owner_manifest").fetchone()[0])
             if owner_count != session_count:
                 raise ShardRefusedError("sealed shard lacks captured session owner evidence")

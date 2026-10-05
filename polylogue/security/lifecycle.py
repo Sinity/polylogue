@@ -382,7 +382,7 @@ def apply_primary_invalidation_if_confirmed(
     unknown, or mirror-mode) request returns ``success=False`` with an
     explicit reason and never touches the archive. Only a request whose
     durable state is exactly ``confirmed`` proceeds to
-    :func:`polylogue.security.excision.apply_session_excision`.
+    the audited Excision operation.
     """
     user_path = next((str(item[2]) for item in conn_user.execute("PRAGMA database_list") if item[1] == "main"), "")
     if not user_path or Path(user_path).resolve(strict=True) != (archive_root / "user.db").resolve(strict=True):

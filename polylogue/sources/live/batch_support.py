@@ -29,7 +29,6 @@ from polylogue.archive.artifact_taxonomy import (
 from polylogue.archive.raw_payload.decode import (
     jsonl_session_artifact,
 )
-from polylogue.core.compute import compute_window_length
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -42,7 +41,6 @@ from polylogue.sources.dispatch import (
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.sqlite_snapshot import is_sqlite_path
-from polylogue.storage.runtime import RawSessionRecord
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
 _FULL_PARSE_PROGRESS_MAX_FILES = 64
@@ -52,7 +50,6 @@ _STREAMING_FULL_INGEST_BYTES = 8 * 1024 * 1024
 _MAX_APPEND_PLAN_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES = 64 * 1024 * 1024
 _MAX_APPEND_PLAN_GROUP_FILES = 64
-_DEFAULT_LIVE_FULL_INGEST_WORKERS = 1
 _BROWSER_CAPTURE_PREFIX_PROBE_BYTES = 1 * 1024 * 1024
 _BROWSER_CAPTURE_PROVIDER_RE = re.compile(rb'"provider"\s*:\s*"([^"\\]{1,80})"')
 _CURSOR_HASH_AUTHORITY_PREFIX = "sha256-prefix-v1"
@@ -296,6 +293,7 @@ class _FullIngestResult:
     succeeded: list[Path]
     failed: list[Path]
     source_payload_read_bytes: int
+    acquired_raw_ids: tuple[str, ...] = ()
     # Accepted raw bytes awaiting worker completion or capacity. The cursor
     # schedules a full retry without consuming its finite failure budget.
     preparation_deferred: list[Path] = field(default_factory=list)
@@ -977,21 +975,6 @@ def _append_plan_group_ready(plans: list[_AppendPlan]) -> bool:
     if len(plans) >= _MAX_APPEND_PLAN_GROUP_FILES:
         return True
     return sum(plan.bytes_read for plan in plans) >= _MAX_APPEND_PLAN_GROUP_PAYLOAD_BYTES
-
-
-def _full_ingest_worker_count(records: list[RawSessionRecord]) -> int:
-    """Return the worker count for daemon live full-ingest batches."""
-    return compute_window_length(len(records), _live_full_ingest_worker_limit())
-
-
-def _live_full_ingest_worker_limit() -> int:
-    """Resolve the daemon live full-ingest worker cap via the layered config."""
-    from polylogue.config import load_polylogue_config
-
-    try:
-        return load_polylogue_config().live_full_ingest_workers
-    except ValueError:
-        return _DEFAULT_LIVE_FULL_INGEST_WORKERS
 
 
 def _blob_copy_heartbeat(

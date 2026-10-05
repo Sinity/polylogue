@@ -125,6 +125,15 @@ These are the commands worth remembering during normal repo work:
 
 <!-- END GENERATED: devtools-command-catalog -->
 
+Ordinary test and verification runs retain their first outcome and report. They do not automatically retry failures or promote a later isolated pass. A requested failure diagnostic is a separate observation and must retain both outcomes. `devtools test --rerun` still forces execution instead of reusing an identical green receipt.
+
+Corpus launches retain a qualified ceiling of two workers, including when live memory limits are unreadable. The observed charge model still reports its arithmetic prediction; a wider width fitting below `memory.high` does not establish that it can avoid the previously observed reclaim stall. Focused launches retain their separate charge profile and ceiling.
+
+Affected admission collects the final selected node IDs against a compatible snapshot of the checkout's testmon graph. New nodes in recorded files and each parametrization count as unknown when that environment has no execution record. Forced contract tests form a separate physical launch and are priced again when they overlap the affected launch. Collection writes only temporary graph and selection evidence; unsuccessful or incomplete evidence refuses admission. Recorded durations remain a floor for selections containing unknown nodes. Graph writers and readers share an environment key covering pytest configuration, conftest content and the effective Hypothesis profile. A changed policy requires explicitly authorized collection. Managed execution copies declared source bytes into independent inodes and mounts the copy readonly at the checkout path with bubblewrap. The child policy must match its declared graph key. Source bytecode lookups use a fresh empty readonly directory, including in workers, reruns and collection, so shared timestamp-valid caches cannot supply different executed bytes. A dedicated supervisor establishes kernel child-subreaper custody before each sole execution child. Independent admitted supervisor bytes execute from a sealed memfd; its private closure descriptor is withheld from descendants and its process is nondumpable. Every initial, rerun and collection attempt must provide an attempt-bound ECHILD closure and exact pidfd death before publication. Detached, opaque and further-user-namespace descendants remain kernel children; unrelated host peers are outside this observation boundary. Missing closure or forced supervisor death refuses authority and retains the source copy. The existing marker/birth sampler still owns memory attribution. Host PID and proc semantics remain available to shared job and temporary-file owners. Writable runtime artifacts stay under the declared `.cache` binding; source writes fail. Copy or policy mismatches, launch failures and unsettled descendants refuse execution authority while retaining the graph with an unavailable-authority marker. Only a completed authoritative full collection with terminal test evidence clears prior refusal.
+
+
+Verification memory attribution uses the actual launched process group and a fresh child-only custody marker inherited by descendants and an explicitly requested diagnostic retry. Sharing a cgroup does not establish ownership. Each reading is bound to the kernel process start time; detached marked children remain attributable after reparenting, while reused PIDs cannot acquire prior custody. Environment comparison streams fixed-size chunks and retains only marker equality. Missing or changing process/custody/memory evidence is visibly incomplete or unmeasured in the existing memory receipt; incomplete evidence cannot corroborate the charge model. The sampler does not claim cgroup isolation.
+
 ## Pattern Ratchet
 
 Pattern baselines use `path:sha1:context_sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:context_sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
@@ -141,6 +150,34 @@ devtools scenario run reader-visual-smoke
 ```
 
 Campaign outputs live under `.local/`, not in tracked docs trees.
+
+Pytest steps retain the original `process_exit` separately from the evidence
+verdict. An existing unreadable or malformed report, selection, summary, or
+event ledger produces `pytest_evidence_unavailable`; statistics publication
+and mirror failures use the same diagnosis. The run-local step records
+`evidence_error` with the phase, exception type, and message, and a process
+exit of zero becomes a failed verification exit. Explicit interruption and
+nonexecution diagnoses remain alongside this evidence error. `devtools why`
+shows the recorded error; the canonical receipt carries only its phase and
+type, without local paths or exception text.
+
+## Checkout entry
+
+The devshell configures Git hooks only for the entered checkout. It anchors
+`core.hooksPath` to the common checkout's `.githooks`, enables worktree config,
+and pins the current worktree's override. Each scope is written only when its
+value differs. Entering a worktree leaves sibling worktree configs untouched.
+Direnv uses the flake's bytecode and cleanup setup without repeating it.
+
+Source fingerprint and lexical import-edge memos are disposable shared state
+under `$XDG_CACHE_HOME/polylogue/source-fingerprints`, or
+`~/.cache/polylogue/source-fingerprints` when XDG cache home is unset. Keys cover
+repository-relative labels, exact source bytes, the algorithm version, Python's
+AST format, and the fingerprint namespace. Equal source trees share entries;
+changed content misses. Import edges store lexical bases and resolve them in
+the current tree, so adding or removing an imported module still changes the
+closure. Entries publish atomically with unique temporary files. An unavailable
+or malformed memo recomputes the result; there is no checkout-local memo route.
 
 ## Local State Layout
 

@@ -301,25 +301,30 @@ def _open_backup_readonly_connection(
     unapplicable. A version above the expected one is still refused: this
     runtime cannot interpret it. An unstamped tier (version 0) is refused too.
     """
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
     # This is acquisition of SQLite evidence, not a read-model admission.
     # Stale derived identity remains evidence to retain; ordinary product
     # readers still enforce their current identity before serving rows.
+    from polylogue.storage.io_phase_metrics import connection_cursor
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_BASELINE_VERSION_BY_TIER, ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
     connection = open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class, validate_schema=False)
+    owner = NativeSQLCustodyOwner(connection)
     try:
         try:
             tier = ArchiveTier(path.stem)
         except ValueError:
-            return connection
-        version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if not ARCHIVE_BASELINE_VERSION_BY_TIER[tier] <= version <= ARCHIVE_VERSION_BY_TIER[tier]:
-            raise SchemaSkew(tier.value, ARCHIVE_VERSION_BY_TIER[tier], version)
-        return connection
-    except BaseException:
-        connection.close()
+            tier = None
+        if tier is not None:
+            with connection_cursor(owner.require_connection(), "PRAGMA user_version") as cursor:
+                version = int(cursor.fetchone()[0])
+            if not ARCHIVE_BASELINE_VERSION_BY_TIER[tier] <= version <= ARCHIVE_VERSION_BY_TIER[tier]:
+                raise SchemaSkew(tier.value, ARCHIVE_VERSION_BY_TIER[tier], version)
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
         raise
+    return owner.handoff()
 
 
 def _sqlite_user_version(path: Path) -> int:
@@ -484,16 +489,22 @@ def _archive_layout_present(root: Path) -> bool:
     return any(path.exists() for path in _all_archive_tiers(root).values())
 
 
-def _readable_sqlite(path: Path) -> str | None:
+def _require_readable_sqlite(path: Path) -> None:
+    """Preserve an unreadable tier as the original failure, never a diagnostic value."""
+    from polylogue.core.sql_settlement import current_native_sql_lifetimes
+    from polylogue.storage.io_phase_metrics import connection_cursor
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner, _close_failed_native_construction
+
+    connection = _open_backup_readonly_connection(path, immutable=False, timeout_class="background-read")
+    owner = NativeSQLCustodyOwner(connection, lifetime_dependencies=current_native_sql_lifetimes())
     try:
-        conn = _open_backup_readonly_connection(path, immutable=False, timeout_class="background-read")
-        try:
-            conn.execute("SELECT 1 FROM sqlite_master LIMIT 1")
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        return str(exc)
-    return None
+        with connection_cursor(owner.require_connection(), "SELECT 1 FROM sqlite_master LIMIT 1"):
+            pass
+    except BaseException as primary:
+        _close_failed_native_construction(owner, primary)
+        raise
+    else:
+        owner.close()
 
 
 def _check_prerequisites(
@@ -513,9 +524,7 @@ def _check_prerequisites(
                 continue
             warnings.append(f"{tier}.db not found at {path}")
             continue
-        error = _readable_sqlite(path)
-        if error is not None:
-            warnings.append(f"{tier}.db not readable: {error}")
+        _require_readable_sqlite(path)
 
     # Allow for the backup copy plus a scratch restore during verification.
     try:
@@ -548,7 +557,7 @@ def _check_prerequisites(
 
 
 def _has_backup_error(warnings: list[str]) -> bool:
-    return any("not found" in warning or "not readable" in warning for warning in warnings)
+    return any("not found" in warning for warning in warnings)
 
 
 def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> None:
@@ -718,6 +727,18 @@ def _source_recoverability_proofs(
             timeout_class="offline-bulk" if immutable else "background-read",
         )
     ) as conn:
+        from polylogue.storage.io_phase_metrics import connection_cursor
+        from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+        # Slot 004 introduced captured_coordinate, the newest field this
+        # recovery reader interprets. Later additive trains do not invalidate
+        # the authenticated predecessor's acquisition coordinates. Older
+        # snapshots remain opaque evidence, never guessed current coordinates.
+        with connection_cursor(conn, "PRAGMA user_version") as cursor:
+            version = int(cursor.fetchone()[0])
+        if not 4 <= version <= ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]:
+            raise SchemaSkew(ArchiveTier.SOURCE.value, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE], version)
         reference_rows = _raw_session_reference_rows(conn)
         for row in reference_rows:
             blob_hash = str(row.get("blob_hash") or "")

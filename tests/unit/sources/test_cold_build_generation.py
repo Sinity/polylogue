@@ -18,8 +18,7 @@ import sqlite3
 import stat
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 
 import pytest
 
@@ -28,17 +27,17 @@ from polylogue.maintenance.candidate_capacity import (
     read_capacity_receipts,
 )
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.batch import LiveBatchMetrics, LiveBatchProcessor
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
     active_index_generation_is_empty,
     clear_cold_build_generation,
     register_cold_build_generation,
 )
-from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import GENERATIONS_DIRNAME, MAINTENANCE_STATE_DIRNAME
 from polylogue.storage.index_generation import UnpublishedPromotionRecoveryError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_batch import prepared_live_batch_processor
 
 
 def _codex_session(native_id: str, text: str) -> bytes:
@@ -50,14 +49,11 @@ def _codex_session(native_id: str, text: str) -> bytes:
     ).encode()
 
 
-def _processor(archive_root: Path, root: Path) -> LiveBatchProcessor:
-    index_db = archive_root / "index.db"
-    return LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
+async def _ingest_paths(archive_root: Path, root: Path, paths: list[Path]) -> LiveBatchMetrics:
+    async with prepared_live_batch_processor(
+        archive_root, (WatchSource(name="codex", root=root),), parser_fingerprint="test-parser"
+    ) as processor:
+        return await processor.ingest_files(paths, emit_event=False)
 
 
 def _active_session_count(archive_root: Path) -> int:
@@ -94,7 +90,7 @@ def cold_build(tmp_path: Path) -> Iterator[ColdBuildGeneration]:
 
 def _ingest(archive_root: Path, root: Path, name: str, native_id: str) -> None:
     (root / name).write_bytes(_codex_session(native_id, native_id))
-    metrics = asyncio.run(_processor(archive_root, root).ingest_files([root / name], emit_event=False))
+    metrics = asyncio.run(_ingest_paths(archive_root, root, [root / name]))
     assert metrics.succeeded_file_count == 1, metrics
 
 
@@ -229,10 +225,7 @@ def test_restart_completes_pointer_swapped_cold_promotion(tmp_path: Path, monkey
     generation = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
     register_cold_build_generation(generation)
     try:
-        assert (
-            asyncio.run(_processor(archive, source_root).ingest_files([member], emit_event=False)).succeeded_file_count
-            == 1
-        )
+        assert asyncio.run(_ingest_paths(archive, source_root, [member])).succeeded_file_count == 1
         with generation.open_writer() as candidate:
             candidate.run_generation_readiness_pass()
         generation.source_baseline.verify(archive / "source.db")
@@ -763,7 +756,7 @@ def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None
     generation = ColdBuildGeneration.begin(tmp_path, reason="test", sources=(WatchSource("codex", root),))
     register_cold_build_generation(generation)
     try:
-        metrics = asyncio.run(_processor(tmp_path, root).ingest_files([session, sidecar], emit_event=False))
+        metrics = asyncio.run(_ingest_paths(tmp_path, root, [session, sidecar]))
         assert metrics.succeeded_file_count == 1, metrics
         assert metrics.excluded_file_count == 1, metrics
         decisions = {row.path: row for row in generation.source_baseline.decisions}
@@ -1099,20 +1092,14 @@ def test_faulted_baseline_refresh_retains_prior_accepted_revisions(tmp_path: Pat
     register_cold_build_generation(generation)
     try:
         assert any(row.disposition == "fault" for row in generation.source_baseline.decisions)
-        assert (
-            asyncio.run(_processor(archive, first_root).ingest_files([first], emit_event=False)).succeeded_file_count
-            == 1
-        )
+        assert asyncio.run(_ingest_paths(archive, first_root, [first])).succeeded_file_count == 1
         generation.refresh_accepted_progress()
         assert generation.accepted_progress[:2] == (1, 1)
         first.unlink()
         second_root.mkdir()
         second = second_root / "second.jsonl"
         second.write_bytes(_codex_session("second", "second"))
-        assert (
-            asyncio.run(_processor(archive, second_root).ingest_files([second], emit_event=False)).succeeded_file_count
-            == 1
-        )
+        assert asyncio.run(_ingest_paths(archive, second_root, [second])).succeeded_file_count == 1
         generation.refresh_accepted_progress()
         assert generation.accepted_progress[:2] == (1, 1)
 
@@ -1157,10 +1144,7 @@ def test_faulted_baseline_refresh_reuses_candidate_and_retained_evidence_capacit
         source_root.mkdir()
         source = source_root / "one.jsonl"
         source.write_bytes(_codex_session("one", "one"))
-        assert (
-            asyncio.run(_processor(archive, source_root).ingest_files([source], emit_event=False)).succeeded_file_count
-            == 1
-        )
+        assert asyncio.run(_ingest_paths(archive, source_root, [source])).succeeded_file_count == 1
         assert generation.session_count() == 1
         observed = capture_production_source_baseline(sources, operation_id=generation.operation_id)
         merged = merge_pending_production_baseline(observed, generation.source_baseline)
@@ -1236,10 +1220,7 @@ def test_orphan_replacement_does_not_charge_already_retained_source_again(
     orphan = ColdBuildGeneration.begin(archive, reason="first", sources=(source,))
     register_cold_build_generation(orphan)
     try:
-        assert (
-            asyncio.run(_processor(archive, source_root).ingest_files([member], emit_event=False)).succeeded_file_count
-            == 1
-        )
+        assert asyncio.run(_ingest_paths(archive, source_root, [member])).succeeded_file_count == 1
     finally:
         clear_cold_build_generation()
     old_root = orphan.generation_root

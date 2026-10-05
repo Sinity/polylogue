@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from typing import cast
 
 from polylogue.core.enums import BlockType, Origin, ToolOutcome, ToolResultUnknownReason
+from polylogue.core.tool_association import tool_association_ctes_sql
 from polylogue.sources.origin_specs import tool_outcome_unknown_reasons_for_origin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSessionEvent
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
@@ -31,17 +32,17 @@ class _OutcomeIndex:
                 PRIMARY KEY (tool_id, owner_present, owner)
             ) WITHOUT ROWID;
             CREATE INDEX sidecar_tool_outcome ON sidecar (tool_id, outcome);
-            CREATE TABLE result_state (
-                tool_id TEXT PRIMARY KEY,
-                result_count INTEGER NOT NULL,
-                use_count INTEGER NOT NULL
-            ) WITHOUT ROWID;
-            CREATE TABLE results (
-                tool_id TEXT NOT NULL,
-                ordinal INTEGER NOT NULL,
-                outcome TEXT NOT NULL,
-                PRIMARY KEY (tool_id, ordinal)
-            ) WITHOUT ROWID;
+            CREATE TABLE original_messages (
+                ordinal INTEGER PRIMARY KEY,native_id TEXT,normalized_id TEXT,parent_native_id TEXT,
+                parent_position INTEGER,declared_position INTEGER,role TEXT,position INTEGER,variant INTEGER
+            );
+            CREATE INDEX original_messages_native ON original_messages(native_id);
+            CREATE INDEX original_messages_normalized ON original_messages(normalized_id);
+            CREATE INDEX original_messages_position ON original_messages(declared_position);
+            CREATE TABLE association_blocks (
+                session_key INTEGER NOT NULL,block_key TEXT PRIMARY KEY,message_key INTEGER NOT NULL,
+                tool_id TEXT,is_use INTEGER,outcome TEXT,unknown_reason TEXT,block_position INTEGER
+            );
             """
         )
 
@@ -143,26 +144,11 @@ class _OutcomeIndex:
             )
         return ToolOutcome(first[0])
 
-    def add_result(self, tool_id: str, outcome: ToolOutcome) -> None:
-        row = self.conn.execute("SELECT result_count FROM result_state WHERE tool_id = ?", (tool_id,)).fetchone()
-        ordinal = row[0] if row is not None else 0
-        if row is None:
-            self.conn.execute("INSERT INTO result_state VALUES (?, 1, 0)", (tool_id,))
-        else:
-            self.conn.execute("UPDATE result_state SET result_count = result_count + 1 WHERE tool_id = ?", (tool_id,))
-        self.conn.execute("INSERT INTO results VALUES (?, ?, ?)", (tool_id, ordinal, outcome.value))
-
-    def next_result(self, tool_id: str) -> ToolOutcome | None:
+    def use_outcome(self, message_ordinal: int, block_ordinal: int) -> ToolOutcome | None:
         row = self.conn.execute(
-            "SELECT result_count, use_count FROM result_state WHERE tool_id = ?", (tool_id,)
+            "SELECT verdict FROM resolved_uses WHERE use_key=?", (f"{message_ordinal}:{block_ordinal}",)
         ).fetchone()
-        if row is None or row[1] >= row[0]:
-            return None
-        outcome = self.conn.execute(
-            "SELECT outcome FROM results WHERE tool_id = ? AND ordinal = ?", (tool_id, row[1])
-        ).fetchone()[0]
-        self.conn.execute("UPDATE result_state SET use_count = use_count + 1 WHERE tool_id = ?", (tool_id,))
-        return ToolOutcome(outcome)
+        return ToolOutcome(row[0]) if row is not None else None
 
 
 @contextmanager
@@ -203,9 +189,12 @@ def derive_tool_outcomes(
         if isinstance(messages, SqliteMessageSink):
             with messages.atomic_edit():
                 for ordinal in range(len(messages)):
-                    messages[ordinal] = _normalize_message(index, messages[ordinal], origin=origin)
+                    messages[ordinal] = _normalize_message(index, messages[ordinal], ordinal=ordinal, origin=origin)
             return messages
-        return [_normalize_message(index, message, origin=origin) for message in messages]
+        return [
+            _normalize_message(index, message, ordinal=ordinal, origin=origin)
+            for ordinal, message in enumerate(messages)
+        ]
 
 
 def _index_sidecars(index: _OutcomeIndex, events: Sequence[ParsedSessionEvent], *, origin: Origin) -> None:
@@ -237,9 +226,31 @@ def _index_sidecars(index: _OutcomeIndex, events: Sequence[ParsedSessionEvent], 
 
 
 def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, origin: Origin) -> None:
-    for message in messages:
-        for block in message.blocks:
-            if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
+    for ordinal, message in enumerate(messages):
+        native_id = message.provider_message_id
+        normalized_id = native_id.strip() if native_id else None
+        index.conn.execute(
+            "INSERT INTO original_messages VALUES(?,?,?,?,?,?,?,?,?)",
+            (
+                ordinal,
+                native_id,
+                normalized_id or None,
+                message.parent_message_provider_id,
+                message.parent_message_position,
+                message.position,
+                message.role.value,
+                message.position if message.position is not None else ordinal,
+                message.variant_index or 0,
+            ),
+        )
+        for block_ordinal, block in enumerate(message.blocks):
+            if block.type not in (BlockType.TOOL_USE, BlockType.TOOL_RESULT) or not block.tool_id:
+                continue
+            if block.type is BlockType.TOOL_USE:
+                index.conn.execute(
+                    "INSERT INTO association_blocks VALUES(?,?,?,?,?,?,?,?)",
+                    (0, f"{ordinal}:{block_ordinal}", ordinal, block.tool_id, 1, None, None, block_ordinal),
+                )
                 continue
             result_candidates = _result_candidates(
                 block, index, owner=message.provider_message_id, unknown_reason=block.outcome_unknown_reason
@@ -256,12 +267,44 @@ def _index_results(index: _OutcomeIndex, messages: Sequence[ParsedMessage], *, o
                     f"tool outcome derivation refused for origin {origin.value!r}: "
                     f"unsupported tool_result block shape tool_id={block.tool_id!r}"
                 )
-            index.add_result(block.tool_id, outcome)
+            unknown_reason = block.outcome_unknown_reason if outcome is ToolOutcome.UNKNOWN else None
+            index.conn.execute(
+                "INSERT INTO association_blocks VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    0,
+                    f"{ordinal}:{block_ordinal}",
+                    ordinal,
+                    block.tool_id,
+                    0,
+                    outcome.value,
+                    unknown_reason,
+                    block_ordinal,
+                ),
+            )
+    # Use the same native uniqueness and last declared-position parent law
+    # as the original writer. IDs stay provider facts; ordinals only locate
+    # these exact occurrences in the caller-owned preparation table.
+    index.conn.execute("""CREATE VIEW association_messages AS
+        SELECT 0 AS session_key,m.ordinal AS message_key,
+          COALESCE((SELECT p.ordinal FROM original_messages p
+                    WHERE p.native_id=m.parent_native_id
+                    AND (SELECT COUNT(*) FROM original_messages n
+                         WHERE n.normalized_id=p.normalized_id)=1),
+                   (SELECT MAX(p.ordinal) FROM original_messages p
+                    WHERE p.declared_position=m.parent_position)) AS parent_key,
+          m.role,m.position AS message_position,m.variant AS variant_index
+        FROM original_messages m""")
+    index.conn.execute(
+        "CREATE TABLE resolved_uses AS WITH RECURSIVE "
+        + tool_association_ctes_sql()
+        + " SELECT use_key,verdict FROM tool_associations"
+    )
+    index.conn.execute("CREATE UNIQUE INDEX resolved_use_key ON resolved_uses(use_key)")
 
 
-def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, origin: Origin) -> ParsedMessage:
+def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, ordinal: int, origin: Origin) -> ParsedMessage:
     blocks: list[ParsedContentBlock] = []
-    for block in message.blocks:
+    for block_ordinal, block in enumerate(message.blocks):
         if block.type is BlockType.TOOL_RESULT:
             unknown_reason = (
                 None
@@ -314,8 +357,8 @@ def _normalize_message(index: _OutcomeIndex, message: ParsedMessage, *, origin: 
                 )
             )
         elif block.type is BlockType.TOOL_USE:
-            outcome = index.next_result(block.tool_id) if block.tool_id else None
-            if outcome is None and block.tool_id:
+            outcome = index.use_outcome(ordinal, block_ordinal) if block.tool_id else None
+            if outcome in (None, ToolOutcome.NO_RESULT) and block.tool_id:
                 outcome = index.unmatched_sidecar_outcome(block.tool_id, origin=origin)
             blocks.append(block.model_copy(update={"tool_outcome": outcome or ToolOutcome.NO_RESULT}))
         else:

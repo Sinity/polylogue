@@ -37,6 +37,7 @@ from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -67,7 +68,7 @@ ARCHIVE_VERIFICATION_CHECK_NAMES = archive_verification_names_for_route("live-ar
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    return sqlite3.connect(path)
+    return connect_measured(path)
 
 
 def _add_historical_supersession_receipts(conn: sqlite3.Connection) -> None:
@@ -1970,7 +1971,8 @@ def test_reindex_acceptance_rejects_missing_semantic_stamp_column(tmp_path: Path
     check = _check(report, "session-fingerprint-stamps")
     assert report.blocking
     assert check.status is OutcomeStatus.ERROR
-    assert "missing fingerprint column(s): parser_fingerprint" in check.summary
+    assert check.count == 1
+    assert check.evidence["error"]
 
 
 def test_reindex_acceptance_rejects_stale_semantic_stamps(tmp_path: Path) -> None:

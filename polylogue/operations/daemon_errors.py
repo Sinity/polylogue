@@ -55,6 +55,11 @@ class DaemonMutationIndeterminateError(RuntimeError):
 class DaemonOperationProtocolError(RuntimeError):
     """A daemon operation response was not a v1 typed envelope."""
 
+    def __init__(self, message: str, *, outcome: str | None = None, error_code: str | None = None) -> None:
+        self.outcome = outcome
+        self.error_code = error_code
+        super().__init__(message)
+
 
 class DaemonSocketOwnershipError(RuntimeError):
     """The process answering the daemon socket is not this user's daemon."""

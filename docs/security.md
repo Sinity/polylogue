@@ -304,7 +304,7 @@ and summed into `ParseResult.excised_skips`) rather than aborting the whole inge
 **Lineage safety.** Excising a session that is a prefix-sharing lineage
 *parent* (see `session_links`/`branch_point_message_id` in the top-level
 architecture notes) would otherwise delete the bytes a child session's
-composed transcript depends on. `apply_session_excision` detects the full
+composed transcript depends on. The audited session Excision operation detects the full
 transitive set of prefix-sharing dependents and refuses
 (`LineageDependentsError`) unless the caller passes `cascade_lineage=True`
 (CLI: `--cascade-lineage`), in which case the whole lineage — the session and
@@ -466,3 +466,5 @@ Out of scope:
 - `tests/unit/security/test_secret_scan.py`,
   `tests/unit/security/test_excision.py`,
   `tests/unit/security/test_excision_lifecycle.py`.
+
+Excision freezes each selected Index marker witness in the authorized plan: its request key, Source carrier digest, physical Index incarnation and exact dispositions digest. An explicit empty witness tuple proves absence; a missing operand refuses recovery. Restart receipt counts come from these original operands, while Source completion and atomic paid completion retain their separate authority. A committed User receipt is checked against the actual retained postimage before Index reachability checks; pending User effects use their original projected effects.

@@ -499,9 +499,10 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         fallback_markers=(),
         confidence_field=(),
         readiness_semantics=(
-            "Each episode joins a tool_use block to its paired tool_result (when one exists) "
-            "and surfaces provider-reported structural outcomes; result_state and caveat "
-            "distinguish a genuine structural outcome from a call with no paired result."
+            "Each episode surfaces the shared invocation association and structural verdict. "
+            "A parent-proven fanout retains every result in invocation events while episode "
+            "scalar output is omitted with a named caveat and authority gap. result_state "
+            "does not certify completeness of scalar output."
         ),
         consumer_fields=(
             "episode_id",
@@ -525,8 +526,9 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
         ),
         field_exemptions=_true_zero_fields(
             "is_error and exit_code are provider-reported structural values read directly "
-            "from the paired tool_result block, not estimates or aggregates; None means the "
-            "value was never reported, 0 is the recorded exit code or a reported non-error.",
+            "from a singular paired tool_result block, not estimates or aggregates. None means "
+            "no singular value is projected, including a proved plural reply; the episode "
+            "caveat reports that omission. Zero is a recorded exit code or non-error.",
             "is_error",
             "exit_code",
         ),

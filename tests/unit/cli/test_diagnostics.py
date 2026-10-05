@@ -721,7 +721,7 @@ def test_latency_command_reports_no_ops_db(tmp_path: Path) -> None:
 
 def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
@@ -730,15 +730,13 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatc
     conn = sqlite3.connect(ops_db)
     now_ms = int(time.time() * 1000)
     for i, duration in enumerate((100, 200, 300, 400, 500)):
-        record_route_observation(
+        record_mcp_call(
             conn,
-            observation_id=f"obs-{i}",
-            trace_id=f"t-{i}",
-            surface="cli",
-            route="cli.status",
+            call_id=f"obs-{i}",
+            tool_name="status",
             started_at_ms=now_ms - 1000 + i,
-            duration_ms=duration,
-            status="ok",
+            finished_at_ms=now_ms - 1000 + i + duration,
+            success=True,
         )
     conn.close()
 
@@ -758,17 +756,16 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatc
         obj=_env_with_archive_root(tmp_path),
     )
 
-    # Every writer records its drops in the ops tier, so a reader in another
-    # process knows none were lost: the answer is ok (exit 0).
-    assert result.exit_code == 0, result.output
+    # MCP latency is measured; cross-process loss remains unknown.
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
-    assert payload["outcome"]["state"] == "ok"
-    assert payload["drops"]["accounting_complete"] is True
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["drops"]["accounting_complete"] is False
     assert payload["drops"]["total"] == 0
     assert len(payload["buckets"]) == 1
     bucket = payload["buckets"][0]
-    assert bucket["surface"] == "cli"
-    assert bucket["route"] == "cli.status"
+    assert bucket["surface"] == "mcp"
+    assert bucket["route"] == "mcp.status"
     assert bucket["sample_count"] == 5
     assert bucket["p50_ms"] == 300.0
     assert bucket["low_confidence"] is False
@@ -777,22 +774,20 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatc
 
 def test_latency_command_excludes_observations_outside_lookback_window(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.ops_write import record_route_observation
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     ops_db = tmp_path / "ops.db"
     initialize_archive_database(ops_db, ArchiveTier.OPS)
     conn = sqlite3.connect(ops_db)
     now_ms = int(time.time() * 1000)
-    record_route_observation(
+    record_mcp_call(
         conn,
-        observation_id="old",
-        trace_id="t-old",
-        surface="cli",
-        route="cli.status",
+        call_id="old",
+        tool_name="status",
         started_at_ms=now_ms - (48 * 3600 * 1000),
-        duration_ms=100,
-        status="ok",
+        finished_at_ms=now_ms - (48 * 3600 * 1000) + 100,
+        success=True,
     )
     conn.close()
 
@@ -802,50 +797,38 @@ def test_latency_command_excludes_observations_outside_lookback_window(tmp_path:
         obj=_env_with_archive_root(tmp_path),
     )
 
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 1, result.output
     assert json.loads(result.output)["buckets"] == []
 
 
 def test_latency_json_zero_rows_with_no_drops_is_empty(tmp_path: Path) -> None:
-    """An empty window with nothing recorded as lost is ``empty``, not a gap."""
+    """An empty window retains the explicitly unknown loss accounting."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
     result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
 
-    assert result.exit_code == 2, result.output
-    payload = json.loads(result.output)
-    assert payload["buckets"] == []
-    assert payload["drops"]["accounting_complete"] is True
-    assert payload["outcome"]["state"] == "empty"
-
-
-def test_latency_json_zero_rows_with_recorded_drops_is_degraded(tmp_path: Path) -> None:
-    """Degraded, not empty: every observation in the window was lost, and the drops say so."""
-    import time as _time
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow, record_route_observation_drops
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    ops_db = tmp_path / "ops.db"
-    initialize_archive_database(ops_db, ArchiveTier.OPS)
-    now_ms = int(_time.time() * 1000)
-    conn = sqlite3.connect(ops_db)
-    record_route_observation_drops(
-        conn,
-        drops=[RouteObservationDropRow("cli", "cli.status", "emit_failed", now_ms - 1000, now_ms - 500, 2)],
-        now_ms=now_ms,
-    )
-    conn.close()
-    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
-
     assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
     assert payload["buckets"] == []
-    assert payload["drops"]["by_reason"] == {"emit_failed": 2}
+    assert payload["drops"]["accounting_complete"] is False
     assert payload["outcome"]["state"] == "degraded"
+
+
+def test_latency_unobserved_surface_is_degraded(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
+    result = CliRunner().invoke(
+        diagnostics.latency_command, ["--format", "json", "--surface", "cli"], obj=_env_with_archive_root(tmp_path)
+    )
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["buckets"] == []
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["drops"]["accounting_complete"] is False
 
 
 @pytest.mark.asyncio

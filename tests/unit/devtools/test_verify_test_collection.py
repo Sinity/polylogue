@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -78,3 +79,41 @@ def test_a_zero_count_is_not_a_pass(monkeypatch: pytest.MonkeyPatch, capsys: pyt
     _drive(monkeypatch, _Completed(0, stdout="\n"))
     assert verify_test_collection.main(["--json"]) == 1
     assert json.loads(capsys.readouterr().out)["ok"] is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"selected_count": 2, "selected_nodeids": ["tests/a.py::test_one"], "selected_nodeids_omitted": 0},
+        {"selected_count": True, "selected_nodeids": ["tests/a.py::test_one"], "selected_nodeids_omitted": 0},
+    ],
+)
+def test_missing_or_inconsistent_node_evidence_is_unavailable(
+    payload: dict[str, Any] | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(_command: list[str], **kwargs: Any) -> _Completed:
+        if payload is not None:
+            Path(kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_PATH"]).write_text(json.dumps(payload))
+        return _Completed(0)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert verify_test_collection.collect_selection(root=tmp_path, nodeid_limit=1001, environment={}) is None
+
+
+def test_complete_empty_selection_is_distinct_from_missing_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(_command: list[str], **kwargs: Any) -> _Completed:
+        Path(kwargs["env"]["POLYLOGUE_PYTEST_SELECTION_PATH"]).write_text(
+            json.dumps({"selected_count": 0, "selected_nodeids": [], "selected_nodeids_omitted": 0})
+        )
+        return _Completed(5)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    selection = verify_test_collection.collect_selection(root=tmp_path, nodeid_limit=1001, environment={})
+    assert selection is not None and selection.selected_count == 0 and selection.omitted == 0

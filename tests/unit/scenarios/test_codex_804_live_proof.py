@@ -97,6 +97,7 @@ async def _admit_large_component(
         root,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
     )
     discovery = RawMaterializationDiscovery(root)
     try:

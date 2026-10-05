@@ -103,3 +103,13 @@ does not change result identity. SQLite reads only bounded field slices on
 resume. Evidence insert/update/delete advances the archive frame so callers
 cannot silently assemble one row from two revisions. CLI, Python API, and MCP
 preserve this contract; MCP supplies its smaller delivery budget to the owner.
+
+Owned user-target existence probes and vector reads use the shared bounded
+compute owner with `interactive-read` admission and their encoded request-byte
+charge. Cancellation keeps the original result Future alive until its creator
+has physically settled SQLite handles; a supplied vector snapshot remains on
+its original creator. This charge describes request bytes, not decoded-result
+memory. Vector publication and daemon transport waits retain their own owners.
+
+## Thread search
+The public thread insight route searches session identity, title, repository URL, branch, support level, and the payload's thread/member support signals before the requested result window. API, MCP registry projection, and insight exports share `ArchiveStore.iter_thread_insights`. Strong and moderate threads remain distinct; a root without a materialized profile remains readable from the same session evidence as an exact public thread read. Profile absence does not silently consume a page slot. Search does not hydrate all threads before selecting a page. The former async thread-list adapter and its row-only mapper are retired with their unused query DTO; exact retained thread-record reads still use their existing profile owner.

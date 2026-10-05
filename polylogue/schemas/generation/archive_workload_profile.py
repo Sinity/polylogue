@@ -32,21 +32,15 @@ def _connect_read_only(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if not _table_exists(conn, table):
-        return set()
-    return {str(row[1]) for row in conn.execute(f'PRAGMA table_info("{table}")')}
-
-
 def _scalar(conn: sqlite3.Connection, query: str) -> int:
     row = conn.execute(query).fetchone()
     return int(row[0] or 0) if row is not None else 0
 
 
 def _mix(conn: sqlite3.Connection, table: str, column: str) -> JSONDocument:
-    if column not in _columns(conn, table):
-        return {}
-    rows = conn.execute(f'SELECT "{column}", COUNT(*) FROM "{table}" GROUP BY "{column}" ORDER BY "{column}"')
+    rows = conn.execute(
+        f'SELECT "{table}"."{column}", COUNT(*) FROM "{table}" GROUP BY "{table}"."{column}" ORDER BY "{table}"."{column}"'
+    )
     return {"<null>" if row[0] is None else str(row[0]): int(row[1]) for row in rows}
 
 
@@ -69,13 +63,12 @@ def _column_distributions(
     table: str,
     columns: Sequence[str],
 ) -> JSONDocument:
-    available = _columns(conn, table)
-    selected = [column for column in columns if column in available]
+    selected = list(columns)
     if not selected:
         return {}
     sketches = {column: DistributionSketch() for column in selected}
     null_counts = dict.fromkeys(selected, 0)
-    query = "SELECT " + ", ".join(f'"{column}"' for column in selected) + f' FROM "{table}"'
+    query = "SELECT " + ", ".join(f'"{table}"."{column}"' for column in selected) + f' FROM "{table}"'
     for row in conn.execute(query):
         for index, column in enumerate(selected):
             value = row[index]
@@ -104,15 +97,17 @@ def _scan_table_profile(
     Length expressions stay inside SQLite so large text/tool payloads are not
     copied into Python merely to measure their encoded size.
     """
-    available = _columns(conn, table)
-    mixes = [column for column in mix_columns if column in available]
-    distributions = [column for column in distribution_columns if column in available]
-    lengths = [column for column in length_columns if column in available]
+    mixes = list(mix_columns)
+    distributions = list(distribution_columns)
+    lengths = list(length_columns)
     if not mixes and not distributions and not lengths:
         return _scalar(conn, f'SELECT COUNT(*) FROM "{table}"'), {}, {}, {}
 
-    expressions = [*(f'"{column}"' for column in mixes), *(f'"{column}"' for column in distributions)]
-    expressions.extend(f'length(CAST("{column}" AS BLOB))' for column in lengths)
+    expressions = [
+        *(f'"{table}"."{column}"' for column in mixes),
+        *(f'"{table}"."{column}"' for column in distributions),
+    ]
+    expressions.extend(f'length(CAST("{table}"."{column}" AS BLOB))' for column in lengths)
     mix_counts = {column: Counter[str]() for column in mixes}
     sketches = {column: DistributionSketch() for column in distributions}
     distribution_nulls = dict.fromkeys(distributions, 0)
@@ -167,12 +162,12 @@ def _anonymous_cardinality_profile(
     column: str,
     measure: str = "rows_per_value",
 ) -> JSONDocument:
-    if column not in _columns(conn, table):
-        return {}
     sketch = DistributionSketch()
     non_null = 0
     distinct = 0
-    for row in conn.execute(f'SELECT COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL GROUP BY "{column}"'):
+    for row in conn.execute(
+        f'SELECT COUNT(*) FROM "{table}" WHERE "{table}"."{column}" IS NOT NULL GROUP BY "{table}"."{column}"'
+    ):
         count = int(row[0])
         non_null += count
         distinct += 1
@@ -193,9 +188,6 @@ def _tool_profiles(
     session_count: int,
 ) -> tuple[JSONDocument, JSONDocument, JSONDocument]:
     """Derive tool pairing and per-session counts from one grouped scan."""
-    required = {"session_id", "tool_id", "block_type"}
-    if not required <= _columns(conn, "blocks"):
-        return {}, {}, {}
     uses = DistributionSketch()
     results = DistributionSketch()
     totals = {
@@ -281,12 +273,11 @@ def _topology_profile(conn: sqlite3.Connection) -> JSONDocument:
                 "GROUP BY resolved_dst_session_id"
             )
         )
-    if "parent_session_id" in _columns(conn, "sessions"):
-        payload["children_per_parent"] = _sketch_rows(
-            conn.execute("SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id")
-        )
-        payload["root_sessions"] = _scalar(conn, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL")
-        payload["child_sessions"] = _scalar(conn, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NOT NULL")
+    payload["children_per_parent"] = _sketch_rows(
+        conn.execute("SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NOT NULL GROUP BY parent_session_id")
+    )
+    payload["root_sessions"] = _scalar(conn, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL")
+    payload["child_sessions"] = _scalar(conn, "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NOT NULL")
     return payload
 
 
@@ -399,12 +390,8 @@ def _source_profile(path: Path) -> tuple[JSONDocument, JSONDocument]:
     with closing(_connect_read_only(path)) as conn:
         if not _table_exists(conn, "raw_sessions"):
             return {}, {"source_tier": "raw_sessions missing"}
-        columns = _columns(conn, "raw_sessions")
-        window: JSONDocument = {}
-        if "acquired_at_ms" in columns:
-            row = conn.execute("SELECT MIN(acquired_at_ms), MAX(acquired_at_ms) FROM raw_sessions").fetchone()
-            if row is not None:
-                window = {"first_acquired_at_ms": row[0], "last_acquired_at_ms": row[1]}
+        row = conn.execute("SELECT MIN(acquired_at_ms), MAX(acquired_at_ms) FROM raw_sessions").fetchone()
+        window: JSONDocument = {"first_acquired_at_ms": row[0], "last_acquired_at_ms": row[1]}
         profile: JSONDocument = {
             "row_count": _scalar(conn, "SELECT COUNT(*) FROM raw_sessions"),
             "origin_mix": _mix(conn, "raw_sessions", "origin"),
@@ -418,9 +405,7 @@ def _source_profile(path: Path) -> tuple[JSONDocument, JSONDocument]:
                     "SELECT append_end_offset - append_start_offset FROM raw_sessions "
                     "WHERE append_start_offset IS NOT NULL AND append_end_offset IS NOT NULL"
                 )
-            )
-            if {"append_start_offset", "append_end_offset"} <= columns
-            else {},
+            ),
             "revisions_per_logical_source": _anonymous_cardinality_profile(
                 conn,
                 table="raw_sessions",
@@ -428,20 +413,12 @@ def _source_profile(path: Path) -> tuple[JSONDocument, JSONDocument]:
                 measure="revisions_per_logical_source",
             ),
             "parse_state": {
-                "pending": _scalar(conn, "SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NULL")
-                if "parsed_at_ms" in columns
-                else 0,
-                "failed": _scalar(conn, "SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL")
-                if "parse_error" in columns
-                else 0,
+                "pending": _scalar(conn, "SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NULL"),
+                "failed": _scalar(conn, "SELECT COUNT(*) FROM raw_sessions WHERE parse_error IS NOT NULL"),
             },
             "observation_window": window,
         }
-        generation = (
-            _scalar(conn, "SELECT MAX(acquisition_generation) FROM raw_sessions")
-            if "acquisition_generation" in columns
-            else 0
-        )
+        generation = _scalar(conn, "SELECT MAX(acquisition_generation) FROM raw_sessions")
         return profile, {
             "source_schema_version": int(conn.execute("PRAGMA user_version").fetchone()[0]),
             "max_acquisition_generation": generation,
@@ -454,7 +431,6 @@ def _ops_profile(path: Path) -> tuple[JSONDocument, JSONDocument]:
     with closing(_connect_read_only(path)) as conn:
         profile: JSONDocument = {}
         if _table_exists(conn, "ingest_cursor"):
-            columns = _columns(conn, "ingest_cursor")
             profile["growing_sources"] = {
                 "cursor_count": _scalar(conn, "SELECT COUNT(*) FROM ingest_cursor"),
                 "origin_mix": _mix(conn, "ingest_cursor", "origin"),
@@ -464,9 +440,7 @@ def _ops_profile(path: Path) -> tuple[JSONDocument, JSONDocument]:
                 "record_count": _column_distributions(conn, "ingest_cursor", ("record_count",)).get("record_count", {}),
                 "unconsumed_bytes": _sketch_rows(
                     conn.execute("SELECT MAX(COALESCE(stat_size, 0) - COALESCE(byte_offset, 0), 0) FROM ingest_cursor")
-                )
-                if {"stat_size", "byte_offset"} <= columns
-                else {},
+                ),
                 "excluded": _mix(conn, "ingest_cursor", "excluded"),
             }
         if _table_exists(conn, "convergence_debt"):

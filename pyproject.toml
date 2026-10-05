@@ -262,6 +262,7 @@ enable_error_code = [
 [tool.ruff]
 line-length = 120
 target-version = "py310"
+per-file-target-version = { "polylogue/core/evidence.py" = "py314" }
 cache-dir = ".cache/ruff"
 # Excludes are limited to vendored/build directories; every path below is
 # repository infrastructure, not production code. Audited under #1062 Pack B.

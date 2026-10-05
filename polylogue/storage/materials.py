@@ -19,23 +19,28 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from functools import partial
 from io import BytesIO
 from pathlib import Path
-from typing import Any, BinaryIO, Literal
+from typing import TYPE_CHECKING, Any, BinaryIO, Literal, Protocol
 
 import ijson
 
 from polylogue.core.prepared_file import PreparedFileSeal
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
+    BlobPublicationSourceRead,
+    ConnectionBlobPublicationRead,
     PreparedBlobPublicationClaim,
     _prepared_claim_from_record,
     _prepared_claim_record,
     consume_blob_publication_receipt,
 )
 from polylogue.storage.blob_store import BlobStore, PreparedBlob, blob_store_for_connection
+from polylogue.storage.io_phase_metrics import connection_cursor
 
 MaterialState = Literal[
     "claimed",
@@ -553,43 +558,31 @@ def prepare_material(
     )
 
 
-def publish_prepared_materials(materials: Iterable[PreparedMaterial]) -> None:
-    """Publish bounded closed preparations before opening a Source transaction."""
+def publish_prepared_materials(
+    materials: Iterable[PreparedMaterial], *, reference_seal: PreparedIndexMutation | None = None
+) -> None:
+    """Publish closed bounded material pages through the canonical page bodies."""
     from polylogue.core.compute_cancel import check_compute_cancelled
-    from polylogue.storage.blob_publication import require_published
 
     page: list[PreparedMaterial] = []
-    publisher: ArchiveBlobPublisher | None = None
 
     def flush_page() -> None:
-        if publisher is None:
+        if not page:
             return
-        publisher.flush()
-        try:
-            for material in page:
-                assert material.blob is not None
-                require_published(publisher, material.blob.hash_hex, source_path=material.source_uri)
-        finally:
-            for material in page:
-                assert material.publication_claim is not None
-                publisher.forget_completed_claim(material.publication_claim)
-            page.clear()
+        publisher = prepare_material_publication_page(page, reference_seal=reference_seal)
+        flush_material_publication_page(page, publisher, reference_seal=reference_seal)
+        page.clear()
 
     for material in materials:
         check_compute_cancelled()
         if material.blob is None:
             continue
-        if material.publication_claim is None:
-            raise ValueError("prepared material has no captured publication claim")
-        if publisher is not None and publisher is not material.publisher:
+        if page and page[0].publisher is not material.publisher:
             flush_page()
-        publisher = material.publisher
-        publisher.queue_prepared(material.blob, claim=material.publication_claim)
         page.append(material)
         if len(page) == 256:
             flush_page()
-    if page:
-        flush_page()
+    flush_page()
 
 
 def admit_material(
@@ -613,7 +606,9 @@ def admit_material(
         claim = prepared.publication_claim
         if claim is None:
             raise ValueError("material has no captured publication claim")
-        blob_hash, byte_size = prepared.publisher.validate_published_claim(conn, claim, source_path=prepared.source_uri)
+        blob_hash, byte_size = prepared.publisher.validate_published_claim(
+            ConnectionBlobPublicationRead(conn), claim, source_path=prepared.source_uri
+        )
         custody = "retained"
     else:
         if prepared.seal is not None or prepared.publication_claim is not None:
@@ -647,7 +642,7 @@ def admit_material(
             referrer_ref,
             source_uri,
             material_state,
-            diagnostic[:4096],
+            diagnostic,
             int(retryable),
             supersedes_material_id,
             bytes.fromhex(blob_hash) if blob_hash else None,
@@ -861,7 +856,7 @@ def link_material(
       ON CONFLICT(material_id, evidence_ref, relation) DO UPDATE SET
         authority=excluded.authority, confidence=excluded.confidence,
         observed_at_ms=excluded.observed_at_ms, source_diagnostic=excluded.source_diagnostic""",
-        (material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic[:4096]),
+        (material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic),
     )
     if commit:
         conn.commit()
@@ -1003,3 +998,326 @@ __all__ = [
     "read_material",
     "MaterialEvidenceLink",
 ]
+
+
+def prepare_material_publication_page(
+    page: Sequence[PreparedMaterial],
+    *,
+    reference_seal: PreparedIndexMutation | None,
+) -> ArchiveBlobPublisher:
+    """Queue this closed canonical page and prepare its original reservation."""
+    if not page:
+        raise ValueError("material publication page is empty")
+    publisher = page[0].publisher
+    for material in page:
+        if material.publisher is not publisher or material.blob is None or material.publication_claim is None:
+            raise ValueError("material page differs from its captured publisher or publication claim")
+        publisher.queue_prepared(material.blob, claim=material.publication_claim)
+    if reference_seal is not None:
+        from polylogue.core.write_lease import current_write_lease
+
+        if current_write_lease() is not None:
+            raise RuntimeError("prepared material reservations require lease-free preparation")
+        publisher.prepare_flush(reference_seal=reference_seal)
+    return publisher
+
+
+def flush_material_publication_page(
+    page: Sequence[PreparedMaterial],
+    publisher: ArchiveBlobPublisher,
+    *,
+    reference_seal: PreparedIndexMutation | None,
+) -> None:
+    """Flush the same pending batch and preserve its typed placement outcome."""
+    from polylogue.storage.blob_publication import require_published
+
+    if any(material.publisher is not publisher for material in page):
+        raise ValueError("material continuation requires its original publisher")
+    if reference_seal is None:
+        publisher.flush()
+    else:
+        from polylogue.core.stage_admission import admit_stage_write
+        from polylogue.core.write_lease import current_write_lease
+
+        if current_write_lease() is not None:
+            raise RuntimeError("prepared material reservations require lease-free preparation")
+        admit_stage_write(
+            "prepared-material-blob-reservations", partial(publisher.flush, reference_seal=reference_seal)
+        )
+    try:
+        for material in page:
+            assert material.blob is not None
+            require_published(publisher, material.blob.hash_hex, source_path=material.source_uri)
+    finally:
+        for material in page:
+            assert material.publication_claim is not None
+            publisher.forget_completed_claim(material.publication_claim)
+
+
+class MaterialSourceProducer(Protocol):
+    """Finite canonical material operations on ordinary or selected Source state."""
+
+    def material_publication_read(self, publisher: ArchiveBlobPublisher) -> BlobPublicationSourceRead: ...
+
+    def material_literal(self, value: object) -> tuple[str, tuple[object, ...]]: ...
+    def material_rows(self, material_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def material_duplicate_rows(self, blob_hash: bytes, material_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def material_previous_rows(
+        self,
+        referrer_ref: str,
+        source_uri: str,
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def material_supersede_write(
+        self,
+        material_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def material_write(
+        self,
+        material_id: str,
+        supersedes_material_id: str | None,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def material_link_write(
+        self,
+        key: tuple[str, str, str],
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+    def consume_material_receipt(self, claim: PreparedBlobPublicationClaim) -> None: ...
+
+
+_MATERIAL_ROWS_SQL = "SELECT * FROM material_observations WHERE material_id = ?"
+
+
+_MATERIAL_DUPLICATE_SQL = "SELECT 1 FROM material_observations WHERE blob_hash = ? AND material_id != ? LIMIT 1"
+
+
+_MATERIAL_PREVIOUS_SQL = (
+    "SELECT m.material_id FROM material_evidence_links AS l "
+    "JOIN material_observations AS m USING(material_id) "
+    "WHERE l.evidence_ref = ? AND l.relation = 'refers_to' "
+    "AND m.source_uri = ? AND m.acquisition_state != 'superseded' "
+    "ORDER BY m.created_at_ms DESC, m.material_id DESC LIMIT 1"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionMaterialSourceProducer:
+    connection: sqlite3.Connection
+
+    def material_publication_read(self, publisher: ArchiveBlobPublisher) -> BlobPublicationSourceRead:
+        return ConnectionBlobPublicationRead(self.connection)
+
+    def material_literal(self, value: object) -> tuple[str, tuple[object, ...]]:
+        return "?", (value,)
+
+    def material_rows(self, material_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, _MATERIAL_ROWS_SQL, (material_id,))
+
+    def material_duplicate_rows(self, blob_hash: bytes, material_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, _MATERIAL_DUPLICATE_SQL, (blob_hash, material_id))
+
+    def material_previous_rows(
+        self,
+        referrer_ref: str,
+        source_uri: str,
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, _MATERIAL_PREVIOUS_SQL, (referrer_ref, source_uri))
+
+    def material_supersede_write(
+        self,
+        material_id: str,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, sql, parameters)
+
+    def material_write(
+        self,
+        material_id: str,
+        supersedes_material_id: str | None,
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, sql, parameters)
+
+    def material_link_write(
+        self,
+        key: tuple[str, str, str],
+        sql: str,
+        parameters: tuple[object, ...],
+    ) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, sql, parameters)
+
+    def consume_material_receipt(self, claim: PreparedBlobPublicationClaim) -> None:
+        consume_blob_publication_receipt(
+            self.connection,
+            claim.receipt.publication_id,
+            bytes.fromhex(claim.receipt.blob_hash),
+        )
+
+
+def _admit_material(
+    producer: MaterialSourceProducer,
+    *,
+    prepared: PreparedMaterial,
+    observed_at_ms: int,
+    supersedes_material_id: str | None = None,
+) -> MaterialObservation:
+    """Apply a sealed preparation through the existing archive publisher."""
+    if prepared.publisher.root.resolve() != prepared.blob_root:
+        raise ValueError("material preparation belongs to another archive")
+    source_uri, referrer_ref = prepared.source_uri, prepared.referrer_ref
+    material_id = prepared.material_id
+    material_state = prepared.state
+    diagnostic, retryable = prepared.diagnostic, prepared.retryable
+    media_type, media_charset, filename = prepared.media_type, prepared.media_charset, prepared.filename
+    privacy_classification = prepared.privacy_classification
+    if prepared.blob is not None:
+        claim = prepared.publication_claim
+        if claim is None:
+            raise ValueError("material has no captured publication claim")
+        blob_hash, byte_size = prepared.publisher.validate_published_claim(
+            producer.material_publication_read(prepared.publisher), claim, source_path=prepared.source_uri
+        )
+        custody = "retained"
+    else:
+        if prepared.seal is not None or prepared.publication_claim is not None:
+            raise ValueError("material claim has publication proof without bytes")
+        blob_hash, byte_size, custody = None, None, "claimed"
+    if blob_hash is not None:
+        with producer.material_duplicate_rows(bytes.fromhex(blob_hash), material_id) as rows:
+            duplicate = rows.fetchone() is not None
+        if duplicate and prepared.infer_duplicate:
+            material_state = "duplicate"
+    now = observed_at_ms
+    values = (
+        None,
+        material_id,
+        referrer_ref,
+        source_uri,
+        material_state,
+        diagnostic,
+        int(retryable),
+        supersedes_material_id,
+        bytes.fromhex(blob_hash) if blob_hash else None,
+        byte_size,
+        media_type,
+        media_charset,
+        filename,
+        prepared.manifest_json,
+        custody,
+        privacy_classification,
+        observed_at_ms,
+        now,
+    )
+    expressions: list[str] = []
+    parameters: list[object] = []
+    for position, value in enumerate(values):
+        expression, operands = ("?", (None,)) if position == 0 else producer.material_literal(value)
+        expressions.append(expression)
+        parameters.extend(operands)
+    sql = """INSERT INTO material_observations
+        (rowid, material_id, referrer_ref, source_uri, acquisition_state, diagnostic,
+         retryable, supersedes_material_id, blob_hash, byte_size, media_type,
+         media_charset, filename, extraction_manifest_json, custody,
+         privacy_classification, acquired_at_ms, created_at_ms)
+        VALUES ({values})
+        ON CONFLICT(material_id) DO UPDATE SET
+          acquisition_state=excluded.acquisition_state, diagnostic=excluded.diagnostic,
+          retryable=excluded.retryable, blob_hash=excluded.blob_hash,
+          byte_size=excluded.byte_size, extraction_manifest_json=excluded.extraction_manifest_json,
+          custody=excluded.custody, acquired_at_ms=excluded.acquired_at_ms""".format(values=", ".join(expressions))
+    with producer.material_write(material_id, supersedes_material_id, sql, tuple(parameters)):
+        pass
+    if prepared.publication_claim is not None:
+        producer.consume_material_receipt(prepared.publication_claim)
+
+    # A readmission keeps the stored identity metadata and creation time, so
+    # report the row that persisted rather than this call's arguments.
+    with producer.material_rows(material_id) as cursor:
+        observation = _material_from_cursor(cursor)
+    if observation is None:
+        raise RuntimeError(f"material admission did not persist {material_id}")
+    return observation
+
+
+def _supersede_material(producer: MaterialSourceProducer, material_id: str) -> None:
+    state_sql, state_operands = producer.material_literal("superseded")
+    key_sql, key_operands = producer.material_literal(material_id)
+    with producer.material_supersede_write(
+        material_id,
+        f"UPDATE material_observations SET acquisition_state={state_sql} WHERE material_id={key_sql}",
+        (*state_operands, *key_operands),
+    ):
+        pass
+
+
+def _link_material(
+    producer: MaterialSourceProducer,
+    material_id: str,
+    evidence_ref: str,
+    *,
+    relation: MaterialRelation,
+    authority: Literal["provider", "operator", "repository", "inferred", "unknown"] = "unknown",
+    confidence: float = 1.0,
+    observed_at_ms: int,
+    source_diagnostic: str = "",
+) -> None:
+    if not material_id.strip() or not evidence_ref.strip():
+        raise ValueError("material_id and evidence_ref are required")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    with producer.material_rows(material_id) as rows:
+        if rows.fetchone() is None:
+            raise KeyError(material_id)
+    values = (None, material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic)
+    expressions: list[str] = []
+    parameters: list[object] = []
+    for position, value in enumerate(values):
+        expression, operands = ("?", (None,)) if position == 0 else producer.material_literal(value)
+        expressions.append(expression)
+        parameters.extend(operands)
+    sql = """INSERT INTO material_evidence_links
+      (rowid, material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic)
+      VALUES ({values})
+      ON CONFLICT(material_id, evidence_ref, relation) DO UPDATE SET
+        authority=excluded.authority, confidence=excluded.confidence,
+        observed_at_ms=excluded.observed_at_ms, source_diagnostic=excluded.source_diagnostic""".format(
+        values=", ".join(expressions)
+    )
+    with producer.material_link_write((material_id, evidence_ref, relation), sql, tuple(parameters)):
+        pass
+
+
+def _material_from_cursor(cursor: sqlite3.Cursor) -> MaterialObservation | None:
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = [column[0] for column in cursor.description or ()]
+    row = dict(zip(columns, row, strict=True))
+    return MaterialObservation(
+        material_id=row["material_id"],
+        referrer_ref=row["referrer_ref"],
+        source_uri=row["source_uri"],
+        acquisition_state=row["acquisition_state"],
+        diagnostic=row["diagnostic"],
+        retryable=bool(row["retryable"]),
+        blob_hash=bytes(row["blob_hash"]).hex() if row["blob_hash"] is not None else None,
+        byte_size=row["byte_size"],
+        media_type=row["media_type"],
+        media_charset=row["media_charset"],
+        filename=row["filename"],
+        extraction_manifest=json.loads(row["extraction_manifest_json"]),
+        custody=row["custody"],
+        privacy_classification=row["privacy_classification"],
+        acquired_at_ms=row["acquired_at_ms"],
+        created_at_ms=row["created_at_ms"],
+    )
+
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation

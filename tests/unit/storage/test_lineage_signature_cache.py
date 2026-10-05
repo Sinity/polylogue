@@ -18,15 +18,20 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import LineageSignatureCache
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import (
+    close_fixture_index_connection,
+    fixture_index_mutation_scope,
+    write_fixture_index_session,
+)
 
 
 def _connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -104,8 +109,8 @@ def test_disabling_cache_preserves_lineage_output(tmp_path: Path) -> None:
             right = [tuple(row) for row in uncached_conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
             assert left == right, table
     finally:
-        cached_conn.close()
-        uncached_conn.close()
+        close_fixture_index_connection(cached_conn)
+        close_fixture_index_connection(uncached_conn)
 
 
 def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
@@ -178,7 +183,7 @@ def test_composed_cache_reuses_canonical_parent_identity_for_siblings(
         "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position DESC LIMIT 1", (parent_id,)
     ).fetchone()[0]
     assert branch_a == canonical_branch == branch_b
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_changed_parent_refuses_prepared_child_even_with_stale_batch_cache(tmp_path: Path) -> None:
@@ -202,13 +207,13 @@ def test_changed_parent_refuses_prepared_child_even_with_stale_batch_cache(tmp_p
         write_fixture_index_session(conn, replacement)
         assert cache.get_composed(parent_id) == stale_prefix
         assert write_module._composed_db_signatures(conn, parent_id) != stale_prefix
-        with pytest.raises(write_module.PreparedSessionWriteRefusedError):
+        with pytest.raises(write_module.PreparedSessionWriteRefusedError), fixture_index_mutation_scope(conn):
             write_fixture_index_session(conn, child, signature_cache=cache, prepared_write=prepared)
         assert conn.execute("SELECT 1 FROM sessions WHERE native_id = 'child'").fetchone() is None
     finally:
         if prepared is not None:
             prepared.close()
-        conn.close()
+        close_fixture_index_connection(conn)
 
 
 def test_one_byte_prefix_difference_is_a_miss_and_stays_spawned_fresh(tmp_path: Path) -> None:
@@ -232,7 +237,7 @@ def test_one_byte_prefix_difference_is_a_miss_and_stays_spawned_fresh(tmp_path: 
     ).fetchone()
     assert tuple(link) == ("spawned-fresh", None)
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 3
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path: Path) -> None:
@@ -290,7 +295,7 @@ def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path:
     ).fetchone()[0]
     assert tuple(link) == ("prefix-sharing", c_last)
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (d2_id,)).fetchone()[0] == 1
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_pop_reaches_a_descendant_through_its_recorded_closure() -> None:

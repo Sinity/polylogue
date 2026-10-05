@@ -47,6 +47,7 @@ def _model_usage_rows() -> tuple[ModelUsageTotals, ...]:
             output_tokens=_EXACT_OUTPUT,
             cache_read_tokens=_EXACT_CACHE_READ,
             cache_write_tokens=0,
+            provider_lanes_complete=True,
         ),
     )
 
@@ -176,6 +177,7 @@ def test_synthetic_claude_row_preserves_exact_provider_price(
             output_tokens=6_789,
             cache_read_tokens=123_456,
             cache_write_tokens=7_890,
+            provider_lanes_complete=True,
         ),
     )
     reconciliation = build_session_usage_reconciliation(
@@ -235,14 +237,10 @@ def test_multi_model_reprice_keeps_each_model_rate() -> None:
 
     rows = (
         ModelUsageTotals(
-            model_name="gpt-5.1-codex",
-            input_tokens=1_000,
-            output_tokens=100,
+            model_name="gpt-5.1-codex", input_tokens=1_000, output_tokens=100, provider_lanes_complete=True
         ),
         ModelUsageTotals(
-            model_name="claude-sonnet-4-5",
-            input_tokens=2_000,
-            output_tokens=1_000,
+            model_name="claude-sonnet-4-5", input_tokens=2_000, output_tokens=1_000, provider_lanes_complete=True
         ),
     )
     reconciliation = build_session_usage_reconciliation(

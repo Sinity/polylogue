@@ -6,12 +6,14 @@ import random
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias, TypeVar
 
 if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
 
 from polylogue.archive.filter.types import SortField
+from polylogue.core.timestamps import _aware_utc
 
 _T = TypeVar("_T")
 SortKey: TypeAlias = datetime | float | int | str
@@ -48,7 +50,7 @@ class ResultWindow:
 def sort_generic(
     plan: QuerySortPlan,
     items: list[_T],
-    key_fn: Callable[[_T], SortKey | tuple[SortKey, datetime, str]],
+    key_fn: Callable[[_T], SortKey | tuple[SortKey, ...]],
 ) -> list[_T]:
     if plan.sort == "random":
         shuffled = list(items)
@@ -84,57 +86,62 @@ def _session_measured_tokens(session: Session) -> tuple[bool, int]:
     return not measured, total
 
 
-def sort_sessions(
-    plan: QuerySortPlan,
-    sessions: list[Session],
-) -> list[Session]:
-    dt_min = datetime.min.replace(tzinfo=timezone.utc)
+# SQLite stores these values without losing integer counters. The first key
+# always places unmeasured tokens last; the remaining keys share direction.
+SessionOrderValues: TypeAlias = tuple[bool, int | float, int, str]
 
-    def _ties(session: Session) -> tuple[datetime, str]:
-        # SQL breaks every count order by ``sort_key_ms`` then ``session_id``,
-        # in the same direction (``_summary_order_by``); a missing sort key
-        # is SQLite's NULL, the smallest value.
-        return session.updated_at or session.created_at or dt_min, str(session.id)
 
+def _time_value(value: datetime | None) -> int:
+    reference = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = _aware_utc(value or datetime.min.replace(tzinfo=timezone.utc)) - reference
+    return ((delta.days * 86400 + delta.seconds) * 1_000_000) + delta.microseconds
+
+
+def compare_numeric_order_values(left: str, right: str) -> int:
+    """Compare exact staged numbers without an integer bind limit or rounding."""
+    lhs, rhs = Decimal(left), Decimal(right)
+    return (lhs > rhs) - (lhs < rhs)
+
+
+def session_order_values(plan: QuerySortPlan, session: Session) -> SessionOrderValues:
+    """The exact comparison values shared by composed and staged SQL sorting."""
+    ties = (_time_value(session.updated_at or session.created_at), str(session.id))
     if plan.sort == "tokens":
-        # A composite key alone (unmeasured, total) can't share sort_generic's
-        # single reversal: reversing would also flip "unmeasured" to sort
-        # first. Sort unmeasured-last unconditionally, then by measured total
-        # in the requested direction, exactly as the SQL ORDER BY does.
-        scored = [(session, *_session_measured_tokens(session)) for session in sessions]
-        measured = sorted(
-            ((session, total) for session, unmeasured, total in scored if not unmeasured),
-            key=lambda pair: (pair[1], *_ties(pair[0])),
-            reverse=not plan.reverse,
-        )
-        unmeasured = sorted(
-            (session for session, is_unmeasured, _total in scored if is_unmeasured),
-            key=lambda session: (0, *_ties(session)),
-            reverse=not plan.reverse,
-        )
-        return [session for session, _total in measured] + unmeasured
-
-    def _key(session: Session) -> SortKey | tuple[SortKey, datetime, str]:
-        if plan.sort == "date":
-            return session.updated_at or dt_min
-        if plan.sort == "messages":
-            return (len(session.messages), *_ties(session))
-        if plan.sort == "words":
-            return (sum(message.word_count for message in session.messages), *_ties(session))
-        if plan.sort == "longest":
-            return (max((message.word_count for message in session.messages), default=0), *_ties(session))
-        return session.updated_at or dt_min
-
-    return sort_generic(plan, sessions, _key)
+        unmeasured, total = _session_measured_tokens(session)
+        return unmeasured, total, *ties
+    if plan.sort == "messages":
+        return False, len(session.messages), *ties
+    if plan.sort == "words":
+        return False, sum(message.word_count for message in session.messages), *ties
+    if plan.sort == "longest":
+        return False, max((message.word_count for message in session.messages), default=0), *ties
+    if plan.sort == "random":
+        return False, random.random(), 0, ""
+    return False, _time_value(session.updated_at), 0, ""
 
 
-def sort_summaries(
-    plan: QuerySortPlan,
-    summaries: list[SessionSummary],
-) -> list[SessionSummary]:
-    dt_min = datetime.min.replace(tzinfo=timezone.utc)
-    # Mirrors SQL's ``sort_key_ms = COALESCE(updated_at_ms, created_at_ms)``.
-    return sort_generic(plan, summaries, lambda summary: summary.updated_at or summary.created_at or dt_min)
+def summary_order_values(plan: QuerySortPlan, summary: SessionSummary) -> SessionOrderValues:
+    """Preserve the summary comparator's date fallback and stable input ties."""
+    if plan.sort == "random":
+        return False, random.random(), 0, ""
+    return False, _time_value(summary.updated_at or summary.created_at), 0, ""
+
+
+def sort_sessions(plan: QuerySortPlan, sessions: list[Session]) -> list[Session]:
+    if plan.sort == "random":
+        return sort_generic(plan, sessions, lambda session: 0)
+    if plan.sort != "tokens":
+        return sorted(sessions, key=lambda session: session_order_values(plan, session)[1:], reverse=not plan.reverse)
+    scored = [(session, session_order_values(plan, session)) for session in sessions]
+    measured = sorted(
+        (pair for pair in scored if not pair[1][0]), key=lambda pair: pair[1][1:], reverse=not plan.reverse
+    )
+    unmeasured = sorted((pair for pair in scored if pair[1][0]), key=lambda pair: pair[1][1:], reverse=not plan.reverse)
+    return [session for session, _values in measured] + [session for session, _values in unmeasured]
+
+
+def sort_summaries(plan: QuerySortPlan, summaries: list[SessionSummary]) -> list[SessionSummary]:
+    return sort_generic(plan, summaries, lambda summary: summary_order_values(plan, summary)[1:])
 
 
 class SessionReservoir(Generic[_T]):
@@ -221,6 +228,10 @@ __all__ = [
     "SessionReservoir",
     "ResultWindow",
     "sort_sessions",
+    "session_order_values",
+    "summary_order_values",
+    "SessionOrderValues",
+    "compare_numeric_order_values",
     "sort_generic",
     "sort_summaries",
 ]

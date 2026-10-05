@@ -52,7 +52,9 @@ _ABORT_SLO_S = 5.0
 
 
 def _bootstrap_archive(tmp_path: Path) -> Path:
-    with ArchiveStore(tmp_path):
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with write_lease("test.fixture.query-control", archive_root=tmp_path), ArchiveStore(tmp_path):
         pass
     return tmp_path
 
@@ -222,12 +224,12 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Admission waits must not consume storage adapter workers."""
-    from polylogue.storage.sqlite import async_adapter
-    from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
+    from polylogue.core import compute
+    from polylogue.core.compute import BoundedComputeAdapter
 
     root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
-    adapter = ArchiveReadAsyncAdapter(max_workers=2)
-    monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
+    adapter = BoundedComputeAdapter(max_workers=2)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
     controller = QueryAdmissionController(capacity=2, reserved_interactive=1)
     release_scans = threading.Event()
     first_scan_started = threading.Event()
@@ -285,7 +287,7 @@ async def test_interactive_read_starts_while_scan_submission_is_saturated(
             *(task for task in (second_scan, interactive) if task is not None),
             return_exceptions=True,
         )
-        adapter.close()
+        assert adapter.close(join_timeout_s=5) == ()
     assert controller.in_flight_weight == 0
 
 
@@ -293,12 +295,12 @@ async def test_adapter_close_releases_queued_executor_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Canceling an accepted-but-queued future must release its lease."""
-    from polylogue.storage.sqlite import async_adapter
-    from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
+    from polylogue.core import compute
+    from polylogue.core.compute import BoundedComputeAdapter
 
     root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
-    adapter = ArchiveReadAsyncAdapter(max_workers=1)
-    monkeypatch.setattr(async_adapter, "default_archive_read_async_adapter", lambda: adapter)
+    adapter = BoundedComputeAdapter(max_workers=1)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
     controller = QueryAdmissionController(capacity=2, reserved_interactive=0)
     release_first = threading.Event()
     first_started = threading.Event()
@@ -325,7 +327,7 @@ async def test_adapter_close_releases_queued_executor_admission(
         assert controller.in_flight_weight == 2
         assert second_started.is_set() is False
 
-        close_task = asyncio.create_task(asyncio.to_thread(adapter.close))
+        close_task = asyncio.create_task(asyncio.to_thread(adapter.close, join_timeout_s=5))
         await asyncio.sleep(0.05)
         release_first.set()
         await close_task
@@ -333,8 +335,7 @@ async def test_adapter_close_releases_queued_executor_admission(
     finally:
         release_first.set()
         await asyncio.gather(first, second, return_exceptions=True)
-        if not adapter._closed:
-            adapter.close()
+        assert adapter.close(join_timeout_s=5) == ()
 
     assert second_started.is_set() is False
     assert controller.in_flight_weight == 0
@@ -1101,3 +1102,120 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     assert bounded_ctx.receipt.cleanup_complete is True
     assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
     assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000
+
+
+@pytest.mark.parametrize("abort", ["cancel", "deadline"])
+async def test_queued_read_cancellation_returns_shared_compute_and_connection_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, abort: str
+) -> None:
+    from polylogue.core import compute
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=2)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
+    controller = QueryAdmissionController(capacity=2, reserved_interactive=0)
+    release = threading.Event()
+    started = threading.Event()
+    reached = threading.Event()
+
+    def occupied() -> None:
+        started.set()
+        assert release.wait(5)
+
+    original = adapter.submit(occupied)
+    assert await asyncio.to_thread(started.wait, 2)
+    ctx = QueryExecutionContext.create(query_text="queued-λ", timeout_s=0.5 if abort == "deadline" else None)
+
+    def read(store: ArchiveStore) -> int:
+        reached.set()
+        return _cheap_work(store)
+
+    pending = asyncio.create_task(execute_archive_read(root, read, ctx=ctx, controller=controller))
+    try:
+        deadline = time.monotonic() + 2
+        while adapter.snapshot().queued_units == 0 and time.monotonic() < deadline:
+            await asyncio.sleep(0.005)
+        assert adapter.snapshot().queued_units == 1
+        assert adapter.snapshot().queued_bytes == len("queued-λ".encode())
+        if abort == "cancel":
+            ctx.cancel()
+        with pytest.raises(QueryTimeoutError if abort == "deadline" else QueryCancelledError):
+            await pending
+        assert not reached.is_set()
+        assert controller.in_flight_weight == 0
+        assert adapter.snapshot().used_units == 1
+    finally:
+        release.set()
+        await asyncio.wrap_future(original.future)
+        await asyncio.gather(pending, return_exceptions=True)
+        assert adapter.close(join_timeout_s=5) == ()
+
+
+async def test_shared_compute_backpressure_returns_connection_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.core import compute
+    from polylogue.core.compute import BoundedComputeAdapter, DaemonBackpressureError
+
+    root = await asyncio.to_thread(_bootstrap_archive, tmp_path)
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    monkeypatch.setattr(compute, "compute_adapter", lambda: adapter)
+    release = threading.Event()
+    original = adapter.submit(lambda: release.wait(5))
+    controller = QueryAdmissionController()
+    try:
+        with pytest.raises(DaemonBackpressureError) as refused:
+            await execute_archive_read(
+                root, _cheap_work, ctx=QueryExecutionContext.create(query_text="saturated"), controller=controller
+            )
+        assert refused.value.code == "compute_backpressure"
+        assert controller.in_flight_weight == 0
+        assert adapter.snapshot().used_units == 1
+    finally:
+        release.set()
+        await asyncio.wrap_future(original.future)
+        assert adapter.close(join_timeout_s=5) == ()
+
+
+@pytest.mark.parametrize("failure_type", [QueryCancelledError, ValueError])
+async def test_detached_disconnect_worker_exception_is_observed_after_physical_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception]
+) -> None:
+    import polylogue.archive.query.execution_control as ec
+
+    monkeypatch.setattr(ec, "DISCONNECT_DRAIN_TIMEOUT_S", 0.02)
+    root = _bootstrap_archive(tmp_path)
+    ctx = QueryExecutionContext.create(query_text="detached", timeout_s=None)
+    controller = QueryAdmissionController()
+    started = threading.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+
+    def failing_work(store: ArchiveStore) -> None:
+        started.set()
+        assert release.wait(5)
+        raise failure_type("late worker failure")
+
+    task = asyncio.create_task(execute_archive_read(root, failing_work, ctx=ctx, controller=controller))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert ctx.receipt.state == "disconnected"
+        assert controller.in_flight_weight > 0
+        release.set()
+        deadline = time.monotonic() + 5
+        while controller.in_flight_weight and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        assert controller.in_flight_weight == 0
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not unhandled
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)

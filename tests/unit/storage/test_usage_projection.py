@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 
 import pytest
 
@@ -88,8 +89,10 @@ def test_projection_splits_models_and_marks_missing_cache_rate_incomplete() -> N
 
 def test_rollup_keeps_cost_unknown_when_one_model_is_incomplete() -> None:
     projections = (
-        UsageProjectionModel("s1", "gpt-4o", 100, 0, 0, 0, 0.001, "complete"),
-        UsageProjectionModel("s2", "gpt-4o", 100, 0, 0, 0, None, "incomplete", ("missing_model_price",)),
+        UsageProjectionModel("s1", "gpt-4o", 100, 0, 0, 0, 0.001, "complete", provider_lanes_complete=True),
+        UsageProjectionModel(
+            "s2", "gpt-4o", 100, 0, 0, 0, None, "incomplete", ("missing_model_price",), provider_lanes_complete=True
+        ),
     )
     (rollup,) = rollup_usage_projections(projections, origins={"s1": "test", "s2": "test"})
     assert rollup.cost_usd is None
@@ -193,3 +196,59 @@ def test_free_model_with_zero_cache_rate_remains_priced(monkeypatch: pytest.Monk
     (projection,) = project_provider_usage_events(events, origin="test")
     assert projection.state == "complete"
     assert projection.cost_usd == 0.0
+
+
+def test_nullable_model_projection_and_rollup_sort_without_aliasing() -> None:
+    projections = project_provider_usage_events(
+        [
+            {"session_id": "s1", "model_name": None, "last_input_tokens": 1},
+            {"session_id": "s1", "model_name": "gpt-4o", "last_input_tokens": 1},
+        ],
+        origin="test",
+    )
+    assert [row.model_name for row in projections] == [None, "gpt-4o"]
+    assert projections[0].missing_reasons == ("missing_model",)
+    assert projections[0].provider_lanes_complete
+    assert [row.model_name for row in rollup_usage_projections(projections)] == [None, "gpt-4o"]
+
+
+@pytest.mark.parametrize(
+    "column", ["last_total_tokens", "last_reasoning_output_tokens", "total_tokens", "total_reasoning_output_tokens"]
+)
+def test_unmappable_counters_remain_incomplete(column: str) -> None:
+    (projection,) = project_provider_usage_events(
+        [{"session_id": "s1", "model_name": "gpt-4o", "provider_event_type": "token_count", column: 10}], origin="test"
+    )
+    assert projection.state == "incomplete"
+    assert projection.cost_usd is None
+    assert projection.missing_reasons == ("missing_token_lanes",)
+    assert not projection.provider_lanes_complete
+
+
+def test_projection_cost_precision_survives_many_tiny_sessions() -> None:
+    projections = project_provider_usage_events(
+        ({"session_id": f"s{index}", "model_name": "gpt-4o-mini", "last_input_tokens": 1} for index in range(100)),
+        origin="test",
+    )
+    assert all(row.cost_usd == estimate_cost(1, 0, "gpt-4o-mini") for row in projections)
+    (rollup,) = rollup_usage_projections(projections)
+    assert rollup.cost_usd == round(100 * estimate_cost(1, 0, "gpt-4o-mini"), 6)
+    assert rollup.cost_usd > 0
+
+
+def test_many_cumulative_sessions_replace_only_their_own_delta() -> None:
+    def events() -> Iterator[dict[str, str | int]]:
+        for index in range(500):
+            yield {"session_id": f"s{index}", "model_name": "gpt-4o", "last_input_tokens": 100}
+            yield {
+                "session_id": f"s{index}",
+                "model_name": "gpt-4o",
+                "provider_event_type": "token_count",
+                "position": 1,
+                "total_input_tokens": index,
+            }
+
+    projections = project_provider_usage_events(events(), origin="test")
+    assert len(projections) == 500
+    assert {row.session_id: row.input_tokens for row in projections} == {f"s{index}": index for index in range(500)}
+    assert all(row.cumulative for row in projections)

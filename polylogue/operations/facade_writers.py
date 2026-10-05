@@ -17,6 +17,8 @@ from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
+from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest
+from polylogue.operations.operation_context import OperationContext
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.connection_profile import open_connection
 
@@ -421,21 +423,86 @@ def _daemon_writer_result(request: Any, value: object, *, affected_count: int = 
     }
 
 
-def facade_record_work_event(request: Any, context: Any, audit: Any, snapshot: Any) -> dict[str, object]:
-    from polylogue.operations.facade_mutations import record_work_event_product
+async def facade_record_work_event(
+    request: DaemonOperationRequest, context: OperationContext
+) -> DaemonOperationEnvelope:
+    """Acquire one work event, then publish through the original resident owner."""
+    from time import monotonic
 
-    del audit, snapshot
-    payload = request.payload
-    result = record_work_event_product(
-        _daemon_config(context.archive_root),
-        str(payload["session_id"]),
-        event_id=str(payload["event_id"]),
-        event_type=str(payload["event_type"]),
-        summary=str(payload["summary"]),
-        payload=payload.get("payload"),
-        timestamp=payload.get("timestamp"),
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.operation_context import (
+        OperationControlRead,
+        observe_control_authority,
+        open_operation_read,
     )
-    return _daemon_writer_result(request, result)
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    await runtime.recover_interrupted_operations()
+    started = monotonic()
+    payload = request.payload
+
+    def observe_event_authority() -> OperationControlRead:
+        with open_operation_read(
+            context.archive_root, publication_guard=runtime.publication_guard, execution_context=context.read_control
+        ) as snapshot:
+            _validate_identity(request, context, snapshot)
+            return OperationControlRead(snapshot.identity, snapshot.schema_versions, snapshot.degraded_components)
+
+    authority = await runtime.compute_phase(observe_event_authority)
+
+    def acquire() -> dict[str, object]:
+        current = observe_control_authority(context.archive_root)
+        if current.identity != authority.identity:
+            raise ValueError("archive_identity_stale")
+        with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
+            version = int(archive.index_connection.execute("PRAGMA user_version").fetchone()[0])
+            if version != authority.schema_versions.get("index"):
+                raise ValueError("schema_version_mismatch")
+            _validate_identity(request, context, authority)
+            runtime.observe_snapshot(request, authority)
+            runtime.begin_unbound_write(request, snapshot=authority)
+            return archive.admit_work_event(
+                session_id=str(payload["session_id"]),
+                event_type=str(payload["event_type"]),
+                payload=dict(payload.get("payload") or {}),
+                event_id=str(payload["event_id"]),
+                summary=str(payload["summary"]),
+                timestamp=payload.get("timestamp"),
+            )
+
+    admitted = await runtime.write_phase("work-event.acquire", acquire)
+
+    def refuse(_subjects: object, failure: BaseException) -> None:
+        raise failure
+
+    def refuse_one(failure: BaseException) -> None:
+        raise failure
+
+    receipts = await runtime.materialize_retained_raw_ids(
+        (str(admitted["raw_id"]),),
+        on_terminal_refusal=refuse,
+        on_dependency_refusal=refuse_one,
+        on_membership_refusal=refuse_one,
+        before_publication=lambda: None,
+    )
+    result = _daemon_writer_result(
+        request,
+        {
+            "event_id": admitted["event_id"],
+            "session_id": admitted["session_id"],
+            "event_type": admitted["event_type"],
+            "summary": admitted["summary"],
+            "content_changed": any(admitted["raw_id"] in receipt.writer_changed_raw_ids for receipt in receipts),
+        },
+    )
+    validate_operation_result(request.operation, result)
+    settled = await runtime.compute_phase(observe_event_authority)
+    return operation_envelope(request, context, snapshot=settled, started_at=started, result=result)
 
 
 def facade_record_manual_continuation(request: Any, context: Any, audit: Any, snapshot: Any) -> dict[str, object]:

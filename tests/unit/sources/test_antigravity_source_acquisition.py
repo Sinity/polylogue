@@ -82,6 +82,7 @@ def test_source_census_accounts_for_all_roles_and_unknown_items(tmp_path: Path) 
     source_census = antigravity.census_source(root)
     assert source_census.counts == {
         antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF: 1,
+        antigravity.AntigravitySourceRole.EXPORT_DOCUMENT: 0,
         antigravity.AntigravitySourceRole.BRAIN_DOCUMENT: 1,
         antigravity.AntigravitySourceRole.METADATA_SIDECAR: 1,
         antigravity.AntigravitySourceRole.UNKNOWN: 1,
@@ -484,3 +485,98 @@ async def test_inbox_staged_trajectory_is_admitted_without_a_provider_label(
     finally:
         writer.close()
         await archive.close()
+
+
+@pytest.mark.parametrize(
+    "shape", ["export", "renamed_export", "foreign", "missing_markdown", "malformed", "brain_metadata"]
+)
+def test_antigravity_export_json_census_requires_canonical_parser_evidence(tmp_path: Path, shape: str) -> None:
+    import hashlib
+    import json
+
+    from polylogue.sources.dispatch import parse_payload
+    from polylogue.sources.origin_specs import recognize_source_class
+
+    root = tmp_path / "antigravity"
+    root.mkdir()
+    payload = {
+        "source": "antigravity_language_server",
+        "cascadeId": "neutral-cascade",
+        "markdown": "### User Input\n\nauthored neutral text\n",
+    }
+    if shape == "foreign":
+        payload["source"] = "foreign"
+    elif shape == "missing_markdown":
+        del payload["markdown"]
+    path = root / ("neutral-export.txt" if shape == "renamed_export" else "neutral-export.json")
+    if shape == "brain_metadata":
+        path = root / "brain" / "work" / "plan.md.metadata.json"
+        path.parent.mkdir(parents=True)
+    content = b'{"broken":' if shape == "malformed" else json.dumps(payload).encode()
+    path.write_bytes(content)
+    source_census = antigravity.census_source(root)
+    [item] = source_census.items
+    assert item.content_sha256 == hashlib.sha256(content).hexdigest()
+    assert item.size_bytes == len(content)
+    classification = item.classification
+    assert classification is not None
+    expected_session = shape in {"export", "renamed_export"}
+    assert classification.parse_as_session is expected_session
+    assert source_census.counts[antigravity.AntigravitySourceRole.EXPORT_DOCUMENT] == int(expected_session)
+    assert antigravity.classify_source_path(path) == classification
+    root_census = census_source_root(root, provider=Provider.ANTIGRAVITY)
+    assert root_census.candidate_count == 1
+    assert root_census.disposition_counts == {
+        "session": int(expected_session),
+        "non_session": int(shape == "brain_metadata"),
+        "unsupported": int(shape not in {"export", "renamed_export", "brain_metadata"}),
+    }
+    assert root_census.is_complete
+    if expected_session:
+        recognized = recognize_source_class(Provider.ANTIGRAVITY, path, payload=payload)
+        assert recognized is not None and recognized.source_class == "session"
+        assert recognize_source_class(Provider.ANTIGRAVITY, path, source_only=True) is None
+        [session] = parse_payload(Provider.ANTIGRAVITY, payload, "unused", source_path=str(path))
+        assert session.provider_session_id == "neutral-cascade"
+        assert [message.text for message in session.messages] == ["authored neutral text"]
+    elif shape == "brain_metadata":
+        assert classification.role is antigravity.AntigravitySourceRole.METADATA_SIDECAR
+    else:
+        assert classification.role is antigravity.AntigravitySourceRole.UNKNOWN
+
+
+def test_antigravity_export_census_rechecks_identity_after_structural_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    root = tmp_path / "antigravity"
+    root.mkdir()
+    path = root / "export.json"
+    path.write_text(
+        json.dumps(
+            {
+                "source": "antigravity_language_server",
+                "cascadeId": "neutral",
+                "markdown": "### User Input\n\nneutral\n",
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = antigravity.classify_source_path
+    reached = False
+
+    def replace_after_probe(
+        source_path: str | Path, *, payload: object | None = None
+    ) -> antigravity.AntigravitySourceClassification:
+        nonlocal reached
+        classification = original(source_path, payload=payload)
+        assert classification.role is antigravity.AntigravitySourceRole.EXPORT_DOCUMENT
+        reached = True
+        path.write_text("{}", encoding="utf-8")
+        return classification
+
+    monkeypatch.setattr(antigravity, "classify_source_path", replace_after_probe)
+    with pytest.raises(antigravity.AntigravitySourceMutationError):
+        antigravity.census_source(root)
+    assert reached

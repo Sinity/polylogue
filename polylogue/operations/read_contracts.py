@@ -21,6 +21,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+class ReadPageUnavailableError(ValueError):
+    """A page lacks the physical coordinates needed for truthful continuation."""
+
+    code = "read_page_unavailable"
+
+
 class _ReadRequest(BaseModel):
     """Base for a declared read request payload."""
 
@@ -298,7 +304,15 @@ class SessionReadRequest(_ReadRequest):
     #: surfaces (polylogue-idrej).
     around: str | None = Field(default=None, min_length=1)
     projection: dict[str, object] | None = None
+    session_projection: Literal["archive", "domain"] = "archive"
+    selection_epoch: str | None = Field(default=None, min_length=1)
     continuation: str | None = None
+
+    @model_validator(mode="after")
+    def domain_projection_names_a_transcript(self) -> SessionReadRequest:
+        if self.kind != "transcript" and self.session_projection != "archive":
+            raise ValueError("selected domain hydration requires the transcript kind")
+        return self
 
     @model_validator(mode="after")
     def only_a_continuable_kind_continues(self) -> SessionReadRequest:
@@ -327,6 +341,7 @@ class SessionReadResult(_ReadResult):
 
     outcome: dict[str, object]
     session: dict[str, object]
+    selection_epoch: str | None = None
     session_id: str = Field(min_length=1)
     kind: SessionReadKind = "transcript"
     evidence: dict[str, object] | None = None

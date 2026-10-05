@@ -178,8 +178,12 @@ _NATIVE_SEAL_SQL = {
     "_owned_cursor": (1, "sql", 0),
     "_source_statement_attempt": (0, "sql", None),
     "source_statement": (0, "sql", None),
+    "user_statement": (0, "sql", None),
+    "_selected_statement": (0, "sql", None),
     "original_rows": (1, "sql", None),
     "source_rows": (0, "sql", None),
+    "user_rows": (0, "sql", None),
+    "_selected_rows": (0, "sql", None),
     "before_index_input": (2, "rowid_sql", None),
 }
 
@@ -744,7 +748,9 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
 _BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
 
 
-def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
+def _string_values(
+    tree: ast.Module, *, initial: Mapping[str, tuple[str, ...]] | None = None
+) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to a fixpoint (3 passes suffice).
 
     Two namespaces share the mapping: a bare name resolves to the statement
@@ -752,7 +758,7 @@ def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     string sequence it is bound to, which is what lets a ``for table in (...)``
     target expand.
     """
-    values: dict[str, tuple[str, ...]] = {}
+    values: dict[str, tuple[str, ...]] = dict(initial or {})
     bindings = [node for node in walk_module(tree) if isinstance(node, _BINDING_NODES)]
     for _ in range(3):
         for node in bindings:
@@ -817,6 +823,28 @@ def _string_parameter_names(function: ast.AST | None) -> frozenset[str]:
         if argument.annotation is None or _is_string_annotation(argument.annotation):
             names.add(argument.arg)
     return frozenset(names)
+
+
+def _sql_fragments(
+    expression: ast.AST, values: Mapping[str, tuple[str, ...]], function: ast.AST | None
+) -> tuple[str, ...]:
+    """Keep caller operands distinct from another scope's literal bindings."""
+    if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+        arguments = function.args
+        parameters = {item.arg for item in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)}
+        if arguments.vararg is not None:
+            parameters.add(arguments.vararg.arg)
+        if arguments.kwarg is not None:
+            parameters.add(arguments.kwarg.arg)
+        # A local operand also shadows literals collected in other functions.
+        # Resolve this function's own bindings only after removing those names.
+        locals_ = {
+            node.id for node in ast.walk(function) if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+        }
+        shadowed = parameters | locals_
+        values = {name: fragments for name, fragments in values.items() if name.removeprefix("[]") not in shadowed}
+        values = _string_values(ast.Module(body=function.body, type_ignores=[]), initial=values)
+    return _fragments(expression, values)
 
 
 def _is_string_annotation(annotation: ast.AST) -> bool:
@@ -1312,7 +1340,7 @@ class DurableWriteCensus:
             scope, function = scopes.get(node, ("<module>", None))
             qualified = scope if scope != "<module>" else "<module>"
             argument = execution.argument
-            statements = _fragments(argument, values)
+            statements = _sql_fragments(argument, values, function)
             receiver = execution.receiver
             for statement in statements:
                 for creation in _runtime_table_creations(
@@ -1365,7 +1393,7 @@ class DurableWriteCensus:
             scope, function = scopes.get(node, ("<module>", None))
             qualified = scope if scope != "<module>" else "<module>"
             argument = execution.argument
-            statements = _fragments(argument, values)
+            statements = _sql_fragments(argument, values, function)
             if not statements:
                 if isinstance(argument, ast.Name) and argument.id in _string_parameter_names(function):
                     helper = HelperSite(

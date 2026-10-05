@@ -26,6 +26,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
+from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     FileIntakeAdapter,
@@ -39,7 +40,6 @@ from polylogue.sources.live.batch import (
     _STREAMING_FULL_INGEST_BYTES,
     CursorAuthorityBlockedError,
     LiveBatchProcessor,
-    _full_ingest_worker_count,
     _full_parse_progress_groups,
     _FullIngestResult,
     last_complete_newline_from_tail,
@@ -55,7 +55,6 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
-from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.frozen_clock import FrozenClock
@@ -600,7 +599,10 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
         current_source="codex",
         current_path=source,
     )
-    running = store.recent_ingest_attempts(limit=1)[0]
+    running_summary = _archive_live_ingest_attempt_summary_info(tmp_path / "ops.db")
+    assert running_summary is not None and running_summary.available
+    assert running_summary.running_count == 1
+    running = running_summary.recent[0]
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         events = conn.execute(
             """
@@ -618,7 +620,10 @@ def test_cursor_records_live_ingest_attempt_progress(tmp_path: Path) -> None:
     assert any(str(source) in event[2] for event in matching_events)
 
     store.finish_ingest_attempt(attempt_id, status="completed", phase="completed")
-    completed = store.recent_ingest_attempts(limit=1)[0]
+    completed_summary = _archive_live_ingest_attempt_summary_info(tmp_path / "ops.db")
+    assert completed_summary is not None and completed_summary.available
+    assert completed_summary.running_count == 0
+    completed = completed_summary.recent[0]
     assert completed.status == "completed"
     assert completed.completed_at is not None
 
@@ -883,8 +888,11 @@ def test_cursor_marks_running_attempts_abandoned_on_restart(tmp_path: Path) -> N
         failed_file_count=0,
     )
 
-    restarted = CursorStore(db_path)
-    attempt = restarted.recent_ingest_attempts(limit=1)[0]
+    CursorStore(db_path)
+    summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
+    assert summary is not None and summary.available
+    assert summary.running_count == 0
+    attempt = summary.recent[0]
 
     assert attempt.attempt_id == attempt_id
     assert attempt.status == "interrupted"
@@ -1015,48 +1023,6 @@ def test_cursor_does_not_import_legacy_live_cursor_rows(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         row_count = conn.execute("SELECT COUNT(*) FROM ingest_cursor").fetchone()[0]
     assert row_count == 0
-
-
-def test_live_full_ingest_caps_workers_below_batch_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", raising=False)
-    records = [
-        RawSessionRecord(
-            raw_id=f"raw-{index}",
-            source_name="claude-code",
-            source_path=f"/tmp/session-{index}.jsonl",
-            blob_size=2 * 1024 * 1024,
-            acquired_at="2026-05-01T00:00:00+00:00",
-        )
-        for index in range(300)
-    ]
-    giant = RawSessionRecord(
-        raw_id="raw-giant",
-        source_name="codex",
-        source_path="/tmp/giant.jsonl",
-        blob_size=600 * 1024 * 1024,
-        acquired_at="2026-05-01T00:00:00+00:00",
-    )
-
-    assert _full_ingest_worker_count(records) == 1
-    assert _full_ingest_worker_count([giant]) == 1
-
-
-def test_live_full_ingest_worker_cap_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("POLYLOGUE_LIVE_FULL_INGEST_WORKERS", "4")
-    records = [
-        RawSessionRecord(
-            raw_id=f"raw-{index}",
-            source_name="claude-code",
-            source_path=f"/tmp/session-{index}.jsonl",
-            blob_size=2 * 1024 * 1024,
-            acquired_at="2026-05-01T00:00:00+00:00",
-        )
-        for index in range(300)
-    ]
-
-    from polylogue.core.compute import compute_window_length
-
-    assert _full_ingest_worker_count(records) == compute_window_length(len(records), 4)
 
 
 @pytest.mark.asyncio
@@ -2285,7 +2251,9 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     )
 
     metrics = await processor.ingest_files([source_path], emit_event=False)
-    attempts = cursor.recent_ingest_attempts(limit=1)
+    summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
+    assert summary is not None and summary.available
+    attempts = summary.recent
 
     assert metrics.succeeded_file_count == 1
     assert len(attempts) == 1

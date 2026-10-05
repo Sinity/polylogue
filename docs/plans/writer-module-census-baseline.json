@@ -532,8 +532,9 @@
   },
   {
     "file": "polylogue/storage/sqlite/reference_seal.py",
-    "tiers": [],
-    "authority": "scratch"
+    "tiers": [
+      "source"
+    ]
   },
   {
     "file": "polylogue/storage/sqlite/schema.py",

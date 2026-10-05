@@ -163,7 +163,7 @@ def iter_retained_source_records(
     # accumulating one string per member (and then joining them all).
     rejected = BoundedMemberReport()
     unselected = BoundedMemberReport()
-    dispositions = PickleSpool[tuple[int, str, str, str, str | None]]()
+    dispositions: PickleSpool[tuple[int, str, str, str, str | None]] | None = None
     try:
         with _container_input(blob_store, blob_hash, input_capture) as physical, zipfile.ZipFile(physical) as archive:
             entries = archive.infolist()
@@ -179,10 +179,16 @@ def iter_retained_source_records(
             admission = zip_member_admission(archive, logical_path, entries, provider)
 
             def record_rejected(entry: zipfile.ZipInfo, reason: str, code: str) -> None:
+                nonlocal dispositions
+                if dispositions is None:
+                    dispositions = PickleSpool()
                 rejected.record(reason)
                 dispositions.append((ordinal, entry.filename, "refused", reason, code))
 
             def record_unselected(entry: zipfile.ZipInfo, reason: str) -> None:
+                nonlocal dispositions
+                if dispositions is None:
+                    dispositions = PickleSpool()
                 unselected.record(f"{entry.filename}: {reason}")
                 dispositions.append((ordinal, entry.filename, "unselected", reason, None))
 
@@ -265,7 +271,7 @@ def iter_retained_source_records(
                     # The member cannot be stored: a recorded refusal, not an
                     # aborted acquisition of the whole ZIP.
                     record_rejected(entry, f"content_identity_refused: {exc}", "content_identity_refused")
-        for ordinal, member_name, disposition, diagnostic, refusal_code in dispositions:
+        for ordinal, member_name, disposition, diagnostic, refusal_code in () if dispositions is None else dispositions:
             if on_member_disposition is None:
                 continue
             record = SourceInputRecord(
@@ -307,7 +313,8 @@ def iter_retained_source_records(
             )
         return len(entries)
     finally:
-        dispositions.close()
+        if dispositions is not None:
+            dispositions.close()
 
 
 def iter_captured_zip_input(
@@ -319,7 +326,7 @@ def iter_captured_zip_input(
     file_mtime: str | None = None,
     observation_callback: ObservationCallback | None = None,
     status_callback: StatusCallback | None = None,
-) -> Iterator[SourceInputRecord]:
+) -> Generator[SourceInputRecord, None, None]:
     """Transport one exact input and its normal-exhaustion denominator.
 
     The initial record hands off the already accepted private publication.

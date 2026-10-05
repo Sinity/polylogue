@@ -13,6 +13,7 @@ from typing import TypedDict
 import pytest
 
 from polylogue.core.enums import IngestOutcome
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier, initialize_runtime_tier_probe
 from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
 from polylogue.storage.sqlite.archive_tiers.source_items import (
@@ -483,6 +484,18 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
         entry_ordinal=0,
         split_index=0,
         addressing_mode="whole_member",
+        # Declared synthetic namespace; this control exercises the denominator,
+        # not a claim that an external container was acquired.
+        captured_coordinate=CapturedZipMemberCoordinate(
+            "/fixture/export.zip",
+            "/fixture/export.zip",
+            "session.json",
+            0,
+            0,
+            MemberAddressingMode.WHOLE_MEMBER,
+            "ab" * 32,
+            "cd" * 32,
+        ),
         manage_transaction=False,
     )
     record_source_item_member_disposition(
@@ -523,7 +536,7 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
     assert census["sealable"] is False
 
 
-def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> None:
+def test_member_disposition_preserves_exact_identity_and_bounds_diagnostic() -> None:
     conn = _source()
     item = _frozen_item(conn)
     conn.execute("BEGIN")
@@ -538,7 +551,7 @@ def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> 
         observed_at_ms=2,
     )
     name, diagnostic = conn.execute("SELECT member_name, diagnostic FROM source_item_member_dispositions").fetchone()
-    assert len(name) <= 4096
+    assert name == "n" * 20_000
     assert len(diagnostic) <= 4096
 
 
@@ -554,6 +567,18 @@ def test_zip_enumeration_without_member_denominator_stays_incomplete() -> None:
         entry_ordinal=0,
         split_index=0,
         addressing_mode="whole_member",
+        # Declared synthetic namespace; this control exercises the denominator,
+        # not a claim that an external container was acquired.
+        captured_coordinate=CapturedZipMemberCoordinate(
+            "/fixture/export.zip",
+            "/fixture/export.zip",
+            "session.json",
+            0,
+            0,
+            MemberAddressingMode.WHOLE_MEMBER,
+            "ab" * 32,
+            "cd" * 32,
+        ),
         manage_transaction=False,
     )
     with pytest.raises(ValueError, match="central-directory denominator"):
@@ -789,3 +814,114 @@ def test_stale_item_transition_cannot_overwrite_a_newer_observation() -> None:
     with pytest.raises(ValueError, match="revision changed"):
         transition_source_item(conn, request_id="older", expected_revision=0, **args)
     assert conn.execute("SELECT revision, request_id FROM source_items").fetchone() == (1, "newer")
+
+
+@pytest.mark.parametrize("baseline", [False, True])
+@pytest.mark.parametrize("member_name", [" ", " " * 4096 + "member.jsonl"])
+def test_member_disposition_preserves_exact_whitespace_zip_names(baseline: bool, member_name: str) -> None:
+    from contextlib import closing
+
+    with closing(_source(baseline=baseline)) as conn:
+        if baseline:
+            # Fresh DDL is tested with its own declared fixture columns, before
+            # captured-input columns arrive through the immutable train.
+            item = source_item_id(
+                source_generation_id="frozen", logical_coordinate="export.json", addressing_mode="physical-file-v1"
+            )
+            conn.execute(
+                "INSERT INTO source_generations(source_generation_id, manifest_digest, addressing_mode, "
+                "item_count, created_at_ms) VALUES ('frozen', ?, 'physical-file-v1', 1, 1)",
+                ("a" * 64,),
+            )
+            conn.execute(
+                "INSERT INTO source_items(source_generation_id, source_item_id, logical_coordinate, "
+                "addressing_mode, disposition, outcome_code, stage, observed_at_ms, updated_at_ms) "
+                "VALUES ('frozen', ?, 'export.json', 'physical-file-v1', 'pending', 'interrupted', 'manifest', 1, 1)",
+                (item,),
+            )
+        else:
+            item = _frozen_item(conn)
+
+        def record(name: str, ordinal: int = 0) -> None:
+            record_source_item_member_disposition(
+                conn,
+                source_generation_id="frozen",
+                source_item_id=item,
+                entry_ordinal=ordinal,
+                member_name=name,
+                disposition=SourceItemMemberDisposition.UNSELECTED,
+                diagnostic="not a declared artifact",
+                observed_at_ms=2,
+            )
+
+        record(member_name)
+        record(member_name)
+        assert conn.execute("SELECT entry_ordinal, member_name FROM source_item_member_dispositions").fetchall() == [
+            (0, member_name)
+        ]
+        with pytest.raises(ValueError):
+            record("", 1)
+        assert conn.execute("SELECT COUNT(*) FROM source_item_member_dispositions").fetchone() == (1,)
+
+
+@pytest.mark.parametrize(
+    "outcome, expected",
+    [
+        (IngestOutcome.SUCCESS, False),
+        (IngestOutcome.VALIDATION_REJECTED, False),
+        (IngestOutcome.UNSUPPORTED_SHAPE, False),
+        (IngestOutcome.CORRUPT_INPUT, False),
+        (IngestOutcome.TRANSIENT_ERROR, True),
+        (IngestOutcome.PARSER_DEFECT, False),
+        (IngestOutcome.DOWNSTREAM_FAILURE, True),
+        (IngestOutcome.CANCELED, True),
+        (IngestOutcome.INTERRUPTED, True),
+        (IngestOutcome.LEGACY_UNKNOWN, None),
+    ],
+)
+def test_source_item_default_retryability_preserves_typed_outcome(
+    outcome: IngestOutcome, expected: bool | None
+) -> None:
+    from contextlib import closing
+
+    with closing(_source()) as conn:
+        item = _frozen_item(conn)
+        for _ in range(2):
+            assert (
+                transition_source_item(
+                    conn,
+                    source_generation_id="frozen",
+                    source_item_id=item,
+                    request_id="outcome",
+                    disposition=AcquisitionDisposition.UNKNOWN_BLOCKING,
+                    outcome_code=outcome,
+                    stage="observation",
+                    observed_at_ms=2,
+                )
+                == 1
+            )
+        assert conn.execute("SELECT outcome_code, retryable, revision FROM source_items").fetchone() == (
+            outcome.value,
+            None if expected is None else int(expected),
+            1,
+        )
+
+
+@pytest.mark.parametrize("retryable", [False, True])
+def test_source_item_explicit_retryability_is_preserved(retryable: bool) -> None:
+    from contextlib import closing
+
+    with closing(_source()) as conn:
+        item = _frozen_item(conn)
+        transition_source_item(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            request_id="explicit",
+            disposition=AcquisitionDisposition.UNKNOWN_BLOCKING,
+            outcome_code=IngestOutcome.TRANSIENT_ERROR,
+            stage="observation",
+            observed_at_ms=2,
+            retryable=retryable,
+        )
+        assert conn.execute("SELECT retryable FROM source_items").fetchone() == (int(retryable),)

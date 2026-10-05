@@ -192,24 +192,6 @@ def zip_member_raw_id(
     return digest.hexdigest()
 
 
-def zip_member_identity_coordinate(
-    *,
-    raw_id: str,
-    source_path: str,
-    source_index: int,
-    blob_hash: str,
-) -> tuple[int, int] | None:
-    """Decode a v2 raw identity, rejecting legacy or unrelated coordinates."""
-    entry_ordinal, split_index = zip_member_source_coordinate(source_index)
-    expected_raw_id = zip_member_raw_id(
-        source_path=source_path,
-        entry_ordinal=entry_ordinal,
-        split_index=split_index,
-        blob_hash=blob_hash,
-    )
-    return (entry_ordinal, split_index) if raw_id == expected_raw_id else None
-
-
 def zip_member_coordinate_candidates(source_path: str, *, separator: str = ":") -> Iterator[tuple[Path, str]]:
     """Yield lexical coordinate boundaries without claiming a container is readable.
 
@@ -285,7 +267,6 @@ __all__ = [
     "zip_member_coordinate_candidates",
     "split_zip_member_text",
     "MemberAddressingMode",
-    "zip_member_identity_coordinate",
     "zip_member_raw_id",
     "zip_member_source_coordinate",
     "zip_member_source_index",

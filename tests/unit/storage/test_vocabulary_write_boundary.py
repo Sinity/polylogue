@@ -42,7 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.artifacts import artifact_observation_params
 from polylogue.storage.sqlite.queries.raw_writes import execute_raw_admission_plan_async
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
 
 OUT_OF_VOCABULARY = "not-a-declared-member"
 
@@ -352,4 +352,4 @@ def test_raw_state_update_compiler_refuses_out_of_vocabulary(
     # test anti-vacuous: the compiler, not pydantic/coercion, must refuse it.
     object.__setattr__(update, field, value)
     with pytest.raises(ValueError, match=field):
-        compile_raw_state_update(update, now_ms=1)
+        compile_raw_state_update(update, now_ms=1, literal=raw_state_parameter)

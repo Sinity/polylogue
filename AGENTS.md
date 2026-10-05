@@ -151,13 +151,23 @@ hold retryable backlog.
 `docs/devtools.md` describe it (catalog in `devtools/command_catalog.py`; a new
 command needs its `CommandSpec` and `devtools render devtools-reference`).
 
+- Match verification to the changed behavior and consequence. For an ordinary
+  well-understood fix, use a brief delta review, imports/basic static checks,
+  or one discriminating behavioral check when useful. Batch broader regression
+  at meaningful integration milestones, not after every patch. Record known
+  failures and untested areas; unrelated fixture failures need not block a
+  product fix. Preserve assertions and report the original run's outcome.
+  Destructive changes, durable data-loss boundaries, and purchased-vector
+  preservation need stronger checks before execution.
 - `devtools test <selection>` runs focused tests through the managed host
-  pool; never run bare `pytest`. The pool is shared: run one selection per PR
-  head covering every affected file, and batch review-thread fixes into one
-  push. Re-running only the failing ids is diagnosis on an unchanged tree;
-  after a source change, re-run the complete affected selection. Reuse a receipt across related
-  tasks. The pre-push hook runs `devtools verify --quick` on the pushed HEAD;
-  the hosted quick gate stays the enforced record.
+  pool; never run bare `pytest`. Workers use an explicit selection:
+  `agentctl job start polylogue pytest_focused --workspace <checkout> -- <selection>`.
+  A bare worker `verify` wrapper supplies no selector and cannot run the
+  required-argument focused profile. The pre-push hook runs
+  `devtools verify --quick` on the pushed HEAD; required hooks and hosted
+  merge checks remain enforced. Reuse existing results while their relevant
+  code is unchanged; task `verification_commands` are examples to reconcile
+  with the current descriptor, not an automatic full-suite gate.
 - `devtools verify --quick` runs the static gates (`devtools gate --list`
   enumerates them; `devtools gate <name>` runs one).
   `devtools verify` selects affected tests from a usable testmon graph and
@@ -184,8 +194,7 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
 
 ## Code Review Rules
 
-Read and apply `docs/review/codex-review-guide.md` (exhaustive review,
-checklist, severity, noise)
+Use `docs/review/codex-review-guide.md` for relevant invariants, severity and noise
 and the nested `AGENTS.md` beside each changed file.
 - A change to an interface, command, config key, schema, route, or file format
   updates every consumer (callers, CLI/MCP, tests, docs, generated references,
@@ -208,11 +217,11 @@ Product code lands through feature branches and squash-merged PRs to
 protected `master`. The PR title is the conventional squash subject (72
 characters or fewer, imperative). The body has Summary, Problem (with
 evidence), Solution, Verification (exact commands and the line that matters),
-Self-review, and honest residuals. Before every push, the author reviews its
-full diff against `master` with the checklist in
-`docs/review/codex-review-guide.md`, fixes everything found, and repeats until
-a pass is clean; Self-review narrates that last pass item by item (a tick or
-N/A with the reason, how it applied, evidence) and is public text. Put no
+Self-review, and honest residuals. Before pushing, review the changed delta
+and its affected contracts; reuse the review of unchanged code. Report
+concrete findings and residuals briefly. The guide's checklist is a reference,
+not a required item-by-item narration or repeated review ceremony. Required
+repository review and merge protections still apply. Put no
 resolver keywords beside issue numbers unless the operator asks.
 release-please owns the version and changelog. Before writing "unified" or
 "complete", grep the diff and check both paths.

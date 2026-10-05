@@ -55,9 +55,12 @@ class ModelUsageTotals(BaseModel):
     ``compute_session_cost`` aggregates these rows directly when supplied,
     instead of recomputing an independent (and, for Codex, ~1000x smaller)
     estimate from per-message fields Codex rarely populates (polylogue-r7p6).
+    ``provider_lanes_complete`` is false when unmappable provider counters
+    leave these lanes a subtotal. It is independent of catalog price availability.
     """
 
     model_config = ConfigDict(frozen=True, protected_namespaces=())
+    provider_lanes_complete: bool
     model_name: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0

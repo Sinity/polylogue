@@ -2,7 +2,7 @@
 
 import sqlite3
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Literal
@@ -13,12 +13,18 @@ from polylogue.core.enums import AssertionKind, Provider
 from polylogue.core.refs import EvidenceRef
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, open_connection
+from polylogue.storage.sqlite.connection_profile import (
+    NativeConnectionSettlementError,
+    NativeSQLCustodyOwner,
+    open_connection,
+)
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.index_writer import prepared_fixture_index_batch, write_fixture_index_session
 from tests.infra.live_ingest import write_index_session
 from tests.infra.reference_sessions import reference_session
+from tests.infra.sqlite_cursor_settlement import settlement_owner_summary
 
 
 def test_prepared_inactive_scope_writes_only_its_captured_owned_generation(tmp_path: Path) -> None:
@@ -36,10 +42,28 @@ def test_prepared_inactive_scope_writes_only_its_captured_owned_generation(tmp_p
                 generation_id=generation.generation_id,
                 owner_id=generation.owner_id,
             ) as archive:
-                with archive.index_mutation_scope(prepared_seal=seal):
+                with archive.index_mutation_scope(prepared_seal=seal) as scope:
                     archive._conn.execute("CREATE TABLE captured_destination(value INTEGER)")
                     archive._conn.execute("INSERT INTO captured_destination VALUES (1)")
                 assert archive._conn.execute("SELECT value FROM captured_destination").fetchone()[0] == 1
+                assert scope._committed and scope._commit_receipt is None and seal._cleanup_requested
+                with pytest.raises(ReferenceSealError):
+                    _ = scope.commit_receipt
+                with pytest.raises(ReferenceSealError):
+                    with seal.original_read_snapshot():
+                        pytest.fail("terminal inactive seal admitted another original read")
+                with pytest.raises(ReferenceSealError):
+                    with seal.mutation_scope(archive._conn):
+                        pytest.fail("terminal inactive seal admitted a second publication")
+                writer_owner = scope._writer_owner
+                connection = archive._conn
+                assert writer_owner is not None and writer_owner.connection is connection
+            assert writer_owner.connection is None and writer_owner._settled
+            with pytest.raises(sqlite3.ProgrammingError):
+                connection.execute("SELECT 1")
+            with closing(sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True)) as observed:
+                with closing(observed.execute("SELECT value FROM captured_destination")) as rows:
+                    assert rows.fetchone()[0] == 1
             with ArchiveStore.open_existing(tmp_path, read_only=False) as active:
                 assert (
                     active._conn.execute("SELECT 1 FROM sqlite_schema WHERE name='captured_destination'").fetchone()
@@ -92,7 +116,9 @@ def test_publication_exclusion_survives_failed_original_owner_cleanup(tmp_path: 
             with pytest.raises((OSError, NativeConnectionSettlementError)):
                 seal.close()
             assert exclusion.held and not seal._closed and seal.publication_lifetime_bound
-            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,), settlement_owner_summary(
+                retained_native_settlement_owners_on_current_thread(entry)
+            )
             with pytest.raises(BlockingIOError):
                 fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
             payload_fails = False
@@ -155,7 +181,9 @@ def test_publication_parent_retains_uncertain_exclusion_close_without_retrying_f
                     seal.close()
                 assert caught.value.failure is fault
                 assert exclusion.held and not seal._closed
-                assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+                assert retained_native_settlement_owners_on_current_thread(entry) == (seal,), settlement_owner_summary(
+                    retained_native_settlement_owners_on_current_thread(entry)
+                )
                 with pytest.raises(BlockingIOError):
                     fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
             assert attempts == 1
@@ -237,9 +265,17 @@ def test_batch_reuses_one_durable_reference_census(
             archive.commit()
             monkeypatch.setattr(reference_seal, "_references_from_user", observed)
             monkeypatch.setattr(reference_seal.PreparedIndexMutation, "_open_observer", open_observer)
-            with archive.index_mutation_scope():
-                for number in range(8):
-                    write_index_session(archive, reference_session(f"batch-{number}"))
+            sessions = tuple(reference_session(f"batch-{number}") for number in range(8))
+            with prepared_fixture_index_batch(archive._conn, sessions, archive_root=tmp_path) as (seal, prepared):
+                with archive.index_mutation_scope(prepared_seal=seal):
+                    for session, carrier in zip(sessions, prepared, strict=True):
+                        write_fixture_index_session(
+                            archive._conn,
+                            session,
+                            prepared_write=carrier,
+                            content_hash=carrier.input_content_hash.hex(),
+                            pending_input_content_hash=carrier.input_content_hash.hex(),
+                        )
             assert census_calls == 1
             assert len(assertion_queries) == 1
             assert archive._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 9
@@ -294,15 +330,29 @@ def test_cancelled_active_mutation_rolls_back_and_original_owner_closes(tmp_path
             bootstrap_archive_root(tmp_path)
             archive = ArchiveStore.open_existing(tmp_path, read_only=False)
             try:
-                with pytest.raises(asyncio.CancelledError):
-                    with archive.index_mutation_scope():
-                        write_index_session(archive, reference_session("cancelled-pending"))
-                        assert archive._conn.in_transaction
-                        cancelled.set()
-                        archive._conn.set_progress_handler(lambda: int(cancelled.is_set()), 1)
-                        # Admission refuses another mutation. The scope must
-                        # still roll back and close on this original owner.
-                        write_index_session(archive, reference_session("must-not-start"))
+                sessions = (reference_session("cancelled-pending"), reference_session("must-not-start"))
+                with prepared_fixture_index_batch(archive._conn, sessions, archive_root=tmp_path) as (seal, prepared):
+                    with pytest.raises(asyncio.CancelledError):
+                        with archive.index_mutation_scope(prepared_seal=seal):
+                            write_fixture_index_session(
+                                archive._conn,
+                                sessions[0],
+                                prepared_write=prepared[0],
+                                content_hash=prepared[0].input_content_hash.hex(),
+                                pending_input_content_hash=prepared[0].input_content_hash.hex(),
+                            )
+                            assert archive._conn.in_transaction
+                            cancelled.set()
+                            archive._conn.set_progress_handler(lambda: int(cancelled.is_set()), 1)
+                            # Admission refuses another mutation. The scope must
+                            # still roll back and close on this original owner.
+                            write_fixture_index_session(
+                                archive._conn,
+                                sessions[1],
+                                prepared_write=prepared[1],
+                                content_hash=prepared[1].input_content_hash.hex(),
+                                pending_input_content_hash=prepared[1].input_content_hash.hex(),
+                            )
                 assert not archive._conn.in_transaction
                 assert archive._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
                 with pytest.raises(asyncio.CancelledError):
@@ -339,12 +389,20 @@ def test_active_suppression_uses_the_batch_user_observer(tmp_path: Path, monkeyp
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             monkeypatch.setattr(session_suppression, "readonly_connection_context", unexpected_reader)
-            with archive.index_mutation_scope() as scope:
-                assert scope is not None
-                first = scope.suppression_reader()
-                for number in range(3):
-                    assert scope.suppression_reader() is first
-                    write_index_session(archive, reference_session(f"suppression-{number}"))
+            sessions = tuple(reference_session(f"suppression-{number}") for number in range(3))
+            with prepared_fixture_index_batch(archive._conn, sessions, archive_root=tmp_path) as (seal, prepared):
+                with archive.index_mutation_scope(prepared_seal=seal) as scope:
+                    assert scope is not None
+                    first = scope.suppression_reader()
+                    for session, carrier in zip(sessions, prepared, strict=True):
+                        assert scope.suppression_reader() is first
+                        write_fixture_index_session(
+                            archive._conn,
+                            session,
+                            prepared_write=carrier,
+                            content_hash=carrier.input_content_hash.hex(),
+                            pending_input_content_hash=carrier.input_content_hash.hex(),
+                        )
 
 
 @pytest.mark.parametrize("terminal", ["commit", "rollback", "close"])
@@ -608,16 +666,16 @@ def test_explicit_archive_rollback_failure_is_not_repeated_by_scope_unwind(
 
     from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStoreSettlementError
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
     from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
 
     with write_lease("test.archive-tier-rollback", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
-        control_archive_connections(monkeypatch, tmp_path / "index.db", tmp_path / "source.db", tmp_path / "user.db")
-        archive = ArchiveStore.open_existing(tmp_path, read_only=False)
-        child = None
-        try:
-            index = archive._conn
-            assert isinstance(index, ControlledConnection)
+        with monkeypatch.context() as factory_control:
+            control_archive_connections(
+                factory_control, tmp_path / "index.db", tmp_path / "source.db", tmp_path / "user.db"
+            )
+            archive = ArchiveStore.open_existing(tmp_path, read_only=False)
             if tier == "source":
                 child = archive.source_connection
             elif tier == "user":
@@ -625,11 +683,15 @@ def test_explicit_archive_rollback_failure_is_not_repeated_by_scope_unwind(
             else:
                 child = sqlite3.connect(":memory:", factory=ControlledConnection)
                 archive.operation_vector_connection = child
+        seal = PreparedIndexMutation(archive.index_db_path, archive_root=tmp_path)
+        try:
+            index = archive._conn
+            assert isinstance(index, ControlledConnection)
             assert isinstance(child, ControlledConnection)
             child.execute("BEGIN")
             fault = OSError(errno.EIO, "synthetic actual tier rollback failure")
             with pytest.raises(OSError) as caught:
-                with archive.index_mutation_scope() as scope:
+                with archive.index_mutation_scope(prepared_seal=seal) as scope:
                     index.execute("CREATE TABLE discarded_tier_batch(value INTEGER)")
                     child.rollback_failure = fault
                     archive.rollback()
@@ -648,6 +710,7 @@ def test_explicit_archive_rollback_failure_is_not_repeated_by_scope_unwind(
             if isinstance(child, ControlledConnection):
                 child.rollback_failure = None
             archive.close()
+            seal.close()
 
 
 @pytest.mark.parametrize("targets", [("user",), ("user", "scratch")])
@@ -707,7 +770,9 @@ def test_active_seal_attempts_each_native_child_once_and_keeps_typed_failures(
             assert directory.exists() == ("scratch" in targets)
             # Even entry owners whose own close was never attempted select the
             # complete terminal parent after the first sibling fails.
-            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,)
+            assert retained_native_settlement_owners_on_current_thread(entry) == (seal,), settlement_owner_summary(
+                retained_native_settlement_owners_on_current_thread(entry)
+            )
             children = native_sql_children(seal)
             assert children and all(owner._parent_cleanup_requested for owner in children)
             for cursor in cursors:
@@ -956,13 +1021,15 @@ def test_inactive_scope_reader_settles_once_through_its_actual_store_census(
                     raise ValueError("synthetic failure after acquiring actual User reader")
             assert cursors[0].close_attempts == 1
             captured = retained_native_sql_owners()
-            assert captured == (archive,)
+            assert captured == (archive,), settlement_owner_summary(captured)
             if persistent:
                 with pytest.raises(ArchiveStoreSettlementError):
                     captured[0].close()
                 assert cursors[0].close_attempts == 2
                 assert archive._pending_index_mutation_scope is scope
-                assert retained_native_sql_owners() == (archive,)
+                assert retained_native_sql_owners() == (archive,), settlement_owner_summary(
+                    retained_native_sql_owners()
+                )
                 cursors[0].allow_cleanup.set()
             captured[0].close()
             assert cursors[0].close_attempts == (3 if persistent else 2)
@@ -1021,7 +1088,7 @@ def test_inactive_reader_initializer_failure_retains_original_store_before_sql(
     class InitializerConnection(ControlledConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             assert archive._sql_custody is current_sql_custody()
-            assert retained_native_sql_owners() == (archive,)
+            assert retained_native_sql_owners() == (archive,), settlement_owner_summary(retained_native_sql_owners())
             cursor = self.cursor(factory=ControlledCursor)
             cursor.execute("SELECT 1 UNION ALL SELECT 2")
             next(cursor)
@@ -1051,7 +1118,7 @@ def test_inactive_reader_initializer_failure_retains_original_store_before_sql(
             assert archive._pending_index_mutation_scope is scope
             assert cursors[0].close_attempts == 1
             captured = retained_native_sql_owners()
-            assert captured == (archive,)
+            assert captured == (archive,), settlement_owner_summary(captured)
             cursors[0].allow_cleanup.set()
             captured[0].close()
             assert cursors[0].close_attempts == 2
@@ -1747,14 +1814,17 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
             ),
             PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
             closing(
-                open_isolated_write_connection(
-                    tmp_path / "index.db",
-                    purpose="test.excision-index-stage",
-                    archive_root=tmp_path,
-                    profile=replace(ISOLATED_TIER_WRITE_PROFILE, foreign_keys=True),
+                NativeSQLCustodyOwner(
+                    open_isolated_write_connection(
+                        tmp_path / "index.db",
+                        purpose="test.excision-index-stage",
+                        archive_root=tmp_path,
+                        profile=replace(ISOLATED_TIER_WRITE_PROFILE, foreign_keys=True),
+                    )
                 )
-            ) as index,
+            ) as index_owner,
         ):
+            index = index_owner.require_connection()
             with closing(index.execute("PRAGMA foreign_keys")) as cursor:
                 assert cursor.fetchone()[0] == 1
             with closing(index.execute("SELECT message_id FROM messages WHERE session_id=?", (target,))) as cursor:
@@ -1800,7 +1870,14 @@ def test_original_excision_projection_survives_source_commit_and_protects_other_
                 tier="user",
                 effects=(
                     KnownTierRowEffect("assertions", columns, old, None),
-                    KnownTierRowEffect("query_unit_frame_state", frame.columns, frame, advanced_frame),
+                    KnownTierRowEffect(
+                        "query_unit_frame_state",
+                        frame.columns,
+                        frame,
+                        advanced_frame,
+                        _trigger_parent_ordinal=1,
+                        _canonical_trigger="query_unit_frame_assertions_delete",
+                    ),
                 ),
             )
             source_permit = seal.prepare_known_tier_mutation(
@@ -2428,7 +2505,7 @@ def test_literal_attachment_freezes_all_main_writes_until_actual_dedicated_settl
                         source.close_failure = OSError(errno.EIO, "synthetic actual attached writer close failure")
                         with pytest.raises(NativeConnectionSettlementError):
                             connection_context.__exit__(None, None, None)
-                        assert witness.exists() and seal._live_literal_reader is owner
+                        assert witness.exists() and seal._live_literal_readers == {owner: permit}
                         assert owner.connection is source and owner.close_required
                         with pytest.raises(ReferenceSealError):
                             seal.retain_literal_scalar(1)
@@ -2436,7 +2513,7 @@ def test_literal_attachment_freezes_all_main_writes_until_actual_dedicated_settl
                         owner.close()
                     else:
                         connection_context.__exit__(None, None, None)
-                    assert seal._live_literal_reader is None and owner.connection is None
+                    assert not seal._live_literal_readers and owner.connection is None
                     assert seal.retain_literal_scalar(1)._seal is seal
                 finally:
                     source.close_failure = None
@@ -2540,9 +2617,21 @@ def test_selected_source_hydration_preserves_actual_global_sequence_inputs_and_j
                     original_sequence = tuple(tuple(row) for row in cursor)
                 with seal.original_rows("source", "SELECT rowid FROM raw_sessions WHERE raw_id='selected'") as cursor:
                     raw_rowid = cursor.fetchone()[0]
+                with seal.original_rows(
+                    "source", "SELECT sequence,raw_id FROM raw_existence_changes ORDER BY sequence"
+                ) as cursor:
+                    original_journal = tuple(tuple(row) for row in cursor)
+                assert (sequence, "retained") in original_journal
+                journal_inputs = tuple(
+                    seal.retain_tier_row("source", "raw_existence_changes", row[0]) for row in original_journal
+                )
+                assert all(row is not None for row in journal_inputs)
                 image = seal.retain_tier_row("source", "raw_sessions", raw_rowid)
                 assert image is not None
                 seal._provision_source_stage()
+                for journal_input in journal_inputs:
+                    assert journal_input is not None
+                    seal._load_source_row(journal_input)
                 seal._source_allocation_dependencies("raw_existence_changes")
                 seal._source_allocation_dependencies("accepted_marker_inputs")
                 assert seal._load_source_row(image)
@@ -2551,8 +2640,10 @@ def test_selected_source_hydration_preserves_actual_global_sequence_inputs_and_j
                     seal._scratch.execute("SELECT rowid,name,seq FROM sqlite_sequence ORDER BY rowid")
                 ) as cursor:
                     assert tuple(tuple(row) for row in cursor) == original_sequence
-                with closing(seal._scratch.execute("SELECT sequence,raw_id FROM raw_existence_changes")) as cursor:
-                    assert tuple(tuple(row) for row in cursor) == ((sequence, "retained"),)
+                with closing(
+                    seal._scratch.execute("SELECT sequence,raw_id FROM raw_existence_changes ORDER BY sequence")
+                ) as cursor:
+                    assert tuple(tuple(row) for row in cursor) == original_journal
                 with closing(
                     seal._scratch.execute("SELECT retained_floor FROM raw_existence_journal_control")
                 ) as cursor:
@@ -2773,7 +2864,7 @@ def test_constructor_accounts_original_index_identity_before_resolving_long_refe
                         with seal._owned_cursor(
                             seal._scratch,
                             "SELECT byte_length FROM temp.original_input_fields WHERE tier='index' "
-                            "AND table_name='sessions' AND column_name='session_id' AND physical_rowid=?",
+                            "AND table_name='sessions' AND column_name='session_id' AND row_address=?",
                             parameters,
                         ) as metadata:
                             row = metadata.fetchone()
@@ -2857,7 +2948,7 @@ def test_partial_update_factory_retains_paid_original_cells_outside_effect_rollb
             with seal._owned_cursor(
                 seal._scratch,
                 "SELECT column_name,byte_length FROM temp.original_input_fields "
-                "WHERE tier='source' AND table_name='authority_control' AND physical_rowid=1",
+                "WHERE tier='source' AND table_name='authority_control' AND row_address=1",
             ) as cursor:
                 assert dict(cursor) == {"key": len("selected"), "value": len(value)}
             with seal._owned_cursor(seal._scratch, "SELECT count(*) FROM temp.known_tier_effects") as cursor:
@@ -2988,3 +3079,497 @@ def test_partial_update_factory_rollback_close_failure_retains_primary_and_origi
             for selected in blocked:
                 selected.allow_cleanup.set()
             seal.close()
+
+
+@pytest.mark.parametrize("first_tier", ["source", "user"])
+@pytest.mark.parametrize("settlement_failure", ["none", "close", "authorizer"])
+def test_overlapping_literal_children_freeze_main_until_last_physical_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first_tier: str, settlement_failure: str
+) -> None:
+    import errno
+
+    from polylogue.storage.sqlite.connection_profile import native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import ArchiveWriteCustody
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, control_archive_connections
+
+    released: list[object] = []
+    actual_release = ArchiveWriteCustody.release_sql_owner
+    selected_seal = None
+
+    def release(custody: ArchiveWriteCustody, owner: object) -> None:
+        if owner is selected_seal:
+            released.append(owner)
+        return actual_release(custody, owner)
+
+    monkeypatch.setattr(ArchiveWriteCustody, "release_sql_owner", release)
+    with write_lease("test.overlapping-literal-children", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+            selected_seal = seal
+            cell = seal.retain_literal_stream("blob", 3, (b"abc",))
+            source_permit = seal.prepare_known_tier_mutation(tier="source", effects=())
+            user_permit = seal.prepare_known_tier_mutation(tier="user", effects=())
+            # Construct the foreign original observer before the controlled
+            # writable factory selects existing inode identities.
+            foreign = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+            control_archive_connections(monkeypatch, tmp_path / "source.db", tmp_path / "user.db")
+            with pytest.raises(ReferenceSealError):
+                seal._settle_frozen_literal_bookkeeping()
+            contexts = {}
+            owners = {}
+            try:
+                for tier, permit in (("user", user_permit), ("source", source_permit)):
+                    with permit.hold_authority():
+                        context = permit.mutation_connection()
+                        connection = context.__enter__()
+                        contexts[tier] = context
+                        assert isinstance(connection, ControlledConnection)
+                        owners[tier] = next(
+                            child for child in native_sql_children(seal) if child.connection is connection
+                        )
+                        with closing(connection.execute("BEGIN IMMEDIATE")):
+                            pass
+                        expression, bindings = seal.source_literal_expression(cell)
+                        with closing(connection.execute(f"SELECT {expression}", bindings)) as cursor:
+                            assert cursor.fetchone()[0] == b"abc"
+                        if tier == "source":
+                            permit.allow_commit(connection)
+                            connection.commit()
+                            seal.accept_known_tier_commit(permit.committed())
+                    # Only TEMP bookkeeping can change while either literal
+                    # reader retains the same immutable original MAIN.
+                    with closing(
+                        seal._scratch.execute("INSERT OR IGNORE INTO temp.authorized_removals VALUES (?)", (tier,))
+                    ):
+                        pass
+                    with closing(seal._scratch.execute("SELECT 1 UNION ALL SELECT 2")) as live:
+                        assert live.fetchone()[0] == 1
+                        with pytest.raises(ReferenceSealError):
+                            seal._settle_frozen_literal_bookkeeping()
+                    scratch_owner = next(
+                        child for child in native_sql_children(seal) if child.connection is seal._scratch
+                    )
+                    with scratch_owner.readonly_blob("known_tier_literals", "literal", cell._cell_id):
+                        with pytest.raises(ReferenceSealError):
+                            seal._settle_frozen_literal_bookkeeping()
+                    seal._settle_frozen_literal_bookkeeping()
+                assert owners["user"].require_connection().in_transaction
+                assert seal._live_literal_readers == {owners["user"]: user_permit, owners["source"]: source_permit}
+                with pytest.raises(ReferenceSealError):
+                    seal._retain_live_literal_reader(owners["user"], user_permit)
+                with pytest.raises(ReferenceSealError):
+                    foreign._retain_live_literal_reader(owners["user"], user_permit)
+                for tier in (first_tier, "user" if first_tier == "source" else "source"):
+                    owner = owners[tier]
+                    connection = owner.require_connection()
+                    assert isinstance(connection, ControlledConnection)
+                    if settlement_failure != "none" and tier == first_tier:
+                        actual_authorizer = seal._scratch.set_authorizer
+                        if settlement_failure == "close":
+                            connection.close_failure = OSError(errno.EIO, "exact overlapping reader close failure")
+                        else:
+
+                            def fail_authorizer(
+                                callback: Callable[[int, str | None, str | None, str | None, str | None], int] | None,
+                            ) -> None:
+                                raise OSError(errno.EIO, "exact frozen authorizer settlement failure")
+
+                            monkeypatch.setattr(seal._scratch, "set_authorizer", fail_authorizer)
+                        with pytest.raises(NativeConnectionSettlementError):
+                            contexts[tier].__exit__(None, None, None)
+                        assert owner in seal._live_literal_readers
+                        assert owner.connection is (connection if settlement_failure == "close" else None)
+                        assert owner.close_required
+                        assert released == []
+                        with pytest.raises(sqlite3.DatabaseError):
+                            with closing(seal._scratch.execute("DELETE FROM known_tier_literals")):
+                                pass
+                        connection.close_failure = None
+                        monkeypatch.setattr(seal._scratch, "set_authorizer", actual_authorizer)
+                        owner.close()
+                    else:
+                        contexts[tier].__exit__(None, None, None)
+                    assert owner not in seal._live_literal_readers and owner.connection is None
+                    if seal._live_literal_readers:
+                        assert released == [] and seal._mutation_custody is not None
+                        with pytest.raises(ReferenceSealError):
+                            seal.retain_literal_scalar(1)
+                        with pytest.raises(sqlite3.DatabaseError):
+                            with closing(seal._scratch.execute("DELETE FROM known_tier_literals")):
+                                pass
+                        with pytest.raises(sqlite3.DatabaseError):
+                            seal._scratch.blobopen("known_tier_literals", "literal", cell._cell_id, readonly=False)
+                assert released == [seal] and seal._mutation_custody is None
+                assert not seal._literal_custody_release_pending
+                assert seal.retain_literal_scalar(1)._seal is seal
+            finally:
+                for owner in owners.values():
+                    if owner.connection is not None:
+                        assert isinstance(owner.connection, ControlledConnection)
+                        owner.connection.close_failure = None
+                    owner.close()
+                foreign.close()
+
+
+@pytest.mark.parametrize("cancel_site", ["source_admission", "after_source_close"])
+def test_overlapping_literal_cancellation_preserves_exact_native_obligations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_site: str
+) -> None:
+    import asyncio
+    import threading
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.storage.sqlite.connection_profile import native_sql_children, open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation
+
+    cancelled = threading.Event()
+    token = compute_cancel.set(cancelled)
+    try:
+        with write_lease("test.overlapping-literal-cancellation", archive_root=tmp_path):
+            bootstrap_archive_root(tmp_path)
+            with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as setup:
+                with closing(setup.execute("CREATE TABLE authority_control(key TEXT PRIMARY KEY,value TEXT)")):
+                    pass
+                with closing(setup.execute("INSERT INTO authority_control VALUES('selected','original')")):
+                    pass
+                setup.commit()
+            with PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal:
+                user_permit = seal.prepare_known_tier_mutation(tier="user", effects=())
+                source_permit = seal.prepare_known_tier_mutation(
+                    "authority_control", ("value",), (("accepted", "selected"),), tier="source", key_column="key"
+                )
+                with user_permit.hold_authority():
+                    user_context = user_permit.mutation_connection()
+                    user = user_context.__enter__()
+                    owner = next(child for child in native_sql_children(seal) if child.connection is user)
+                    with closing(user.execute("BEGIN IMMEDIATE")):
+                        pass
+                actual_configure = KnownTierMutationPermit.configure_mutation_connection
+                reached = []
+
+                def configure(
+                    permit: KnownTierMutationPermit, connection: sqlite3.Connection, statements: tuple[str, ...]
+                ) -> None:
+                    if permit is source_permit and cancel_site == "source_admission":
+                        reached.append(True)
+                        cancelled.set()
+                    return actual_configure(permit, connection, statements)
+
+                monkeypatch.setattr(KnownTierMutationPermit, "configure_mutation_connection", configure)
+                try:
+                    with pytest.raises(asyncio.CancelledError):
+                        with source_permit.hold_authority(), source_permit.mutation_connection() as source:
+                            with closing(source.execute("BEGIN IMMEDIATE")):
+                                pass
+                            with closing(
+                                source.execute("UPDATE authority_control SET value='accepted' WHERE key='selected'")
+                            ):
+                                pass
+                            source_permit.allow_commit(source)
+                            source.commit()
+                            seal.accept_known_tier_commit(source_permit.committed())
+                        reached.append(True)
+                        cancelled.set()
+                        seal._require_new_work()
+                    assert reached == [True]
+                    assert seal._live_literal_readers == {owner: user_permit}
+                    assert user.in_transaction and seal._mutation_custody is not None
+                    # Cancellation never substitutes a logical close for this
+                    # actual original User transaction's rollback/settlement.
+                    user_context.__exit__(None, None, None)
+                    assert owner.connection is None and not seal._live_literal_readers
+                    assert not seal._literal_custody_release_pending
+                    if cancel_site == "after_source_close":
+                        assert seal._mutation_custody is None
+                finally:
+                    owner.close()
+                cancelled.clear()
+            with closing(sqlite3.connect(tmp_path / "source.db")) as observed:
+                with closing(observed.execute("SELECT value FROM authority_control WHERE key='selected'")) as rows:
+                    assert rows.fetchone()[0] == ("accepted" if cancel_site == "after_source_close" else "original")
+    finally:
+        cancelled.clear()
+        compute_cancel.reset(token)
+
+
+@pytest.mark.parametrize("effect", ["ddl", "dml", "noop"])
+async def test_exact_active_index_commit_accepts_own_state_without_change_count_authority(
+    tmp_path: Path, effect: str
+) -> None:
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    def run() -> None:
+        with write_lease("test.index-own-state", archive_root=tmp_path):
+            bootstrap_archive_root(tmp_path)
+            with closing(ArchiveStore.open_existing(tmp_path, read_only=False)) as store:
+                with closing(store._conn.execute("CREATE TABLE acceptance_control(value INTEGER)")):
+                    pass
+                with closing(store._conn.execute("INSERT INTO acceptance_control VALUES(1)")):
+                    pass
+                store._conn.commit()
+                with PreparedIndexMutation(store.index_db_path, archive_root=tmp_path) as seal:
+                    prior = seal._versions["index"]
+                    with seal.mutation_scope(store._conn) as scope:
+                        sql = {
+                            "ddl": "CREATE TABLE accepted_ddl(value INTEGER)",
+                            "dml": "UPDATE acceptance_control SET value=2",
+                            "noop": "UPDATE acceptance_control SET value=2 WHERE 0",
+                        }[effect]
+                        with closing(store._conn.execute(sql)):
+                            pass
+                        scope.commit()
+                    receipt = scope.commit_receipt
+                    seal.require_index_commit_receipt(receipt)
+                    assert receipt._writer is store._conn and receipt._scope is scope and receipt._seal is seal
+                    assert receipt._effect_count == int(effect == "dml")
+                    assert scope._writer_owner is not None
+                    assert scope._writer_owner.connection is store._conn and not store._conn.in_transaction
+                    assert (seal._versions["index"] != prior) == (effect != "noop")
+                    with pytest.raises(ReferenceSealError):
+                        with seal.mutation_scope(store._conn):
+                            pytest.fail("accepted active seal admitted a second Index publication")
+                    if effect == "ddl":
+                        assert store._conn.execute("SELECT count(*) FROM accepted_ddl").fetchone()[0] == 0
+                    else:
+                        assert store._conn.execute("SELECT value FROM acceptance_control").fetchone()[0] == (
+                            2 if effect == "dml" else 1
+                        )
+
+    await run_archive_fixture_write(tmp_path, run)
+
+
+async def test_foreign_ddl_in_exact_index_commit_gap_refuses_even_with_zero_total_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    def run() -> None:
+        with write_lease("test.index-foreign-ddl-gap", archive_root=tmp_path):
+            bootstrap_archive_root(tmp_path)
+            with closing(ArchiveStore.open_existing(tmp_path, read_only=False)) as store:
+                with PreparedIndexMutation(store.index_db_path, archive_root=tmp_path) as seal:
+                    prior = seal._versions["index"]
+                    actual_commit = store._conn.commit
+                    foreign = []
+
+                    def commit_then_foreign() -> None:
+                        actual_commit()
+                        with closing(
+                            open_isolated_write_connection(
+                                store.index_db_path, archive_root=tmp_path, purpose="test.foreign-ddl"
+                            )
+                        ) as other:
+                            with closing(other.execute("CREATE TABLE foreign_gap_ddl(value INTEGER)")):
+                                pass
+                            assert other.total_changes == 0
+                            other.commit()
+                            foreign.append(True)
+
+                    with monkeypatch.context() as patch:
+                        patch.setattr(store._conn, "commit", commit_then_foreign)
+                        with pytest.raises(ReferenceSealStaleError):
+                            with seal.mutation_scope(store._conn) as scope:
+                                original_changes = store._conn.total_changes
+                                with closing(store._conn.execute("CREATE TABLE own_gap_ddl(value INTEGER)")):
+                                    pass
+                                assert store._conn.total_changes == original_changes
+                                scope.commit()
+                    assert foreign == [True] and scope._committed and not scope._index_accepted
+                    assert seal._versions["index"] == prior and seal._accepted_index_commit is None
+                    with pytest.raises(ReferenceSealError):
+                        _ = scope.commit_receipt
+                    for name in ("own_gap_ddl", "foreign_gap_ddl"):
+                        assert (
+                            store._conn.execute("SELECT name FROM sqlite_schema WHERE name=?", (name,)).fetchone()[0]
+                            == name
+                        )
+
+    await run_archive_fixture_write(tmp_path, run)
+
+
+@pytest.mark.parametrize("state", ["prepared", "unprepared", "source-only", "foreign", "stale", "cursor", "snapshot"])
+def test_candidate_observer_requires_its_original_index_promotion_proof(tmp_path: Path, state: str) -> None:
+    from polylogue.storage.index_generation import IndexGenerationStore
+    from polylogue.storage.io_phase_metrics import connect_measured, connection_cursor
+    from polylogue.storage.sqlite.connection_profile import native_sql_children
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealStaleError
+
+    with write_lease("test.candidate-role-fixture", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        generations = IndexGenerationStore.for_archive_root(tmp_path)
+        candidate = generations.create(source_snapshot="candidate-role")
+        foreign = generations.create(source_snapshot="foreign-candidate-role")
+    path = Path(candidate.index_path)
+    seal = (
+        PreparedIndexMutation.source_only(archive_root=tmp_path)
+        if state == "source-only"
+        else PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+    )
+    with seal:
+        if state == "source-only":
+            with pytest.raises(ReferenceSealError):
+                seal.prepare_candidate_reachability(path)
+            with pytest.raises(ReferenceSealError):
+                seal._require_unpinned_observer("candidate")
+            assert "candidate" not in seal._observers
+        elif state == "unprepared":
+            with pytest.raises(ReferenceSealError):
+                seal._require_unpinned_observer("candidate")
+            assert "candidate" not in seal._observers
+        else:
+            identity = seal.prepare_candidate_reachability(path)
+            observer = seal._observers["candidate"]
+            assert any(owner.connection is observer for owner in native_sql_children(seal))
+            # The private promotion role does not become a public storage tier.
+            with pytest.raises(ReferenceSealError):
+                seal.observer("candidate")
+            if state == "foreign":
+                with pytest.raises(ReferenceSealStaleError):
+                    seal.validate_candidate_current(Path(foreign.index_path))
+            elif state == "stale":
+                with write_lease("test.foreign-candidate-commit", archive_root=tmp_path):
+                    writer = connect_measured(path)
+                    owner = NativeSQLCustodyOwner(writer)
+                    try:
+                        with connection_cursor(writer, "CREATE TABLE foreign_candidate_effect(value INTEGER)"):
+                            pass
+                        writer.commit()
+                    finally:
+                        owner.close()
+                with pytest.raises(ReferenceSealStaleError):
+                    seal.validate_candidate_current(path)
+                assert seal._candidate_identity == identity
+            elif state == "cursor":
+                with connection_cursor(observer, "SELECT 1"):
+                    with pytest.raises(ReferenceSealError):
+                        seal.validate_candidate_current(path)
+                assert seal.validate_candidate_current(path) == identity
+            elif state == "snapshot":
+                with connection_cursor(observer, "BEGIN"):
+                    pass
+                try:
+                    with pytest.raises(ReferenceSealError):
+                        seal.validate_candidate_current(path)
+                finally:
+                    observer.rollback()
+                assert seal.validate_candidate_current(path) == identity
+            else:
+                assert seal.validate_candidate_current(path) == identity
+    assert native_sql_children(seal) == ()
+
+
+@pytest.mark.parametrize("failed_resource", ["payload", "cursor"])
+@pytest.mark.parametrize("terminal_reason", ["cancelled", "namespace_changed", "source_producer_failed"])
+def test_preparation_payload_waits_for_original_sql_and_retries_failed_cleanup(
+    tmp_path: Path, failed_resource: str, terminal_reason: str
+) -> None:
+    import asyncio
+    import threading
+    from tempfile import TemporaryDirectory
+
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+    from polylogue.storage.derived.raw import _cleanup_scratch
+    from polylogue.storage.sqlite.connection_profile import (
+        native_sql_children,
+        retained_native_sql_owners_for_lifetime,
+    )
+    from polylogue.storage.sqlite.reference_seal import (
+        PreparedIndexMutation,
+        ReferenceSealStaleError,
+        _check_reference_cancellation,
+    )
+    from tests.infra.sqlite_cursor_settlement import ControlledCursor
+
+    with write_lease("test.preparation-payload", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        scratch = TemporaryDirectory(dir=tmp_path)
+        seal = PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path)
+        cursor = None
+
+        def open_pending_cursor() -> ControlledCursor:
+            with retain_native_sql_lifetimes(scratch):
+                pending = seal.observer("user").cursor(factory=ControlledCursor)
+                pending.execute("SELECT 1 UNION ALL SELECT 2")
+                next(pending)
+            if failed_resource == "cursor":
+                pending.cleanup_failure = fault
+                pending.allow_cleanup.clear()
+            return pending
+
+        fault = OSError("synthetic original preparation cleanup failure")
+        attempts = 0
+        payload_fails = failed_resource == "payload"
+
+        def close_payload() -> None:
+            nonlocal attempts
+            attempts += 1
+            assert all(owner._settled for owner in native_sql_children(seal))
+            assert not retained_native_sql_owners_for_lifetime(scratch)
+            if payload_fails:
+                raise fault
+            _cleanup_scratch(scratch)
+
+        cancellation_token = None
+        displaced_index = tmp_path / "displaced-index.db"
+        try:
+            if terminal_reason != "source_producer_failed":
+                cursor = open_pending_cursor()
+            if terminal_reason == "cancelled":
+                cancellation_flag = threading.Event()
+                cancellation_flag.set()
+                cancellation_token = compute_cancel.set(cancellation_flag)
+                with pytest.raises(asyncio.CancelledError) as cancelled:
+                    _check_reference_cancellation()
+                primary: BaseException = cancelled.value
+            elif terminal_reason == "namespace_changed":
+                (tmp_path / "index.db").rename(displaced_index)
+                with pytest.raises(ReferenceSealStaleError) as stale:
+                    seal._assert_configured_namespace()
+                primary = stale.value
+            else:
+                producer_failure = RuntimeError("synthetic original Source producer failure")
+                with pytest.raises(BaseExceptionGroup) as failed:
+                    with seal.original_read_snapshot(), seal.source_producer():
+                        cursor = open_pending_cursor()
+                        raise producer_failure
+                assert failed.value.exceptions[0] is producer_failure
+                assert any(isinstance(error, NativeConnectionSettlementError) for error in failed.value.exceptions[1:])
+                assert seal._cleanup_requested
+                primary = failed.value
+            try:
+                raise primary
+            except BaseException as original:
+                assert original is primary
+                seal.retain_preparation_payload(close_payload)
+            with pytest.raises((OSError, NativeConnectionSettlementError)) as cleanup:
+                seal.close()
+            if isinstance(cleanup.value, NativeConnectionSettlementError):
+                assert isinstance(cleanup.value.failure, BaseExceptionGroup)
+                assert cleanup.value.failure.exceptions == (fault,)
+            else:
+                assert cleanup.value is fault
+            assert not seal._closed and Path(scratch.name).exists()
+            assert attempts == (1 if failed_resource == "payload" else 0)
+            payload_fails = False
+            if cursor is not None:
+                cursor.allow_cleanup.set()
+            seal.close()
+            assert seal._closed and not Path(scratch.name).exists()
+            assert attempts == (2 if failed_resource == "payload" else 1)
+            assert not native_sql_children(seal)
+        finally:
+            payload_fails = False
+            if cursor is not None:
+                cursor.allow_cleanup.set()
+            try:
+                seal.close()
+            finally:
+                if cancellation_token is not None:
+                    compute_cancel.reset(cancellation_token)
+                if displaced_index.exists():
+                    displaced_index.rename(tmp_path / "index.db")

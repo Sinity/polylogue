@@ -53,6 +53,7 @@ export type ActionQueryRowPayload = {
   readonly message_id: string;
   readonly occurred_at_ms?: number | null;
   readonly origin: string;
+  readonly outcome_unknown_reason?: string | null;
   readonly output_text?: string | null;
   readonly result_state: ActionResultState;
   readonly semantic_type?: string | null;
@@ -643,6 +644,7 @@ export type SearchEnvelope = {
   readonly action_affordances?: ReadonlyArray<ActionAffordancePayload>;
   readonly advisories?: ReadonlyArray<string>;
   readonly authority?: AuthorityEnvelope | null;
+  readonly completed_lanes?: ReadonlyArray<string>;
   readonly diagnostics?: QueryMissDiagnosticsPayload | null;
   readonly exactness?: "exact" | "capped" | "sampled" | "estimate" | null;
   readonly executed_lanes?: ReadonlyArray<string>;
@@ -664,6 +666,7 @@ export type SearchEnvelope = {
   readonly result_fingerprint?: string | null;
   readonly retrieval_lane: string;
   readonly route_state?: RouteReadinessPayload | null;
+  readonly snapshot_epoch?: string | null;
   readonly sort?: string | null;
   readonly total: number | null;
   readonly total_unit?: string | null;
@@ -715,6 +718,7 @@ export type SessionListResponse = {
   readonly outcome: OutcomeEnvelope;
   readonly query_description?: ReadonlyArray<string>;
   readonly route_state?: RouteReadinessPayload | null;
+  readonly snapshot_epoch?: string | null;
   readonly total: number;
 };
 
@@ -830,9 +834,9 @@ export type BootstrapWebCredentialResponse = WebCredentialBootstrapPayload;
 export type BootstrapWebCredentialError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetStatusParameters = Record<string, never>;
-export type GetStatusResponse = {
+export type GetStatusResponse = ({
   readonly [key: string]: unknown;
-};
+}) | null;
 export type GetStatusError = QueryErrorPayload | WebCredentialFailurePayload | QueryFailurePayload;
 
 export type GetWebuiFreshnessParameters = {
@@ -998,6 +1002,7 @@ export class PolylogueClient {
       {
         method: "GET",
         path: "/api/status",
+        allowNotModified: true,
       },
       options,
     );

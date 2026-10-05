@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.core.protocols import ProgressCallback
     from polylogue.pipeline.services.ingest_execution import IngestExecution
+    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
@@ -38,6 +40,7 @@ class ParsingService:
         ingest_workers: int | None = None,
         measure_ingest_result_size: bool = False,
         execution: IngestExecution | None = None,
+        retained_runner: Callable[[Sequence[str]], Awaitable[tuple[PreparedRevisionReplayResult, ...]]] | None = None,
     ) -> None:
         if raw_batch_size <= 0:
             raise ValueError("raw_batch_size must be a positive integer")
@@ -50,6 +53,7 @@ class ParsingService:
         self._ingest_workers = ingest_workers
         self._measure_ingest_result_size = measure_ingest_result_size
         self.execution = execution
+        self.retained_runner = retained_runner
 
     def _require_backend(self) -> SQLiteBackend:
         """Return the repository backend or fail explicitly."""

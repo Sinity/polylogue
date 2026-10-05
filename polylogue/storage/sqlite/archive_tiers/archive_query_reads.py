@@ -66,6 +66,9 @@ from polylogue.storage.sqlite.run_projection_relations import (
     run_relation_sql,
 )
 
+# Shared by full SQL fusion and bounded public contribution explanations.
+HYBRID_RRF_K = 60
+
 
 class _ArchiveQueryReadsHost(Protocol):
     _conn: sqlite3.Connection
@@ -148,6 +151,7 @@ class ArchiveActionQueryRow:
     #: Full character length of ``output_text`` when the read returned only
     #: its leading prefix (``text_prefix_chars``); ``None`` when it is whole.
     output_text_chars: int | None = None
+    outcome_unknown_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +227,7 @@ def _archive_action_query_row(row: sqlite3.Row, *, with_text_length: bool = Fals
         is_error=is_error,
         exit_code=exit_code,
         result_state=ActionResultState(str(row["result_state"])),
+        outcome_unknown_reason=row["outcome_unknown_reason"],
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
         output_text_chars=(
@@ -1122,6 +1127,7 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("is_error", "a.is_error"),
     ("exit_code", "a.exit_code"),
     ("result_state", "a.result_state"),
+    ("outcome_unknown_reason", "a.outcome_unknown_reason"),
     ("followup_class", "a.followup_class"),
     ("followup_message_ref", "a.followup_message_ref"),
 )
@@ -4198,6 +4204,7 @@ def query_session_action_occurrences(
             a.is_error,
             a.exit_code,
             a.result_state,
+            a.outcome_unknown_reason,
             NULL AS followup_class,
             NULL AS followup_message_ref
         FROM {action_relation_name} a
@@ -4975,6 +4982,9 @@ def query_observed_events(
     else:
         order_by = "e.session_id, e.position, e.event_ref"
     source_where, source_params = observed_event_source_pushdown(predicate)
+    session_ids = _exact_session_ids_from_predicate(predicate)
+    session_scoped = session_ids is not None and len(session_ids) == 1
+    pairing_params: list[object] = [session_ids[0], session_ids[0]] if session_scoped and session_ids else []
     clause, params = _structural_predicate_clause("observed-event", "e", predicate, session_alias="s")
     session_clause = ""
     session_params: list[object] = []
@@ -4982,7 +4992,7 @@ def query_observed_events(
         session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
     rows = self._conn.execute(
         f"""
-        {observed_event_relation_sql(source_where=source_where)}
+        {observed_event_relation_sql(source_where=source_where, session_scoped=session_scoped)}
         SELECT e.*, s.origin, s.title
         FROM observed_events e
         JOIN sessions s ON e.session_id = s.session_id
@@ -4991,7 +5001,7 @@ def query_observed_events(
         ORDER BY {order_by}
         LIMIT ? OFFSET ?
         """,
-        [*source_params, *params, *session_params, normalized_limit, normalized_offset],
+        [*pairing_params, *source_params, *params, *session_params, normalized_limit, normalized_offset],
     ).fetchall()
     return [
         ArchiveObservedEventQueryRow(

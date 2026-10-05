@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from polylogue.core.errors import SessionNotFoundError
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
 from polylogue.operations.session_evidence import (
@@ -130,7 +132,7 @@ def page_next_offset(*, offset: int, returned: int, total: int | None, limit: in
     answer the same client question -- "is there another page, and where does
     it start?" -- so they must answer it identically.  Deciding it per payload
     is how the list page came to omit the key entirely, which silently ended
-    ``query_complete_session_ids``' walk after one page and let
+    ``query_complete_session_selection``' walk after one page and let
     ``delete --all`` act on the first page only (#1873 regression, polylogue-w3s0q).
 
     ``total`` may be an honest ``None`` (a vector lane exposes a bounded
@@ -168,6 +170,18 @@ def execute_read_operation(
     """
 
     dependencies = dependencies or DaemonReadDependencies()
+    snapshot_epoch: str | None = None
+    if name == "cli.query":
+        from polylogue.archive.query.transaction import archive_snapshot_epoch
+
+        snapshot_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+    selected_epoch = payload.get("selection_epoch")
+    if selected_epoch is not None:
+        from polylogue.archive.query.transaction import QueryContinuationStaleError, archive_snapshot_epoch
+
+        current_epoch = f"{archive.index_db_path.resolve()}:{archive_snapshot_epoch(archive)}"
+        if selected_epoch != current_epoch:
+            raise QueryContinuationStaleError(issued_epoch=str(selected_epoch), current_epoch=current_epoch)
     cacheable = _cacheable_read(name, payload)
     cache_key_payload = _params(payload) if name in {"cli.query", "facets"} else payload
     # A grammar completion is a pure protocol read and deliberately accepts the
@@ -195,12 +209,16 @@ def execute_read_operation(
         from polylogue.storage.search.cache import get_cached_result
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)
-        if cached is not None:
+        frame_matches = name != "cli.query" or (cached is not None and cached.get("snapshot_epoch") == snapshot_epoch)
+        if cached is not None and frame_matches:
+            if name == "cli.query":
+                _refresh_query_relative_times(cached)
             return cached
 
     if name == "cli.query":
         params = _params(payload)
         result = _query_payload(params, archive=archive, serving_identity=serving_identity, dependencies=dependencies)
+        result["snapshot_epoch"] = snapshot_epoch
     elif name == "query.aggregate":
         result = _aggregate_payload(payload, archive=archive)
     elif name == "session.read":
@@ -306,6 +324,26 @@ def execute_read_operation(
     return result
 
 
+def _refresh_query_relative_times(result: dict[str, object]) -> None:
+    """Refresh request-time display fields on the cache's detached answer."""
+    from polylogue.surfaces.query_rows import session_row
+
+    items = result.get("items")
+    if isinstance(items, list):
+        for row in items:
+            if isinstance(row, dict) and "relative_time" in row:
+                row["relative_time"] = session_row(row).relative_time
+    hits = result.get("hits")
+    if isinstance(hits, list):
+        for hit in hits:
+            if (
+                isinstance(hit, dict)
+                and isinstance((session := hit.get("session")), dict)
+                and "relative_time" in session
+            ):
+                session["relative_time"] = session_row(session).relative_time
+
+
 def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether a read is safe to reuse until the index revision moves.
 
@@ -409,7 +447,11 @@ def _query_payload(
     # CLI root payloads retain presentation-only keys.  The existing query
     # contract intentionally ignores those while compiling selection intent.
     spec = cli_read_request({**params, "limit": limit, "offset": offset}).selection
-    spec = _resolved_scope_spec(spec, archive=archive)
+    # A proved missing explicit scope still runs the canonical query. Its
+    # exact-ID predicate yields no rows on this pinned snapshot, while normal
+    # validation and ranked-lane failures remain visible.
+    with suppress(SessionNotFoundError):
+        spec = _resolved_scope_spec(spec, archive=archive)
 
     searching = bool(
         spec.query_terms
@@ -478,7 +520,8 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
     """Resolve an explicit session scope to a full session id before filtering.
 
     ``--id`` accepts any reference spelling the archive can resolve — a native
-    id, a prefix, a full ``origin:native`` id.  The SQL filters compare against
+    id, a prefix, a full ``origin:native`` id, or its outer ``session:`` namespace.
+    The SQL filters compare against
     the full ``session_id``, so an unresolved spelling silently scopes the page
     to nothing and reports an empty result instead of the session the operator
     named.  Resolution failure is stated, never rendered as "no rows".
@@ -490,9 +533,9 @@ def _resolved_scope_spec(spec: SessionQuerySpec, *, archive: ArchiveStore) -> Se
     if not scope:
         return spec
     try:
-        resolved = archive.resolve_session_id(scope)
+        resolved = archive.resolve_session_id(scope.removeprefix("session:"))
     except KeyError as exc:
-        raise ValueError(f"session not found: {scope}") from exc
+        raise SessionNotFoundError(f"session not found: {scope}") from exc
     return spec if resolved == scope else dataclass_replace(spec, session_id=resolved)
 
 
@@ -1139,7 +1182,7 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
 
     from dataclasses import asdict
 
-    from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs, stats_filter_kwargs
+    from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
     from polylogue.surfaces.outcome import decide_outcome
 
     mode = str(payload.get("mode") or "")
@@ -1161,76 +1204,45 @@ def _aggregate_payload(payload: Mapping[str, object], *, archive: ArchiveStore) 
     query = " ".join((*spec.query_terms, *spec.contains_terms)).strip()
     scope_id = spec.session_id
 
-    if mode == "count":
-        if spec.exclude_text_terms:
-            from polylogue.api.archive import _archive_count_sessions_for_spec
+    if spec.exclude_text_terms:
+        from polylogue.api.archive import _archive_selected_session_count_for_spec
 
-            count = _archive_count_sessions_for_spec(archive, spec)
-        else:
-            count = (
-                archive.count_search_sessions(
-                    query,
-                    actions_only=spec.retrieval_lane == "actions",
-                    session_id=scope_id,
-                    **cast("Any", filter_kwargs),
-                )
-                if query
-                else archive.count_sessions(session_id=scope_id, **cast("Any", filter_kwargs))
-            )
+        count = _archive_selected_session_count_for_spec(archive, spec)
         return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
 
-    session_ids = _matched_session_ids(
-        archive, query=query, session_id=scope_id, limit=spec.limit, filters=filter_kwargs
+    group_by = str(payload.get("group_by") or "")
+    reduced = archive.aggregate_sessions(
+        mode,
+        query=query,
+        actions_only=spec.retrieval_lane == "actions",
+        group_by=group_by or None,
+        session_id=scope_id,
+        limit=spec.sample if spec.sample is not None else spec.limit,
+        offset=spec.offset,
+        sort=spec.sort,
+        reverse=spec.reverse,
+        sample=spec.sample is not None,
+        **cast("Any", filter_kwargs),
     )
-    empty_selection = bool(query) and not session_ids
-    aggregate_kwargs = cast("Any", stats_filter_kwargs(filter_kwargs))
-
+    if mode == "count":
+        count = cast("int", reduced)
+        return {"outcome": decide_outcome(matched=count).to_dict(), "mode": "count", "count": count}
     if mode == "stats_by":
-        group_by = str(payload.get("group_by") or "")
-        if not group_by:
-            raise ValueError("stats_by requires a group_by field")
-        grouped: dict[str, int] = (
-            {} if empty_selection else dict(archive.stats_by(group_by, **aggregate_kwargs, session_ids=session_ids))
-        )
+        grouped = cast("dict[str, int]", reduced)
         return {
             "outcome": decide_outcome(matched=sum(grouped.values())).to_dict(),
             "mode": "stats_by",
             "group_by": group_by,
             "groups": grouped,
         }
-
     from polylogue.archive.stats import ArchiveStats
 
-    stats = (
-        ArchiveStats(total_sessions=0, total_messages=0)
-        if empty_selection
-        else archive.stats(**aggregate_kwargs, session_ids=session_ids)
-    )
+    stats = cast("ArchiveStats", reduced)
     return {
         "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
         "mode": "stats",
         "stats": asdict(stats),
     }
-
-
-def _matched_session_ids(
-    archive: ArchiveStore,
-    *,
-    query: str,
-    session_id: str | None,
-    limit: int | None,
-    filters: Mapping[str, object],
-) -> tuple[str, ...]:
-    """Scope an aggregate to the sessions a text selection actually matched."""
-
-    if session_id is not None:
-        try:
-            return (archive.resolve_session_id(session_id),)
-        except KeyError:
-            return ()
-    if not query:
-        return ()
-    return tuple(archive.search_session_ids(query, limit=limit, **cast("Any", filters)))
 
 
 def _session_identity_projection(
@@ -1363,10 +1375,14 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     arguments differ from the typed sessions.read owner contract.
     """
 
+    from types import SimpleNamespace
+
     from polylogue.operations.transcript_window import read_transcript_window_sync
-    from polylogue.surfaces.outcome import decide_outcome
+    from polylogue.surfaces.outcome import lineage_page_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
 
+    selection_epoch = payload.get("selection_epoch")
+    session_projection = payload.get("session_projection", "archive")
     ref = str(payload.get("ref") or "").strip()
     if not ref:
         raise ValueError("session.read requires a session reference")
@@ -1398,33 +1414,64 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     def read(window_limit: int, window_offset: int) -> tuple[list[object], int, object]:
         nonlocal latest_envelope
         latest_envelope = archive.read_session_page(session_id, limit=window_limit, offset=window_offset)
-        total = (
-            latest_envelope.total_message_count
-            if latest_envelope.total_message_count is not None
-            else len(latest_envelope.messages)
-        )
+        total = latest_envelope.total_message_count
+        if total is None:
+            raise ValueError("session.read page omitted its composed message count")
         return (
             list(latest_envelope.messages),
             total,
-            {
-                "complete": latest_envelope.lineage_complete,
-                "truncation_reason": latest_envelope.lineage_truncation_reason,
-            },
+            SimpleNamespace(
+                complete=latest_envelope.lineage_complete,
+                truncation_reason=latest_envelope.lineage_truncation_reason,
+            ),
         )
 
+    window_arguments: dict[str, object] = {"projection": dict(raw_projection) if raw_projection else {}}
+    if session_projection != "archive":
+        window_arguments["session_projection"] = session_projection
+    if selection_epoch is not None:
+        window_arguments["selection_epoch"] = selection_epoch
     window = read_transcript_window_sync(
         archive,
         request,
         read=read,
         transaction_operation="session.read",
         projection=_SESSION_READ_PROJECTION,
-        extra_arguments={"projection": dict(raw_projection) if raw_projection else {}},
+        extra_arguments=window_arguments,
     )
     assert latest_envelope is not None
     envelope = replace(latest_envelope, messages=tuple(window.rows))
+    session_body = _session_identity_projection(envelope, excluded_blocks=excluded_blocks)
+    if session_projection == "domain":
+        from polylogue.archive.hydration import archive_envelope_to_session
+
+        summary = archive.read_summary(session_id)
+        if excluded_blocks:
+            envelope = replace(
+                envelope,
+                messages=tuple(
+                    replace(
+                        message,
+                        blocks=tuple(block for block in message.blocks if block.block_type not in excluded_blocks),
+                    )
+                    for message in envelope.messages
+                ),
+            )
+        session_body = archive_envelope_to_session(
+            envelope,
+            display_label=summary.display_label,
+            display_label_source=summary.display_label_source,
+        ).model_dump(mode="json")
     result: dict[str, object] = {
-        "outcome": decide_outcome(matched=len(window.rows)).to_dict(),
-        "session": _session_identity_projection(envelope, excluded_blocks=excluded_blocks),
+        "outcome": lineage_page_outcome(
+            matched=len(window.rows),
+            complete=window.lineage_complete,
+            truncation_reason=window.lineage_truncation_reason,
+        ).to_dict(),
+        "session": session_body,
+        "selection_epoch": selection_epoch,
+        "lineage_complete": window.lineage_complete,
+        "lineage_truncation_reason": window.lineage_truncation_reason,
         "session_id": session_id,
         "total": window.total,
         "limit": window.limit,

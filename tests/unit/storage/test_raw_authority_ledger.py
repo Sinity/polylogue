@@ -5,7 +5,6 @@ import sqlite3
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
-from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +13,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, Outcome, converge
+from polylogue.daemon.derivation import Budget, DerivationRegistry, DerivationReport, converge
 from polylogue.operations import raw_observation_derivation as raw_observation_derivation_mod
 from polylogue.operations.raw_observation_derivation import (
     converge_raw_observations,
@@ -22,18 +21,13 @@ from polylogue.operations.raw_observation_derivation import (
 )
 from polylogue.storage import raw_authority as raw_authority_mod
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
-from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived import raw as raw_derivation_mod
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.derived.raw import RawObservationDerivation, RawObservationInspection
 from polylogue.storage.raw_authority import (
     RawReplayPlan,
     build_raw_replay_plans,
     raw_authority_parser_fingerprint,
     validate_raw_replay_plan,
-)
-from polylogue.storage.raw_reconciler import (
-    RawAuthorityFrontierState,
-    inspect_raw_authority_frontier,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -47,31 +41,28 @@ def _config(root: Path) -> Config:
 
 
 def _derive_raw_observations(root: Path, *, limit: int = 128) -> DerivationReport:
-    """Run the bounded canonical raw-observation derivation for this fixture."""
-    return converge_raw_observations(
-        root,
-        source_roots=(),
-        limit=limit,
-    )
+    """Settle original retained inputs, then return the genuine bounded pass."""
+    import asyncio
+
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def exercise() -> DerivationReport:
+        async with prepared_live_convergence_owner(root) as owner:
+            await owner.replay_retained_raw_ids(_raw_ids(root))
+            return await owner.run_prepared_sync(
+                "test.ledger.raw-pass",
+                lambda: converge_raw_observations(
+                    root, source_roots=(), limit=limit, compute_adapter=owner._compute_adapter
+                ),
+                settlement_owners=lambda: (),
+                estimated_bytes=0,
+            )
+
+    return asyncio.run(exercise())
 
 
 def _derived_success(report: DerivationReport) -> bool:
     return report.failed == 0 and report.pending == 0
-
-
-def _derived_count(report: DerivationReport, outcome: Outcome = Outcome.DONE) -> int:
-    assert report.failed == 0
-    assert report.pending == 0
-    return report.count(outcome)
-
-
-def _derive_after_source_stages(root: Path) -> DerivationReport:
-    for _ in range(4):
-        report = _derive_raw_observations(root)
-        assert report.failed == 0, report.outcomes
-        if report.pending == 0:
-            return report
-    pytest.fail("raw observation did not converge after its committed source stages")
 
 
 def _raw_ids(root: Path) -> tuple[str, ...]:
@@ -128,7 +119,11 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
         payload["head_rows"] = []
         return json_document(payload)
 
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
+    assert _derived_success(_derive_raw_observations(tmp_path))
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive.resolve_exact_session_ids(("codex-session:receipt",)) == {
+            "codex-session:receipt": "codex-session:receipt"
+        }
     (raw_id,) = _raw_ids(tmp_path)
     (plan,) = build_raw_replay_plans(tmp_path, ((raw_id,),))
     invalid = incomplete_receipt(tmp_path, plan)
@@ -152,17 +147,29 @@ def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_pa
     assert receipt["application_rows"] == []
 
 
-def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: Path) -> None:
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(tmp_path, native_id="active-plan", source_path="active-plan.jsonl", acquired_at_ms=1)
-    assert _derived_success(_derive_raw_observations(tmp_path))
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: Path) -> None:
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    def acquire() -> str:
+        bootstrap_archive_root(tmp_path)
+        return _write_codex_raw(tmp_path, native_id="active-plan", source_path="active-plan.jsonl", acquired_at_ms=1)
+
+    raw_id = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        assert sum(len(receipt.written_session_ids) for receipt in receipts) == 1
     shadow_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     assert shadow_plan.index_preconditions["sessions"]
 
-    active_index = tmp_path / "generations" / "active" / "index.db"
-    initialize_archive_database(active_index, ArchiveTier.INDEX)
-    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+    def select_empty_generation() -> None:
+        active_index = tmp_path / "generations" / "active" / "index.db"
+        initialize_archive_database(active_index, ArchiveTier.INDEX)
+        (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
 
+    await run_archive_fixture_write(tmp_path, select_empty_generation)
     active_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     valid, observed = validate_raw_replay_plan(tmp_path, shadow_plan)
 
@@ -171,17 +178,30 @@ def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: P
     assert observed == active_plan.to_dict()
 
 
-def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
-    bootstrap_archive_root(tmp_path)
-    active_index = tmp_path / "generations" / "active" / "index.db"
-    initialize_archive_database(active_index, ArchiveTier.INDEX)
-    (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
-    (tmp_path / "index.db").write_bytes(b"not a sqlite database")
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    census = inspect_raw_authority_frontier(_config(tmp_path))
+    def prepare() -> None:
+        bootstrap_archive_root(tmp_path)
+        active_index = tmp_path / "generations" / "active" / "index.db"
+        initialize_archive_database(active_index, ArchiveTier.INDEX)
+        (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
+        (tmp_path / "index.db").write_bytes(b"not a sqlite database")
 
-    assert census.accepted_head_count == 0
-    assert census.plan_count == 0
+    await run_archive_fixture_write(tmp_path, prepare)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        measured = await owner.run_convergence_sync(
+            "fixture.frontier.active",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
+        )
+    assert measured.healthy and measured.accepted_head_checks == measured.blocking_head_checks == 0
 
 
 @pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
@@ -433,7 +453,7 @@ def _seed_ambiguous_membership_component(
                 (raw_id, parser_fingerprint, json.dumps([logical_source_key])),
             )
         conn.commit()
-    observation_status = RawObservationDerivation(tmp_path).inspect(
+    observation_status = RawObservationInspection(tmp_path).inspect(
         raw_observation_frame(tmp_path, raw_ids=(raw_id,)),
         (raw_id,),
     )[raw_id]
@@ -474,7 +494,7 @@ def test_ambiguous_verdict_under_previous_dynamic_fingerprint_is_replayable(
         "raw_authority_parser_fingerprint",
         lambda: changed_fingerprint,
     )
-    observation_status = RawObservationDerivation(tmp_path).inspect(
+    observation_status = RawObservationInspection(tmp_path).inspect(
         raw_observation_frame(tmp_path, raw_ids=(_raw_id,)),
         (_raw_id,),
     )[_raw_id]
@@ -502,268 +522,197 @@ def test_raw_observation_report_bounds_retained_outcomes_without_losing_counts(t
             source_path=f"bounded-{index}.jsonl",
             acquired_at_ms=index,
         )
-    adapter = RawObservationDerivation(tmp_path)
-    report = converge(
-        DerivationRegistry((adapter,)),
-        raw_observation_frame(tmp_path),
-        budget=Budget(
-            page=10,
-            discovery=10,
-            inspection=20,
-            compute=10,
-            publication=10,
-            retained_outcomes=8,
-        ),
-    )
-    assert report.done == 10
-    assert report.failed == 0
-    assert len(report.outcomes) == 8
-    assert report.truncated is True
+    import asyncio
+
+    from polylogue.core.stage_admission import admit_stage_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def exercise() -> DerivationReport:
+        async with prepared_live_convergence_owner(tmp_path) as owner:
+
+            def run_phase() -> DerivationReport:
+                adapter = RawObservationDerivation(tmp_path, compute_adapter=owner._compute_adapter)
+                return converge(
+                    DerivationRegistry((adapter,)),
+                    raw_observation_frame(tmp_path),
+                    budget=Budget(
+                        page=10, discovery=10, inspection=20, compute=10, publication=10, retained_outcomes=8
+                    ),
+                    publisher=admit_stage_write,
+                )
+
+            report = await owner.run_prepared_sync(
+                "test.ledger.bounded-phase", run_phase, settlement_owners=lambda: (), estimated_bytes=0
+            )
+            assert report.pending == 10
+            assert report.failed == 0
+            assert len(report.outcomes) == 8
+            assert report.truncated is True
+            await owner.replay_retained_raw_ids(_raw_ids(tmp_path))
+            return report
+
+    asyncio.run(exercise())
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        assert archive.index_connection is not None
+        assert archive.index_connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 10
 
 
-def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) -> None:
-    """polylogue-lkrc AC1/AC6/AC7: the CORRUPT terminal state had zero
-    regression coverage anywhere in the suite even though it is one of the
-    eight mutually exclusive frontier states the reconciler declares and
-    persists as a durable blocker.
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) -> None:
+    from contextlib import closing
 
-    This reproduces the first of ``_classify_frontier``'s three CORRUPT
-    triggers (``polylogue/storage/raw_reconciler.py``): ``raw_revision_heads``
-    still names a ``session_id`` but the materialized session row it points at
-    is gone (a torn write, an interrupted rebuild, or manual tampering with
-    the rebuildable index tier). Proven-current accepted heads must never
-    silently read as healthy in this shape.
-    """
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(tmp_path, native_id="dangling-session", source_path="dangling.jsonl", acquired_at_ms=1)
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    with sqlite3.connect(tmp_path / "index.db") as index_conn:
-        session_id = index_conn.execute(
-            "SELECT session_id FROM raw_revision_heads WHERE accepted_raw_id = ?", (raw_id,)
-        ).fetchone()[0]
-        # Simulate the accepted head surviving while its materialized session
-        # vanishes underneath it -- the index tier is rebuildable and this is
-        # exactly the kind of partial state a crash mid-rebuild can leave.
-        index_conn.execute("PRAGMA foreign_keys = OFF")
-        index_conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        index_conn.commit()
+    def acquire() -> tuple[str, str | None]:
+        bootstrap_archive_root(tmp_path)
+        raw_id = _write_codex_raw(tmp_path, native_id="dangling-session", source_path="neutral.jsonl", acquired_at_ms=1)
+        return raw_id, None
 
-    census = inspect_raw_authority_frontier(_config(tmp_path))
+    raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        assert sum(len(item.written_session_ids) for item in receipts) == 1
 
-    item = next(entry for entry in census.items if entry.raw_id == raw_id)
-    assert item.state is RawAuthorityFrontierState.CORRUPT
-    assert item.reason == "accepted head has no matching materialized session"
-    assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
+        def corrupt() -> None:
+            with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+                sid = conn.execute(
+                    "SELECT session_id FROM raw_revision_heads WHERE accepted_raw_id=?", (raw_id,)
+                ).fetchone()[0]
+                conn.execute("PRAGMA foreign_keys=OFF")
+                conn.execute("DELETE FROM sessions WHERE session_id=?", (sid,))
 
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        blocker = source_conn.execute(
-            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ?",
-            (item.plan_id,),
-        ).fetchone()
-    assert blocker is not None
-    assert blocker[1] is None
-
+        await run_archive_fixture_write(tmp_path, corrupt)
+        measured = await owner.run_convergence_sync(
+            "fixture.frontier.refusal",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
+        )
+    assert not measured.healthy and measured.blocking_head_checks == 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        rows = conn.execute(
+            "SELECT expected_json,observed_json,resolved_at_ms,reason FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+        ).fetchall()
+    assert len(rows) == 1 and rows[0][2] is None
+    expected, observed = json.loads(rows[0][0]), json.loads(rows[0][1])
+    assert expected["input_raw_ids"] == [raw_id]
+    assert observed["state"] == "corrupt"
+    assert rows[0][3] == "accepted head has no matching materialized session"
+    assert "actuator" not in observed and "actuator" not in expected["authority_witness"]
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
     assert raw_materialization_ready(readiness) is False
     refs = cast(list[dict[str, object]], readiness["raw_authority_frontier_remediation_refs"])
-    assert item.plan_id in {ref["plan_id"] for ref in refs}
+    assert expected["plan_id"] in {ref["plan_id"] for ref in refs}
 
 
-def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path) -> None:
-    """polylogue-lkrc AC1/AC6/AC7: reproduces the second reachable CORRUPT
-    trigger -- the accepted head names one raw as authoritative
-    (``accepted_raw_id``) while the materialized session it points at was
-    actually built from a *different* raw. This is the torn-write shape the
-    reconciler's own comment describes ("accepted revision head and
-    materialized session select different raw authority"): a genuine
-    disagreement between two derived-tier tables that a read-only census
-    must surface as a durable blocker rather than silently trust the head.
-    """
-    bootstrap_archive_root(tmp_path)
-    accepted_raw_id = _write_codex_raw(
-        tmp_path, native_id="mismatch-one", source_path="mismatch.jsonl", acquired_at_ms=1
-    )
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
-    # An independent, never-materialized raw acquisition -- stands in for the
-    # "wrong" raw a corrupted head could point at.
-    phantom_raw_id = _write_codex_raw(tmp_path, native_id="phantom-only", source_path="phantom.jsonl", acquired_at_ms=2)
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path) -> None:
+    from contextlib import closing
 
-    with sqlite3.connect(tmp_path / "index.db") as index_conn:
-        logical_source_key = index_conn.execute(
-            "SELECT logical_source_key FROM raw_revision_heads WHERE accepted_raw_id = ?", (accepted_raw_id,)
-        ).fetchone()[0]
-        index_conn.execute(
-            "UPDATE raw_revision_heads SET accepted_raw_id = ? WHERE logical_source_key = ?",
-            (phantom_raw_id, logical_source_key),
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    def acquire() -> tuple[str, str | None]:
+        bootstrap_archive_root(tmp_path)
+        raw_id = _write_codex_raw(tmp_path, native_id="mismatch-one", source_path="neutral.jsonl", acquired_at_ms=1)
+        phantom = _write_codex_raw(tmp_path, native_id="phantom-only", source_path="phantom.jsonl", acquired_at_ms=2)
+        return raw_id, phantom
+
+    raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        assert sum(len(item.written_session_ids) for item in receipts) == 1
+
+        def corrupt() -> None:
+            with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+                conn.execute(
+                    "UPDATE raw_revision_heads SET accepted_raw_id=? WHERE accepted_raw_id=?", (phantom, raw_id)
+                )
+
+        await run_archive_fixture_write(tmp_path, corrupt)
+        measured = await owner.run_convergence_sync(
+            "fixture.frontier.refusal",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
         )
-        index_conn.commit()
-
-    census = inspect_raw_authority_frontier(_config(tmp_path))
-
-    # The session itself was materialized from accepted_raw_id, so the
-    # classifier resolves the raw row by the SESSION's own raw_id, not the
-    # (now wrong) value stashed on the head row -- the surfaced item is still
-    # keyed by the real session raw, with the head's disagreement in the
-    # reason/evidence.
-    item = next(entry for entry in census.items if entry.raw_id == accepted_raw_id)
-    assert item.state is RawAuthorityFrontierState.CORRUPT
-    assert item.reason == "accepted revision head and materialized session select different raw authority"
-    assert item.index_preconditions["head_accepted_raw_id"] == phantom_raw_id
-    assert item.index_preconditions["accepted_raw_id"] == accepted_raw_id
-    assert census.state_counts[RawAuthorityFrontierState.CORRUPT.value] == 1
-
+    assert not measured.healthy and measured.blocking_head_checks == 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        rows = conn.execute(
+            "SELECT expected_json,observed_json,resolved_at_ms,reason FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+        ).fetchall()
+    assert len(rows) == 1 and rows[0][2] is None
+    expected, observed = json.loads(rows[0][0]), json.loads(rows[0][1])
+    assert expected["input_raw_ids"] == [raw_id]
+    assert observed["state"] == "corrupt"
+    assert rows[0][3] == "accepted revision head and materialized session select different raw authority"
+    assert expected["index_preconditions"]["head_accepted_raw_id"] == phantom
+    assert expected["index_preconditions"]["accepted_raw_id"] == raw_id
+    assert "actuator" not in observed and "actuator" not in expected["authority_witness"]
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
     assert raw_materialization_ready(readiness) is False
+    refs = cast(list[dict[str, object]], readiness["raw_authority_frontier_remediation_refs"])
+    assert expected["plan_id"] in {ref["plan_id"] for ref in refs}
 
 
-def test_verified_blob_receipt_invalidates_when_blob_bytes_change_underneath_it(tmp_path: Path) -> None:
-    """polylogue-byw3y: the safety-critical half of the receipt cache.
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(tmp_path: Path) -> None:
+    from contextlib import closing
 
-    A verification receipt is a durable HINT, never an authority: it may only
-    ever be trusted for the exact on-disk fingerprint (dev/inode/size/mtime/
-    ctime) it was recorded against. If a blob's bytes are corrupted/mutated
-    in place -- the file at the content-addressed path no longer matches its
-    own filename hash -- the next census MUST re-verify from scratch and
-    reclassify the frontier item as unproven, never silently keep trusting a
-    stale receipt. This is the regression this bead's whole design exists to
-    prevent: a performance win here would be worthless (and actively unsafe)
-    if it could paper over real corruption.
-    """
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(
-        tmp_path,
-        native_id="tamper-target",
-        source_path="tamper.jsonl",
-        acquired_at_ms=1,
-        text="hello",
-        byte_proven=True,
-    )
-    assert _derived_count(_derive_after_source_stages(tmp_path)) == 1
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        blob_hash_hex = str(
-            source_conn.execute("SELECT hex(blob_hash) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
-        ).lower()
-
-    # First census: proves the blob, records a durable receipt.
-    census = inspect_raw_authority_frontier(_config(tmp_path))
-    item = next(entry for entry in census.items if entry.raw_id == raw_id)
-    assert item.state is RawAuthorityFrontierState.PROVEN_CURRENT
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        receipt = source_conn.execute(
-            "SELECT st_size FROM verified_blob_receipts WHERE blob_hash = ?",
-            (bytes.fromhex(blob_hash_hex),),
-        ).fetchone()
-    assert receipt is not None, "first census must persist a verification receipt"
-
-    # Corrupt the blob bytes IN PLACE -- same content-addressed filename,
-    # different content. This is the exact shape a stale-but-trusted receipt
-    # would silently paper over: the fingerprint's st_size differs, so the
-    # census must force a real re-hash rather than trust the old receipt.
-    blob_path = BlobStore(tmp_path / "blob").blob_path(blob_hash_hex)
-    blob_path.write_bytes(blob_path.read_bytes() + b"tampered-bytes")
-
-    census2 = inspect_raw_authority_frontier(_config(tmp_path))
-    item2 = next(entry for entry in census2.items if entry.raw_id == raw_id)
-    assert item2.state is RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE
-    assert item2.reason == "accepted head raw bytes do not prove the expected content-addressed digest"
-    assert census2.state_counts[RawAuthorityFrontierState.MISSING_BYTES_REACQUIRE.value] == 1
-
-
-def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_passes(tmp_path: Path) -> None:
-    """polylogue-byw3y: the performance half -- a blob verified once and left
-    untouched must not be re-hashed by a second census pass. Counts actual
-    ``BlobStore.verify`` invocations (the real content re-hash) rather than
-    trusting a wall-clock or state proxy, so the assertion fails honestly if
-    the receipt cache regresses back to re-verifying every restart.
-    """
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(
-        tmp_path,
-        native_id="unchanged-target",
-        source_path="unchanged.jsonl",
-        acquired_at_ms=1,
-        text="hello",
-        byte_proven=True,
-    )
-    assert _derived_count(_derive_after_source_stages(tmp_path)) == 1
-
-    verify_calls: list[str] = []
-    real_verify = BlobStore.verify
-
-    def _counting_verify(self: BlobStore, hash_hex: str) -> bool:
-        verify_calls.append(hash_hex)
-        return real_verify(self, hash_hex)
-
-    with patch.object(BlobStore, "verify", _counting_verify):
-        census1 = inspect_raw_authority_frontier(_config(tmp_path))
-        assert len(verify_calls) == 1, "first census must hash the blob at least once"
-        item1 = next(entry for entry in census1.items if entry.raw_id == raw_id)
-        assert item1.state is RawAuthorityFrontierState.PROVEN_CURRENT
-
-        verify_calls.clear()
-        census2 = inspect_raw_authority_frontier(_config(tmp_path))
-        assert verify_calls == [], "second census over an unchanged blob must reuse the durable receipt"
-        item2 = next(entry for entry in census2.items if entry.raw_id == raw_id)
-        assert item2.state is RawAuthorityFrontierState.PROVEN_CURRENT
-
-
-def test_quarantined_accepted_head_is_a_terminal_obligation_not_a_promise(tmp_path: Path) -> None:
-    """polylogue-u19l/polylogue-6kur: a quarantined head is a typed refusal.
-
-    The historical defect was an absorbing state: the census promised a
-    REFINE_QUARANTINE actuator for every quarantined head while the
-    executability gate could never select one, so 4,147 blockers accumulated
-    behind a remedy that did not exist. polylogue-6kur removed the promise
-    instead of re-plumbing it -- there is no actuator taxonomy left to
-    misassign. What must survive is the honest half: the state is reported,
-    counted, and published as a durable operator-visible blocker.
-
-    Force the shape by accepting a raw normally, then flipping only its
-    ``revision_authority`` to 'quarantined' under an otherwise byte-proven
-    envelope.
-
-    Anti-vacuity: dropping ``revision_authority == 'quarantined'`` from
-    ``_classify_frontier`` reclassifies this head as PROVEN_CURRENT, and both
-    the state assertion and the blocker assertion go red.
-    """
-    bootstrap_archive_root(tmp_path)
-    raw_id = _write_codex_raw(
-        tmp_path, native_id="quarantine-ineligible", source_path="quarantine.jsonl", acquired_at_ms=1
-    )
-    assert _derived_count(_derive_raw_observations(tmp_path)) == 1
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.execute(
-            "UPDATE raw_sessions SET revision_authority = 'quarantined' WHERE raw_id = ?",
-            (raw_id,),
+    def acquire() -> tuple[str, str | None]:
+        bootstrap_archive_root(tmp_path)
+        raw_id = _write_codex_raw(
+            tmp_path, native_id="quarantine-ineligible", source_path="neutral.jsonl", acquired_at_ms=1
         )
-        source_conn.commit()
+        return raw_id, None
 
-    census = inspect_raw_authority_frontier(_config(tmp_path))
+    raw_id, phantom = await run_archive_fixture_write(tmp_path, acquire)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        assert sum(len(item.written_session_ids) for item in receipts) == 1
 
-    item = next(entry for entry in census.items if entry.raw_id == raw_id)
-    assert item.state is RawAuthorityFrontierState.UNRESOLVED_PROVENANCE
-    assert item.reason == "accepted raw authority remains quarantined"
-    assert census.state_counts[RawAuthorityFrontierState.UNRESOLVED_PROVENANCE.value] == 1
+        def corrupt() -> None:
+            with closing(sqlite3.connect(tmp_path / "source.db")) as conn, conn:
+                conn.execute("UPDATE raw_sessions SET revision_authority='quarantined' WHERE raw_id=?", (raw_id,))
 
-    # Terminal, countable, operator-visible: tracked as an open blocker an
-    # operator can find, never misrepresented as "something will fix this".
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        blocker = source_conn.execute(
-            "SELECT reason, resolved_at_ms FROM raw_authority_blockers WHERE json_extract(expected_json, '$.plan_id') = ?",
-            (item.plan_id,),
-        ).fetchone()
-    assert blocker is not None
-    assert blocker[1] is None
-    assert "quarantined" in blocker[0]
-
+        await run_archive_fixture_write(tmp_path, corrupt)
+        measured = await owner.run_convergence_sync(
+            "fixture.frontier.refusal",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
+        )
+    assert not measured.healthy and measured.blocking_head_checks == 1
+    with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
+        rows = conn.execute(
+            "SELECT expected_json,observed_json,resolved_at_ms,reason FROM raw_authority_blockers WHERE resolved_at_ms IS NULL"
+        ).fetchall()
+    assert len(rows) == 1 and rows[0][2] is None
+    expected, observed = json.loads(rows[0][0]), json.loads(rows[0][1])
+    assert expected["input_raw_ids"] == [raw_id]
+    assert observed["state"] == "unresolved_provenance"
+    assert rows[0][3] == "accepted raw authority remains quarantined"
+    assert "actuator" not in observed and "actuator" not in expected["authority_witness"]
     readiness = raw_materialization_readiness_snapshot(tmp_path)
     assert readiness["raw_authority_blocker_count"] == 1
+    assert raw_materialization_ready(readiness) is False
+    refs = cast(list[dict[str, object]], readiness["raw_authority_frontier_remediation_refs"])
+    assert expected["plan_id"] in {ref["plan_id"] for ref in refs}
 
 
 @pytest.mark.parametrize("prior_decision", ["ambiguous", "deferred"])
@@ -776,10 +725,10 @@ def test_v5_semantic_refusal_is_recensused_and_replayed_from_retained_bytes(
     )
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("UPDATE raw_session_memberships SET decision = ? WHERE raw_id = ?", (prior_decision, raw_id))
-    derivation = RawObservationDerivation(tmp_path)
+    derivation = RawObservationInspection(tmp_path)
     assert derivation.inspect(raw_observation_frame(tmp_path, raw_ids=(raw_id,)), (raw_id,))[raw_id] == "stale"
 
-    report = _derive_after_source_stages(tmp_path)
+    report = _derive_raw_observations(tmp_path)
     assert _derived_success(report)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute(

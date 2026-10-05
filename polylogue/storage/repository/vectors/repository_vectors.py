@@ -6,17 +6,23 @@ import asyncio
 import builtins
 import sqlite3
 from contextlib import closing
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.hydration import archive_envelope_to_session
+from polylogue.core.compute import compute_adapter
 from polylogue.core.enums import Origin
 from polylogue.core.errors import VectorRuntimeUnavailableError
 from polylogue.core.protocols import VectorProvider
 from polylogue.core.sources import source_name_to_origin
 from polylogue.logging import get_logger
 from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_async
+from polylogue.storage.hydrators import session_event_from_record
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.search_providers.sqlite_vec_runtime import require_vector_seed_session
+from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from polylogue.storage.sqlite.queries.session_events import read_session_events
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -24,6 +30,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
     from polylogue.archive.stats import ArchiveStats
     from polylogue.config import Config
+    from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -49,6 +56,7 @@ class RepositoryVectorMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
+        _read_blob_store: BlobStore
 
         async def get_many(self, session_ids: builtins.list[str]) -> builtins.list[Session]: ...
 
@@ -61,29 +69,32 @@ class RepositoryVectorMixin:
         if not vector_provider:
             raise ValueError("Semantic search requires a vector provider.")
 
-        results = await asyncio.to_thread(
-            vector_provider.query,
-            text,
-            limit=limit * 3,
+        def project(connection: sqlite3.Connection, count: int, hits: list[tuple[str, float]]) -> list[Session]:
+            del count
+            with closing(connection.cursor()) as cursor:
+                sessions: list[Session] = []
+                for message_id, _distance in hits:
+                    row = cursor.execute(
+                        "SELECT session_id FROM archive_index.messages WHERE message_id = ?", (message_id,)
+                    ).fetchone()
+                    if row is None:
+                        raise VectorRuntimeUnavailableError("semantic witness has no session in the selected index")
+                    session_id = str(row[0])
+                    session = archive_envelope_to_session(
+                        read_archive_session_envelope(connection, session_id, blob_store=self._read_blob_store)
+                    )
+                    session.session_events = tuple(
+                        session_event_from_record(event) for event in read_session_events(connection, session_id)
+                    )
+                    sessions.append(session)
+                return sessions
+
+        return await vector_provider.read_similarity(
+            index_path=self._backend.db_path,
+            text=text,
+            limit=limit,
+            project=project,
         )
-        if not results:
-            return []
-
-        message_ids = [msg_id for msg_id, _ in results]
-        msg_to_conv = await self._get_message_session_mapping(message_ids)
-
-        conv_scores: dict[str, float] = {}
-        for msg_id, distance in results:
-            conv_id = msg_to_conv.get(msg_id)
-            if conv_id:
-                conv_scores[conv_id] = min(conv_scores.get(conv_id, float("inf")), distance)
-
-        ranked_ids = sorted(
-            conv_scores.keys(),
-            key=lambda session_id: conv_scores[session_id],
-        )[:limit]
-
-        return await self.get_many(ranked_ids)
 
     async def search_similar_sessions(
         self,
@@ -92,11 +103,11 @@ class RepositoryVectorMixin:
         vector_provider: VectorProvider | None = None,
         provider_config: Config | None = None,
     ) -> dict[str, object]:
-        """Rank sessions from ``query_by_session`` message hits.
+        """Rank sessions by minimum L2 over every distinct retained seed output.
 
-        The vector provider owns KNN ordering. This repository operation only
-        resolves each returned message to its session, keeps the closest hit
-        per session, and hydrates the metadata needed by read surfaces.
+        One best actual message witness represents each returned session;
+        ``matched_message_count`` counts that selected witness, not every
+        potentially relevant message in the session.
         """
         if vector_provider is None:
             from polylogue.storage.search_providers import create_vector_provider
@@ -108,8 +119,8 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             raise VectorRuntimeUnavailableError("No local vector runtime is available")
 
-        return await vector_provider.read_session_similarity(
-            session_id,
+        return await vector_provider.read_similarity(
+            seed_session_id=session_id,
             index_path=self._backend.db_path,
             limit=limit,
             project=lambda connection, count, hits: self._project_session_similarity(
@@ -252,10 +263,14 @@ class RepositoryVectorMixin:
         if vector_provider is None:
             raise ValueError("No vector provider configured")
 
-        results = await asyncio.to_thread(
-            vector_provider.query,
-            query,
-            limit=limit,
+        results = (
+            await compute_adapter()
+            .submit(
+                partial(vector_provider.query, query, limit=limit),
+                admission_class="interactive-read",
+                estimated_bytes=len(query.encode("utf-8")),
+            )
+            .wait()
         )
         if not results:
             return []

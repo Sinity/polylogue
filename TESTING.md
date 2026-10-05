@@ -32,6 +32,13 @@ The generic worker `focused` profile maps to `pytest_focused`, which requires
 an explicit selector after `--`; the static `verify_quick` operation remains
 available by name and does not count as behavioral test evidence.
 
+For a routine fix, choose a small check that distinguishes the changed
+behavior, or imports/basic static checks when sufficient. Broader regression
+belongs at integration milestones. Keep first failures visible; retry only
+as an explicitly named flake or contention diagnostic, retaining both results.
+An unrelated inherited fixture failure does not require another full run.
+Required hooks and hosted checks still apply.
+
 ### Managed pytest pools
 
 The operation owns pytest admission. `.agentctl/project.toml` declares
@@ -52,6 +59,9 @@ candidate. A job ID, principal, or operation name is not slot ownership.
   the launch file the job consumes and deletes.
 - `agentctl job start polylogue pytest_focused --wait -- <selection>` runs
   `devtools test <selection>` inside the pool directly.
+- A worker's bare `verify` wrapper does not supply focused arguments. Use
+  `agentctl job start polylogue pytest_focused --workspace <checkout> -- <selection>`
+  instead, with an explicit test path or selector.
 - If the runtime is unreachable the run refuses rather than running unqueued:
   `systemctl --user start pueued`, then rerun.
 
@@ -123,8 +133,9 @@ Focused `devtools test <selection>` does not load or update testmon. Its
 receipt records the checkout graph only as a diagnostic.
 
 Ordinary `devtools verify` runs static gates and makes one bounded selection
-from a usable pytest-testmon graph at `.cache/testmon/testmondata` (environment
-`polylogue`). A green result covers only the selected tests; ordinary
+from a usable pytest-testmon graph at `.cache/testmon/testmondata` (environments
+bound to pytest configuration, root and nested conftest files, and the effective
+Hypothesis profile). A green result covers only the selected tests; ordinary
 development accepts that selection can miss affected tests. A normal selector
 that chooses zero is reported as zero. If the graph is unusable or the
 selection exceeds its bound, verification records why and refuses before

@@ -61,7 +61,11 @@ from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, raw_source_path
+from polylogue.storage.sqlite.archive_tiers.write import (
+    ConnectionSessionSourceRead,
+    prepare_session_write,
+    raw_source_path,
+)
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 
@@ -708,7 +712,7 @@ def test_a_child_reads_its_parent_in_its_own_rollouts_install_root(tmp_path: Pat
         _session(_CHILD),
         source_conn=source,
         raw_id="child-rollout",
-        child_source_path=raw_source_path(source, "child-rollout"),
+        child_source_path=raw_source_path(ConnectionSessionSourceRead(source), "child-rollout"),
     )
     if not state_first:
         _project_both_roots(index, source)
@@ -732,7 +736,9 @@ def test_a_prepared_child_publishes_under_the_root_it_was_prepared_in(tmp_path: 
     index, source = _two_roots_naming_one_child(tmp_path)
     _project_both_roots(index, source)
     child = _session(_CHILD)
-    prepared = prepare_session_write(index, child, merge_append=False, source_conn=source, raw_id="child-rollout")
+    prepared = prepare_session_write(
+        index, child, merge_append=False, source_read=ConnectionSessionSourceRead(source), raw_id="child-rollout"
+    )
     child_id = write_fixture_index_session(
         index,
         child,

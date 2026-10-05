@@ -426,9 +426,16 @@ def _parser_census_state(
     )
     if byte_governed_fragment and not _byte_append_chain_is_exact(source_conn, raw_id=raw_id, check_stop=check_stop):
         return False, (SourceGenerationBlocker.PARSER_CENSUS_MISMATCH,)
+    # A primary FULL/APPEND identity lives on the original Raw row. It
+    # has no semantic membership census; the shared measured identity law
+    # below still requires its exact current parser receipt and key set.
+    primary_revision_identity = (
+        census is None and membership_count == 0 and raw[3] is not None and raw[4] in ("full", "append")
+    )
     expected_census = (
         parser_confirmed_non_session
         or byte_governed_fragment
+        or primary_revision_identity
         or current
         and census_status == "complete"
         and recorded_count == membership_count
@@ -532,6 +539,7 @@ def _logical_receipt(
         ):
             valid_application_count = _count_current_or_prefix_applications(
                 source_conn,
+                logical_key=logical_key,
                 raw_id=raw_id,
                 source_revision=source_revision,
                 acquisition_generation=acquisition_generation,
@@ -606,6 +614,7 @@ def _logical_receipt(
 def _count_current_or_prefix_applications(
     source_conn: sqlite3.Connection,
     *,
+    logical_key: str,
     raw_id: str,
     source_revision: str | None,
     acquisition_generation: int | None,
@@ -624,15 +633,16 @@ def _count_current_or_prefix_applications(
     that durable provenance.
     """
     head_raw_id = str(head[1])
-    head_identity = (*head[1:6], head[6])
+    head_identity = tuple(head[1:6])
     head_content_hash = _bytes_cell(head[3])
     head_frontier = _int_cell(head[5])
     head_generation = _int_cell(head[6])
+    head_source_matches = _accepted_head_matches_source(source_conn, logical_key, head, check_stop=check_stop)
     raw_is_prefix = _raw_is_predecessor(source_conn, raw_id=raw_id, accepted_raw_id=head_raw_id, check_stop=check_stop)
     valid = 0
     for application in applications:
         decision = str(application[3])
-        application_identity = (*application[4:9], application[2])
+        application_identity = tuple(application[4:9])
         application_generation = _int_cell(application[2])
         application_content_hash = _bytes_cell(application[6])
         source_event_matches = (
@@ -657,6 +667,7 @@ def _count_current_or_prefix_applications(
             and head_generation is not None
             and application_content_hash is not None
             and application_frontier is not None
+            and head_source_matches
             and application_identity == head_identity
         )
         accepted_self_prefix = (
@@ -665,6 +676,7 @@ def _count_current_or_prefix_applications(
             and str(application[4]) == raw_id
             and str(application[5]) == source_revision
             and source_event_matches
+            and head_source_matches
             and raw_is_prefix
             and application_content_hash is not None
             and (
@@ -684,6 +696,62 @@ def _count_current_or_prefix_applications(
         if names_current_head or accepted_self_prefix:
             valid += 1
     return valid
+
+
+def _accepted_head_matches_source(
+    source_conn: sqlite3.Connection,
+    logical_key: str,
+    head: tuple[object, ...],
+    *,
+    check_stop: Callable[[], None] | None,
+) -> bool:
+    """Prove the accepted generation separately from the original application event."""
+    matches = 0
+    membership_present = False
+    with closing(
+        source_conn.execute(
+            "SELECT logical_source_key, source_revision, normalized_content_hash, message_count, acquisition_generation "
+            "FROM main.raw_session_memberships WHERE raw_id=?",
+            (head[1],),
+        )
+    ) as rows:
+        for row in rows:
+            if check_stop is not None:
+                check_stop()
+            if canonical_authority_logical_key(str(row[0])) != logical_key:
+                continue
+            membership_present = True
+            matches += (
+                str(head[4]) == "semantic"
+                and str(row[1]) == str(head[2])
+                and _bytes_cell(row[2]) == _bytes_cell(head[3])
+                and _int_cell(row[3]) == _int_cell(head[5])
+                and _int_cell(row[4]) == _int_cell(head[6])
+            )
+    if membership_present:
+        return matches == 1
+    if check_stop is not None:
+        check_stop()
+    with closing(
+        source_conn.execute(
+            "SELECT logical_source_key, source_revision, acquisition_generation, blob_size, append_end_offset "
+            "FROM main.raw_sessions WHERE raw_id=?",
+            (head[1],),
+        )
+    ) as rows:
+        raw = rows.fetchone()
+    if raw is None or raw[0] is None:
+        return False
+    return (
+        canonical_authority_logical_key(str(raw[0])) == logical_key
+        and str(raw[1]) == str(head[2])
+        and _int_cell(raw[2]) == _int_cell(head[6])
+        and (
+            str(head[4]) == "semantic"
+            or str(head[4]) == "byte"
+            and _int_cell(raw[4] if raw[4] is not None else raw[3]) == _int_cell(head[5])
+        )
+    )
 
 
 def _raw_is_predecessor(

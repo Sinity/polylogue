@@ -46,9 +46,10 @@ import errno
 import sqlite3
 import threading
 from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
-from typing import TypeVar, cast
+from pathlib import Path, PurePosixPath, PureWindowsPath
+from typing import Any, BinaryIO, Protocol, TypeVar, cast
 
 import ijson
 
@@ -58,9 +59,12 @@ from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, read_captured_zip_coordinate_receipt
 from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
-from polylogue.logging import get_logger
+from polylogue.logging import DEBUG, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.source_items import retained_completed_source_item_for_raw
+from polylogue.storage.sqlite.archive_tiers.source_items import (
+    CompletedSourceItemRead,
+    retained_completed_source_item_for_raw,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import read_frame
 
@@ -99,49 +103,39 @@ def _like_prefix(prefix: str) -> str:
 
 
 def _select_retained(
-    source_conn: sqlite3.Connection,
+    source_read: RetainedAssemblyRead,
     *,
     origin: Origin,
     artifact_kind: ArtifactKind,
-    where: str,
-    parameters: list[object],
+    coordinate: str,
+    prefix: bool = False,
 ) -> Generator[tuple[str, RetainedArtifact], None, None]:
-    """Page current exact coordinates under durable receipt and group proof."""
-    receipt_order = raw_receipt_order_sql("r")
-    cursor = source_conn.execute(
-        f"""
-        WITH candidates AS (
-            SELECT r.raw_id, a.source_path, lower(hex(r.blob_hash)) AS blob_hash, r.blob_size,
-                   {receipt_order} AS receipt_order, c.entry_ordinal, c.captured_coordinate,
-                   ROW_NUMBER() OVER (PARTITION BY a.source_path ORDER BY {receipt_order} DESC, r.raw_id) AS rank
-            FROM raw_artifacts a JOIN raw_sessions r ON r.raw_id=a.raw_id
-            LEFT JOIN raw_container_coordinates c ON c.raw_id=r.raw_id
-            WHERE a.origin=? AND ({where}) AND a.artifact_kind=?
-              AND r.blob_hash IS NOT NULL
-        ) SELECT raw_id, source_path, blob_hash, blob_size, receipt_order, entry_ordinal, captured_coordinate
-          FROM candidates WHERE rank=1 ORDER BY source_path
-    """,
-        [origin.value, *parameters, artifact_kind.value],
-    )
-    try:
-        for raw_id, source_path, blob_hash, blob_size, receipt, ordinal, captured in cursor:
+    """Page current exact coordinates with no SQL cursor across consumption."""
+    after: str | None = None
+    while True:
+        check_compute_cancelled()
+        page = source_read.retained_artifact_page(
+            origin.value,
+            artifact_kind.value,
+            coordinate,
+            prefix=prefix,
+            after=after,
+        )
+        if not page:
+            return
+        for raw_id, source_path, blob_hash, blob_size, receipt, ordinal, captured in page:
             check_compute_cancelled()
             if receipt is None:
                 raise OSError(errno.ENODATA, "retained artifact currency has no source receipt")
             if ordinal is not None:
-                generation, item = retained_completed_source_item_for_raw(source_conn, str(raw_id))
-                # The group's complete denominator proves duplicate membership.
-                # Live assembly chooses the first central entry at this path.
-                member = source_conn.execute(
-                    "SELECT r.raw_id, lower(hex(r.blob_hash)), r.blob_size, c.captured_coordinate FROM source_item_raw_members m "
-                    "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
-                    "JOIN raw_container_coordinates c ON c.raw_id=r.raw_id "
-                    "JOIN raw_artifacts a ON a.raw_id=r.raw_id "
-                    "WHERE m.source_generation_id=? AND m.source_item_id=? AND a.source_path=? "
-                    "AND a.origin=? AND a.artifact_kind=? "
-                    "ORDER BY c.entry_ordinal, c.split_index LIMIT 1",
-                    (generation, item, str(source_path), origin.value, artifact_kind.value),
-                ).fetchone()
+                generation, item = retained_completed_source_item_for_raw(source_read, raw_id)
+                member = source_read.retained_group_member(
+                    generation,
+                    item,
+                    source_path,
+                    origin.value,
+                    artifact_kind.value,
+                )
                 if member is None:
                     raise RetainedZipMembershipUnprovedError("completed ZIP group lacks its selected artifact")
                 raw_id, blob_hash, blob_size, captured = member
@@ -149,15 +143,13 @@ def _select_retained(
                     raise RetainedZipMembershipUnprovedError(
                         "retained ZIP artifact lacks its captured namespace/member receipt"
                     )
-            path = str(source_path)
-            coordinate = None if captured is None else read_captured_zip_coordinate_receipt(captured)
-            if coordinate is not None and coordinate.declared_member != path:
+            coordinate_receipt = None if captured is None else read_captured_zip_coordinate_receipt(captured)
+            if coordinate_receipt is not None and coordinate_receipt.declared_member != source_path:
                 raise RetainedZipMembershipUnprovedError(
                     "retained ZIP artifact coordinate differs from its captured member receipt"
                 )
-            yield path, RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size), coordinate)
-    finally:
-        cursor.close()
+            yield source_path, RetainedArtifact(raw_id, source_path, blob_hash, blob_size, coordinate_receipt)
+        after = page[-1][1]
 
 
 def _first_retained_artifact(records: Generator[tuple[str, RetainedArtifact], None, None]) -> RetainedArtifact | None:
@@ -168,11 +160,18 @@ def _first_retained_artifact(records: Generator[tuple[str, RetainedArtifact], No
         records.close()
 
 
-def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
+def _read(source_read: RetainedAssemblyRead, artifact: RetainedArtifact) -> bytes | None:
     try:
-        return blob_store.read_all(artifact.blob_hash)
+        with source_read.open_sidecar_payload(artifact.raw_id, bytes.fromhex(artifact.blob_hash)) as payload:
+            return payload.read()
     except (OSError, ValueError) as exc:
-        logger.debug("retained assembly blob unavailable (%s): %s", artifact.source_path, exc)
+        emit(
+            "retained_assembly_blob_unavailable",
+            level=DEBUG,
+            source_path=artifact.source_path,
+            failure=exc,
+            outcome="unavailable",
+        )
         return None
 
 
@@ -194,6 +193,7 @@ _parsed_retained_fill_lock = threading.Lock()
 
 
 def _read_parsed(
+    source_read: RetainedAssemblyRead,
     blob_store: BlobStore,
     artifact: RetainedArtifact,
     kind: str,
@@ -216,7 +216,7 @@ def _read_parsed(
             origin = kind.split(".", 1)[0]
             for held in [held for held in _parsed_retained_cache if held == kind or held.split(".", 1)[0] != origin]:
                 del _parsed_retained_cache[held]
-        payload = _read(blob_store, artifact)
+        payload = _read(source_read, artifact)
         if payload is None:
             return None
         parsed = parse(payload)
@@ -247,7 +247,7 @@ def claude_code_sidecar_coordinates(session_source_path: str) -> tuple[str, str]
 
 
 def retained_claude_code_sidecars(
-    source_conn: sqlite3.Connection,
+    source_read: RetainedAssemblyRead,
     blob_store: BlobStore,
     *,
     session_source_path: str,
@@ -260,34 +260,33 @@ def retained_claude_code_sidecars(
     resolved: SidecarData = {}
 
     indexes = _select_retained(
-        source_conn,
+        source_read,
         origin=Origin.CLAUDE_CODE_SESSION,
         artifact_kind=ArtifactKind.SESSION_INDEX,
-        where="a.source_path = ?",
-        parameters=[index_path],
+        coordinate=index_path,
     )
     artifact = _first_retained_artifact(indexes)
     if artifact is not None:
         from .parsers.claude.index import parse_sessions_index_bytes
 
         entries: ClaudeCodeSessionIndex | None = _read_parsed(
-            blob_store, artifact, "claude_code.session_index", parse_sessions_index_bytes
+            source_read, blob_store, artifact, "claude_code.session_index", parse_sessions_index_bytes
         )
         if entries:
             resolved["session_index"] = entries
 
     histories = _select_retained(
-        source_conn,
+        source_read,
         origin=Origin.CLAUDE_CODE_SESSION,
         artifact_kind=ArtifactKind.PROMPT_HISTORY_LOG,
-        where="a.source_path = ?",
-        parameters=[history_path],
+        coordinate=history_path,
     )
     artifact = _first_retained_artifact(histories)
     if artifact is not None:
         from .parsers.claude.history import build_session_paste_index_bytes
 
         pastes: ClaudeCodeHistoryPasteIndex | None = _read_parsed(
+            source_read,
             blob_store,
             artifact,
             "claude_code.history_paste_index",
@@ -311,9 +310,11 @@ def codex_sidecar_coordinates(session_source_path: str) -> tuple[str, str] | Non
     deliberate: two installs may have identical thread ids and sidecar names,
     but never share retained title evidence.
     """
-    if not session_source_path or ":" in PurePosixPath(session_source_path).name:
+    if not session_source_path:
         return None
-    path = Path(session_source_path)
+    # Use the acquired coordinate spelling, independent of the host OS.
+    windows = PureWindowsPath(session_source_path)
+    path = windows if "\\" in session_source_path and windows.is_absolute() else PurePosixPath(session_source_path)
     sessions_root = next((parent for parent in path.parents if parent.name == "sessions"), None)
     if sessions_root is None:
         return None
@@ -324,7 +325,7 @@ def codex_sidecar_coordinates(session_source_path: str) -> tuple[str, str] | Non
 
 
 def retained_codex_sidecars(
-    source_conn: sqlite3.Connection,
+    source_read: RetainedAssemblyRead,
     blob_store: BlobStore,
     *,
     session_source_path: str,
@@ -337,32 +338,30 @@ def retained_codex_sidecars(
     resolved: SidecarData = {}
 
     indexes = _select_retained(
-        source_conn,
+        source_read,
         origin=Origin.CODEX_SESSION,
         artifact_kind=ArtifactKind.SESSION_INDEX,
-        where="a.source_path = ?",
-        parameters=[index_path],
+        coordinate=index_path,
     )
     artifact = _first_retained_artifact(indexes)
     if artifact is not None:
         from .assembly_codex import parse_codex_session_index_bytes
 
-        names = _read_parsed(blob_store, artifact, "codex.session_index", parse_codex_session_index_bytes)
+        names = _read_parsed(source_read, blob_store, artifact, "codex.session_index", parse_codex_session_index_bytes)
         if names:
             resolved["thread_names"] = names
 
     histories = _select_retained(
-        source_conn,
+        source_read,
         origin=Origin.CODEX_SESSION,
         artifact_kind=ArtifactKind.PROMPT_HISTORY_LOG,
-        where="a.source_path = ?",
-        parameters=[history_path],
+        coordinate=history_path,
     )
     artifact = _first_retained_artifact(histories)
     if artifact is not None:
         from .assembly_codex import parse_codex_history_bytes
 
-        titles = _read_parsed(blob_store, artifact, "codex.history_titles", parse_codex_history_bytes)
+        titles = _read_parsed(source_read, blob_store, artifact, "codex.history_titles", parse_codex_history_bytes)
         if titles:
             resolved["history_titles"] = titles
     return resolved
@@ -399,7 +398,7 @@ def _member_basename(artifact: RetainedArtifact) -> str:
 
 
 def retained_chatgpt_sidecars(
-    source_conn: sqlite3.Connection,
+    source_read: RetainedAssemblyRead,
     blob_store: BlobStore,
     *,
     session_source_path: str,
@@ -415,11 +414,11 @@ def retained_chatgpt_sidecars(
     index = ChatGPTAssetIndex()
     claimed: set[str] = set()
     indexes = _select_retained(
-        source_conn,
+        source_read,
         origin=Origin.CHATGPT_EXPORT,
         artifact_kind=ArtifactKind.EXPORT_ASSET_INDEX,
-        where="a.source_path LIKE ? ESCAPE '\\'",
-        parameters=[_like_prefix(scope)],
+        coordinate=_like_prefix(scope),
+        prefix=True,
     )
     try:
         try:
@@ -428,11 +427,17 @@ def retained_chatgpt_sidecars(
                 if name not in {"library_files.json", "conversation_asset_file_names.json"} or name in claimed:
                     continue
                 try:
-                    with blob_store.open(artifact.blob_hash) as source:
+                    with source_read.open_sidecar_payload(artifact.raw_id, bytes.fromhex(artifact.blob_hash)) as source:
                         if index.load_stream(source, library=name == "library_files.json"):
                             claimed.add(name)
                 except (OSError, ValueError, ijson.JSONError) as exc:
-                    logger.debug("retained chatgpt asset index unavailable (%s): %s", path, exc)
+                    emit(
+                        "retained_chatgpt_asset_index_unavailable",
+                        level=DEBUG,
+                        source_path=path,
+                        failure=exc,
+                        outcome="unavailable",
+                    )
         finally:
             indexes.close()
     except BaseException:
@@ -442,11 +447,11 @@ def retained_chatgpt_sidecars(
     try:
         group = index.begin_asset_group()
         assets = _select_retained(
-            source_conn,
+            source_read,
             origin=Origin.CHATGPT_EXPORT,
             artifact_kind=ArtifactKind.EXPORT_ASSET,
-            where="a.source_path LIKE ? ESCAPE '\\'",
-            parameters=[_like_prefix(scope)],
+            coordinate=_like_prefix(scope),
+            prefix=True,
         )
         # Key members exactly as live discovery does: the bare asset id until a
         # second member proves it ambiguous, then ``asset_id#member`` for every
@@ -486,7 +491,7 @@ def with_retained_assembly_evidence(
     sidecar_data: SidecarData,
     *,
     provider: Provider | None,
-    source_conn: sqlite3.Connection,
+    source_read: RetainedAssemblyRead,
     blob_store: BlobStore,
     source_path: str | None,
     captured_zip_coordinate: CapturedZipMemberCoordinate | None,
@@ -513,17 +518,17 @@ def with_retained_assembly_evidence(
     if provider is not Provider.CODEX and all(key in sidecar_data for key in wanted):
         return sidecar_data
     if provider is Provider.CLAUDE_CODE:
-        retained = retained_claude_code_sidecars(source_conn, blob_store, session_source_path=source_path)
+        retained = retained_claude_code_sidecars(source_read, blob_store, session_source_path=source_path)
     elif provider is Provider.CODEX:
         # The acquisition snapshot is the live authority.  Retained sidecars
         # are replay evidence only, so never mix them into a bundle that
         # already carries any live Codex title input.
         if any(sidecar_data.get(key) for key in ("thread_names", "history_titles", "state_titles")):
             return sidecar_data
-        retained = retained_codex_sidecars(source_conn, blob_store, session_source_path=source_path)
+        retained = retained_codex_sidecars(source_read, blob_store, session_source_path=source_path)
     else:
         retained = retained_chatgpt_sidecars(
-            source_conn, blob_store, session_source_path=source_path, captured_zip_coordinate=captured_zip_coordinate
+            source_read, blob_store, session_source_path=source_path, captured_zip_coordinate=captured_zip_coordinate
         )
     if not retained:
         return sidecar_data
@@ -561,11 +566,13 @@ def resolve_retained_assembly_evidence(
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return sidecar_data
+    from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
+
     with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
         return with_retained_assembly_evidence(
             sidecar_data,
             provider=provider,
-            source_conn=frame.connection,
+            source_read=ConnectionSessionSourceRead(frame.connection),
             blob_store=BlobStore(archive_root / "blob"),
             source_path=source_path,
             captured_zip_coordinate=captured_zip_coordinate,
@@ -583,3 +590,86 @@ __all__ = [
     "retained_claude_code_sidecars",
     "with_retained_assembly_evidence",
 ]
+
+
+class RetainedAssemblyRead(CompletedSourceItemRead, Protocol):
+    """Finite retained artifact selection and exact acquired-byte capability."""
+
+    def retained_artifact_page(
+        self,
+        origin: str,
+        artifact_kind: str,
+        coordinate: str,
+        *,
+        prefix: bool,
+        after: str | None,
+    ) -> list[tuple[str, str, str, int, int | None, int | None, str | None]]: ...
+
+    def retained_group_member(
+        self,
+        generation: str,
+        item: str,
+        source_path: str,
+        origin: str,
+        artifact_kind: str,
+    ) -> tuple[str, str, int, str | None] | None: ...
+
+    def open_sidecar_payload(self, raw_id: str, blob_hash: bytes) -> AbstractContextManager[BinaryIO]: ...
+
+
+def _retained_artifact_predicate(prefix: bool) -> str:
+    return "a.source_path LIKE ? ESCAPE '\\'" if prefix else "a.source_path=?"
+
+
+def _retained_artifact_page_sql(prefix: bool) -> str:
+    receipt_order = raw_receipt_order_sql("r")
+    # Cut complete path partitions before ranking. This preserves the exact
+    # winner and avoids rereading earlier paths on subsequent keyset pages.
+    return f"""
+        WITH candidates AS (
+            SELECT r.raw_id, a.source_path, lower(hex(r.blob_hash)) AS blob_hash, r.blob_size,
+                   {receipt_order} AS receipt_order, c.entry_ordinal, c.captured_coordinate,
+                   ROW_NUMBER() OVER (PARTITION BY a.source_path ORDER BY {receipt_order} DESC, r.raw_id) AS rank
+            FROM raw_artifacts a JOIN raw_sessions r ON r.raw_id=a.raw_id
+            LEFT JOIN raw_container_coordinates c ON c.raw_id=r.raw_id
+            WHERE a.origin=? AND ({_retained_artifact_predicate(prefix)}) AND a.artifact_kind=?
+              AND r.blob_hash IS NOT NULL AND (? IS NULL OR a.source_path>?)
+        ) SELECT raw_id, source_path, blob_hash, blob_size, receipt_order, entry_ordinal, captured_coordinate
+          FROM candidates WHERE rank=1 ORDER BY source_path LIMIT 256
+    """
+
+
+_RETAINED_GROUP_MEMBER_SQL = (
+    "SELECT r.raw_id, lower(hex(r.blob_hash)), r.blob_size, c.captured_coordinate FROM source_item_raw_members m "
+    "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
+    "JOIN raw_container_coordinates c ON c.raw_id=r.raw_id "
+    "JOIN raw_artifacts a ON a.raw_id=r.raw_id "
+    "WHERE m.source_generation_id=? AND m.source_item_id=? AND a.source_path=? "
+    "AND a.origin=? AND a.artifact_kind=? ORDER BY c.entry_ordinal, c.split_index LIMIT 1"
+)
+
+
+def _retained_artifact_page_from_rows(
+    rows: sqlite3.Cursor,
+) -> list[tuple[str, str, str, int, int | None, int | None, str | None]]:
+    page: list[tuple[str, str, str, int, int | None, int | None, str | None]] = []
+    for row in rows:
+        check_compute_cancelled()
+        page.append(
+            (
+                str(row[0]),
+                str(row[1]),
+                str(row[2]),
+                int(row[3]),
+                None if row[4] is None else int(row[4]),
+                None if row[5] is None else int(row[5]),
+                None if row[6] is None else str(row[6]),
+            )
+        )
+    return page
+
+
+def _retained_group_member_from_row(
+    row: sqlite3.Row | tuple[Any, ...] | None,
+) -> tuple[str, str, int, str | None] | None:
+    return None if row is None else (str(row[0]), str(row[1]), int(row[2]), None if row[3] is None else str(row[3]))

@@ -133,10 +133,6 @@
       "digest": "b43ea2a563c60d7a047d861250fa7daec323617d"
     },
     {
-      "file": "polylogue/operations/archive_backup.py",
-      "digest": "d12cc3652d9cbc72aa95836708c30c8054d2c93e"
-    },
-    {
       "file": "polylogue/daemon/cli.py",
       "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
     },
@@ -805,10 +801,6 @@
     {
       "file": "polylogue/storage/raw_retention.py",
       "digest": "cb7167b3325a15636f2cbc4c82fcde97e67ff56d"
-    },
-    {
-      "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
-      "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44"
     },
     {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",

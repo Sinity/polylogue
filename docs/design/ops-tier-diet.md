@@ -20,7 +20,7 @@ count the plan was written against.
 `ingest_cursor`, `convergence_debt`, `whole_archive_convergence_pledge`,
 `cursor_lag_samples`, `daemon_stage_events`, `daemon_events`,
 `judgment_scheduler_receipts`, `daemon_lifecycle`, `secret_scan_status`,
-`mcp_call_log`, `mcp_call_session_refs`, `route_observations`,
+`mcp_call_log`, `mcp_call_session_refs`,
 `fts_drift_samples`, `context_injection_ledger`.
 
 `slo_samples` is already gone. `schema_identity` is bootstrap metadata, not an
@@ -164,8 +164,9 @@ write.
 | `schema_drift_samples` | `analysis/schema_drift.py`, `cli/commands/diagnostics.py`, `daemon/health.py`, `operations/daemon_status.py`, `schemas/drift_sentinel_sampling.py` | drift event + rollup; **paired with `fts_drift_samples`** |
 | `fts_drift_samples` | `cli/commands/diagnostics.py` | same drift event; the two are written and read together on one diagnostics route, so deleting either alone leaves a half-migrated command |
 | `cursor_lag_samples` | `daemon/cursor_lag_baseline.py`, `operations/daemon_workload_probe.py`, `schemas/generation/archive_workload_profile.py` | lag event + rollup; the workload-profile schema needs an explicit unavailable term |
-| `route_observations` | `cli/commands/diagnostics.py`, `operations/route_observation.py` | route-timing event + rollup |
 | `daemon_stage_events` | `api/archive.py`, `operations/claude_workflow_convergence.py`, `daemon/status.py`, `daemon/health.py`, `daemon/catchup_status.py`, `operations/daemon_metrics.py`, `maintenance/archive_verification.py`, `operations/daemon_workload_probe.py`, `sources/live/cursor.py`, `storage/archive_readiness.py` | stage event + rollup — **the largest and last**: ten reader modules including archive readiness and archive verification. Verify for each whether it reads stage events as *diagnostics* or as *evidence of stage completion*; the second kind is authority and must not become a rollup. |
+
+Route observations and their persisted drop ledger were retired. Latency reads the live MCP call log; the in-memory route receipt contract remains for shared resident telemetry.
 
 `schema_drift_samples`/`fts_drift_samples` move as a pair. `daemon_stage_events`
 moves last, after its ten readers have each been classified.

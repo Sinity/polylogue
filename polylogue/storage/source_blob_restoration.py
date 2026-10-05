@@ -19,6 +19,7 @@ import io
 import os
 import sqlite3
 import stat
+import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -26,11 +27,10 @@ from pathlib import Path
 from typing import IO
 
 from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import (
     read_captured_zip_coordinate_receipt,
-    split_zip_member_text,
-    zip_member_coordinate_candidates,
 )
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
@@ -183,11 +183,10 @@ def is_recorded_container_member(row: Mapping[str, object]) -> bool:
 
 
 def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str, bool]:
-    """Resolve recorded bytes under the active root with one ZIP decision.
+    """Resolve explicit retained coordinates or a literal loose-file path.
 
-    A stored member receipt proves the coordinate kind. A legacy coordinate
-    needs a readable ZIP at a lexical boundary; an unreadable candidate is
-    retryable evidence, rather than permission to try a later boundary.
+    A member namespace is authority only when its acquisition receipt names it.
+    Colons and ZIP-looking suffixes in loose paths remain filename data.
     """
     source = str(row.get("source_path") or "")
 
@@ -210,31 +209,7 @@ def retained_source_location(row: Mapping[str, object], root: Path) -> tuple[str
         coordinate = read_captured_zip_coordinate_receipt(receipt)
         return f"{relocate(Path(coordinate.canonical_container))}:{coordinate.member_name}", True
 
-    literal = relocate(Path(source))
-    recorded = is_recorded_container_member(row)
-    if not recorded:
-        try:
-            literal.stat()
-        except (FileNotFoundError, NotADirectoryError):
-            pass
-        else:
-            return str(literal), False
-    from polylogue.sources.source_staging import probe_zip_container
-
-    for container, member in zip_member_coordinate_candidates(source):
-        candidate = relocate(container)
-        try:
-            if probe_zip_container(candidate):
-                return f"{candidate}:{member}", True
-        except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
-            continue
-    if recorded:
-        split = split_zip_member_text(source)
-        if split is not None:
-            container_text, member = split
-            return f"{relocate(Path(container_text))}:{member}", True
-        return source, True
-    return str(literal), False
+    return str(relocate(Path(source))), is_recorded_container_member(row)
 
 
 def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
@@ -405,6 +380,74 @@ __all__ = [
     "source_window_holds_blob",
     "retained_blob_source_candidates",
     "retained_source_location",
+    "stage_blob_from_recorded_source",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]
+
+
+def stage_blob_from_recorded_source(
+    conn: sqlite3.Connection,
+    archive_root: Path,
+    blob_store: BlobStore,
+    raw_id: str,
+    *,
+    blob_hash: str,
+    source_path: str,
+    stop: Callable[[], bool] | None = None,
+) -> tuple[PreparedBlob | None, str | None]:
+    """Stage one absent blob from the first recorded source window holding its exact bytes.
+
+    The candidate windows come from ``retained_blob_source_candidates``,
+    the owner backup recoverability reads too. A ZIP member is replayed
+    through acquisition's ZIP admission (``zip_reacquired_unit``)
+    and staged only when the replayed value is byte-identical to the
+    blob; a structural-only match is ``inexact_payload``. Returns the
+    staged blob, or ``None`` with the last candidate's refusal reason.
+    """
+    row = read_raw_source_evidence(conn, raw_id)
+    if row is None:
+        raise KeyError(raw_id)
+    prior_full_observations = read_prior_full_source_receipts(conn, row)
+    source_path, container_member = retained_source_location(row, archive_root)
+    candidates = retained_blob_source_candidates(
+        row,
+        container_member=container_member,
+        prior_full_observations=prior_full_observations,
+    )
+    if not candidates:
+        return None, "no_source_window"
+    reason: str | None = None
+    for candidate in candidates:
+        if candidate.window is not None:
+            prepared, reason = stage_exact_source_window_blob(
+                blob_store,
+                source_path=Path(source_path),
+                window=candidate.window,
+                blob_hash=blob_hash,
+                stop=stop,
+            )
+        else:
+            from polylogue.storage.source_zip_replay import zip_reacquired_unit
+
+            # The resolved unit streams from its member again: a preserved
+            # member can be gigabytes, so its bytes are never held whole.
+            unit, reason = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+            prepared = None
+            if unit is not None and unit.open_payload is not None:
+                try:
+                    with unit.open_payload() as unit_stream:
+                        prepared = stage_exact_blob(
+                            blob_store,
+                            unit_stream,
+                            blob_hash=blob_hash,
+                            size_bytes=unit.size_bytes,
+                            stop=stop,
+                        )
+                except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
+                    reason = f"error:{type(exc).__name__}"
+                else:
+                    reason = None if prepared is not None else "inexact_payload"
+        if prepared is not None:
+            return prepared, None
+    return None, reason

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
-import subprocess
 import time
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -18,16 +18,13 @@ from polylogue.operations.route_observation import (
     RouteObservationDrops,
     RouteObservationSpec,
     compute_latency_percentiles,
-    observe_route,
-    open_observation_connection,
+    measure_route,
     reset_route_observation_drops,
     route_observation_drops,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     ArchiveMcpCallLogEntry,
-    ArchiveRouteObservation,
-    list_route_observations,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -38,8 +35,8 @@ def _init_ops(tmp_path: Path) -> Path:
     return ops_db
 
 
-def _observation(*, surface: str, route: str, duration_ms: int, status: str = "ok") -> ArchiveRouteObservation:
-    return ArchiveRouteObservation(
+def _observation(*, surface: str, route: str, duration_ms: int, status: str = "ok") -> SimpleNamespace:
+    return SimpleNamespace(
         observation_id="o",
         trace_id="t",
         surface=surface,
@@ -76,93 +73,6 @@ def _buckets(
 ) -> tuple[RouteLatencyBucket, ...]:
     """Percentiles over a sample this test built itself, so drops are known-zero."""
     return compute_latency_percentiles(observations, mcp_calls, drops=RouteObservationDrops.none_observed()).buckets
-
-
-def test_observe_route_records_a_receipt_with_measured_duration(tmp_path: Path) -> None:
-    """Anti-vacuity: the receipt's recorded duration reflects real elapsed time.
-
-    A route body that sleeps a controlled amount must produce a receipt
-    whose duration_ms is at least that long -- this fails if the timing
-    wrapper is a no-op or measures the wrong span.
-    """
-    _init_ops(tmp_path)
-
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.test-route", verb="v1") as obs:
-        time.sleep(0.05)
-        obs.attributes["marker"] = "seen"
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="cli", route="cli.test-route")
-    assert len(rows) == 1
-    row = rows[0]
-    assert row.duration_ms >= 45  # measured, not a stub -- real sleep was ~50ms
-    assert row.status == "ok"
-    assert row.verb == "v1"
-    assert row.attributes["marker"] == "seen"
-    # The receipt projection rides in the same freeform document.
-    assert isinstance(row.attributes["route_receipt"], dict)
-
-
-def test_observe_route_records_git_head_when_requested(tmp_path: Path) -> None:
-    _init_ops(tmp_path)
-    expected = subprocess.check_output(
-        ["git", "-C", str(Path.cwd()), "rev-parse", "--short=12", "HEAD"],
-        text=True,
-    ).strip()
-
-    with observe_route(
-        archive_root=tmp_path,
-        surface="mcp",
-        route="mcp.status.coordination",
-        git_head_cwd=Path.cwd(),
-    ):
-        pass
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="mcp", route="mcp.status.coordination")
-    assert len(rows) == 1
-    assert rows[0].git_head == expected
-
-
-def test_observe_route_records_error_status_on_exception_and_reraises(tmp_path: Path) -> None:
-    _init_ops(tmp_path)
-
-    with pytest.raises(RuntimeError, match="boom"):
-        with observe_route(archive_root=tmp_path, surface="cli", route="cli.failing-route"):
-            raise RuntimeError("boom")
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="cli", route="cli.failing-route")
-    assert len(rows) == 1
-    assert rows[0].status == "error"
-
-
-def test_observe_route_caller_can_override_status_to_degraded(tmp_path: Path) -> None:
-    _init_ops(tmp_path)
-
-    with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.status.coordination") as obs:
-        obs.status = "degraded"
-        obs.daemon_path = "direct"
-        obs.attributes["archive_evidence_degraded"] = True
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="mcp")
-    assert rows[0].status == "degraded"
-    assert rows[0].daemon_path == "direct"
-    assert rows[0].attributes["archive_evidence_degraded"] is True
-
-
-def test_observe_route_is_a_silent_no_op_without_an_archive(tmp_path: Path) -> None:
-    """Telemetry emission must never depend on, or fail loudly over, an absent archive."""
-    missing_root = tmp_path / "does-not-exist"
-
-    with observe_route(archive_root=missing_root, surface="cli", route="cli.test-route"):
-        pass  # no exception -- best-effort drop, not a hard requirement
-
-
-def test_observe_route_is_a_silent_no_op_with_no_archive_root(tmp_path: Path) -> None:
-    with observe_route(archive_root=None, surface="cli", route="cli.test-route"):
-        pass
 
 
 def test_compute_latency_percentiles_matches_known_distribution() -> None:
@@ -267,8 +177,7 @@ def test_receipt_carries_the_declared_scope_and_identity(tmp_path: Path) -> None
     _init_ops(tmp_path)
     spec = RouteObservationSpec(surface="cli", route="cli.status", verb="read", phases=(DEFAULT_ROUTE_PHASE, "render"))
 
-    with observe_route(
-        archive_root=tmp_path,
+    with measure_route(
         surface="cli",
         route="cli.status",
         spec=spec,
@@ -277,7 +186,7 @@ def test_receipt_carries_the_declared_scope_and_identity(tmp_path: Path) -> None
         parent_run_id="run-0",
         archive_id="archive-3",
         archive_epoch="epoch-7",
-        git_head_cwd=Path.cwd(),
+        build_id="artifact-build-1",
     ) as obs:
         obs.daemon_path = "daemon"
         obs.response_bytes = 512
@@ -290,7 +199,7 @@ def test_receipt_carries_the_declared_scope_and_identity(tmp_path: Path) -> None
     assert receipt.trace_id == "req-1"
     assert receipt.run_id == "run-1"
     assert receipt.parent_run_id == "run-0"
-    assert receipt.build_id is not None  # git head, the build scope
+    assert receipt.build_id == "artifact-build-1"
     assert receipt.archive_id == "archive-3"
     assert receipt.archive_epoch == "epoch-7"
     assert receipt.daemon_path == "daemon"
@@ -304,7 +213,7 @@ def test_receipt_carries_the_declared_scope_and_identity(tmp_path: Path) -> None
 def test_receipt_reports_an_unobtained_measure_as_unavailable(tmp_path: Path) -> None:
     """Unmeasured is not zero: a response size nobody supplied is declared missing."""
     _init_ops(tmp_path)
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.status") as obs:
+    with measure_route(surface="cli", route="cli.status") as obs:
         pass
     receipt = obs.receipt
     assert receipt is not None
@@ -317,9 +226,7 @@ def test_receipt_adapts_onto_a_workload_receipt(tmp_path: Path) -> None:
     from polylogue.scenarios.workload import WorkloadReceipt, WorkloadRunStatus
 
     _init_ops(tmp_path)
-    with observe_route(
-        archive_root=tmp_path, surface="mcp", route="mcp.query", trace_id="req-9", run_id="run-9"
-    ) as obs:
+    with measure_route(surface="mcp", route="mcp.query", trace_id="req-9", run_id="run-9") as obs:
         pass
 
     receipt = obs.receipt
@@ -348,7 +255,7 @@ def test_workload_receipt_reports_an_unentered_declared_phase_as_interrupted(tmp
 
     _init_ops(tmp_path)
     spec = RouteObservationSpec(surface="cli", route="cli.partial", phases=(DEFAULT_ROUTE_PHASE, "render"))
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.partial", spec=spec) as obs:
+    with measure_route(surface="cli", route="cli.partial", spec=spec) as obs:
         pass  # "render" never entered
 
     receipt = obs.receipt
@@ -360,58 +267,11 @@ def test_degraded_route_is_not_projected_as_successful_work(tmp_path: Path) -> N
     from polylogue.scenarios.workload import WorkloadRunStatus
 
     _init_ops(tmp_path)
-    with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.gap") as obs:
+    with measure_route(surface="mcp", route="mcp.gap") as obs:
         obs.status = "degraded"
     assert obs.receipt is not None
     assert obs.receipt.to_workload_receipt().status is WorkloadRunStatus.INTERRUPTED
     assert "response_bytes" in obs.receipt.to_workload_receipt().phases[0].unavailable
-
-
-def test_persisted_row_and_workload_receipt_join_on_the_correlation_id(tmp_path: Path) -> None:
-    """Anti-vacuity: strip the correlation id from the emitted receipt and the
-    two projections of one invocation can no longer be joined."""
-    _init_ops(tmp_path)
-    with observe_route(
-        archive_root=tmp_path,
-        surface="cli",
-        route="cli.correlated",
-        trace_id="req-corr",
-        run_id="run-corr",
-    ) as obs:
-        pass
-
-    receipt = obs.receipt
-    assert receipt is not None
-    workload = receipt.to_workload_receipt()
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="cli", route="cli.correlated")
-    assert len(rows) == 1
-    persisted = rows[0]
-
-    # Projection 1: the ops-tier row. Projection 2: the workload receipt.
-    persisted_receipt = persisted.attributes["route_receipt"]
-    assert isinstance(persisted_receipt, dict)
-    persisted_refs = set(persisted_receipt["correlation_refs"])
-    assert persisted_refs, "the persisted row carries no correlation refs to join on"
-    assert persisted_refs <= set(workload.evidence_refs)
-    assert f"route-run:{persisted_receipt['run_id']}" in set(workload.evidence_refs)
-    assert persisted.trace_id == receipt.trace_id
-
-
-def test_observe_route_keeps_the_existing_percentile_reader_working(tmp_path: Path) -> None:
-    """J1-2: the contract is additive; ``polylogue analyze latency`` still reads these rows."""
-    _init_ops(tmp_path)
-    for _ in range(3):
-        with observe_route(archive_root=tmp_path, surface="cli", route="cli.compat"):
-            pass
-
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    rows = list_route_observations(conn, surface="cli", route="cli.compat")
-    buckets = _buckets(rows)
-    assert len(buckets) == 1
-    assert buckets[0].sample_count == 3
-    assert buckets[0].p50_ms is not None
 
 
 def test_spec_requires_the_total_phase_first() -> None:
@@ -421,7 +281,7 @@ def test_spec_requires_the_total_phase_first() -> None:
 
 def test_context_refuses_an_undeclared_phase(tmp_path: Path) -> None:
     _init_ops(tmp_path)
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.x") as obs:
+    with measure_route(surface="cli", route="cli.x") as obs:
         with pytest.raises(ValueError, match="not declared"):
             with obs.phase("render"):
                 pass
@@ -431,18 +291,18 @@ def test_repeated_declared_phases_do_not_fail_the_observed_route(tmp_path: Path)
     """Anti-vacuity: a duplicate phase cannot replace a successful route result."""
     _init_ops(tmp_path)
     spec = RouteObservationSpec(surface="cli", route="cli.repeat", phases=("total", "parse"))
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.repeat", spec=spec) as obs:
+    with measure_route(surface="cli", route="cli.repeat", spec=spec) as obs:
         for _ in range(2):
             with obs.phase("parse"):
                 pass
-    rows = list_route_observations(sqlite3.connect(tmp_path / "ops.db"), surface="cli", route="cli.repeat")
-    assert len(rows) == 1
+    assert obs.receipt is not None
+    assert [phase.name for phase in obs.receipt.phases] == ["total", "parse"]
 
 
 def test_route_spec_cannot_relabel_a_different_call_site() -> None:
     spec = RouteObservationSpec(surface="mcp", route="mcp.query")
     with pytest.raises(ValueError, match="identity"):
-        with observe_route(archive_root=None, surface="cli", route="cli.status", spec=spec):
+        with measure_route(surface="cli", route="cli.status", spec=spec):
             pass
 
 
@@ -450,85 +310,15 @@ def test_invalid_daemon_path_drops_telemetry_without_replacing_route_error(tmp_p
     """Anti-vacuity: malformed optional telemetry cannot escape the finally block."""
     _init_ops(tmp_path)
     with pytest.raises(RuntimeError, match="operation failed"):
-        with observe_route(archive_root=tmp_path, surface="cli", route="cli.invalid-path") as obs:
+        with measure_route(surface="cli", route="cli.invalid-path") as obs:
             obs.daemon_path = "socket"
             raise RuntimeError("operation failed")
     assert route_observation_drops().by_reason.get("emit_failed") == 1
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 0
 
 
 # ---------------------------------------------------------------------------
 # Drop accounting (polylogue-jtwu.2)
 # ---------------------------------------------------------------------------
-
-
-def test_every_observation_dropped_by_an_unavailable_ops_tier_is_counted(tmp_path: Path) -> None:
-    """Anti-vacuity: a drop path that returns without incrementing leaves this at 0."""
-    missing_root = tmp_path / "no-archive"
-    for _ in range(4):
-        with observe_route(archive_root=missing_root, surface="cli", route="cli.dropped"):
-            pass
-
-    drops = route_observation_drops()
-    assert drops.total == 4
-    assert drops.by_reason == {"ops_db_missing": 4}
-    assert drops.attributed_to("cli", "cli.dropped") == 4
-
-
-def test_a_missing_archive_root_is_counted_under_its_own_reason(tmp_path: Path) -> None:
-    for _ in range(2):
-        with observe_route(archive_root=None, surface="cli", route="cli.rootless"):
-            pass
-    assert route_observation_drops().by_reason == {"no_archive_root": 2}
-
-
-def test_an_emit_failure_is_counted_not_just_logged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The condition the module docstring names -- a locked ops.db -- is countable."""
-    _init_ops(tmp_path)
-
-    def _locked(_ops_db: Path) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr("polylogue.operations.route_observation.open_observation_connection", _locked)
-    for _ in range(3):
-        with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.locked"):
-            pass
-
-    drops = route_observation_drops()
-    assert drops.by_reason == {"emit_failed": 3}
-    assert drops.attributed_to("mcp", "mcp.locked") == 3
-
-
-def test_rows_removed_by_the_writers_row_cap_are_counted_as_drops(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The parent bead's own bullet: retention/row-cap pruning was never counted."""
-    _init_ops(tmp_path)
-    monkeypatch.setattr("polylogue.storage.sqlite.archive_tiers.ops_write.ROUTE_OBSERVATION_ROW_CAP", 2)
-
-    for _ in range(5):
-        with observe_route(archive_root=tmp_path, surface="cli", route="cli.capped"):
-            pass
-
-    # Recorded in the ops tier by the evicting write itself, so any reader counts them.
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 2
-    assert conn.execute(
-        "SELECT reason, surface, route, SUM(drop_count) FROM route_observation_drops GROUP BY reason, surface, route"
-    ).fetchall() == [("pruned", "cli", "cli.capped", 3)]  # rows 1..3 evicted to hold the cap at 2
-    assert route_observation_drops().total == 0
-
-
-def test_an_unsampled_spec_counts_its_invocations_rather_than_losing_them(tmp_path: Path) -> None:
-    _init_ops(tmp_path)
-    spec = RouteObservationSpec(surface="cli", route="cli.unsampled", sampled=False)
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.unsampled", spec=spec):
-        pass
-
-    assert route_observation_drops().by_reason == {"not_sampled": 1}
-    conn = sqlite3.connect(tmp_path / "ops.db")
-    assert conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0] == 0
 
 
 def test_percentiles_cannot_be_computed_without_a_drop_disposition() -> None:
@@ -605,60 +395,6 @@ def test_drops_charged_to_no_rendered_bucket_survive_as_unattributed() -> None:
     assert report.is_complete is False
 
 
-def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: Path) -> None:
-    """The percentile denominator is the whole lookback window, not the newest N.
-
-    Anti-vacuity: restore a 1,000-row read limit and the ``sample_count`` below
-    stops at 1,000 while the slow tail (the oldest rows) disappears from p95.
-    """
-    from polylogue.operations.route_observation import read_latency_report
-    from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call, record_route_observation
-
-    ops_db = _init_ops(tmp_path)
-    base_ms = 1_700_000_000_000
-    # The production observation writer's connection: 1,200 FULL-synchronous
-    # commits spend the test's budget on fsync, not on the reader under test.
-    conn = open_observation_connection(ops_db)
-    try:
-        for index in range(1_200):
-            record_route_observation(
-                conn,
-                trace_id=f"t-{index}",
-                surface="cli",
-                route="cli.status",
-                started_at_ms=base_ms + index,
-                # The oldest 200 rows are the slow ones a newest-first limit dropped.
-                duration_ms=5_000 if index < 200 else 10,
-                status="ok",
-            )
-        record_route_observation(
-            conn,
-            trace_id="outside",
-            surface="cli",
-            route="cli.status",
-            started_at_ms=base_ms - 1,
-            duration_ms=99_999,
-            status="ok",
-        )
-        record_mcp_call(conn, tool_name="search", started_at_ms=base_ms, finished_at_ms=base_ms + 7, success=True)
-        conn.commit()
-
-        report = read_latency_report(conn, since_ms=base_ms, now_ms=base_ms + 1_200)
-        cli_only = read_latency_report(conn, since_ms=base_ms, surface="cli", now_ms=base_ms + 1_200)
-    finally:
-        conn.close()
-
-    by_route = {bucket.route: bucket for bucket in report.buckets}
-    assert by_route["cli.status"].sample_count == 1_200
-    assert by_route["cli.status"].p95_ms == 5_000
-    assert by_route["mcp.search"].sample_count == 1
-    assert [bucket.route for bucket in cli_only.buckets] == ["cli.status"]
-    # The ops tier holds every emitter's drops: this window lost none, and says so.
-    assert report.drops.accounting_complete is True
-    assert report.drops.total == 0
-    assert report.outcome.state == "ok"
-
-
 def test_a_fully_accounted_report_is_ok_and_an_empty_one_is_empty() -> None:
     """Anti-vacuity: an outcome that ignored the drop disposition would call
     the degraded reader answer above ``ok``; one that ignored rows would call
@@ -694,92 +430,9 @@ def _read_report(ops_db: Path, *, since_ms: int, now_ms: int | None = None) -> o
         conn.close()
 
 
-def test_drops_held_while_the_tier_was_locked_reach_a_reader_in_another_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: drop the pending drops from the next write (or drain without
-    writing) and the reader reports ``ok`` over a sample that lost three members."""
-    from polylogue.operations import route_observation as route_observation_module
-    from polylogue.operations.route_observation import RouteLatencyReport
-
-    ops_db = _init_ops(tmp_path)
-    real_open = route_observation_module.open_observation_connection
-
-    def _locked(_ops_db: Path) -> sqlite3.Connection:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(route_observation_module, "open_observation_connection", _locked)
-    for _ in range(3):
-        with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.locked"):
-            pass
-    assert route_observation_drops().attributed_to("mcp", "mcp.locked") == 3
-
-    monkeypatch.setattr(route_observation_module, "open_observation_connection", real_open)
-    with observe_route(archive_root=tmp_path, surface="mcp", route="mcp.locked"):
-        pass
-
-    # Nothing is left only in this process; a fresh reader sees the loss.
-    assert route_observation_drops().total == 0
-    report = cast(RouteLatencyReport, _read_report(ops_db, since_ms=0, now_ms=0))
-    assert report.drops.accounting_complete is True
-    assert report.drops.by_reason == {"emit_failed": 3}
-    bucket = report.buckets[0]
-    assert (bucket.sample_count, bucket.dropped_count) == (1, 3)
-    assert bucket.sample_completeness == pytest.approx(0.25)
-    assert report.outcome.state == "degraded"
-    assert report.outcome.to_dict()["reason"] == "observations_dropped"
-
-
-def test_the_exit_flush_records_drops_no_later_observation_carried(tmp_path: Path) -> None:
-    from polylogue.operations.route_observation import RouteLatencyReport, flush_route_observation_drops
-
-    ops_db = _init_ops(tmp_path)
-    spec = RouteObservationSpec(surface="cli", route="cli.unsampled", sampled=False)
-    with observe_route(archive_root=tmp_path, surface="cli", route="cli.unsampled", spec=spec):
-        pass
-    assert route_observation_drops().total == 1
-
-    assert flush_route_observation_drops() == 0
-    assert route_observation_drops().total == 0
-    report = cast(RouteLatencyReport, _read_report(ops_db, since_ms=0, now_ms=0))
-    assert report.drops.by_reason == {"not_sampled": 1}
-
-
-def test_an_unwritable_tier_at_exit_keeps_its_drops_and_reports_them(tmp_path: Path) -> None:
-    from polylogue.operations.route_observation import flush_route_observation_drops
-
-    missing = tmp_path / "gone"
-    with observe_route(archive_root=missing, surface="cli", route="cli.dropped"):
-        pass
-    with observe_route(archive_root=None, surface="cli", route="cli.rootless"):
-        pass
-
-    # The archive-less drop belongs to no archive's sample and is not owed to any tier.
-    assert flush_route_observation_drops() == 1
-    assert route_observation_drops().by_reason == {"ops_db_missing": 1, "no_archive_root": 1}
-
-
-def test_a_window_reaching_past_retention_is_degraded(tmp_path: Path) -> None:
-    from polylogue.operations.route_observation import WINDOW_EXCEEDS_RETENTION, RouteLatencyReport
-    from polylogue.storage.sqlite.archive_tiers.ops_write import ROUTE_OBSERVATION_RETENTION_MS
-
-    ops_db = _init_ops(tmp_path)
-    now_ms = 1_700_000_000_000
-    inside = cast(RouteLatencyReport, _read_report(ops_db, since_ms=now_ms - 1_000, now_ms=now_ms))
-    beyond = cast(
-        RouteLatencyReport,
-        _read_report(ops_db, since_ms=now_ms - ROUTE_OBSERVATION_RETENTION_MS - 1, now_ms=now_ms),
-    )
-    assert inside.window_exceeds_retention is False
-    assert inside.outcome.state == "empty"
-    assert beyond.window_exceeds_retention is True
-    assert beyond.outcome.to_dict()["reason"] == WINDOW_EXCEEDS_RETENTION
-
-
 def test_unobserved_client_route_has_a_typed_reason_and_never_opens_ops(monkeypatch: pytest.MonkeyPatch) -> None:
     """Restoring client observation persistence reaches the refused opener."""
     from polylogue.operations.route_observation import (
-        flush_route_observation_drops,
         record_unobserved_client_route,
         reset_route_observation_drops,
         route_observation_drops,
@@ -788,7 +441,7 @@ def test_unobserved_client_route_has_a_typed_reason_and_never_opens_ops(monkeypa
     def refuse_open(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("a client does not own ops.db")
 
-    monkeypatch.setattr("polylogue.operations.route_observation.open_observation_connection", refuse_open)
+    monkeypatch.setattr("sqlite3.connect", refuse_open)
     emitted: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr("polylogue.logging._threshold", 20)
     monkeypatch.setattr("polylogue.logging._emit_raw", lambda _level, event, fields: emitted.append((event, fields)))
@@ -804,6 +457,48 @@ def test_unobserved_client_route_has_a_typed_reason_and_never_opens_ops(monkeypa
         ]
         assert route_observation_drops().by_reason == {"client_not_owner": 1}
         assert route_observation_drops().accounting_complete is False
-        assert flush_route_observation_drops() == 0
     finally:
         reset_route_observation_drops()
+
+
+def test_measured_cancellation_never_claims_success() -> None:
+    import asyncio
+
+    from polylogue.scenarios.workload import WorkloadRunStatus
+
+    with pytest.raises(asyncio.CancelledError):
+        with measure_route(surface="cli", route="cli.cancelled") as observation:
+            raise asyncio.CancelledError
+    assert observation.receipt is not None
+    assert observation.receipt.status == "error"
+    assert observation.receipt.to_workload_receipt().status is WorkloadRunStatus.FAILED
+
+
+def test_mcp_reader_has_no_retired_table_dependency(tmp_path: Path) -> None:
+    from polylogue.operations.route_observation import read_latency_report
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call
+
+    ops_db = _init_ops(tmp_path)
+    with sqlite3.connect(ops_db) as conn:
+        assert not conn.execute(
+            "SELECT name FROM sqlite_schema WHERE name IN ('route_observations','route_observation_drops')"
+        ).fetchall()
+        for i in range(1200):
+            start = 1700000000000 + i
+            record_mcp_call(
+                conn,
+                call_id=f"call-{i}",
+                tool_name="search",
+                started_at_ms=start,
+                finished_at_ms=start + (5000 if i < 200 else 10),
+                success=True,
+            )
+        report = read_latency_report(conn, since_ms=1700000000000, now_ms=1700000002000)
+        absent = read_latency_report(conn, since_ms=1700000000000, surface="cli", now_ms=1700000002000)
+    assert len(report.buckets) == 1
+    assert report.buckets[0].sample_count == 1200
+    assert report.buckets[0].p95_ms == 5000
+    assert report.drops.accounting_complete is False
+    assert report.outcome.state == "degraded"
+    assert not absent.buckets
+    assert absent.outcome.state == "degraded"

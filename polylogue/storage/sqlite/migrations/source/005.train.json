@@ -1,0 +1,72 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": null,
+  "current_version": 4,
+  "declared_at_ms": 1,
+  "drop_constraints": [],
+  "failure": null,
+  "manifest_format": "polylogue.durable-change-train.v2",
+  "manifest_sha256": "4ab6a0c0b4f67ffa989025740b1edea3691accd04f9802d3fa7d0ed7fbf402ae",
+  "migration": {
+    "owner_ref": "polylogue/storage/sqlite/migrations/source/005_raw_byte_revision_dependents.sql",
+    "path": "005_raw_byte_revision_dependents.sql",
+    "requires_backup": false,
+    "slot": 5,
+    "sql_sha256": "cc865758a08595216398344d683d42e2ca021fe781e5dcf1181a8a3aba139203",
+    "target_version": 5,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:source-dependency-read",
+        "proof:source-schema-write"
+      ],
+      "owner_ref": "sinnix://projects/polylogue/beads/polylogue-lssl6",
+      "rider_id": "source-byte-revision-dependency-indexes",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:source-dependency-read",
+          "consumer_id": "source-dependency-read",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/revision_governance.py:has_raw_byte_revision_dependents",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:source-schema-write",
+          "consumer_id": "source-schema-write",
+          "production_ref": "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+          "roles": [
+            "write"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "index:idx_raw_sessions_predecessor_raw_id",
+        "index:idx_raw_sessions_baseline_raw_id"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "schema_replay_proof": null,
+  "slot": 5,
+  "state": "declared",
+  "target_version": 5,
+  "tier": "source",
+  "train_id": "source-byte-revision-dependency-indexes-v5"
+}

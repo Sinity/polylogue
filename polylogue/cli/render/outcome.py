@@ -127,6 +127,15 @@ def print_diagnostics_lines(diagnostics: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def finish_supplied_outcome(outcome: OutcomeEnvelope) -> None:
+    """Finish a delivered projection with its original selection verdict."""
+    if outcome.state in {"degraded", "error"}:
+        click.echo(json.dumps({"outcome": outcome.to_dict()}, sort_keys=True), err=True)
+    status = outcome_exit_code(outcome)
+    if status:
+        raise SystemExit(status)
+
+
 def exit_for(outcome: OutcomeEnvelope) -> NoReturn:
     """Leave the process with the status this terminal outcome names.
 
@@ -382,6 +391,7 @@ __all__ = [
     "emit_no_results",
     "envelope_outcome",
     "exit_for",
+    "finish_supplied_outcome",
     "maybe_subcommand_typo_hint",
     "print_diagnostics_lines",
 ]

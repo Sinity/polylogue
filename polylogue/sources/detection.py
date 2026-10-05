@@ -150,8 +150,8 @@ class CompiledDetectorRegistry:
                     root_rule = (
                         DetectorProjection(
                             item=rule,
-                            array_fold="any" if mode is DetectionMode.SEQUENCE_RECORD_STREAM else "first",
-                            array_predicate=array_predicate if mode is DetectionMode.SEQUENCE_RECORD_STREAM else None,
+                            array_fold="any",
+                            array_predicate=array_predicate,
                         )
                         if array_input
                         else rule
@@ -209,7 +209,7 @@ class CompiledDetectorRegistry:
                         return predicate([item])
 
                     handle.seek(start)
-                    stream_predicate = array_predicate if mode is DetectionMode.SEQUENCE_RECORD_STREAM else None
+                    stream_predicate = array_predicate if mode is not DetectionMode.RECORD else None
                     shape, payload = project_detection_input(
                         handle, rule, stream_predicate=stream_predicate, check_stop=check_stop
                     )

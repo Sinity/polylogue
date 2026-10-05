@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 from polylogue.core.digest import QUERY, canonical_bytes
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
+from polylogue.core.iterator_lifetime import settled_iterator
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
@@ -1344,10 +1345,11 @@ def message_content_identities(
     if occurrence_offsets:
         counts.update(dict(occurrence_offsets))
     identities: list[MessageContentIdentity] = []
-    for message in messages:
-        digest = message_content_identity(message)
-        identities.append((digest, counts[digest]))
-        counts[digest] += 1
+    with settled_iterator(messages) as _original_messages:
+        for message in _original_messages:
+            digest = message_content_identity(message)
+            identities.append((digest, counts[digest]))
+            counts[digest] += 1
     return tuple(identities)
 
 
@@ -1602,26 +1604,27 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
             return int(row[0]) if row is not None else 0
 
         total = 0
-        for ordinal, message in enumerate(messages):
-            total = ordinal + 1
-            revision = _message_revision_match_id(message)
-            content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}"
-            coordinate = _message_owner_coordinate(message, ordinal)
-            stable = coordinate.stable_key
-            physical = coordinate.physical_key
-            provider = message.provider_message_id.strip() or None
-            conn.execute(
-                "INSERT INTO owner_message VALUES (?, ?, ?, ?, ?, ?, NULL)",
-                (ordinal, revision, content, stable, encoded(physical) if physical is not None else None, provider),
-            )
-            increment("revision", revision)
-            increment("content", content)
-            if stable is not None:
-                increment("stable", stable)
-            if physical is not None:
-                increment("physical", physical)
-            if provider is not None:
-                increment("provider", provider)
+        with settled_iterator(messages) as _original_messages:
+            for ordinal, message in enumerate(_original_messages):
+                total = ordinal + 1
+                revision = _message_revision_match_id(message)
+                content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}"
+                coordinate = _message_owner_coordinate(message, ordinal)
+                stable = coordinate.stable_key
+                physical = coordinate.physical_key
+                provider = message.provider_message_id.strip() or None
+                conn.execute(
+                    "INSERT INTO owner_message VALUES (?, ?, ?, ?, ?, ?, NULL)",
+                    (ordinal, revision, content, stable, encoded(physical) if physical is not None else None, provider),
+                )
+                increment("revision", revision)
+                increment("content", content)
+                if stable is not None:
+                    increment("stable", stable)
+                if physical is not None:
+                    increment("physical", physical)
+                if provider is not None:
+                    increment("provider", provider)
         for ordinal in range(total):
             revision, content, stable = conn.execute(
                 "SELECT revision, content, stable FROM owner_message WHERE ordinal = ?", (ordinal,)
@@ -2250,8 +2253,11 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                     "CREATE TABLE attachment_hash (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, "
                     "native_id TEXT NOT NULL, name TEXT NOT NULL, canonical TEXT NOT NULL, payload TEXT NOT NULL)"
                 )
-                with disk_message_owner_resolution(convo.messages) as resolution:
-                    for ordinal, attachment in enumerate(convo.attachments):
+                with (
+                    disk_message_owner_resolution(convo.messages) as resolution,
+                    settled_iterator(convo.attachments) as _original_attachments,
+                ):
+                    for ordinal, attachment in enumerate(_original_attachments):
                         try:
                             owner_anchor = attachment_message_owner_key(attachment, resolution)
                         except MessageOwnerAmbiguityError:
@@ -2275,8 +2281,11 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                     write(json.loads(encoded))
         else:
             attachments_payload: list[dict[str, JSONValue]] = []
-            with disk_message_owner_resolution(convo.messages) as resolution:
-                for attachment in convo.attachments:
+            with (
+                disk_message_owner_resolution(convo.messages) as resolution,
+                settled_iterator(convo.attachments) as _original_attachments,
+            ):
+                for attachment in _original_attachments:
                     try:
                         owner_anchor = attachment_message_owner_key(attachment, resolution)
                     except MessageOwnerAmbiguityError:
@@ -2290,15 +2299,16 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
     literal('],"created_at":')
     write(convo.created_at)
     literal(',"messages":[')
-    for index, message in enumerate(convo.messages):
-        if index:
-            literal(",")
-        write(_message_hash_payload(message, _message_revision_match_id(message)))
+    with settled_iterator(convo.messages) as _original_messages:
+        for index, message in enumerate(_original_messages):
+            if index:
+                literal(",")
+            write(_message_hash_payload(message, _message_revision_match_id(message)))
     literal('],"semantic_session_fields":')
     write(_session_semantic_fields(convo))
     literal(',"session_events":[')
-    with _event_owner_resolution(convo) as event_resolution:
-        for event_index, event in enumerate(convo.session_events):
+    with _event_owner_resolution(convo) as event_resolution, settled_iterator(convo.session_events) as _original_events:
+        for event_index, event in enumerate(_original_events):
             if event_index:
                 literal(",")
             write(_event_hash_payload(event, event_index, event_resolution))

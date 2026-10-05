@@ -17,7 +17,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.connection_profile import open_connection
-from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update, raw_state_parameter
 
 from .models import ProviderSchemaVerification, SchemaVerificationReport
 from .requests import SchemaVerificationRequest, bounded_window
@@ -219,6 +219,7 @@ def apply_quarantine_updates(
                 validation_mode=ValidationMode.STRICT,
             ),
             now_ms=validated_at_ms,
+            literal=raw_state_parameter,
         )
         conn.execute(
             f"UPDATE raw_sessions SET {', '.join(set_clauses)} WHERE raw_id = ?",

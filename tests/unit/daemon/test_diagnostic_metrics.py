@@ -83,7 +83,9 @@ def test_late_archive_failure_retains_process_and_completed_storage_group(
 ) -> None:
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER, raw_id TEXT)"
+        )
     monkeypatch.setattr(
         metrics,
         "diagnostic_snapshot",
@@ -133,7 +135,9 @@ def test_outer_format_failure_keeps_process_counters_without_private_labels(
 def test_exception_messages_cannot_create_metric_labels(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER, raw_id TEXT)"
+        )
     failure = ["first /synthetic/private-A", "second SELECT private FROM B"]
     monkeypatch.setattr(
         metrics,
@@ -153,7 +157,9 @@ def test_collection_availability_series_survives_recovery(monkeypatch: pytest.Mo
     """Anti-vacuity: failure and recovery must publish the same group series."""
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER, raw_id TEXT)"
+        )
     fail = True
 
     def fail_once(*_args: object, **_kwargs: object) -> None:
@@ -197,7 +203,9 @@ def test_missing_source_is_reported_without_inventing_source_count(tmp_path: Pat
 def test_readable_empty_index_retains_measured_zero(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER, raw_id TEXT)"
+        )
     body = _scrape(db)
     assert 'polylogue_daemon_metrics_collection_available{group="archive_index"} 1' in body
     assert "polylogue_archive_sessions_total 0" in body
@@ -278,7 +286,9 @@ def test_readable_empty_ops_attempt_ledger_keeps_measured_zero(tmp_path: Path) -
 def test_malformed_source_tier_does_not_publish_version_zero(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     with sqlite3.connect(db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute(
+            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, message_count INTEGER, raw_id TEXT)"
+        )
     (tmp_path / "source.db").write_bytes(b"not a sqlite database")
     body = _scrape(db)
     assert "polylogue_daemon_uptime_seconds " in body

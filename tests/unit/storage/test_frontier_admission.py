@@ -637,33 +637,49 @@ def test_selected_authority_change_during_read_refuses_same_page(
         processor.require_cursor_authority([selected])
 
 
-def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
-    """The daemon stage keeps both journals bounded by what admission consumed.
+@pytest.mark.asyncio
+@pytest.mark.timeout(0)
+async def test_prune_stage_deletes_only_consumed_journal_rows(tmp_path: Path) -> None:
+    """Both consumers must prove a row consumed before the actual stage deletes it."""
+    from contextlib import closing
 
-    Anti-vacuity: drop the stage's ``sequence <= watermark`` bound and the
-    unconsumed row below is deleted too, so the next admission re-proves
-    from scratch and the final count assertion fails.
-    """
     from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    initialize_active_archive_root(tmp_path)
-    _raw(tmp_path, "present")
-    _session(tmp_path, "present", 1)
-    stage = make_raw_existence_journal_prune_stage(tmp_path / "index.db")
-    assert stage.check(tmp_path / "index.db") is False  # no certificate yet
-    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
-    assert stage.check(tmp_path / "index.db") is True
-    assert stage.execute(tmp_path / "index.db") is True
-    assert stage.check(tmp_path / "index.db") is False
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
-    # A change the certificate has not consumed survives the prune.
-    _raw(tmp_path, "second")
-    _session(tmp_path, "second", 2)
-    assert stage.execute(tmp_path / "index.db") is True
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 1
-    assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+    def seed() -> None:
+        initialize_active_archive_root(tmp_path)
+        _raw(tmp_path, "present")
+        _session(tmp_path, "present", 1)
+
+    await run_archive_fixture_write(tmp_path, seed)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        stage = make_raw_existence_journal_prune_stage(tmp_path / "index.db", compute_adapter=owner._compute_adapter)
+        assert stage.check(tmp_path / "index.db") is False
+        assert frontier_existence.raw_existence_block_reason(tmp_path) is None
+        assert stage.check(tmp_path / "index.db") is False  # frontier inspection has not consumed these rows
+        await owner.run_convergence_sync(
+            "fixture.frontier.inspect",
+            inspect_prepared_raw_authority_frontier,
+            tmp_path,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+        assert stage.check(tmp_path / "index.db") is True
+        assert await owner.run_convergence_sync("fixture.frontier.prune", stage.execute, tmp_path / "index.db") is True
+        assert stage.check(tmp_path / "index.db") is False
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
+
+        def second() -> None:
+            _raw(tmp_path, "second")
+            _session(tmp_path, "second", 2)
+
+        await run_archive_fixture_write(tmp_path, second)
+        assert await owner.run_convergence_sync("fixture.frontier.prune", stage.execute, tmp_path / "index.db") is True
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn, conn:
+            assert conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 1
+        assert frontier_existence.raw_existence_block_reason(tmp_path) is None
 
 
 def test_retired_symlink_alias_refuses_the_selected_real_path(tmp_path: Path) -> None:

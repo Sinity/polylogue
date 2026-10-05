@@ -23,7 +23,14 @@ from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
+from polylogue.core.raw_coordinates import (
+    CapturedZipMemberCoordinate,
+    MemberAddressingMode,
+    captured_zip_coordinate_receipt,
+    read_captured_zip_coordinate_receipt,
+    zip_member_container,
+    zip_member_coordinate,
+)
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
@@ -36,8 +43,8 @@ from polylogue.storage.source_zip_replay import (
     resolve_member_candidate,
     zip_reacquired_unit,
 )
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
+from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _META = {"metadata": "bundle sibling"}
 
@@ -65,18 +72,57 @@ def _row(
     payload: bytes,
     source_index: int | None,
     addressing_mode: str = "",
+    container: Path | None = None,
+    member_name: str | None = None,
 ) -> dict[str, object]:
-    return {
+    row: dict[str, object] = {
         "coordinate_format": "",
         "entry_ordinal": None,
         "split_index": None,
-        "raw_id": "legacy-raw-id",
+        "raw_id": "fixture-raw-id",
         "source_path": source_path,
         "source_index": source_index,
         "addressing_mode": addressing_mode,
         "blob_hash": hashlib.sha256(payload).hexdigest(),
         "capture_mode": "chatgpt",
     }
+    # Synthetic fixture namespace is declared by the call; do not ask the
+    # restoration consumer to infer it from a recorded operational string.
+    container_text, _, member = source_path.rpartition(":")
+    container = container or Path(container_text)
+    member = member_name or member
+    if container.is_file() and zipfile.is_zipfile(container):
+        with zipfile.ZipFile(container) as archive:
+            ordinal = next((i for i, entry in enumerate(archive.infolist()) if entry.filename == member), None)
+        if ordinal is not None:
+            from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
+
+            mode = (
+                MemberAddressingMode(addressing_mode)
+                if addressing_mode
+                else (
+                    MemberAddressingMode.WHOLE_MEMBER
+                    if source_index is None
+                    else MemberAddressingMode.ELEMENT_OF_CONTAINER
+                )
+            )
+            coordinate = CapturedZipMemberCoordinate(
+                str(container.resolve()),
+                str(container.resolve()),
+                member,
+                ordinal,
+                source_index or 0,
+                mode,
+                hashlib.sha256(container.read_bytes()).hexdigest(),
+                zip_acquisition_fingerprint(Provider.CHATGPT),
+            )
+            row.update(
+                coordinate_format="zip-v2",
+                entry_ordinal=ordinal,
+                split_index=coordinate.split_index,
+                captured_coordinate=captured_zip_coordinate_receipt(coordinate),
+            )
+    return row
 
 
 def test_reordered_member_returns_the_recorded_conversation(tmp_path: Path) -> None:
@@ -351,9 +397,9 @@ def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -
 
 
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
-    """A legacy NULL index resolves the preserved whole member at index zero.
+    """An explicit whole-member receipt does not borrow the raw index.
 
-    Anti-vacuity: returning ``None`` for the legacy split index would refuse
+    Anti-vacuity: requiring a raw index despite the receipt would refuse
     the valid member before reopening the ZIP.
     """
     zip_path = tmp_path / "single.zip"
@@ -385,14 +431,14 @@ def test_corrupt_member_reports_a_typed_failure(tmp_path: Path) -> None:
     """
     zip_path = tmp_path / "corrupt.zip"
     _write_member(zip_path, [_META, _session("a"), _session("b")])
+    recorded_path = f"{zip_path}:conversations.json"
+    row = _row(recorded_path, payload=dumps_bytes(_session("a")), source_index=0)
     raw = bytearray(zip_path.read_bytes())
     body = raw.index(b"PK\x03\x04") + 40
     raw[body] ^= 0xFF
     zip_path.write_bytes(bytes(raw))
-    recorded_path = f"{zip_path}:conversations.json"
-
     unit, error = zip_reacquired_unit(
-        _row(recorded_path, payload=dumps_bytes(_session("a")), source_index=0),
+        row,
         source_path=recorded_path,
         zip_payload_cache={},
     )
@@ -411,13 +457,15 @@ def test_relocated_archive_resolves_against_the_path_in_force(tmp_path: Path) ->
     original.parent.mkdir()
     relocated = tmp_path / "new" / "export.zip"
     relocated.parent.mkdir()
-    _write_member(relocated, [_META, _session("kept"), _session("sibling")])
+    _write_member(original, [_META, _session("kept"), _session("sibling")])
     expected = dumps_bytes(_session("kept"))
     recorded_path = f"{original}:conversations.json"
     resolved_path = f"{relocated}:conversations.json"
+    row = _row(recorded_path, payload=expected, source_index=0)
+    original.replace(relocated)
 
     unit, error = zip_reacquired_unit(
-        _row(recorded_path, payload=expected, source_index=0),
+        row,
         source_path=resolved_path,
         zip_payload_cache={},
     )
@@ -513,6 +561,8 @@ def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_pat
         (False, 0, False),
         (None, 0, False),
         (1.5, 1, False),
+        ({"path": "é/file"}, {"path": "é/file"}, False),
+        ({"é": 1}, {"é": 1}, False),
         ([1, 2], [2, 1], False),
     ],
 )
@@ -534,8 +584,17 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
     value differ from the acquired one.
     """
     db_path = tmp_path / "source.db"
+    initialize_runtime_source_fixture(db_path)
+    container = tmp_path / "export.zip"
+    _write_member(container, _session("one"))
+    captured = read_captured_zip_coordinate_receipt(
+        str(
+            _row(f"{container}:conversations.json", source_index=None, payload=dumps_bytes(_session("one")))[
+                "captured_coordinate"
+            ]
+        )
+    )
     with sqlite3.connect(db_path) as conn:
-        conn.executescript(SOURCE_DDL)
         conn.execute(
             """
             INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms)
@@ -549,6 +608,7 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
             entry_ordinal=0,
             split_index=0,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+            captured_coordinate=captured,
             manage_transaction=False,
         )
         stored = conn.execute("SELECT addressing_mode FROM raw_container_coordinates WHERE raw_id = 'raw-1'").fetchone()
@@ -566,6 +626,7 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
             split_index=0,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
             content_identity=identity,
+            captured_coordinate=captured,
             manage_transaction=False,
         )
         assert (
@@ -584,6 +645,7 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
                 entry_ordinal=0,
                 split_index=0,
                 addressing_mode="element",
+                captured_coordinate=captured,
                 manage_transaction=False,
             )
 
@@ -748,13 +810,18 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     unit, reason = zip_reacquired_unit(
         _row(member_path, payload=b"{}", source_index=0), source_path=member_path, zip_payload_cache={}
     )
-    assert (unit, reason) == (None, "source_missing")
+    assert (unit, reason) == (None, "container_coordinate_missing")
     assert archive_debt._source_artifact_exists(member_path) is False
 
     real_zip = tmp_path / "real.zip"
     _write_member(real_zip, [_session("one")])
-    assert archive_debt._source_artifact_exists(f"{real_zip}:conversations.json") is True
-    assert blob_integrity._source_path_availability(f"{real_zip}:conversations.json")[0] is True
+    member_path = f"{real_zip}:conversations.json"
+    row = _row(member_path, payload=b"{}", source_index=0)
+    receipt = str(row["captured_coordinate"])
+    assert archive_debt._source_artifact_exists(member_path) is False
+    assert blob_integrity._source_path_availability(member_path)[0] is False
+    assert archive_debt._source_artifact_exists(member_path, receipt) is True
+    assert blob_integrity._source_path_availability(member_path, captured_coordinate=receipt)[0] is True
 
 
 def test_zip_coordinate_candidates_preserve_every_colon_boundary() -> None:
@@ -781,3 +848,48 @@ def test_zip_member_does_not_lock_provider_after_two_matching_records() -> None:
     source = BytesIO(b"\n".join(dumps_bytes(record) for record in (chatgpt_record, chatgpt_record, claude_record)))
     observed = list(iter_entry_payloads(source, stream_name="mixed.jsonl", provider_hint=Provider.CHATGPT))
     assert [item.provider for item in observed] == [Provider.CHATGPT, Provider.CHATGPT, Provider.CLAUDE_AI]
+
+
+def test_captured_namespace_preserves_colons_and_refuses_absent_receipt(tmp_path: Path) -> None:
+    container = tmp_path / "odd:name.zip"
+    member = "directory:a:b.json"
+    value = _session("neutral")
+    _write_member(container, value, member=member)
+    source_path = f"{container}:{member}"
+    row = _row(source_path, payload=dumps_bytes(value), source_index=None, container=container, member_name=member)
+    unit, error = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+    assert error is None
+    assert unit is not None and unit.byte_identity == _sha(dumps_bytes(value))
+    row.pop("captured_coordinate")
+    assert zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={}) == (
+        None,
+        "container_coordinate_missing",
+    )
+
+
+def test_zip_member_proof_refuses_a_changed_operational_string(tmp_path: Path) -> None:
+    zip_path = tmp_path / "export.zip"
+    source_path = f"{zip_path}:conversations.json"
+    original = {**_session("neutral"), "tool_path": "é/file"}
+    changed = {**original, "tool_path": "é/file"}
+    expected = dumps_bytes(original)
+    _write_member(zip_path, original)
+    row = {
+        **_row(
+            source_path, payload=expected, source_index=None, addressing_mode=MemberAddressingMode.WHOLE_MEMBER.value
+        ),
+        "coordinate_format": "zip-v2",
+        "entry_ordinal": 0,
+        "split_index": 0,
+        "addressing_mode": MemberAddressingMode.WHOLE_MEMBER.value,
+        "content_identity": structural_content_identity(original),
+    }
+    _write_member(zip_path, changed)
+    unit, error = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+    assert unit is None
+    assert error == "content_identity:unmatched"
+    _write_member(zip_path, dict(reversed(list(original.items()))))
+    unit, error = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
+    assert error is None
+    assert unit is not None
+    assert unit.content_identity == structural_content_identity(original)

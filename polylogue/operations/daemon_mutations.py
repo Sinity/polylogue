@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import functools
+from builtins import BaseExceptionGroup
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from typing import Any, cast
 
 from polylogue.operations.audit import (
@@ -34,6 +35,7 @@ from polylogue.operations.mutation_transaction import (
     ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
+    StartedBoundMutation,
     compute_parameter_digest,
 )
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
@@ -81,25 +83,6 @@ def _execute_named_mutation(
     }
 
 
-def mutation_session_excision(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
-
-    payload = request.payload
-    args = SessionExcisionArgs(
-        archive_root=context.archive_root,
-        session_id=str(payload["session_id"]),
-        reason=str(payload["reason"]),
-        actor=str(payload["actor"]),
-        cascade_lineage=bool(payload.get("cascade_lineage", False)),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, SessionExcisionActuator(), args)
-
-
 def mutation_session_lifecycle_request(
     request: DaemonOperationRequest,
     context: OperationContext,
@@ -136,51 +119,6 @@ def mutation_identity_reset(
         reason=str(payload["reason"]),
     )
     return _execute_named_mutation(request, context, audit, snapshot, IdentityResetActuator(), args)
-
-
-def mutation_raw_authority_blocker_resolve(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
-
-    payload = request.payload
-    args = BlockerResolveArgs(
-        archive_root=context.archive_root,
-        blocker_id=str(payload["blocker_id"]),
-        resolution=str(payload["resolution"]),
-    )
-    return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
-
-
-def maintenance_raw_authority_frontier(
-    request: DaemonOperationRequest,
-    context: OperationContext,
-    audit: AuditRepository,
-    snapshot: PinnedOperationRead,
-) -> dict[str, object]:
-    """Publish the accepted-frontier census under the resident writer's admission.
-
-    The census writes a ``raw_authority_blockers`` row for every blocking plan
-    and tombstones the obligations current evidence disproves, so the daemon
-    runs it rather than a CLI process beside it.
-    """
-    del audit, snapshot
-    from polylogue.config import Config
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
-
-    census = inspect_raw_authority_frontier(
-        Config(archive_root=context.archive_root, render_root=context.archive_root, sources=[])
-    )
-    return {
-        "operation": request.operation,
-        "outcome": "completed",
-        "sequence": 1,
-        "effect": "committed",
-        "result": census.to_dict(),
-    }
 
 
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
@@ -1428,3 +1366,154 @@ def mutation_judgment_record(
         "affected_count": affected,
         "result": result,
     }
+
+
+async def execute_raw_authority_blocker_resolve_operation(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+) -> Any:
+    """Acknowledge one frontier obligation on its original admitted preparation owner."""
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.mutation_actuators import BlockerResolveActuator, BlockerResolveArgs
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+
+    request = validate_execution_request(request, context)
+    if request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
+    runtime = context.runtime
+    assert runtime is not None
+    await runtime.recover_interrupted_operations()
+    started = monotonic()
+    audit = runtime.audit_for_request(request, context)
+
+    def execute() -> Any:
+        authority = observe_control_authority(context.archive_root)
+        _validate_identity(request, context, authority)
+        runtime.observe_snapshot(request, authority)
+        blocker_id = str(request.payload["blocker_id"])
+        resolution = str(request.payload["resolution"]).strip()
+        actuator = BlockerResolveActuator()
+        binding = runtime_operation_binding(actuator)
+        executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+        begun = None
+        try:
+            with prepared_frontier_blocker_acknowledgement(
+                context.archive_root,
+                blocker_id,
+                resolution=resolution,
+                input_demand=runtime.prepared_compute_adapter().amend_current_input_demand,
+            ) as prepared:
+                args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
+
+                def begin() -> StartedBoundMutation:
+                    current = observe_control_authority(context.archive_root)
+                    _validate_identity(request, context, current)
+                    if current.identity != authority.identity:
+                        raise ValueError("archive changed before blocker acknowledgement authorization")
+                    runtime.begin_unbound_write(request, snapshot=authority)
+                    preview = executor.prepare_bound_for_archive(
+                        binding, args, context.principal, archive_root=context.archive_root
+                    )
+                    authorization = executor.authorize_bound(
+                        binding, preview, context.principal, confirmation_strength="bound_token"
+                    )
+                    return executor.begin_bound(binding, preview, authorization, args)
+
+                begun = admit_stage_write("operation.frontier.blocker.begin", begin)
+            # Starting the audited attempt changes Source continuity. Capture the
+            # publication operands only afterwards; the original seal is settled,
+            # never refreshed or reused after that durable intent.
+            with prepared_frontier_blocker_acknowledgement(
+                context.archive_root,
+                blocker_id,
+                resolution=resolution,
+                input_demand=runtime.prepared_compute_adapter().amend_current_input_demand,
+            ) as prepared:
+                args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
+                receipt = admit_stage_write(
+                    "operation.frontier.blocker.publish", lambda: actuator.apply(begun.plan, args)
+                )
+        except BaseException as exc:
+            if begun is None:
+                raise
+            error_summary = str(exc)[:512]
+            try:
+                admit_stage_write(
+                    "operation.frontier.blocker.indeterminate",
+                    lambda: executor.finalize_bound(
+                        begun,
+                        error_summary=error_summary,
+                        unknown_reason="acknowledgement failed after durable intent",
+                    ),
+                )
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("Acknowledgement and audit finalization failed", [exc, cleanup]) from exc
+            raise
+        finalized = admit_stage_write(
+            "operation.frontier.blocker.finalize", lambda: executor.finalize_bound(begun, receipt=receipt)
+        )
+        assert finalized is not None
+        receipt = finalized
+        result = {
+            "operation": request.operation,
+            "outcome": "completed",
+            "sequence": 1,
+            "effect": "committed" if receipt.affected_count else "no-effect",
+            "affected_count": receipt.affected_count,
+            "receipt_ref": receipt.receipt_ref,
+            "result": dict(receipt.domain_receipt),
+        }
+        validate_operation_result(request.operation, result)
+        settled = observe_control_authority(context.archive_root)
+        return operation_envelope(
+            request, context, snapshot=settled, admitted_snapshot=authority, started_at=started, result=result
+        )
+
+    return await runtime.prepared_phase("frontier.blocker.resolve", execute, estimated_bytes=0, exclusive_bytes=True)
+
+
+async def execute_raw_authority_frontier_operation(request: DaemonOperationRequest, context: OperationContext) -> Any:
+    """Measure original frontier inputs through this operation's supplied owner."""
+    from dataclasses import asdict
+
+    from polylogue.operations.daemon_execution import _validate_identity, operation_envelope, validate_execution_request
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.operation_context import observe_control_authority
+    from polylogue.storage.frontier_inspection import FrontierInspectionOutcome, inspect_prepared_raw_authority_frontier
+
+    request = validate_execution_request(request, context)
+    runtime = context.runtime
+    if runtime is None:
+        raise PermissionError("daemon_required")
+    started = monotonic()
+
+    def accept() -> None:
+        authority = observe_control_authority(context.archive_root)
+        _validate_identity(request, context, authority)
+        runtime.observe_snapshot(request, authority)
+        runtime.begin_unbound_write(request, snapshot=authority)
+
+    await runtime.write_phase("frontier.accept", accept)
+
+    def inspect() -> FrontierInspectionOutcome:
+        adapter = runtime.prepared_compute_adapter()
+        return inspect_prepared_raw_authority_frontier(
+            context.archive_root,
+            input_demand=adapter.amend_current_input_demand,
+            check_physical_dependencies=True,
+        )
+
+    measured = await runtime.prepared_phase("frontier.inspect", inspect, estimated_bytes=0, exclusive_bytes=True)
+    result = {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        "effect": "no-effect" if measured.mode == "current" else "committed",
+        "result": asdict(measured),
+    }
+    validate_operation_result(request.operation, result)
+    authority = observe_control_authority(context.archive_root)
+    return operation_envelope(request, context, snapshot=authority, started_at=started, result=result)

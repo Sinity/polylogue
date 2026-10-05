@@ -6,6 +6,7 @@ can implement for sidecar discovery and post-parse enrichment.
 
 from __future__ import annotations
 
+from builtins import BaseExceptionGroup
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +27,7 @@ if TYPE_CHECKING:
 ClaudeCodeSessionIndex: TypeAlias = dict[str, "SessionIndexEntry"]
 ClaudeCodeHistoryPasteIndex: TypeAlias = dict[str, list["HistoryEntry"]]
 CodexThreadNames: TypeAlias = dict[str, str]
-CodexHistoryTitles: TypeAlias = dict[str, str]
+CodexHistoryTitles: TypeAlias = Mapping[str, str]
 
 
 class _ClaudeCodeSidecarData(TypedDict, total=False):
@@ -75,10 +76,25 @@ def close_sidecar_data(data: SidecarData, *, borrowed: SidecarData | None = None
             result.append(assets.index)
         return result
 
+    from .retained_title_index import RetainedTitleIndex
+
+    titles = data.get("retained_state_titles")
+    borrowed_titles = None if borrowed is None else borrowed.get("retained_state_titles")
+    owned: list[RetainedTitleIndex | ChatGPTAssetIndex] = []
+    if isinstance(titles, RetainedTitleIndex) and titles is not borrowed_titles:
+        owned.append(titles)
     borrowed_owners = [] if borrowed is None else owners(borrowed)
-    for index in owners(data):
-        if all(owner is not index for owner in borrowed_owners):
-            index.close()
+    owned.extend(index for index in owners(data) if all(owner is not index for owner in borrowed_owners))
+    failures: list[BaseException] = []
+    for owner in owned:
+        try:
+            owner.close()
+        except BaseException as error:
+            failures.append(error)
+    if len(failures) == 1:
+        raise failures[0]
+    if failures:
+        raise BaseExceptionGroup("retained enrichment physical close failed", failures)
 
 
 @dataclass(frozen=True, slots=True)

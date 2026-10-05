@@ -85,7 +85,12 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, SourceFidelityStatus
 from polylogue.core.json import JSONDocument
 from polylogue.sources.detection_projection import DetectorProjection
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
+from polylogue.sources.sqlite_export import (
+    LogicalExportError,
+    logical_source_context,
+    logical_source_shape,
+    readable_table_info,
+)
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -211,7 +216,7 @@ def _readonly_context(path: Path, *, immutable: bool = False) -> Iterator[sqlite
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    return {str(row[1]) for row in readable_table_info(conn, table)}
 
 
 def _has_required_tables(conn: sqlite3.Connection) -> bool:

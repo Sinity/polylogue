@@ -52,7 +52,7 @@ def resolve_single_session_id(
     """
     from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
     from polylogue.cli.select import machine_output_requested, resolve_ambiguous_selection
-    from polylogue.cli.session_rows import query_session_ids, query_session_rows
+    from polylogue.cli.session_rows import query_session_selection
 
     spec = request.query_spec()
     if not spec.latest and not spec.has_filters():
@@ -60,10 +60,14 @@ def resolve_single_session_id(
 
     config = cast("Config", request.config())
     if spec.latest or first_only:
-        session_ids = query_session_ids(config, request, limit=1)
+        selection = query_session_selection(config, request, limit=1)
+        selection.require_authoritative()
+        session_ids = selection.ids
         return session_ids[0] if session_ids else None
 
-    rows = query_session_rows(config, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
+    selection = query_session_selection(config, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
+    selection.require_authoritative()
+    rows = selection.rows
     if len(rows) <= 1:
         return rows[0].session_id if rows else None
 
@@ -72,7 +76,9 @@ def resolve_single_session_id(
         # must offer the whole selection, so it walks all of it.
         if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
             return list(rows)
-        return query_session_rows(config, request, limit=None)
+        complete = query_session_selection(config, request, limit=None)
+        complete.require_authoritative()
+        return list(complete.rows)
 
     return resolve_ambiguous_selection(
         env,
@@ -97,8 +103,8 @@ def resolve_session_id_from_root_params(
 
     Order:
 
-    1. Returns the value at ``root_params["conv_id"]`` if set (explicit
-       ``--id`` or positional from the calling command).
+    1. Returns an explicit ID directly only when it is the whole selection.
+       Additional predicates still resolve through the canonical query.
     2. Otherwise, if ``--latest`` is set or any narrowing filter
        (``--origin``, ``--tag``, ``--since`` etc.) is present, resolves
        through :func:`resolve_single_session_id`.
@@ -109,13 +115,14 @@ def resolve_session_id_from_root_params(
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.shared.helper_support import mutation_refusal
 
-    explicit = cast("str | None", root_params.get("conv_id"))
-    if explicit:
-        return explicit
+    request = RootModeRequest.from_params(dict(root_params))
+    spec = request.query_spec()
+    if spec.is_exact_session_ref():
+        return spec.session_id
 
     try:
         return resolve_single_session_id(
-            RootModeRequest.from_params(dict(root_params)),
+            request,
             env=env,
             operation=operation,
             first_only=first_only,

@@ -157,6 +157,7 @@ class DerivationConvergenceOwner:
         resume: bool = True,
         domains: Sequence[str] | None = None,
         estimated_bytes: int = 0,
+        exclusive_bytes: bool = False,
     ) -> DerivationReport:
         """Run one derivation pass on the bounded compute pool.
 
@@ -172,6 +173,7 @@ class DerivationConvergenceOwner:
                 resume=resume,
                 domains=domains,
                 estimated_bytes=estimated_bytes,
+                exclusive_bytes=exclusive_bytes,
             )
 
     async def _converge_serialized(
@@ -183,6 +185,7 @@ class DerivationConvergenceOwner:
         resume: bool = True,
         domains: Sequence[str] | None = None,
         estimated_bytes: int = 0,
+        exclusive_bytes: bool = False,
     ) -> DerivationReport:
         from polylogue.core.write_lease import coordinator_write_lease_active
 
@@ -211,6 +214,7 @@ class DerivationConvergenceOwner:
             ),
             admission_class="incremental-background",
             estimated_bytes=estimated_bytes,
+            exclusive_bytes=exclusive_bytes,
         )
         compute_cancel.reset(cancel_token)
         operation = asyncio.wrap_future(submitted.future, loop=loop)

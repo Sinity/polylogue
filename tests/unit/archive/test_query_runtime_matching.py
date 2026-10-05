@@ -6,7 +6,6 @@ import pytest
 
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.query import runtime_matching
 from polylogue.archive.query.plan import SessionQueryPlan
 from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
@@ -282,9 +281,10 @@ def test_sequence_witnesses_name_the_matching_actions(monkeypatch: pytest.Monkey
 
     result = action_predicate_sequence_witnesses(steps, session)
 
-    assert result.truncated is False
-    assert [witness.action_indices for witness in result.witnesses] == [(0, 1)]
-    assert result.witnesses[0].span == (0, 1)
+    witnesses = tuple(result.witnesses)
+    assert [witness.action_indices for witness in witnesses] == [(0, 1)]
+    assert witnesses[0].span == (0, 1)
+    assert bool(result) is True
 
 
 def test_sequence_multiplicity_is_all_pairs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -326,29 +326,49 @@ def test_the_boolean_answer_is_derived_from_the_witnesses(monkeypatch: pytest.Mo
 
     for steps in (hit, miss):
         witnesses = action_predicate_sequence_witnesses(steps, session)
-        assert matches_action_predicate_sequence(steps, session) is bool(witnesses.witnesses)
+        assert matches_action_predicate_sequence(steps, session) is bool(witnesses)
 
 
-def test_the_witness_expansion_is_bounded_and_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A combinatorial match set is capped, and the cap is reported.
-
-    Anti-vacuity: removing the ``MAX_SEQUENCE_WITNESSES`` break makes
-    ``truncated`` False and the witness count exceed the ceiling.
-    """
-    session = _session()
-    monkeypatch.setattr(runtime_matching, "MAX_SEQUENCE_WITNESSES", 3)
+def test_sequence_retains_the_late_viable_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only the last of 10,001 shells is immediately followed by search."""
     _patch_events(
         monkeypatch,
         (
-            *(_event(ToolCategory.FILE_EDIT, tool_name="Edit") for _ in range(4)),
-            *(_event(ToolCategory.SHELL, tool_name="Bash", command="pytest") for _ in range(4)),
+            _event(ToolCategory.FILE_EDIT),
+            *(_event(ToolCategory.SHELL, index=index) for index in range(1, 10_002)),
+            _event(ToolCategory.SEARCH, index=10_002),
+        ),
+    )
+    steps = tuple(_action_predicate("action", kind) for kind in ("file_edit", "shell", "search"))
+    constraints = (QuerySequenceConstraint(), QuerySequenceConstraint(kind="next"))
+    result = action_predicate_sequence_witnesses(steps, _session(), constraints)
+
+    assert bool(result) is True
+    assert [w.action_indices for w in result.witnesses] == [(0, 10_001, 10_002)]
+    assert matches_action_predicate_sequence(steps, _session(), constraints) is True
+
+
+def test_sequence_stream_preserves_every_completed_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_events(
+        monkeypatch,
+        (
+            *(_event(ToolCategory.FILE_EDIT, index=index) for index in range(101)),
+            *(_event(ToolCategory.SHELL, index=index) for index in range(101, 202)),
         ),
     )
     steps = (_action_predicate("action", "file_edit"), _action_predicate("action", "shell"))
+    result = action_predicate_sequence_witnesses(steps, _session())
 
-    result = action_predicate_sequence_witnesses(steps, session)
+    assert iter(result.witnesses) is result.witnesses
+    assert sum(1 for _ in result.witnesses) == 10_201
+    assert bool(result) is True
 
-    assert result.truncated is True
-    assert len(result.witnesses) <= 3
-    # Truncation can only drop matches after one was found, so existence stays sound.
-    assert matches_action_predicate_sequence(steps, session) is True
+
+def test_sequence_stream_has_no_recursive_pattern_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_events(monkeypatch, tuple(_event(ToolCategory.FILE_EDIT, index=index) for index in range(1_100)))
+    steps = (_action_predicate("action", "file_edit"),) * 1_100
+    constraints = (QuerySequenceConstraint(kind="next"),) * 1_099
+    result = action_predicate_sequence_witnesses(steps, _session(), constraints)
+
+    assert next(result.witnesses).action_indices == tuple(range(1_100))
+    assert bool(result) is True

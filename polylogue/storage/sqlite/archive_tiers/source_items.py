@@ -9,15 +9,18 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from enum import StrEnum
 from itertools import islice
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome, Origin
 from polylogue.core.provider_identity import captured_hermes_profile_key, profile_root_for_artifact
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
+from polylogue.storage.io_phase_metrics import connection_cursor
 from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 from .common import require_vocabulary
@@ -470,35 +473,6 @@ def abort_prepared_source_manifest(conn: sqlite3.Connection, *, source_generatio
     conn.execute("DELETE FROM prepared_source_manifest_members WHERE source_generation_id=?", (source_generation_id,))
     conn.execute("DELETE FROM prepared_source_manifests WHERE source_generation_id=?", (source_generation_id,))
     conn.execute("DELETE FROM blob_publication_reservations WHERE publisher_id=?", (publisher_id,))
-
-
-def reconcile_unaccepted_prepared_source_manifests(conn: sqlite3.Connection) -> int:
-    """Reclaim dead pre-accept staging after audit continuity has settled.
-
-    The daemon startup owner calls this before admitting requests. A surviving
-    accepted audit transition has already promoted its source generation; an
-    unresolved audit transition prevents startup from reaching this call.
-    """
-    if not conn.in_transaction:
-        raise ValueError("prepared source reconciliation requires a source transaction")
-    orphan = (
-        "SELECT source_generation_id, publisher_id FROM prepared_source_manifests p "
-        "WHERE NOT EXISTS (SELECT 1 FROM source_generations g "
-        "WHERE g.source_generation_id=p.source_generation_id)"
-    )
-    count = int(conn.execute(f"SELECT COUNT(*) FROM ({orphan})").fetchone()[0])
-    conn.execute(
-        f"DELETE FROM blob_publication_reservations WHERE publisher_id IN (SELECT publisher_id FROM ({orphan}))"
-    )
-    conn.execute(
-        "DELETE FROM prepared_source_manifest_members WHERE source_generation_id IN "
-        f"(SELECT source_generation_id FROM ({orphan}))"
-    )
-    conn.execute(
-        "DELETE FROM prepared_source_manifests WHERE NOT EXISTS "
-        "(SELECT 1 FROM source_generations g WHERE g.source_generation_id=prepared_source_manifests.source_generation_id)"
-    )
-    return count
 
 
 def append_prepared_source_inputs(
@@ -1039,6 +1013,8 @@ def transition_source_item(
     # and reject at this public write boundary before even the idempotent path.
     disposition_value = require_vocabulary(disposition, AcquisitionDisposition, field="disposition")
     outcome_value = require_vocabulary(outcome_code, IngestOutcome, field="outcome_code")
+    if retryable is None:
+        retryable = INGEST_OUTCOME_RETRYABLE[IngestOutcome(outcome_value)]
     row = conn.execute(
         "SELECT revision, request_id, blob_hash, enumeration_fingerprint FROM source_items "
         "WHERE source_generation_id=? AND source_item_id=?",
@@ -1358,7 +1334,7 @@ def _measure_source_item_enumeration(
         return count, digest, member_count, member_digest, retired_count
 
 
-def retained_completed_source_item_for_raw(conn: sqlite3.Connection, raw_id: str) -> tuple[str, str]:
+def retained_completed_source_item_for_raw(source_read: CompletedSourceItemRead, raw_id: str) -> tuple[str, str]:
     """Select an exact completed set, never an acquisition clock or group rank.
 
     A raw can occur in multiple accepted inputs. They prove one interchangeable
@@ -1368,20 +1344,11 @@ def retained_completed_source_item_for_raw(conn: sqlite3.Connection, raw_id: str
     """
     from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
 
-    cursor = conn.execute(
-        "SELECT i.source_generation_id, i.source_item_id, i.enumeration_fingerprint, "
-        "i.enumerated_record_count, i.enumeration_digest, i.enumerated_member_count, i.enumeration_member_digest "
-        "FROM source_item_raw_members m JOIN source_items i "
-        "ON i.source_generation_id=m.source_generation_id AND i.source_item_id=m.source_item_id "
-        "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
-        "WHERE m.raw_id=? AND i.enumerated_at_ms IS NOT NULL "
-        "ORDER BY i.source_generation_id, i.source_item_id",
-        (raw_id,),
-    )
     selected: tuple[str, str] | None = None
     signature: tuple[object, ...] | None = None
-    try:
+    with source_read.completed_source_item_rows(raw_id) as cursor:
         for row in cursor:
+            check_compute_cancelled()
             if row[2] is None:
                 raise RetainedZipMembershipUnprovedError("completed ZIP input has no decoder binding")
             _require_digest(str(row[2]), "enumeration_fingerprint")
@@ -1393,8 +1360,6 @@ def retained_completed_source_item_for_raw(conn: sqlite3.Connection, raw_id: str
             signature = current
             if selected is None:
                 selected = (str(row[0]), str(row[1]))
-    finally:
-        cursor.close()
     if selected is None:
         raise RetainedZipMembershipUnprovedError("retained ZIP raw has no proved complete acquisition group")
     return selected
@@ -1415,7 +1380,7 @@ def record_source_item_member_disposition(
     value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     if entry_ordinal < 0:
         raise ValueError("source member ordinal must be non-negative")
-    if not member_name.strip():
+    if not member_name:
         raise ValueError("source member name must be non-empty")
     item = conn.execute(
         "SELECT enumerated_at_ms FROM source_items WHERE source_generation_id=? AND source_item_id=?",
@@ -1490,3 +1455,32 @@ __all__ = [
     "source_item_id",
     "transition_source_item",
 ]
+
+
+class CompletedSourceItemRead(Protocol):
+    """The canonical completed-group metadata on one owned Source snapshot."""
+
+    def completed_source_item_rows(self, raw_id: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+
+_COMPLETED_SOURCE_ITEM_SQL = (
+    "SELECT i.source_generation_id, i.source_item_id, i.enumeration_fingerprint, "
+    "i.enumerated_record_count, i.enumeration_digest, i.enumerated_member_count, i.enumeration_member_digest "
+    "FROM source_item_raw_members m JOIN source_items i "
+    "ON i.source_generation_id=m.source_generation_id AND i.source_item_id=m.source_item_id "
+    "JOIN raw_sessions r ON r.raw_id=m.raw_id AND r.blob_hash=m.raw_blob_hash "
+    "WHERE m.raw_id=? AND i.enumerated_at_ms IS NOT NULL "
+    "ORDER BY i.source_generation_id, i.source_item_id"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionCompletedSourceItemRead:
+    connection: sqlite3.Connection
+
+    def completed_source_item_rows(self, raw_id: str) -> AbstractContextManager[sqlite3.Cursor]:
+        return connection_cursor(self.connection, _COMPLETED_SOURCE_ITEM_SQL, (raw_id,))
+
+
+if TYPE_CHECKING:
+    from polylogue.security.excision_policy import ExcisionPolicySnapshot

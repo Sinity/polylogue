@@ -27,10 +27,12 @@ from polylogue.operations.raw_authority_verdict_cache import (
     warm_raw_authority_verdict_cache,
 )
 from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
+from polylogue.operations.raw_frontier_inspection import make_raw_frontier_inspection_stage
 from polylogue.operations.session_source_membership import session_ids_for_paths
 from polylogue.operations.sinex_convergence import publication_service_for_archive
 
 if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
 
@@ -424,6 +426,7 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
 def make_default_convergence_stages(
     db_path: Path,
     *,
+    compute_adapter: BoundedComputeAdapter,
     sinex_transport: SinexTransport | None = None,
 ) -> tuple[ConvergenceStage, ...]:
     """Build daemon stages, failing explicitly when backed mode lacks transport."""
@@ -456,11 +459,12 @@ def make_default_convergence_stages(
             # records as convergence debt. Without it registered here the drain
             # skips every such row as an unimplemented stage and the backlog
             # never clears (polylogue-ia88n).
-            make_lineage_prefix_recompose_stage(db_path),
+            make_lineage_prefix_recompose_stage(db_path, compute_adapter=compute_adapter),
             # polylogue-crwl6 AC6: the only production writer of the message-FTS
             # readiness binding the five status request paths compare against.
             make_fts_readiness_binding_stage(db_path),
-            make_raw_existence_journal_prune_stage(db_path),
+            make_raw_frontier_inspection_stage(db_path, compute_adapter=compute_adapter),
+            make_raw_existence_journal_prune_stage(db_path, compute_adapter=compute_adapter),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.

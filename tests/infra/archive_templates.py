@@ -75,22 +75,86 @@ async def run_archive_fixture_write(root: Path, prepare: Callable[[], _T]) -> _T
             raise cleanup
 
 
-def bootstrap_ready_archive_root(root: Path) -> Path:
-    """Construct an empty fixture and complete its real raw-authority census."""
-    from polylogue.config import Config
-    from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
+async def run_archive_fixture_prepare(prepare: Callable[[], _T]) -> _T:
+    """Run canonical preparation and its publication on one lease-free creator.
 
-    bootstrap_archive_root(root)
-    inspect_raw_authority_frontier(
-        Config(archive_root=root, render_root=root / "render", sources=[], db_path=root / "index.db")
-    )
-    return root
+    The callback owns all SQL-backed preparation and closes its carriers before
+    returning detached values. Its canonical publisher acquires writer custody
+    after preparation; this outer owner supplies compute admission only.
+    """
+    import asyncio
+
+    from polylogue.core.compute import BoundedComputeAdapter, SubmittedOperation
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    submitted: SubmittedOperation[_T] | None = None
+    completion: asyncio.Future[_T] | None = None
+    primary: BaseException | None = None
+    try:
+        submitted = adapter.submit(prepare)
+        completion = asyncio.wrap_future(submitted.future)
+        return await asyncio.shield(completion)
+    except BaseException as failure:
+        primary = failure
+        if isinstance(failure, asyncio.CancelledError) and submitted is not None:
+            submitted.cancellation.cancel()
+        raise
+    finally:
+        # A cancelled await cannot retire the creator while its body or retained
+        # SQL custody is still live. Shutdown retries on that original creator.
+        cleanup = asyncio.create_task(asyncio.to_thread(adapter.shutdown, wait=True))
+        cancelled = False
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                if submitted is not None:
+                    submitted.cancellation.cancel()
+                cancelled = True
+            except BaseException:
+                break  # Retrieve and classify the completed cleanup below.
+        try:
+            cleanup.result()
+        except BaseException as failure:
+            if primary is not None:
+                raise BaseExceptionGroup("fixture preparation and settlement failed", [primary, failure]) from failure
+            raise
+        if completion is not None and completion.done() and not completion.cancelled():
+            completion.exception()
+        if cancelled and primary is None:
+            raise asyncio.CancelledError
+
+
+def bootstrap_ready_archive_root(root: Path) -> Path:
+    """Run the complete synchronous fixture construction on its original owner."""
+    import asyncio
+
+    return asyncio.run(bootstrap_ready_archive_root_async(root))
 
 
 __all__ = [
     "bootstrap_archive_root",
     "bootstrap_ready_archive_root",
+    "bootstrap_ready_archive_root_async",
     "clone_archive_template",
     "finalize_archive_template",
+    "run_archive_fixture_prepare",
     "run_archive_fixture_write",
 ]
+
+
+async def bootstrap_ready_archive_root_async(root: Path) -> Path:
+    """Construct and inspect through one genuine supplied fixture owner."""
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    root.mkdir(parents=True, exist_ok=True)
+    async with prepared_live_convergence_owner(root) as owner:
+        await owner._write_coordinator.run_sync("fixture.archive.bootstrap", lambda: bootstrap_archive_root(root))
+        await owner.run_convergence_sync(
+            "fixture.archive.frontier",
+            inspect_prepared_raw_authority_frontier,
+            root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
+    return root

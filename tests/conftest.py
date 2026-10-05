@@ -731,7 +731,7 @@ def _clear_polylogue_env(
     # and discards many daemons, so the production route is not weakened.
     from polylogue.core.compute import reset_compute_adapter
 
-    reset_compute_adapter()
+    assert reset_compute_adapter(join_timeout_s=5) == ()
 
     # Strip every POLYLOGUE_* host env var so tests never inherit operator
     # configuration (archive root, daemon api host/port, validation mode,

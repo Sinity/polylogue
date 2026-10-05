@@ -48,6 +48,14 @@ class RootModeRequest:
             raise click.UsageError(exc.cli_message) from exc
         return cls(params=params, query_terms=query_terms)
 
+    @property
+    def selection_epoch(self) -> str | None:
+        """The resident view selected by a query-set read, when bound."""
+        epoch = self.params.get("selection_epoch")
+        if epoch is not None and (not isinstance(epoch, str) or not epoch):
+            raise ValueError("selection_epoch must name a nonempty selected view")
+        return epoch
+
     def query_params(self) -> dict[str, object]:
         params = dict(self.params)
         params["query"] = self.query_terms

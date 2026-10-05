@@ -20,12 +20,6 @@ from polylogue.analysis.run_projection import (
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.core.types import SessionId
-from polylogue.storage.runtime import (
-    SessionContextSnapshotRecord,
-    SessionObservedEventRecord,
-    SessionRunRecord,
-)
 from polylogue.storage.sqlite.action_pairs import action_pairing_ctes_sql
 
 
@@ -38,16 +32,6 @@ def _tuple_from_json_array(value: object) -> tuple[str, ...]:
     if not isinstance(loaded, list):
         return ()
     return tuple(str(item) for item in loaded if item is not None)
-
-
-def _int_value(value: object, *, default: int) -> int:
-    if value is None:
-        return default
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str | bytes | bytearray):
-        return int(value)
-    return default
 
 
 def _in_or_equals_clause(column: str, values: tuple[str, ...], *, lower: bool = False) -> tuple[str, list[object]]:
@@ -78,17 +62,16 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
     def visit(current: QueryPredicate) -> bool:
         if isinstance(current, QueryBoolPredicate):
             if current.op != "and":
-                return False
+                # An OR cannot be narrowed by one arm. The final predicate
+                # remains authoritative; leave this source scan unrestricted.
+                return True
             return all(visit(child) for child in current.children)
         if isinstance(current, QueryFieldPredicate):
             field = current.bound_field_name(context="lowering observed-event source predicates")
             if field == "kind":
-                # 'tool_finished' discriminates against session_started_base
-                # (the other branch of the source_observed_events UNION), so
-                # it is itself selective -- without this, "kind:tool_finished"
-                # alone (no tool:/handler:/status: predicate alongside it)
-                # falls through to the "not selective" 0=1 fallback below and
-                # silently returns zero rows despite real matching evidence.
+                # This branch contains only tool completions. A kind that
+                # excludes them can omit its scan; otherwise the outer
+                # predicate still selects the requested event kinds.
                 add_clause("'tool_finished' = ?", ["tool_finished"], is_selective=True)
                 return "tool_finished" in {value.strip().lower() for value in current.values}
             if field == "delivery_state":
@@ -134,15 +117,17 @@ def observed_event_source_pushdown(predicate: QueryPredicate) -> tuple[str, list
                 return True
             if field == "status":
                 # Same mapping as the projected ``status`` column below.
-                status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
+                status_expr = "CASE pair.verdict WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
                 clause, clause_params = _in_or_equals_clause(status_expr, current.values, lower=True)
                 add_clause(clause, clause_params, is_selective=True)
                 return True
         return True
 
     supported = visit(predicate)
-    if not supported or not selective:
+    if not supported:
         return "0=1", []
+    if not selective:
+        return "1=1", []
     return " AND ".join(clauses) if clauses else "1=1", params
 
 
@@ -244,7 +229,7 @@ def observed_event_relation_sql(
         session_index_hint=" INDEXED BY idx_blocks_session_position" if session_scoped else "",
     )
     return f"""
-WITH session_started_base AS (
+WITH RECURSIVE session_started_base AS (
     SELECT
         'source' AS row_source,
         'observed-event:' || s0.session_id || ':session_started' AS event_ref,
@@ -299,7 +284,7 @@ tool_finished_base AS (
             WHEN COALESCE(u.tool_command, '') <> '' THEN 'shell'
             ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use')
         END AS handler_kind,
-        CASE r.tool_outcome
+        CASE pair.verdict
             WHEN 'ok' THEN 'ok'
             WHEN 'error' THEN 'failed'
             ELSE 'unknown'
@@ -309,18 +294,31 @@ tool_finished_base AS (
                 THEN json_array('tool-call:' || u.session_id || ':' || u.tool_id)
             ELSE '[]'
         END AS object_refs_json,
-        json_array(
-            u.session_id || '::' || u.message_id || '::' || u.position,
-            r.session_id || '::' || r.message_id || '::' || r.position
-        ) AS evidence_refs_json,
-        trim(COALESCE(u.search_text, '') || ' ' || COALESCE(r.search_text, '')) AS search_text
+        (SELECT json_group_array(ref) FROM (
+            SELECT u.session_id || '::' || u.message_id || '::' || u.position AS ref,
+                   -1 AS message_position,-1 AS variant_index,-1 AS block_position
+            UNION ALL
+            SELECT rb.session_id || '::' || rb.message_id || '::' || rb.position,
+                   ar.message_position,ar.variant_index,ar.block_position
+            FROM association_results ar JOIN blocks rb ON rb.block_id=ar.block_key
+            WHERE ar.session_key=pair.session_id AND ar.assigned_use_key=pair.tool_use_block_id
+            ORDER BY message_position,variant_index,block_position
+        )) AS evidence_refs_json,
+        trim(COALESCE(u.search_text, '') || ' ' || COALESCE((
+            SELECT group_concat(search_text,' ') FROM (
+                SELECT rb.search_text FROM association_results ar JOIN blocks rb ON rb.block_id=ar.block_key
+                WHERE ar.session_key=pair.session_id AND ar.assigned_use_key=pair.tool_use_block_id
+                ORDER BY ar.message_position,ar.variant_index,ar.block_position
+            )
+        ),'')) AS search_text
     -- Derive associations from the shared owner, not from a potentially
     -- unrefreshed action_pairs table. Unresolved uses cannot certify a
-    -- tool_finished event. Preserve u/r aliases for source pushdown.
+    -- tool_finished event. Fanout carries every result reference; no result
+    -- is chosen to stand for the scalar location. Pushdown uses the same verdict.
     FROM paired_uses pair
     JOIN blocks u ON u.block_id = pair.tool_use_block_id
-    JOIN blocks r ON r.block_id = pair.candidate_result_id AND pair.ambiguous = 0
-    WHERE ({source_where})
+    LEFT JOIN blocks r ON r.block_id = pair.candidate_result_id
+    WHERE pair.ambiguous=0 AND pair.result_count>0 AND ({source_where})
 ),
 source_observed_events AS (
     SELECT * FROM session_started_base
@@ -565,40 +563,4 @@ def context_snapshot_from_row(row: RowLike) -> ContextSnapshot:
         segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
         evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
         metadata=dict(json.loads(str(row["metadata_json"] or "{}"))),
-    )
-
-
-def row_to_session_run_record(row: RowLike) -> SessionRunRecord:
-    return SessionRunRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        run=projected_run_from_row(row),
-        search_text=str(row["search_text"] or ""),
-    )
-
-
-def row_to_session_observed_event_record(row: RowLike) -> SessionObservedEventRecord:
-    return SessionObservedEventRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        event=observed_event_from_row(row),
-        search_text=str(row["search_text"] or ""),
-    )
-
-
-def row_to_session_context_snapshot_record(row: RowLike) -> SessionContextSnapshotRecord:
-    return SessionContextSnapshotRecord(
-        session_id=SessionId(str(row["session_id"])),
-        position=_int_value(row["position"], default=0),
-        materializer_version=_int_value(row["materializer_version"], default=1),
-        materialized_at=str(row["materialized_at"] or ""),
-        source_updated_at=str(row["source_updated_at"]) if row["source_updated_at"] is not None else None,
-        snapshot=context_snapshot_from_row(row),
-        search_text=str(row["search_text"] or ""),
     )

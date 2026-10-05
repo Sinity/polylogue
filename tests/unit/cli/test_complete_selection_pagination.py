@@ -23,6 +23,8 @@ import pytest
 from polylogue.cli.operation_kernel import OperationFailedError
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.config import Config
+from polylogue.surfaces.outcome import decide_outcome
+from tests.infra.cli_selection import fixture_query_page
 from tests.infra.daemon_operations import cli_daemon_archive
 
 SEEDED_SESSIONS = 7
@@ -104,7 +106,7 @@ def test_complete_selection_resolves_every_seeded_session(seeded_root: Path, mon
 
     monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
     with cli_daemon_archive(seeded_root, monkeypatch):
-        ids = session_rows.query_complete_session_ids(_config(seeded_root), RootModeRequest.from_params({}))
+        ids = session_rows.query_complete_session_selection(_config(seeded_root), RootModeRequest.from_params({})).ids
 
     assert len(ids) == SEEDED_SESSIONS
     assert len(set(ids)) == SEEDED_SESSIONS
@@ -119,7 +121,7 @@ def test_complete_selection_walks_the_ordinary_over_500_boundary(
     the first page is no longer accepted as a complete 501-row selection.
     """
 
-    from polylogue.cli.session_rows import query_complete_session_ids
+    from polylogue.cli.session_rows import query_complete_session_selection
     from tests.infra.storage_records import SessionBuilder
 
     index_db = tmp_path / "index.db"
@@ -136,7 +138,7 @@ def test_complete_selection_walks_the_ordinary_over_500_boundary(
 
     monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", 500)
     with cli_daemon_archive(tmp_path, monkeypatch):
-        ids = query_complete_session_ids(_config(tmp_path), RootModeRequest.from_params({"query": (TOKEN,)}))
+        ids = query_complete_session_selection(_config(tmp_path), RootModeRequest.from_params({"query": (TOKEN,)})).ids
 
     assert len(ids) == LARGE_SEEDED_SESSIONS
     assert len(set(ids)) == LARGE_SEEDED_SESSIONS
@@ -206,6 +208,17 @@ def test_complete_selection_all_verbs_receive_every_real_operation_id(
     ("pages", "expected_message"),
     [
         ([{"items": [{"id": "a"}], "total": 1}], "continuation"),
+        (
+            [
+                {
+                    "items": [{"id": "a"}],
+                    "total": 1,
+                    "next_offset": None,
+                    "outcome": decide_outcome(matched=1, degraded=("projection_incomplete",)).to_dict(),
+                }
+            ],
+            "selection_not_authoritative",
+        ),
         ([{"items": [{"id": "a"}], "total": 2, "next_offset": 0}], "advance"),
         (
             [
@@ -234,7 +247,15 @@ def test_mutating_selection_refuses_incomplete_or_failed_walks(pages: list[objec
         if isinstance(page, Exception):
             raise page
         assert isinstance(page, dict)
-        return SimpleNamespace(value=page, authority={}, envelope=None)
+        return SimpleNamespace(
+            value={
+                **fixture_query_page(page),
+                **({"outcome": page["outcome"]} if "outcome" in page else {}),
+                "snapshot_epoch": "fixture-selected-frame",
+            },
+            authority={},
+            envelope=None,
+        )
 
     parent = click.Context(click.Command("query"))
     parent.params = {"query_term": (TOKEN,)}
@@ -276,7 +297,7 @@ def test_the_mutating_verb_route_resolves_through_the_complete_walk() -> None:
     an assertion rather than a claim.
 
     Anti-vacuity: point ``resolve_session_ids_for_verb`` at the bounded
-    ``query_session_ids`` probe instead and this goes red.
+    ``query_session_selection`` probe instead and this goes red.
     """
 
     import inspect
@@ -284,5 +305,148 @@ def test_the_mutating_verb_route_resolves_through_the_complete_walk() -> None:
     from polylogue.cli import verb_cardinality
 
     source = inspect.getsource(verb_cardinality.resolve_session_ids_for_verb)
-    assert "query_complete_session_ids" in source
-    assert "query_session_ids(" not in source
+    assert "query_complete_session_selection" in source
+    assert "query_session_selection(" not in source
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_selection_refuses_user_tag_swap_with_unchanged_total(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, complete: bool
+) -> None:
+    """Two independently correct pages cannot authorize one mixed tag population."""
+    import polylogue.cli.session_rows as session_rows
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        ids = [row.session_id for row in pinned.archive.iter_summaries()]
+    monkeypatch.setattr(session_rows, "COMPLETE_SELECTION_PAGE", PAGE)
+    original = session_rows._query_page_with_authority
+    pages: list[dict[str, object]] = []
+    with cli_daemon_archive(seeded_root, monkeypatch) as stack:
+
+        def tag(session_ids: list[str], *, remove: bool = False) -> None:
+            result = stack.client.operation_to_completion(
+                "mutation.session.tag",
+                {"session_ids": session_ids, "remove_tags" if remove else "tags": ["bound-membership"]},
+                archive_root=str(seeded_root),
+            )
+            assert result is not None and result["outcome"] == "completed"
+            assert result["result"]["effect"] == "committed"
+
+        tag(ids[:-1])
+
+        def changed_page(
+            config: Config,
+            request: RootModeRequest,
+            *,
+            limit: int,
+            offset: int,
+            daemon_disabled: bool,
+        ) -> tuple[dict[str, object], str]:
+            payload, authority = original(config, request, limit=limit, offset=offset, daemon_disabled=daemon_disabled)
+            assert isinstance(payload, dict)
+            pages.append(payload)
+            if len(pages) == 1:
+                items = payload["items"]
+                assert isinstance(items, list)
+                tag([items[0]["id"]], remove=True)
+                tag([ids[-1]])
+            return payload, authority
+
+        monkeypatch.setattr(session_rows, "_query_page_with_authority", changed_page)
+        request = RootModeRequest.from_params({"tag": "bound-membership"})
+        with pytest.raises(OperationFailedError) as refusal:
+            if complete:
+                session_rows.query_complete_session_selection(_config(seeded_root), request)
+            else:
+                session_rows.query_session_selection(_config(seeded_root), request, limit=SEEDED_SESSIONS)
+    assert refusal.value.code == "query_continuation_stale"
+    assert len(pages) == 2
+    assert pages[0]["total"] == pages[1]["total"] == SEEDED_SESSIONS - 1
+    first_epoch, second_epoch = (str(page["snapshot_epoch"]) for page in pages)
+    assert first_epoch != second_epoch
+    # No Index generation changed. The durable User assertion trigger alone
+    # changes the selected population and therefore its continuation authority.
+    first_generation, first_relations = first_epoch.rsplit(":", 1)
+    second_generation, second_relations = second_epoch.rsplit(":", 1)
+    assert first_generation == second_generation
+    before = dict(component.split("=", 1) for component in first_relations.split(","))
+    after = dict(component.split("=", 1) for component in second_relations.split(","))
+    assert before.pop("assertions") != after.pop("assertions")
+    assert before == after
+
+
+@pytest.mark.parametrize("view", ["messages", "hooks", "dialogue", "raw"])
+def test_explicit_session_read_preserves_its_text_selection(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, view: str
+) -> None:
+    """An explicit identity narrows a predicate rather than bypassing it."""
+    from click.testing import CliRunner
+
+    from polylogue.cli import cli
+    from polylogue.cli.verb_cardinality import EmptyCardinalityError
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        sid = pinned.archive.list_summaries(limit=1)[0].session_id
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--plain",
+                "--id",
+                sid,
+                "find",
+                "absent-membership-token",
+                "then",
+                "read",
+                "--view",
+                view,
+                "--format",
+                "json",
+            ],
+        )
+    assert result.exit_code == 2, result.output
+    assert result.exception is not None
+    assert isinstance(result.exception.__context__, EmptyCardinalityError)
+
+
+def test_explicit_session_root_boolean_query_preserves_its_predicate(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.cli import cli
+    from polylogue.operations.operation_context import open_operation_read
+
+    with open_operation_read(seeded_root) as pinned:
+        sid = pinned.archive.list_summaries(limit=1)[0].session_id
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        result = CliRunner().invoke(
+            cli, ["--plain", "--id", sid, "find", 'sessions where ~"absent-membership-token"', "--format", "json"]
+        )
+    assert result.exit_code == 2, result.output
+    assert json.loads(result.output)["items"] == []
+
+
+@pytest.mark.parametrize("params,row_key", [({}, "items"), ({"query": (TOKEN,)}, "hits")])
+def test_missing_explicit_scope_is_a_real_pinned_empty_query(
+    seeded_root: Path, monkeypatch: pytest.MonkeyPatch, params: dict[str, object], row_key: str
+) -> None:
+    from polylogue.cli.lowering import lower_cli_query
+    from polylogue.cli.operation_kernel import dispatch
+    from polylogue.cli.session_rows import query_complete_session_selection
+
+    request = RootModeRequest.from_params({"conv_id": "codex-session:absent", **params})
+    with cli_daemon_archive(seeded_root, monkeypatch):
+        value = dispatch(_config(seeded_root), lower_cli_query(request, limit=PAGE, offset=0)).value
+        selection = query_complete_session_selection(_config(seeded_root), request)
+    assert isinstance(value, dict)
+    assert value[row_key] == [] and value["total"] == 0
+    assert value["outcome"]["state"] == "empty"
+    assert isinstance(value["snapshot_epoch"], str) and value["snapshot_epoch"]
+    assert value["next_offset"] is None
+    assert selection.ids == []
+    selection.require_authoritative()

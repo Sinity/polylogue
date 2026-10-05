@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
@@ -23,7 +26,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.query_output import format_search_envelope
 from polylogue.config import Config, Source
 from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-from polylogue.core.protocols import VectorProvider
+from polylogue.core.protocols import ScopedVectorQuery, VectorProvider
 from polylogue.mcp.archive_support import archive_search_payload
 from polylogue.mcp.payloads import session_search_result_payload
 from polylogue.operations.daemon_reads import execute_read_operation
@@ -39,16 +42,28 @@ LaneArchive = tuple[Path, Config, dict[str, str]]
 class _VectorReply:
     """Only the external vector service is substituted; SQL/hydration are real."""
 
-    def __init__(self, failure: Exception | None = None) -> None:
+    def __init__(self, failure: Exception | None = None, *, hits: tuple[tuple[str, float], ...] = ()) -> None:
+        self.hits = hits
         self.failure = failure
         self.calls = 0
 
-    def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
-        del text, limit
+    @contextmanager
+    def scoped_query(
+        self,
+        session_ids: Iterable[str],
+        *,
+        text: str | None = None,
+        seed_session_id: str | None = None,
+        index_connection: sqlite3.Connection,
+        configure_connection: Callable[[sqlite3.Connection], None],
+        check_cancelled: Callable[[], None],
+    ) -> Iterator[ScopedVectorQuery]:
+        del session_ids, text, seed_session_id, index_connection, configure_connection
+        check_cancelled()
         self.calls += 1
         if self.failure is not None:
             raise self.failure
-        return []
+        yield ScopedVectorQuery(rows=iter(self.hits))
 
 
 @pytest.fixture
@@ -354,7 +369,7 @@ def test_archive_read_failure_is_not_relabelled_as_a_degraded_vector_lane(
     import sqlite3
 
     root, config, _ids = lane_archive
-    backend = _VectorReply()
+    backend = _VectorReply(hits=(("actual-witness", 0.1),))
     with open_operation_read(root) as pinned:
 
         def broken_semantic_summaries(*_args: object, **_kwargs: object) -> list[object]:

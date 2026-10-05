@@ -63,9 +63,6 @@ def source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set[
         ).fetchone()
         if has_reservations is None:
             return set()
-        columns = {str(row[1]) for row in source_conn.execute("PRAGMA table_info(blob_publication_reservations)")}
-        if "blob_hash" not in columns:
-            raise RuntimeError("source.blob_publication_reservations is missing columns: blob_hash")
         reservations: set[str] = set()
         for (blob_hash,) in source_conn.execute("SELECT DISTINCT blob_hash FROM blob_publication_reservations"):
             if not isinstance(blob_hash, bytes) or len(blob_hash) != 32:

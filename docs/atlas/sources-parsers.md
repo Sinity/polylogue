@@ -5,8 +5,25 @@
 Sources acquire bytes and identify their material source. Detection chooses a
 provider parser by input shape; the pipeline normalizes provider records into
 parsed sessions before the storage writer lowers them
-(`polylogue/sources/dispatch.py:1-80`; `polylogue/sources/detection.py:76-104`;
-`polylogue/pipeline/services/ingest_batch/_core.py:1179-1243`).
+(`polylogue/sources/dispatch.py:1-80`; `CompiledDetectorRegistry.detect` in `polylogue/sources/detection.py:88-105`;
+`ingest_record` in
+`polylogue/pipeline/services/ingest_worker.py:1137-1226`; `_run_parse_plan`
+in the same file at `1037-1089`;
+`_materialize_parsed_sessions` in the same file at `896-959`).
+
+Document arrays use the same tightness-ordered document predicates for every
+member, including streamed detection. An unrelated fragment cannot claim a
+later complete document. Lowering streams all accepted documents and refuses
+complete documents from a different origin; browser envelopes retain each
+member's own declared provider. Gemini checkpoint logs keep their ordered fold,
+and Hermes ATOF records keep their grouped reducer. Bundle specs do not retain
+the complete decoded cohort.
+
+Retained Codex state material preparation records its complete Source statements
+under the original preparation parent before the writer accepts them.
+Interruption during preparation accepts no material rows; replay publishes the
+complete material set without duplicates. Row and text pages bound work while
+preserving all content.
 
 ## Source observation and SQLite reads
 
@@ -51,6 +68,12 @@ An older raw without a receipt reports `terminal_missing_profile_identity`,
 distinct from missing physical byte coordinates. Captured source-manifest
 members retain physical, semantic and profile evidence together.
 
+ZIP member publication and reacquisition require the captured container/member
+receipt and its exact ordinal, split index and addressing mode. Backup,
+restoration, integrity, debt and conservation readers never infer that namespace
+from a source-path suffix or a Raw ID. Loose filenames containing colons remain
+literal paths; a recorded member without its receipt is an explicit refusal.
+
 Staging publishes provenance and database through separate replacements.
 The provenance includes the backup owner's actual destination identity, so
 readers refuse the intermediate mismatch and a failed second replacement.
@@ -66,6 +89,21 @@ raise, and a staged backup is not published. Transport memory is bounded by
 chunks; the existing canonical emitter still allocates an individual row and
 its encoded cells. No whole-export transport buffer or input limit is added.
 
+Ordinary byte acquisition lends one isolated reader to the caller's existing
+bounded input page. Each sequential request transfers its original source and
+metadata directory capabilities over a private ancillary channel. The child
+opens and proves that request's no-follow source, streams bytes with the same
+per-chunk ACK, then closes its file and received directory descriptors before
+request completion. It retains no byte or identity cache between requests.
+The page returns its frozen input tuple only after final process completion,
+EOF and actual reap; any request fault or cancellation kills and reaps that
+exact child before pipes, sockets or scratch retire. Empty pages allocate no
+reader. Standalone capture and preflight use the same owner for one input;
+logical SQLite export and its native custody stay in their separate fresh
+process. A retained ZIP allocates its disposition spool only on its first
+actual refusal or unselected member, keeping their original ordinal and
+completion laws.
+
 The descriptor census uses `/proc/self/fd` where present and otherwise scans
 the finite OS descriptor bound. Every regular reader descriptor belongs to
 an explicitly bound source role or backup destination. A VFS that opens an
@@ -78,7 +116,11 @@ connection and read transaction. Named domain operations return counts,
 session references and fidelity evidence only after the final binding proof;
 they do not transport another transcript representation. Native live reads
 preserve the source's collation, affinity, views and rowid semantics. Retained
-logical exports use their existing private untyped reconstruction, streamed
+logical exports retain ordinary and readable VIRTUAL/STORED generated column
+values, evaluated in the same acquisition snapshot with exact SQLite storage
+classes. Hidden virtual-table implementation columns remain excluded. Their
+private untyped reconstruction stores those acquired values; original DDL is
+evidence and generated expressions are never replayed. Reconstruction streams
 from the accepted export descriptor. SQLite preflight aggregates every
 trajectory through the production positive-conversational evidence gate;
 empty/degraded evidence remains a caveat, and a prefix cannot hide a later
@@ -98,20 +140,22 @@ this guarantee covers the actual acquisition and import-preview operations.
    `compile_detector_registry` validates them and sorts them per
    `DetectionMode` by `(mode_rank or detector_tightness, local_rank,
    binding_id)`; `CompiledDetectorRegistry.detect` returns the first predicate
-   that claims the payload (`polylogue/sources/detection.py:82-104`;
+   that claims the payload (`polylogue/sources/detection.py:88-105`;
    `polylogue/sources/detection.py:196-227`).
 3. The selected provider parser emits normalized sessions, messages, blocks,
    tool uses, tool results, and lineage hints.
 4. `write_parsed_session_to_archive` computes public origin and identities,
    writes the parsed tree, and resolves asserted parent links
-   (`polylogue/storage/sqlite/archive_tiers/write.py:1108-1124`).
+   (`write_parsed_session_to_archive` in
+   `polylogue/storage/sqlite/archive_tiers/write.py:2119`).
 5. The daemon converger materializes FTS, embeddings, and insight read models.
 
 ## Detector tightness order
 
 Lower number runs first. Tightness must be unique among executable
 `OriginSpec`s, which is enforced at spec validation
-(`polylogue/sources/origin_specs.py:1448-1451`). Current executable order:
+(`OriginSpecRegistry.diagnostics` in
+`polylogue/sources/origin_specs.py:1452-1462`). Current executable order:
 
 | Tightness | Origin |
 | --- | --- |
@@ -166,22 +210,22 @@ provider (`docs/provider-origin-identity.md:15-30`;
   prose is not an outcome oracle.
 - Parser inference cannot overwrite a hook-authoritative lineage edge: when
   `_authoritative_parent_claim` returns a hook-asserted parent, the write
-  replaces the parser's `parent_session_provider_id` with it and promotes the
-  session to `SessionKind.SUBAGENT`
-  (`polylogue/storage/sqlite/archive_tiers/write.py:846-867`).
+  uses that parent for lineage resolution. A hook parent with no parser parent
+  promotes the session to `SessionKind.SUBAGENT`
+  (`_prepared_message_context` in
+  `polylogue/storage/sqlite/archive_tiers/write.py:1655-1698`).
 - Replaying identical normalized content is idempotent by content hash;
   user metadata does not alter import identity.
 - All ordinary ingest, replay, and reindex paths share the parsed-session
-  write choke point (`polylogue/storage/sqlite/archive_tiers/write.py:1108`).
-- Batch ingest keeps source membership and precedence checks read-only:
-  `_core.py` opens one read-only `source.db` handle per batch, and
-  `revision_authority_refuses_write` reads `raw_session_memberships` through
-  it, while index publication and later blob-publication receipt consumption
-  each open their own archive-root-bound write connection
-  (`polylogue/pipeline/services/ingest_batch/_core.py:2956-2971`;
-  `polylogue/storage/sqlite/archive_tiers/ingest_precedence.py:182-277`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:202-212`;
-  `polylogue/pipeline/services/ingest_batch/_core.py:3080-3095`).
+  write choke point (`write_parsed_session_to_archive` in
+  `polylogue/storage/sqlite/archive_tiers/write.py:2119`).
+- Full live ingestion acquires durable Raw inputs before the supplied resident
+  Raw owner prepares them. First ingestion and retained replay share
+  `RawObservationConvergenceOwner` and the original prepared Source and Index
+  witnesses. Preparation reads the retained membership, precedence, blob and
+  parser evidence before short admitted publication; the matching writer
+  consumes attachment reservations with the same prepared receipt. Physical
+  cleanup stays with that preparation creator through publication and failure.
 
 ## Gotchas
 

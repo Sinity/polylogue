@@ -265,3 +265,47 @@ def test_machine_zip_enumeration_preserves_the_accepted_decoder_identity(tmp_pat
     finally:
         publisher.discard_pending()
         unlink_spool(spool)
+
+
+@pytest.mark.parametrize("member_count", [1, 16, pytest.param(256, marks=pytest.mark.timeout(0))])
+def test_actual_retained_input_page_uses_one_settled_byte_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, member_count: int
+) -> None:
+    import subprocess
+    from typing import Any
+
+    source = tmp_path / "exports"
+    source.mkdir()
+    for ordinal in range(member_count):
+        (source / f"member-{ordinal:03}.jsonl").write_bytes(b"{}\n")
+    from polylogue.sources import sqlite_export
+
+    original = subprocess.Popen
+    exchange = sqlite_export._exchange_source_worker
+    children: list[subprocess.Popen[bytes]] = []
+    binding_children: list[subprocess.Popen[bytes]] = []
+    binding = False
+
+    def observe_exchange(request: dict[str, Any], handle: Any = None) -> dict[str, Any]:
+        nonlocal binding
+        previous = binding
+        binding = request["operation"] == "binding"
+        try:
+            return exchange(request, handle)
+        finally:
+            binding = previous
+
+    def launch(*args: Any, **kwargs: Any) -> subprocess.Popen[bytes]:
+        child = original(*args, **kwargs)
+        (binding_children if binding else children).append(child)
+        return child
+
+    monkeypatch.setattr(sqlite_export, "_exchange_source_worker", observe_exchange)
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    assert len(_retain(source, None, tmp_path)) == member_count
+    assert len(binding_children) == member_count
+    assert len(children) == 1 and children[0].poll() == 0
+    for child in [*binding_children, *children]:
+        assert child.poll() == 0
+        assert child.stdin is not None and child.stdin.closed
+        assert child.stdout is not None and child.stdout.closed

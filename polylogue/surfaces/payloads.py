@@ -1353,6 +1353,7 @@ def session_list_envelope_from_domain(
 
     session_id = str(session.id)
     values = _domain_values(session, _SESSION_LIST_MASK)
+    row = session_row(session)
     values.update(
         title=(
             bound_display_title(session.display_title, session_id)
@@ -1369,15 +1370,15 @@ def session_list_envelope_from_domain(
         actions=reader_session_actions(),
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
-        relative_time=session_row(session).relative_time,
+        relative_time=row.relative_time,
         # Domain Session deliberately carries no typed usage-cost evidence.
         total_cost_usd=None,
         cost_provenance=None,
         tags=tuple(session.tags),
         summary=session.summary,
         words=sum(message.word_count for message in session.messages),
-        repo=_session_repo(session),
-        cwd_display=_session_cwd(session),
+        repo=row.repo,
+        cwd_display=row.cwd_display,
         flags=_build_flags_from_session(session),
     )
     return SessionListEnvelope(**values)
@@ -1415,8 +1416,8 @@ def session_list_envelope_from_summary(
         tags=tuple(summary.tags),
         summary=summary.summary,
         words=word_count,
-        repo=repo or _session_repo(summary),
-        cwd_display=cwd_display or _session_cwd(summary),
+        repo=repo or row.repo,
+        cwd_display=cwd_display or row.cwd_display,
         flags=flags,
     )
     return SessionListEnvelope(**values)
@@ -1662,6 +1663,8 @@ class SessionListResponse(SurfacePayloadModel):
     All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.
     """
 
+    snapshot_epoch: str | None = Field(default=None, min_length=1)
+    """Opaque pinned selection frame; absent on genuinely unbound surfaces."""
     items: tuple[SessionListRowPayload, ...]
     total: int
     limit: int
@@ -1739,6 +1742,8 @@ class SearchEnvelope(SurfacePayloadModel):
       produced no hits but filters were applied.
     """
 
+    snapshot_epoch: str | None = Field(default=None, min_length=1)
+    """Opaque pinned selection frame; absent on genuinely unbound surfaces."""
     hits: tuple[SessionSearchHitPayload, ...]
     total: int | None
     limit: int
@@ -1761,6 +1766,7 @@ class SearchEnvelope(SurfacePayloadModel):
     exactness: Literal["exact", "capped", "sampled", "estimate"] | None = None
     requested_lanes: tuple[str, ...] = ()
     executed_lanes: tuple[str, ...] = ()
+    completed_lanes: tuple[str, ...] = ()
     unavailable_lanes: tuple[str, ...] = ()
     failed_lanes: tuple[dict[str, str], ...] = ()
     advisories: tuple[str, ...] = ()
@@ -1836,6 +1842,7 @@ class ActionQueryRowPayload(SurfacePayloadModel):
     is_error: int | None = None
     exit_code: int | None = None
     result_state: ActionResultState
+    outcome_unknown_reason: str | None = None
     followup_class: str | None = None
     followup_message_ref: str | None = None
 
@@ -3942,6 +3949,8 @@ def build_search_envelope(
         diagnostics=diagnostics,
         requested_lanes=tuple(execution.requested_lanes) if execution is not None else (),
         executed_lanes=tuple(execution.executed_lanes) if execution is not None else (),
+        completed_lanes=tuple(execution.completed_lanes) if execution is not None else (),
+        exactness=execution.exactness if execution is not None else None,
         unavailable_lanes=tuple(execution.unavailable_lanes) if execution is not None else (),
         failed_lanes=tuple(
             {"lane": failure.lane, "kind": failure.kind, "reason": failure.reason}
@@ -4385,6 +4394,7 @@ class ContextPreambleBlackboardNote(SurfacePayloadModel):
 
 
 class MutationResultPayload(SurfacePayloadModel):
+    domain_receipt: dict[str, object] | None = None
     """Shared result envelope for user-visible mutation surfaces.
 
     Carries idempotent status codes, context fields, and bulk-operation
@@ -4429,20 +4439,6 @@ class MutationResultPayload(SurfacePayloadModel):
 # ---------------------------------------------------------------------------
 # Payload builder helpers
 # ---------------------------------------------------------------------------
-
-
-def _session_repo(session: object) -> str | None:
-    repo = getattr(session, "git_repository_url", None)
-    return str(repo) if repo else None
-
-
-def _session_cwd(session: object) -> str | None:
-    directories = getattr(session, "working_directories", ()) or ()
-    for directory in directories:
-        text = str(directory).strip()
-        if text:
-            return text
-    return None
 
 
 def _build_flags_from_session(session: object) -> SessionFlagsPayload | None:

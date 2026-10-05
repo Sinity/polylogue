@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import base64
 import mimetypes
+import os
 import shutil
 import sys
 import tempfile
@@ -15,11 +15,10 @@ import click
 from pydantic import ValidationError
 
 from polylogue.browser_capture.actions import (
-    ACTION_ATTACHMENT_MAX_BYTES,
-    ACTION_TOTAL_ATTACHMENT_MAX_BYTES,
     BrowserActionConflictError,
     BrowserActionQuotaError,
     enqueue_action,
+    store_action_attachment,
 )
 from polylogue.browser_capture.models import (
     BrowserActionAttachmentInput,
@@ -335,23 +334,14 @@ def action_command(
         resolved_text = text if text is not None else (prompt_file or Path()).read_text(encoding="utf-8")
         resolved_operation = operation or ("conversation.create" if conversation_id == "new" else "conversation.reply")
         attachments: list[BrowserActionAttachmentInput] = []
-        total = 0
         for path in attachment_paths:
-            size = path.stat().st_size
-            if size > ACTION_ATTACHMENT_MAX_BYTES:
-                raise BrowserActionQuotaError(
-                    f"browser action attachment exceeds {ACTION_ATTACHMENT_MAX_BYTES} bytes: {path.name}"
-                )
-            total += size
-            if total > ACTION_TOTAL_ATTACHMENT_MAX_BYTES:
-                raise BrowserActionQuotaError(
-                    f"browser action attachments exceed {ACTION_TOTAL_ATTACHMENT_MAX_BYTES} total bytes"
-                )
+            with path.open("rb") as source:
+                reference = store_action_attachment(source.read, os.fstat(source.fileno()).st_size)
             attachments.append(
                 BrowserActionAttachmentInput(
                     name=path.name,
                     mime_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
-                    content_base64=base64.b64encode(path.read_bytes()).decode("ascii"),
+                    attachment_ref=reference,
                 )
             )
         request = BrowserActionRequest(

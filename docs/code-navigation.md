@@ -191,7 +191,7 @@ registry or declaration, not the rendered output.
 
 ## Verification by change type
 
-| Change | Minimum focused verification |
+| Change | Useful verification choices |
 | --- | --- |
 | Documentation navigation | `devtools render docs-surface --check` |
 | Package/import boundary | `devtools gate layering` |
@@ -199,7 +199,10 @@ registry or declaration, not the rendered output.
 | CLI/API/MCP contract | owning focused tests plus generated reference checks |
 | Archive invariant or maintenance route | red-twin test, real command dispatch, and receipt validation |
 | Parser or identity semantics | provider fixture, eager/streaming/replay equivalence, and content-hash/fingerprint tests |
-| Any merge candidate | `devtools verify --quick` plus the PR's affected-area tests |
+| Any merge candidate | required hooks/hosted checks; select local checks by the changed behavior and consequence |
+
+These are choices, not a mandatory suite for every patch. Use small checks
+for ordinary fixes and batch broader regression at integration milestones.
 
 For the complete verification model, see [Testing](../TESTING.md) and
 [Developer Tools](devtools.md).

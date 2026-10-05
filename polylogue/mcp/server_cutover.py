@@ -16,6 +16,15 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
+from polylogue.archive.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    MCPReadView,
+    SessionListProjection,
+    is_mcp_get_session_projection,
+    is_mcp_read_view,
+    mcp_get_session_projection_names,
+    mcp_read_view_names,
+)
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -27,15 +36,6 @@ from polylogue.mcp.payloads import (
 )
 from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.operations.session_contracts import SessionOperation
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTIONS,
-    MCPReadView,
-    SessionListProjection,
-    is_mcp_get_session_projection,
-    is_mcp_read_view,
-    mcp_get_session_projection_names,
-    mcp_read_view_names,
-)
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
@@ -929,7 +929,9 @@ async def _query_registry_insight(
     hooks: ServerCallbacks,
     descriptor: Any,
     *,
+    expression: str | None,
     limit: int | None,
+    offset: int | None,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -955,17 +957,29 @@ async def _query_registry_insight(
         )
     fields = set(query_model.model_fields)
     kwargs: dict[str, object] = {}
+    if expression is not None and "query" in fields:
+        kwargs["query"] = expression
     if "limit" in fields:
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
-        kwargs["offset"] = 0
+        kwargs["offset"] = offset if offset is not None else 0
     for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
         if value is not None and key in fields:
             kwargs[key] = value
 
     with hooks.response_context(
         "query",
-        {"projection": descriptor.resolved_cli_command_name, "origin": origin, "tag": tag, "repo": repo},
+        {
+            "projection": descriptor.resolved_cli_command_name,
+            "expression": expression,
+            "limit": kwargs.get("limit"),
+            "offset": kwargs.get("offset"),
+            "origin": origin,
+            "tag": tag,
+            "repo": repo,
+            "since": since,
+            "until": until,
+        },
     ):
         try:
             items = await fetch_insights_async(descriptor, hooks.get_polylogue(), **kwargs)
@@ -980,7 +994,9 @@ async def _query_insight_projection(
     hooks: ServerCallbacks,
     projection: str,
     *,
+    expression: str | None,
     limit: int | None,
+    offset: int | None,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -1007,7 +1023,9 @@ async def _query_insight_projection(
         return await _query_registry_insight(
             hooks,
             descriptor,
+            expression=expression,
             limit=limit,
+            offset=offset,
             origin=origin,
             tag=tag,
             repo=repo,
@@ -1274,6 +1292,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``"stuck_sessions"`` (latency-profile-flagged stuck sessions), scoped
         by the same origin/tag/repo/since/until filters.
 
+        Registry insight projections pass ``expression`` to their declared
+        text-search field before paging; for example, ``projection="threads"``
+        with ``expression="strong"`` selects strongly supported threads.
+        Existing reference expressions resolve before registry text search.
+
         Personal-state continuations are decimal offsets, matching the
         ``next_offset`` returned in each page.
         """
@@ -1389,7 +1412,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return await _query_insight_projection(
                     hooks,
                     projection,
+                    expression=expression,
                     limit=limit,
+                    offset=offset,
                     origin=origin,
                     tag=tag,
                     repo=repo,
@@ -1696,7 +1721,15 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 evidence = await hooks.get_polylogue().get_session_orchestration(session_id)
                 if evidence is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
+                from polylogue.surfaces.outcome import OutcomeEnvelope
+
+                payload = evidence.model_dump(mode="json")
+                payload["outcome"] = OutcomeEnvelope(
+                    state=evidence.outcome,
+                    reason=evidence.gaps[0] if evidence.outcome == "degraded" and evidence.gaps else None,
+                    detail={"gaps": evidence.gaps} if evidence.outcome == "degraded" else {},
+                ).to_dict()
+                return hooks.json_payload(MCPRootPayload(root=payload))
             list_projection = SESSION_LIST_PROJECTIONS.get(projection) if projection is not None else None
             if list_projection is not None and session_id is not None:
                 return await _session_list_projection_payload(list_projection, session_id, tool="get")
@@ -2889,7 +2922,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         return await _daemon_operation(
             hooks,
             "maintenance.insights.rebuild",
-            {"session_ids": list(session_ids) if session_ids else None},
+            {"session_ids": list(session_ids) if session_ids is not None else None},
         )
 
     return hooks.error_json(f"unknown maintenance operation: {operation!r}", code="invalid_argument")
@@ -3175,17 +3208,19 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
         async def maintenance(
             operation: Literal["rebuild_insights"],
             confirm: bool = False,
+            session_ids: list[str] | None = None,
         ) -> str:
             """Rebuild session insights.
 
             ``rebuild_insights`` requires ``confirm=True`` and fails closed without it.
+            ``session_ids=None`` selects all sessions; an explicit list preserves that scope.
             """
 
             async def run() -> str:
                 return await _dispatch_maintenance(
                     hooks,
                     operation=operation,
-                    kwargs={"confirm": confirm},
+                    kwargs={"confirm": confirm, "session_ids": session_ids},
                 )
 
             return await hooks.async_safe_call("maintenance", run)

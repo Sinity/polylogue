@@ -3,37 +3,19 @@
   const nativeFetchRequestMessage = "polylogue.chatgpt.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.chatgpt.nativeFetchResponse";
   const currentOrigin = window.location.origin;
-  const nativeFetchTimeoutMs = 8000;
 
-  window.__polylogueCapturedFetches = Array.isArray(window.__polylogueCapturedFetches)
-    ? window.__polylogueCapturedFetches
-    : [];
-
-  function post(capture) {
-    window.postMessage({ type: nativeCaptureMessage, capture }, currentOrigin);
+  function remember(capture, ownerId) {
+    window.polylogueAssetStream.pageMessage({ type: nativeCaptureMessage, capture }, ownerId);
   }
 
-  function remember(capture) {
-    window.__polylogueCapturedFetches.push(capture);
-    if (window.__polylogueCapturedFetches.length > 8) {
-      window.__polylogueCapturedFetches.splice(0, window.__polylogueCapturedFetches.length - 8);
-    }
-    post(capture);
-  }
-
-  const existingCaptures = window.__polylogueCapturedFetches.slice(-8);
-  window.__polylogueCapturedFetches = existingCaptures;
-  for (const capture of existingCaptures) post(capture);
-
-  if (window.__polylogueFetchHookInstalled) return;
-  window.__polylogueFetchHookInstalled = true;
+  if (window.__polylogueFetchHookInstalled === 2) return;
+  window.__polylogueFetchHookInstalled = 2;
 
   const originalFetch = window.fetch;
   const accessTokenCacheTtlMs = 15000;
   let cachedAccessToken = null;
   let cachedAccountId = null;
   let cachedAccessTokenUntil = 0;
-  let accessTokenPromise = null;
 
   function accessTokenFromPayload(payload) {
     const candidates = [
@@ -65,13 +47,20 @@
     }
   }
 
-  async function fetchSessionAccessToken() {
+  async function fetchSessionAccessToken(signal) {
     const sessionUrl = new URL("/api/auth/session", currentOrigin);
     const response = await fetchWithAbort(
       sessionUrl.href,
       { credentials: "include", cache: "no-store" },
-      "access_token_fetch"
+      signal
     );
+    if (response.status === 429) {
+      const error = new Error("provider_rate_limited");
+      error.outcome = "rate_limited"; error.providerResponse = { status: 429, url: response.url || sessionUrl.href };
+      error.retryAfter = response.headers.get("retry-after");
+      await response.body?.cancel().catch(() => undefined);
+      throw error;
+    }
     if (!response.ok) return null;
     try {
       const payload = await response.json();
@@ -82,24 +71,23 @@
     }
   }
 
-  async function fetchCurrentAccessToken() {
-    const sessionToken = await fetchSessionAccessToken().catch(() => null);
+  async function fetchCurrentAccessToken(signal) {
+    const sessionToken = await fetchSessionAccessToken(signal).catch((error) => {
+      signal.throwIfAborted();
+      if (error.outcome === "rate_limited") throw error;
+      return null;
+    });
     return sessionToken || bootstrapAccessToken();
   }
 
-  function resolveAccessToken() {
+  function resolveAccessToken(signal) {
     if (Date.now() < cachedAccessTokenUntil) return Promise.resolve(cachedAccessToken);
-    if (accessTokenPromise) return accessTokenPromise;
-    accessTokenPromise = fetchCurrentAccessToken()
+    return fetchCurrentAccessToken(signal)
       .then((token) => {
         cachedAccessToken = token;
         cachedAccessTokenUntil = Date.now() + accessTokenCacheTtlMs;
         return token;
-      })
-      .finally(() => {
-        accessTokenPromise = null;
       });
-    return accessTokenPromise;
   }
 
   function bearerHeaders(accessToken) {
@@ -112,58 +100,84 @@
     return new URL(`/backend-api/conversation/${encodeURIComponent(String(conversationId))}`, currentOrigin);
   }
 
-  function timeoutError(label) {
-    const error = new Error(`${label}_timeout_after_${nativeFetchTimeoutMs}ms`);
-    error.name = "PolylogueTimeoutError";
-    return error;
-  }
-
-  async function fetchConversation(conversationId) {
+  async function fetchConversation(conversationId, signal, invocationRef = null, progress = () => {}, ownerId) {
     const url = conversationUrl(conversationId);
-    const accessToken = await resolveAccessToken();
-    const controller = new globalThis.AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(timeoutError("page_bridge_fetch")), nativeFetchTimeoutMs);
-    let response;
+    progress("staging", "BEGIN");
+    const prepared = await window.polylogueAssetStream.prepareResponse("chatgpt", signal, url.href, null, "native-response", false, null, null, false, invocationRef, ownerId);
+    progress("staging", "END");
+    let response; let bodyRef;
     try {
+      progress("provider_auth", "BEGIN");
+      const accessToken = await resolveAccessToken(signal);
+      progress("provider_auth", "END");
+      progress("provider_response", "BEGIN");
       response = await originalFetch.call(window, url.href, {
-        credentials: "include",
-        cache: "no-store",
-        headers: accessToken ? bearerHeaders(accessToken) : {},
-        signal: controller.signal
+        credentials: "include", cache: "no-store",
+        headers: accessToken ? bearerHeaders(accessToken) : {}, signal,
       });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
+      progress("provider_response", "END");
+      progress("body", "BEGIN");
+      bodyRef = await prepared.consume(response);
+      progress("body", "END");
+    } catch (error) { await prepared.fail(error); throw error; }
     const contentType = response.headers.get("content-type") || "";
-    const body = contentType.includes("application/json") ? await response.clone().text() : "";
     return {
       url: url.href,
       status: response.status,
       ok: response.ok,
       contentType,
       retryAfter: response.headers.get("retry-after") || null,
-      body,
+      bodyRef,
       capturedAt: new Date().toISOString()
     };
   }
 
+  const requestControllers = new Map();
+  window.addEventListener("message", (event) => {
+    if (event.source !== window || event.origin !== currentOrigin) return;
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
+    if (data.type === "polylogue.chatgpt.cancelRequest") {
+      const controller = requestControllers.get(`${data.ownerId}:${data.requestId}`);
+      if (controller) controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+      else {
+        window.polylogueAssetStream.pageMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, error: "capture_cancelled" }, data.ownerId);
+        window.polylogueAssetStream.pageMessage({ type: "polylogue.chatgpt.assetFetchResponse", requestId: data.requestId,
+          outcome: { status: "cancelled", phase: "bridge", detail: "capture_cancelled" } }, data.ownerId);
+      }
+    }
+  });
+  window.addEventListener("pagehide", () => {
+    for (const controller of requestControllers.values()) controller.abort();
+  });
+
   window.addEventListener("message", async (event) => {
     if (event.source !== window || event.origin !== currentOrigin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== nativeFetchRequestMessage || !data.requestId || !data.conversationId) return;
+    const controller = new AbortController();
+    requestControllers.set(`${data.ownerId}:${data.requestId}`, controller);
+    const progress = (stage, state) => {
+      if (!controller.signal.aborted) window.polylogueAssetStream.pageMessage({ type: nativeFetchResponseMessage, requestId: data.requestId,
+        progress: { stage, state } }, data.ownerId);
+    };
     try {
-      const capture = await fetchConversation(data.conversationId);
-      if (capture.ok && capture.body) remember({ ...capture, source: "polylogue_native_fetch" });
-      window.postMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, currentOrigin);
+      const capture = await fetchConversation(data.conversationId, controller.signal, data.invocationRef || null, progress, data.ownerId);
+      if (capture.ok && capture.bodyRef) remember({ ...capture, source: "polylogue_native_fetch" }, data.ownerId);
+      window.polylogueAssetStream.pageMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, data.ownerId);
     } catch (error) {
-      window.postMessage(
+      window.polylogueAssetStream.pageMessage(
         {
           type: nativeFetchResponseMessage,
           requestId: data.requestId,
-          error: String(error && error.message ? error.message : error)
+          ...(error.outcome === "rate_limited" ? { capture: { ok: false, status: 429, url: error.providerResponse.url, retryAfter: error.retryAfter } } : {}),
+          error: controller.signal.aborted ? "capture_cancelled" : String(error && error.message ? error.message : error)
         },
-        currentOrigin
+        data.ownerId
       );
+    } finally {
+      requestControllers.delete(`${data.ownerId}:${data.requestId}`);
     }
   });
 
@@ -173,34 +187,6 @@
   // signed download_url; the bytes are then fetched from that URL directly.
   const assetFetchRequestMessage = "polylogue.chatgpt.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.chatgpt.assetFetchResponse";
-  const assetFetchTimeoutMs = 8000;
-  const assetAbsoluteMaxBytes = 25 * 1024 * 1024;
-
-  function assetTimeoutError(label) {
-    const error = new Error(`${label}_timeout_after_${assetFetchTimeoutMs}ms`);
-    error.name = "PolylogueTimeoutError";
-    return error;
-  }
-
-  function arrayBufferToBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += chunkSize) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunkSize));
-    }
-    return window.btoa(binary);
-  }
-
-  function bytesToHex(buffer) {
-    return [...new Uint8Array(buffer)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  }
-
-  async function sha256Hex(buffer) {
-    if (!globalThis.crypto?.subtle) throw new Error("asset_sha256_unavailable");
-    return bytesToHex(await globalThis.crypto.subtle.digest("SHA-256", buffer));
-  }
-
   function assetOutcome(status, { phase, httpStatus = null, detail = null, sizeBytes = null, asset = null } = {}) {
     const outcome = { status, phase };
     if (httpStatus !== null) outcome.http_status = httpStatus;
@@ -229,7 +215,7 @@
   async function readMetadataEnvelope(response) {
     let rawText = "";
     try {
-      rawText = (await response.clone().text()).slice(0, 16384);
+      rawText = await response.clone().text();
     } catch {
       return { meta: null, rawText: "" };
     }
@@ -242,6 +228,7 @@
 
   function metadataFailureOutcome(request, response, meta, rawText) {
     const signal = metadataErrorSignal(meta, rawText);
+    if (response.status === 429) return { status: "rate_limited", phase: "metadata", http_status: 429, retry_after: response.headers.get("retry-after") || null, response_url: response.url || null };
     if (signal.includes("ace_pod_expired") || signal.includes("ace pod expired")) {
       return assetOutcome("pod_expired", {
         phase: "metadata",
@@ -273,80 +260,19 @@
     return null;
   }
 
-  function boundedMaxBytes(request) {
-    const requested = Number(request.maxBytes);
-    if (!Number.isFinite(requested) || requested <= 0) return assetAbsoluteMaxBytes;
-    return Math.min(requested, assetAbsoluteMaxBytes);
+  async function fetchWithAbort(url, options, signal) {
+    signal.throwIfAborted();
+    return originalFetch.call(window, url, { ...options, signal });
   }
 
-  function declaredContentLength(response) {
-    const raw = response.headers.get("content-length");
-    if (!raw || !/^\d+$/.test(raw)) return null;
-    const parsed = Number(raw);
-    return Number.isSafeInteger(parsed) ? parsed : null;
-  }
-
-  async function fetchWithAbort(url, options, label) {
-    const controller = new globalThis.AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(assetTimeoutError(label)), assetFetchTimeoutMs);
-    try {
-      return await originalFetch.call(window, url, { ...options, signal: controller.signal });
-    } finally {
-      window.clearTimeout(timeoutId);
-    }
-  }
-
-  // Chunked/streamed responses (common for CDN-served DOM assets, unlike the
-  // sandbox/file endpoints ChatGPT itself controls) may omit Content-Length
-  // entirely, so declaredContentLength alone cannot bound them. Read the body
-  // as a stream and cancel it the moment the budget is exceeded, rather than
-  // buffering an unbounded response and checking its size only afterward.
-  async function readBoundedBody(response, maxBytes) {
-    if (!response.body || typeof response.body.getReader !== "function") {
-      // No Streams API on the body (older polyfill/test double) -- fall back
-      // to buffering, still enforcing the same limit before returning bytes.
-      const buffer = await response.arrayBuffer();
-      if (buffer.byteLength > maxBytes) {
-        return { tooLarge: true, sizeBytes: buffer.byteLength };
-      }
-      return { tooLarge: false, buffer };
-    }
-    const reader = response.body.getReader();
-    const chunks = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return { tooLarge: true, sizeBytes: total };
-      }
-      chunks.push(value);
-    }
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      merged.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return { tooLarge: false, buffer: merged.buffer };
-  }
-
-  // Shared tail for every asset kind once a concrete https URL is known:
-  // fetch it (dropping credentials cross-origin — provider-issued signed
-  // URLs and DOM-rendered CDN links must never receive page cookies/bearer),
-  // enforce the byte budget, and hash+base64 the result. `sandbox`/`file`
-  // resolve `signedUrl` via a metadata round trip first; `url` (a byte-bearing
-  // link already visible in the DOM, e.g. an `img.src`/`a.href`) skips
-  // straight to this tail with no metadata step at all.
-  async function fetchBytesFromResolvedUrl(signedUrl, request, fallbackName) {
+  async function fetchBytesFromResolvedUrl(signedUrl, request, fallbackName, signal) {
     const byteCredentials = signedUrl.origin === currentOrigin ? "include" : "omit";
     const fileResponse = await fetchWithAbort(
       signedUrl.href,
       { credentials: byteCredentials, cache: "no-store" },
-      "asset_bytes_fetch"
+      signal
     );
+    if (fileResponse.status === 429) return { status: "rate_limited", phase: "signed_bytes", http_status: 429, retry_after: fileResponse.headers.get("retry-after") || null, response_url: fileResponse.url || signedUrl.href };
     if ([401, 403, 404, 410].includes(fileResponse.status)) {
       return assetOutcome("signed_url_expired", {
         phase: "signed_bytes",
@@ -361,46 +287,14 @@
         detail: `signed_url_http_${fileResponse.status}`
       });
     }
-    const maxBytes = boundedMaxBytes(request);
-    const contentLength = declaredContentLength(fileResponse);
-    if (contentLength !== null && contentLength > maxBytes) {
-      return assetOutcome("too_large", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: "content_length_over_limit",
-        sizeBytes: contentLength
-      });
-    }
-    const bodyResult = await readBoundedBody(fileResponse, maxBytes);
-    if (bodyResult.tooLarge) {
-      return assetOutcome("too_large", {
-        phase: "signed_bytes",
-        httpStatus: fileResponse.status,
-        detail: "downloaded_bytes_over_limit",
-        sizeBytes: bodyResult.sizeBytes
-      });
-    }
-    const buffer = bodyResult.buffer;
-    let contentSha256;
-    try {
-      contentSha256 = await sha256Hex(buffer);
-    } catch {
-      return assetOutcome("integrity_error", { phase: "sha256", detail: "sha256_unavailable" });
-    }
+    const asset = await window.polylogueAssetStream.stream(fileResponse, request.requestId, signal, { ownerId: request.ownerId });
     return assetOutcome("acquired", {
-      phase: "complete",
-      httpStatus: fileResponse.status,
-      asset: {
-        base64: arrayBufferToBase64(buffer),
-        size_bytes: buffer.byteLength,
-        sha256: contentSha256,
-        mime_type: fileResponse.headers.get("content-type") || null,
-        name: fallbackName
-      }
+      phase: "complete", httpStatus: fileResponse.status,
+      asset: { ...asset, mime_type: fileResponse.headers.get("content-type") || null, name: fallbackName },
     });
   }
 
-  async function fetchAssetBytes(request) {
+  async function fetchAssetBytes(request, signal) {
     if (request.kind === "url") {
       // No metadata round trip: the caller already has a concrete
       // byte-bearing URL in hand (e.g. an `img.src`/`a.href` rendered on the
@@ -418,7 +312,7 @@
       if (directUrl.protocol !== "https:") {
         return assetOutcome("invalid_request", { phase: "request", detail: "url_not_https" });
       }
-      return fetchBytesFromResolvedUrl(directUrl, request, request.name || null);
+      return fetchBytesFromResolvedUrl(directUrl, request, request.name || null, signal);
     }
 
     let metaUrl;
@@ -434,14 +328,14 @@
     } else {
       return assetOutcome("invalid_request", { phase: "request", detail: "unsupported_asset_kind" });
     }
-    const accessToken = await resolveAccessToken();
+    const accessToken = await resolveAccessToken(signal);
     if (!accessToken) {
       return assetOutcome("unauthorized", { phase: "access_token", detail: "access_token_unavailable" });
     }
     const metaResponse = await fetchWithAbort(
       metaUrl.href,
       { credentials: "include", cache: "no-store", headers: bearerHeaders(accessToken) },
-      "asset_meta_fetch"
+      signal
     );
     const { meta, rawText } = await readMetadataEnvelope(metaResponse);
     const failure = metadataFailureOutcome(request, metaResponse, meta, rawText);
@@ -463,36 +357,39 @@
     // same-origin estuary endpoint rather than at a self-authenticating object
     // store URL. fetchBytesFromResolvedUrl keeps page cookies only for that
     // exact origin, never forwarding them (or the bearer) cross-origin.
-    return fetchBytesFromResolvedUrl(signedUrl, request, (meta && (meta.file_name || meta.fileName)) || null);
+    return fetchBytesFromResolvedUrl(signedUrl, request, (meta && (meta.file_name || meta.fileName)) || null, signal);
   }
 
   function assetExceptionOutcome(error) {
-    const timedOut =
-      error?.name === "AbortError" ||
-      error?.name === "PolylogueTimeoutError" ||
-      String(error?.message || "").includes("timeout_after_");
+    if (error.outcome === "rate_limited") return { status: "rate_limited", phase: "access_token", http_status: 429,
+      retry_after: error.retryAfter, response_url: error.providerResponse.url };
     return assetOutcome("request_failed", {
       phase: "bridge",
-      detail: timedOut ? "request_timeout" : "request_failed"
+      detail: "request_failed"
     });
   }
 
   window.addEventListener("message", async (event) => {
     if (event.source !== window || event.origin !== currentOrigin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type !== assetFetchRequestMessage || !data.requestId || !data.request) return;
+    const controller = new AbortController();
+    requestControllers.set(`${data.ownerId}:${data.requestId}`, controller);
     try {
-      const outcome = await fetchAssetBytes(data.request);
-      window.postMessage({ type: assetFetchResponseMessage, requestId: data.requestId, outcome }, currentOrigin);
+      const outcome = await fetchAssetBytes({ ...data.request, requestId: data.requestId, ownerId: data.ownerId }, controller.signal);
+      window.polylogueAssetStream.pageMessage({ type: assetFetchResponseMessage, requestId: data.requestId, outcome }, data.ownerId);
     } catch (error) {
-      window.postMessage(
+      window.polylogueAssetStream.pageMessage(
         {
           type: assetFetchResponseMessage,
           requestId: data.requestId,
-          outcome: assetExceptionOutcome(error)
+          outcome: controller.signal.aborted ? assetOutcome("cancelled", { phase: "bridge", detail: "capture_cancelled" }) : assetExceptionOutcome(error)
         },
-        currentOrigin
+        data.ownerId
       );
+    } finally {
+      requestControllers.delete(`${data.ownerId}:${data.requestId}`);
     }
   });
 
@@ -505,16 +402,15 @@
         absolute.origin === currentOrigin &&
         /^\/backend-api\/conversation\/[^/?#]+\/?$/.test(absolute.pathname);
       const contentType = response.headers.get("content-type") || "";
-      if (isConversation && contentType.includes("application/json")) {
-        const body = await response.clone().text();
-        remember({
-          url: absolute.href,
-          status: response.status,
-          ok: response.ok,
-          contentType,
-          body,
-          capturedAt: new Date().toISOString()
-        });
+      if (isConversation && response.ok && contentType.includes("application/json")) {
+        for (const ownerId of window.polylogueAssetStream.eligibleOwners()) {
+          const controller = new AbortController();
+          const cancel = () => controller.abort("provider_page_closed");
+          window.addEventListener("pagehide", cancel, { once: true });
+          void window.polylogueAssetStream.stageResponse(response.clone(), "chatgpt", controller.signal, absolute.href, null, "native-response", ownerId)
+            .then((bodyRef) => remember({ url: absolute.href, status: response.status, ok: true, contentType, bodyRef, capturedAt: new Date().toISOString() }, ownerId))
+            .catch(() => undefined).finally(() => window.removeEventListener("pagehide", cancel));
+        }
       }
     } catch {
       // Capture must never perturb the ChatGPT page's own request path.

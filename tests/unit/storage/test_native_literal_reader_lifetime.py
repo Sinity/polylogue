@@ -1,6 +1,7 @@
 """Actual incremental readers retire before their original SQL artifacts."""
 
 import asyncio
+import json
 import sqlite3
 from builtins import BaseExceptionGroup
 from contextlib import closing
@@ -14,7 +15,52 @@ from polylogue.storage.sqlite.connection_profile import (
     retained_native_sql_owners_on_current_thread,
     scratch_connection_context,
 )
+from polylogue.storage.sqlite.literal_cells import canonical_json_text_chunks
 from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
+
+
+@pytest.mark.parametrize("text", ["", 'quotes" slash\\ controls\x00\n\t', "é🌍𐀀", "日本語\u2028\u2029"])
+def test_canonical_native_text_token_matches_full_serializer_at_every_byte_split(text: str) -> None:
+    payload = text.encode("utf-8")
+    expected = json.dumps(text, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    for split in range(len(payload) + 1):
+
+        def chunks(split: int = split):
+            yield payload[:split]
+            yield payload[split:]
+
+        assert b"".join(canonical_json_text_chunks(chunks())) == expected
+
+
+@pytest.mark.parametrize("payload", [b"\xff", b"\xed\xa0\x80", b"\xf0\x9f\x8c"])
+def test_canonical_native_text_token_preserves_strict_utf8_refusal(payload: bytes) -> None:
+    closed = []
+
+    def chunks():
+        try:
+            for byte in payload:
+                yield bytes([byte])
+        finally:
+            closed.append(True)
+
+    with pytest.raises(UnicodeDecodeError):
+        b"".join(canonical_json_text_chunks(chunks()))
+    assert closed == [True]
+
+
+def test_canonical_native_text_token_cancellation_closes_original_stream() -> None:
+    closed = []
+
+    def chunks():
+        try:
+            yield b"original"
+            raise asyncio.CancelledError
+        finally:
+            closed.append(True)
+
+    with pytest.raises(asyncio.CancelledError):
+        b"".join(canonical_json_text_chunks(chunks()))
+    assert closed == [True]
 
 
 def _original_owner(connection: sqlite3.Connection) -> NativeSQLCustodyOwner:

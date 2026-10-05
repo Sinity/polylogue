@@ -635,14 +635,21 @@ def test_a_shard_built_against_other_columns_is_refused(tmp_path: Path) -> None:
     assert shard_column_signature() != "a-build-with-other-columns"
 
 
-def test_a_shard_with_two_entries_for_one_session_is_refused(tmp_path: Path) -> None:
-    """Bindings are keyed by session id, so a duplicate would address the wrong rows."""
+def test_a_shard_preserves_duplicate_ordinals_but_refuses_ambiguous_writer_binding(tmp_path: Path) -> None:
+    """The parser carrier retains outputs; an identity cannot select either duplicate range."""
     session = _synthetic_sessions()[0]
-    shard = build_session_shard(tmp_path / "shards", [prepare_session_rows(session), prepare_session_rows(session)])
-    with sqlite3.connect(shard.path) as conn:
-        conn.execute("UPDATE shard_seal SET session_count = 2")
+    built = build_session_shard(tmp_path / "shards", [prepare_session_rows(session), prepare_session_rows(session)])
+    shard = open_session_shard(built.path)
+    assert len(shard.sessions) == 2
+    first, second = shard.sessions
+    assert first.session_id == second.session_id
+    assert first.message_lo != second.message_lo
     with pytest.raises(ShardRefusedError, match="twice"):
-        open_session_shard(shard.path)
+        shard.by_session_id()[first.session_id]
+    from polylogue.storage.sqlite.archive_tiers.write import prepared_session_rows_from_shard
+
+    with pytest.raises(ShardRefusedError, match="twice"):
+        prepared_session_rows_from_shard(shard.path, first.session_id)
 
 
 def test_a_shard_cannot_be_attached_inside_a_transaction(tmp_path: Path) -> None:

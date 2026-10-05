@@ -41,8 +41,6 @@ from polylogue.core.compute_cancel import compute_cancel_requested
 from polylogue.core.enums import IngestOutcome, Origin, Provider
 from polylogue.core.metrics import (
     read_current_rss_mb,
-    read_peak_rss_children_mb,
-    read_peak_rss_self_mb,
 )
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
@@ -116,6 +114,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
+    ConnectionSessionSourceRead,
     LineageSignatureCache,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
@@ -154,8 +153,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 
 from polylogue.pipeline.services.ingest_batch._memory import (
-    INGEST_RELEASE_BLOB_MB_THRESHOLD,
-    INGEST_RELEASE_MESSAGE_THRESHOLD,
     discard_ingest_result_payload,
     discard_session_data_payload,
 )
@@ -169,12 +166,6 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _RawIngestOutcome,
     _SessionEntry,
     _SourceSnapshot,
-)
-from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
-from polylogue.pipeline.services.ingest_batch._summary import (
-    apply_ingest_batch_summary,
-    progressed_raw_count,
-    successful_raw_ids,
 )
 
 logger = get_logger(__name__)
@@ -853,28 +844,48 @@ def _incoming_write_carries_distinct_messages(
     # This is a temporary comparison within the existing preparation owner;
     # only its boolean result crosses admission, alongside the predecessor.
     with scratch_connection_context(prefix="ingest-comparison-", filename="counts.db") as counts:
-        counts.execute(
-            "CREATE TABLE counts(kind TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(kind,key)) WITHOUT ROWID"
-        )
-        for message_id, signature, owner in _iter_composed_rows(conn, payload.session_id):
-            check_compute_cancelled()
-            if owner == payload.session_id:
-                row = conn.execute("SELECT content_identity FROM messages WHERE message_id=?", (message_id,)).fetchone()
-                if row is None or row[0] is None:
-                    continue
-                kind, key = "own", str(row[0])
-            else:
-                kind, key = "inherited", signature
-            counts.execute("INSERT INTO counts VALUES(?,?,1) ON CONFLICT(kind,key) DO UPDATE SET n=n+1", (kind, key))
+        with closing(counts.execute("PRAGMA temp_store=FILE")):
+            pass
+        with closing(
+            counts.execute(
+                "CREATE TEMP TABLE counts(kind TEXT NOT NULL, key TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(kind,key)) WITHOUT ROWID"
+            )
+        ):
+            pass
+        with closing(_iter_composed_rows(conn, payload.session_id)) as composed:
+            for message_id, signature, owner in composed:
+                check_compute_cancelled()
+                if owner == payload.session_id:
+                    with closing(
+                        conn.execute("SELECT content_identity FROM messages WHERE message_id=?", (message_id,))
+                    ) as cursor:
+                        row = cursor.fetchone()
+                    if row is None or row[0] is None:
+                        continue
+                    kind, key = "own", str(row[0])
+                else:
+                    kind, key = "inherited", signature
+                with closing(
+                    counts.execute(
+                        "INSERT INTO counts VALUES(?,?,1) ON CONFLICT(kind,key) DO UPDATE SET n=n+1", (kind, key)
+                    )
+                ):
+                    pass
         for message in session_to_write.messages:
             check_compute_cancelled()
             identity = message_content_identity(message)
-            if counts.execute("UPDATE counts SET n=n-1 WHERE kind='own' AND key=? AND n>0", (identity,)).rowcount:
+            with closing(
+                counts.execute("UPDATE counts SET n=n-1 WHERE kind='own' AND key=? AND n>0", (identity,))
+            ) as cursor:
+                matched = cursor.rowcount
+            if matched:
                 continue
             signature = _parsed_message_signature(message)
-            if counts.execute(
-                "UPDATE counts SET n=n-1 WHERE kind='inherited' AND key=? AND n>0", (signature,)
-            ).rowcount:
+            with closing(
+                counts.execute("UPDATE counts SET n=n-1 WHERE kind='inherited' AND key=? AND n>0", (signature,))
+            ) as cursor:
+                matched = cursor.rowcount
+            if matched:
                 continue
             return True
         return False
@@ -1482,21 +1493,26 @@ def _write_session(
     preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None
     sidecar_blob_locators: Mapping[str, Mapping[str, str]] = {}
     if payload.prepared_artifact is not None:
+        from polylogue.sources.prepared_jsonl import PreparedSidecarLocators
+        from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
+
+        if source_conn is None:
+            raise PreparedSessionWriteRefusedError("artifact publication requires its actual Source writer")
+        publication_read = ConnectionBlobPublicationRead(source_conn)
         preacquired_attachment_blobs = payload.prepared_artifact.attachment_blobs(
-            source_connection=source_conn, session_id=payload.session_id
+            source_read=publication_read, session_id=payload.session_id
         )
+        if payload.prepared_session_ordinal is None:
+            raise PreparedSessionWriteRefusedError("sidecar publication lacks its captured artifact coordinate")
+        locators = PreparedSidecarLocators(
+            payload.prepared_artifact, payload.prepared_session_ordinal, publication_read
+        )
+        sidecar_blob_locators = locators
+        counts.update(locators.publication_counts())
     elif any(
         item.inline_bytes is not None or item.precomputed_blob is not None for item in session_to_write.attachments
     ):
         raise PreparedSessionWriteRefusedError("attachment publication requires its sealed canonical artifact")
-    if payload.prepared_artifact is not None and source_conn is not None:
-        from polylogue.sources.prepared_jsonl import PreparedSidecarLocators
-
-        if payload.prepared_session_ordinal is None:
-            raise PreparedSessionWriteRefusedError("sidecar publication lacks its captured artifact coordinate")
-        locators = PreparedSidecarLocators(payload.prepared_artifact, payload.prepared_session_ordinal, source_conn)
-        sidecar_blob_locators = locators
-        counts.update(locators.publication_counts())
 
     prepared_write = payload.prepared_write
     if prepared_write is None:
@@ -1524,8 +1540,8 @@ def _write_session(
         prepared_write=prepared_write,
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
-        source_conn=source_conn,
-        child_source_path=raw_source_path(source_conn, payload.raw_id),
+        source_read=ConnectionSessionSourceRead(source_conn),
+        child_source_path=raw_source_path(ConnectionSessionSourceRead(source_conn), payload.raw_id),
         merge_append=merge_append,
         force_replace=(
             force_write or browser_precedence == "replace" or append_force_replace or freshness_force_replace
@@ -2794,10 +2810,11 @@ def _source_snapshot(
     here marked an oversized cohort stale on every attempt, so its raw was
     retried forever and never converged.
     """
-    cursor = conn.execute(f"SELECT * FROM {table} WHERE {predicate} LIMIT 0", parameters)
-    columns = tuple(column[0] for column in cursor.description)
+    with closing(conn.execute(f"SELECT * FROM {table} WHERE {predicate} LIMIT 0", parameters)) as cursor:
+        columns = tuple(column[0] for column in cursor.description)
     order = ", ".join(str(index + 1) for index in range(len(columns)))
-    rows = conn.execute(f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order}", parameters).fetchall()
+    with closing(conn.execute(f"SELECT * FROM {table} WHERE {predicate} ORDER BY {order}", parameters)) as cursor:
+        rows = cursor.fetchall()
     return _SourceSnapshot(table, predicate, parameters, columns, tuple(tuple(row) for row in rows))
 
 
@@ -2814,19 +2831,27 @@ def _ingest_policy_binding(
     audit_conn: sqlite3.Connection | None = None,
 ) -> tuple[object, ...]:
     if user_conn is None:
-        with closing(open_readonly_connection(archive_root / "user.db", validate_schema=False)) as user:
-            epoch = tuple(user.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
+        with (
+            closing(open_readonly_connection(archive_root / "user.db", validate_schema=False)) as user,
+            closing(user.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1")) as cursor,
+        ):
+            epoch = tuple(cursor.fetchone())
     else:
-        epoch = tuple(user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1").fetchone())
+        with closing(user_conn.execute("SELECT epoch FROM query_unit_frame_state WHERE singleton=1")) as cursor:
+            epoch = tuple(cursor.fetchone())
     if audit_conn is None:
-        with closing(open_readonly_connection(archive_root / "audit.db", validate_schema=False)) as audit:
-            head = audit.execute(
-                "SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1"
-            ).fetchone()
+        with (
+            closing(open_readonly_connection(archive_root / "audit.db", validate_schema=False)) as audit,
+            closing(
+                audit.execute("SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1")
+            ) as cursor,
+        ):
+            head = cursor.fetchone()
     else:
-        head = audit_conn.execute(
-            "SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1"
-        ).fetchone()
+        with closing(
+            audit_conn.execute("SELECT generation, head_sha256 FROM audit_continuity_head WHERE singleton=1")
+        ) as cursor:
+            head = cursor.fetchone()
     return (*epoch, *(tuple(head) if head is not None else (None, None)))
 
 
@@ -2840,23 +2865,25 @@ def _ingest_revision_heads(
         return ()
     marks = ",".join("?" for _ in keys)
     if index_conn is not None:
-        return tuple(
-            tuple(row)
-            for row in index_conn.execute(
+        with closing(
+            index_conn.execute(
                 f"SELECT * FROM raw_revision_heads WHERE logical_source_key IN ({marks}) "
                 f"OR session_id IN ({marks}) ORDER BY logical_source_key",
                 (*keys, *keys),
             )
-        )
-    with closing(open_readonly_connection(db_path, validate_schema=False)) as index:
-        return tuple(
-            tuple(row)
-            for row in index.execute(
+        ) as cursor:
+            return tuple(tuple(row) for row in cursor)
+    with (
+        closing(open_readonly_connection(db_path, validate_schema=False)) as index,
+        closing(
+            index.execute(
                 f"SELECT * FROM raw_revision_heads WHERE logical_source_key IN ({marks}) "
                 f"OR session_id IN ({marks}) ORDER BY logical_source_key",
                 (*keys, *keys),
             )
-        )
+        ) as cursor,
+    ):
+        return tuple(tuple(row) for row in cursor)
 
 
 def _prepared_ingest_is_current(
@@ -2893,7 +2920,8 @@ def _prepared_ingest_is_current(
         else reference_seal.observer("source")
     )
     try:
-        source.execute("BEGIN")
+        with closing(source.execute("BEGIN")):
+            pass
         try:
             matches = all(
                 _source_snapshot(source, snapshot.table, snapshot.predicate, snapshot.parameters) == snapshot
@@ -2953,7 +2981,7 @@ def _prepare_ingest_payloads(
             pending,
             merge_append=merge_append,
             fallback_timestamp=payload.fallback_timestamp,
-            source_conn=source,
+            source_read=ConnectionSessionSourceRead(source),
             raw_id=payload.raw_id,
             prepared_rows=payload.prepared_rows,
         )
@@ -3129,12 +3157,15 @@ def _publish_drive_revision_updates(
     assignments = ",".join(f"{column}=?" for column in _DRIVE_REVISION_COLUMNS)
     with permit.mutation_connection() as source:
         with source:
-            source.execute("BEGIN IMMEDIATE")
-            cursor = source.executemany(
-                f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates
-            )
-            if int(cursor.rowcount) != len(prepared.drive_revision_updates):
-                raise RuntimeError("prepared Drive lineage did not update every exact retained raw row")
+            with closing(source.execute("BEGIN IMMEDIATE")):
+                pass
+            with closing(
+                source.executemany(
+                    f"UPDATE raw_sessions SET {assignments} WHERE raw_id=?", prepared.drive_revision_updates
+                )
+            ) as cursor:
+                if int(cursor.rowcount) != len(prepared.drive_revision_updates):
+                    raise RuntimeError("prepared Drive lineage did not update every exact retained raw row")
             permit.allow_commit(source)
         # Advance the original observer while this exact writer can retain
         # its acceptance reservation. Its physical close follows settlement.
@@ -3514,228 +3545,50 @@ async def process_ingest_batch(
     suspend_fts_triggers: bool = False,
     fresh_build: bool = False,
 ) -> ParseBatchObservation | None:
-    """Process a batch of raw records through the unified ingest pipeline.
+    """Publish acquired Raw IDs through the caller's original retained owner.
 
-    Each raw is prepared through the shared compute owner before its ordered
-    writer admission. Session insight refresh remains a downstream stage.
+    Acquisition has physically settled before this call. Canonical Raw replay
+    owns Source census, Index publication and final acknowledgement; this host
+    only projects its actual receipts into the parsing result.
     """
-
-    if service.execution is None:
-        raise PermissionError("ingest publication requires its declared execution owner")
-    if len(batch_ids) > 1:
-        last_observation = None
-        for raw_id in batch_ids:
-            last_observation = await process_ingest_batch(
-                service,
-                backend,
-                [raw_id],
-                result,
-                progress_callback,
-                force_write=force_write,
-                ingest_result_chunk_size=ingest_result_chunk_size,
-                suspend_fts_triggers=suspend_fts_triggers,
-                fresh_build=fresh_build,
-            )
-        return last_observation
-
-    raw_artifacts = await service.repository.get_raw_sessions_batch(batch_ids)
-    if not raw_artifacts:
-        return None
-
-    archive_root_str = str(service.archive_root)
-    blob_root_str = str(service.archive_root / "blob")
-    batch_started = time.perf_counter()
-    rss_start_mb = read_current_rss_mb()
-    peak_rss_self_start_mb = read_peak_rss_self_mb()
-
-    # Get validation mode from environment and Sinex authority mode from the
-    # canonical config layer.  Off mode is passed through so the sync writer
-    # performs no protocol encoding or outbox work.
+    if service.retained_runner is None:
+        raise PermissionError("ingest publication requires its supplied retained Raw owner")
     from polylogue.config import load_polylogue_config
 
-    _resolved_settings = load_polylogue_config()
-    validation_mode = _resolved_settings.schema_validation
-    publication_mode = PublicationMode.from_string(_resolved_settings.sinex_mode)
-    configured_source_backend = getattr(service.repository, "source_backend", None)
-    if publication_mode is not PublicationMode.OFF and configured_source_backend is None:
+    publication_mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
+    if publication_mode is not PublicationMode.OFF:
         raise PublicationEncodingError(
-            "mirror/primary acceptance requires the durable source-tier backend; refusing before index publication"
+            "retained ingest requires its canonical accepted-marker and outbox producer before publication"
         )
-
-    sync_kwargs: dict[str, object] = {
-        "db_path": backend.db_path,
-        "archive_root_str": archive_root_str,
-        "blob_root_str": blob_root_str,
-        "validation_mode": validation_mode,
-        "ingest_workers": service.ingest_workers,
-        "measure_ingest_result_size": service.measure_ingest_result_size,
-        "publication_mode": publication_mode,
-        "force_write": force_write,
-        "ingest_result_chunk_size": ingest_result_chunk_size,
-        "suspend_fts_triggers": suspend_fts_triggers,
+    started = time.perf_counter()
+    receipts = await service.retained_runner(tuple(batch_ids))
+    written: dict[str, None] = {}
+    changed: dict[str, None] = {}
+    for receipt in receipts:
+        written.update(dict.fromkeys(receipt.written_session_ids))
+        changed.update(dict.fromkeys(receipt.changed_session_ids))
+        for key, count in receipt.written_counts.items():
+            if key in result.counts:
+                result.counts[key] += count
+            if key in result.changed_counts and key != "sessions":
+                result.changed_counts[key] += count
+        result.parse_failures += receipt.quarantined
+        for key, seconds in receipt.stage_timings_s.items():
+            result.stage_timings_s[key] = result.stage_timings_s.get(key, 0.0) + seconds
+    result.processed_ids.update(written)
+    result._changed_session_ids.extend(key for key in changed if key not in result._changed_session_ids)
+    result.changed_counts["sessions"] += len(changed)
+    if progress_callback and receipts:
+        progress_callback(len(batch_ids))
+    return {
+        "records": len(batch_ids),
+        "sessions": len(written),
+        "messages": sum(receipt.written_message_count for receipt in receipts),
+        "changed_sessions": len(changed),
+        "failed_raw_count": sum(receipt.quarantined for receipt in receipts),
+        "converged": all(receipt.adoption_deferred == 0 for receipt in receipts),
+        "elapsed_ms": (time.perf_counter() - started) * 1000,
     }
-    # OFF without a source backend is a supported index-only mode. Marker
-    # acceptance is enabled only when its durable owner is available.
-    if configured_source_backend is not None:
-        sync_kwargs["marker_acceptance_enabled"] = True
-    if fresh_build:
-        sync_kwargs["fresh_build"] = True
-
-    class PreparedPublication:
-        # These existing owners remain on the same physical worker; the
-        # reference seal is created before any parent/attachment computation.
-        def __init__(self, seal: PreparedIndexMutation, unit: _PreparedIngestUnit) -> None:
-            self.seal = seal
-            self.unit = unit
-
-        def close(self) -> None:
-            failures: list[BaseException] = []
-            for close in (partial(discard_ingest_result_payload, self.unit.result), self.seal.close):
-                try:
-                    close()
-                except BaseException as failure:
-                    failures.append(failure)
-            if failures:
-                raise builtins.BaseExceptionGroup("ingest preparation cleanup failed", failures)
-
-    def prepare_publication() -> PreparedPublication:
-        seal = PreparedIndexMutation(backend.db_path, archive_root=service.archive_root)
-        unit = None
-        try:
-            unit = _prepare_ingest_unit_sync(
-                batch_ids[0],
-                db_path=backend.db_path,
-                archive_root=service.archive_root,
-                validation_mode=validation_mode,
-                publication_mode=publication_mode,
-                measure_ingest_result_size=service.measure_ingest_result_size,
-                reference_seal=seal,
-            )
-            if unit is None or not _prepared_ingest_is_current(
-                unit,
-                db_path=backend.db_path,
-                archive_root=service.archive_root,
-                validation_mode=validation_mode,
-                publication_mode=publication_mode,
-                reference_seal=seal,
-            ):
-                raise _StaleDrivePreparationError("ingest input changed during sealed preparation")
-            return PreparedPublication(seal, unit)
-        except BaseException as primary:
-            try:
-                if unit is not None:
-                    PreparedPublication(seal, unit).close()
-                else:
-                    seal.close()
-            except BaseException as cleanup:
-                raise builtins.BaseExceptionGroup("ingest preparation and cleanup failed", [primary, cleanup]) from None
-            raise
-
-    def publish_prepared(prepared: PreparedPublication) -> _IngestBatchSummary:
-        seal, unit = prepared.seal, prepared.unit
-        seal.validate_observers_current()
-        if unit.drive_revision_updates:
-            _publish_prepared_drive_revision_updates(unit, service.archive_root, seal)
-        if unit.result.prepared_artifact is not None:
-            unit.result.prepared_artifact.publish_blobs(reference_seal=seal)
-        return cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync)(
-            raw_artifacts,
-            reference_seal=seal,
-            prepared_unit=unit,
-            **sync_kwargs,
-        )
-
-    try:
-        batch_summary = await service.execution.publish_prepared_sync("index", prepare_publication, publish_prepared)
-    except _StaleDrivePreparationError:
-        emit("ingest.drive.preparation_stale")
-        return None
-    heavy_batch = (
-        batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD
-        or batch_summary.total_msgs >= INGEST_RELEASE_MESSAGE_THRESHOLD
-    )
-    raw_artifacts.clear()
-
-    apply_ingest_batch_summary(result, batch_summary)
-    progressed = progressed_raw_count(batch_summary)
-    if progress_callback and progressed:
-        progress_callback(progressed)
-
-    if batch_summary.elapsed_s > 0.0:
-        logger.info(
-            "ingest_batch",
-            elapsed_s=round(batch_summary.elapsed_s, 2),
-            records=batch_summary.raw_record_count,
-            blob_mb=round(batch_summary.total_blob_mb, 1),
-            sessions=batch_summary.total_convos,
-            messages=batch_summary.total_msgs,
-            workers=batch_summary.worker_count,
-            changed=len(batch_summary.changed_session_ids),
-            result_mb=round(batch_summary.total_result_bytes / (1024 * 1024), 1),
-            max_result_mb=round(batch_summary.max_result_bytes / (1024 * 1024), 1),
-            max_result_raw_id=batch_summary.max_result_raw_id,
-            max_current_rss_mb=batch_summary.max_current_rss_mb,
-            write_s=round(batch_summary.write_elapsed_s, 2),
-            max_write_s=round(batch_summary.max_write_elapsed_s, 2),
-            commit_s=round(batch_summary.commit_elapsed_s, 2),
-            drain_s=round(batch_summary.drain_elapsed_s, 2),
-            flush_s=round(batch_summary.flush_elapsed_s, 2),
-            wait_s=round(batch_summary.result_wait_s, 2),
-            setup_s=round(batch_summary.setup_elapsed_s, 2),
-            tear_s=round(batch_summary.teardown_elapsed_s, 2),
-            # polylogue-rujy AC4: content-addressed tool-result sidecar blob
-            # writes this batch actually added vs. deduplicated (0 unless the
-            # batch touched Claude Code sessions with acquired sidecars).
-            sidecar_blob_new_mb=round(batch_summary.counts["sidecar_blob_bytes_new"] / (1024 * 1024), 2),
-            sidecar_blob_dedup_mb=round(batch_summary.counts["sidecar_blob_bytes_dedup"] / (1024 * 1024), 2),
-            sidecar_blobs_written=batch_summary.counts["sidecar_blobs_written"],
-            sidecar_blobs_refused_excised=batch_summary.counts["sidecar_blobs_refused_excised"],
-        )
-
-    succeeded_raw_ids = successful_raw_ids(batch_summary)
-    raw_state_update_elapsed_s = await _persist_batch_raw_state_updates(
-        service,
-        backend,
-        outcomes=batch_summary.outcomes,
-        succeeded_raw_ids=succeeded_raw_ids,
-        skipped_raw_ids=batch_summary.skipped_raw_ids,
-        failed_raw_ids=batch_summary.failed_raw_ids,
-        validation_mode=validation_mode,
-        publication_mode=publication_mode,
-        publication_payloads_by_raw_id=batch_summary.publication_payloads_by_raw_id,
-        marker_sessions_by_raw_id=(
-            batch_summary.marker_sessions_by_raw_id if configured_source_backend is not None else None
-        ),
-        marker_request_facts_by_raw_id=(
-            batch_summary.marker_request_facts_by_raw_id if configured_source_backend is not None else None
-        ),
-        marker_request_sessions_by_raw_id=(
-            batch_summary.marker_request_sessions_by_raw_id if configured_source_backend is not None else None
-        ),
-        marker_batches_by_raw_id=(
-            batch_summary.marker_batches_by_raw_id if configured_source_backend is not None else None
-        ),
-    )
-    batch_summary.publication_payloads_by_raw_id.clear()
-    batch_summary.publication_payload_bytes = 0
-
-    elapsed_s = time.perf_counter() - batch_started
-    rss_end_mb = read_current_rss_mb()
-    peak_rss_self_end_mb = read_peak_rss_self_mb()
-    peak_rss_children_mb = read_peak_rss_children_mb()
-    observation = _build_parse_batch_observation(
-        batch_summary=batch_summary,
-        elapsed_s=elapsed_s,
-        raw_state_update_elapsed_s=raw_state_update_elapsed_s,
-        rss_start_mb=rss_start_mb,
-        rss_end_mb=rss_end_mb,
-        peak_rss_self_start_mb=peak_rss_self_start_mb,
-        peak_rss_self_end_mb=peak_rss_self_end_mb,
-        peak_rss_children_mb=peak_rss_children_mb,
-    )
-    if heavy_batch:
-        del batch_summary
-    return observation
 
 
 def _successful_raw_state_update(

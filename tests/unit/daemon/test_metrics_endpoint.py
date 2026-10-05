@@ -1019,9 +1019,10 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL,
-                    message_count INTEGER NOT NULL
+                    message_count INTEGER NOT NULL,
+                    raw_id TEXT
                 );
-                INSERT INTO sessions VALUES
+                INSERT INTO sessions (session_id, origin, message_count) VALUES
                     ('c1', 'claude-code-session', 100),
                     ('c2', 'claude-code-session', 50),
                     ('c3', 'codex-session', 30);

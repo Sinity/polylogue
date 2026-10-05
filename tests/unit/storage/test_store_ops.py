@@ -10,10 +10,10 @@ import json
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Never, TypeVar, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -1614,6 +1614,9 @@ class TestCacheThreadSafety:
         assert final_stats["cache_version"] == expected_version
 
 
+_VectorResultT = TypeVar("_VectorResultT")
+
+
 class _VectorSpy:
     model = "test-model"
 
@@ -1638,7 +1641,27 @@ class _VectorSpy:
         del origin
         self.upsert_calls.append((session_id, messages))
 
-    async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+    def scoped_query(
+        self,
+        session_ids: Iterable[str],
+        *,
+        index_connection: sqlite3.Connection,
+        configure_connection: Callable[[sqlite3.Connection], None],
+        check_cancelled: Callable[[], None],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+    ) -> Never:
+        raise AssertionError("this fixture does not perform scoped vector reads")
+
+    async def read_similarity(
+        self,
+        *,
+        index_path: Path,
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _VectorResultT],
+        text: str | None = None,
+        seed_session_id: str | None = None,
+        limit: int = 10,
+    ) -> _VectorResultT:
         raise AssertionError("this fixture does not perform retained-session reads")
 
 
@@ -1650,25 +1673,38 @@ class TestRepositoryVectorAsyncBoundary:
     ) -> None:
         backend = SQLiteBackend(db_path=tmp_path / "vectors.db")
         repo = SessionRepository(backend=backend)
-        provider = _VectorSpy()
-        monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
-        monkeypatch.setattr(repo, "get_many", AsyncMock(return_value=[_session_model("conv-1")]))
+        import threading
 
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
+        from polylogue.core.compute import compute_adapter, current_cancellation
+        from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
 
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
+        provider = SqliteVecProvider(voyage_key="neutral", db_path=tmp_path / "embeddings.db")
+        creator = threading.get_ident()
+        worker_threads: list[int] = []
+        observed: list[tuple[Path, str | None, int]] = []
 
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        def read_original(
+            *,
+            index_path: Path,
+            project: object,
+            text: str | None,
+            seed_session_id: str | None,
+            limit: int,
+        ) -> list[Session]:
+            assert seed_session_id is None
+            assert text is not None
+            worker_threads.append(threading.get_ident())
+            assert current_cancellation() is not None
+            assert compute_adapter().snapshot().active_input_bytes == len(text.encode("utf-8"))
+            observed.append((index_path, text, limit))
+            return [_session_model("conv-1")]
 
+        monkeypatch.setattr(provider, "_read_similarity", read_original)
         result = await repo.search_similar("semantic query", limit=4, vector_provider=provider)
-
         assert [str(session.id) for session in result] == ["conv-1"]
-        assert provider.query_calls == [("semantic query", 12)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+        assert observed == [(backend.db_path, "semantic query", 4)]
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != creator
 
     async def test_embed_session_offloads_vector_upsert(
         self,
@@ -1707,21 +1743,28 @@ class TestRepositoryVectorAsyncBoundary:
         provider = _VectorSpy()
         monkeypatch.setattr(repo, "_get_message_session_mapping", AsyncMock(return_value={"msg-1": "conv-1"}))
 
-        to_thread_calls: list[tuple[Callable[..., object], tuple[object, ...], dict[str, object]]] = []
+        import threading
 
-        async def fake_to_thread(func: Callable[..., object], /, *args: object, **kwargs: object) -> object:
-            to_thread_calls.append((func, args, kwargs))
-            return func(*args, **kwargs)
+        from polylogue.core.compute import compute_adapter, current_cancellation
 
-        monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+        creator = threading.get_ident()
+        actual_query = provider.query
+        worker_threads: list[int] = []
+
+        def query(text: str, limit: int = 10) -> list[tuple[str, float]]:
+            worker_threads.append(threading.get_ident())
+            assert current_cancellation() is not None
+            assert compute_adapter().snapshot().active_input_bytes == len(text.encode("utf-8"))
+            return actual_query(text, limit=limit)
+
+        monkeypatch.setattr(provider, "query", query)
 
         result = await repo.similarity_search("semantic query", limit=4, vector_provider=provider)
 
         assert result == [("conv-1", "msg-1", 0.125)]
         assert provider.query_calls == [("semantic query", 4)]
-        assert len(to_thread_calls) == 1
-        assert getattr(to_thread_calls[0][0], "__self__", None) is provider
-        assert getattr(to_thread_calls[0][0], "__name__", "") == "query"
+        assert len(worker_threads) == 1
+        assert worker_threads[0] != creator
 
 
 # ============================================================================

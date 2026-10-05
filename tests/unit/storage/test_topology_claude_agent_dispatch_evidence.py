@@ -36,6 +36,7 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 from tests.infra.index_writer import write_fixture_index_session
 
 _PARENT = "8f6c4d02-1f4a-4f2f-9a1e-1b2c3d4e5f60"
@@ -458,12 +459,14 @@ def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_av
         )
         replay = child.model_copy(update={"parent_session_provider_id": _OTHER_PARENT})
         replay_source = source if source_available else None
-        assert prepared_lineage_bindings(index, replay, source_conn=replay_source) == (
+        assert prepared_lineage_bindings(index, replay, source_read=ConnectionSessionSourceRead(replay_source)) == (
             _PARENT,
             f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}",
         )
         if route == "prepared":
-            prepared = prepare_session_write(index, replay, merge_append=False, source_conn=replay_source)
+            prepared = prepare_session_write(
+                index, replay, merge_append=False, source_read=ConnectionSessionSourceRead(replay_source)
+            )
             try:
                 write_fixture_index_session(
                     index,

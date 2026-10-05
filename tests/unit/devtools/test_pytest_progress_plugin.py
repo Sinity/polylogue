@@ -299,11 +299,7 @@ def test_progress_plugin_records_final_selected_nodes(
     pytest_progress_plugin.pytest_sessionstart(object())
 
     pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["tests/a.py::test_keep"]),
-        object(),
-        [_Item("tests/a.py::test_keep")],
-    )
+    pytest_progress_plugin.pytest_collection_finish(_Session(["tests/a.py::test_keep"]))
 
     selection = json.loads(selection_path.read_text())
     assert selection["selected_count"] == 1
@@ -333,14 +329,8 @@ def test_progress_plugin_bounds_selection_nodeid_payload(
             _Item("tests/a.py::test_skip_3"),
         ]
     )
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["unused"]),
-        object(),
-        [
-            _Item("tests/a.py::test_keep_1"),
-            _Item("tests/a.py::test_keep_2"),
-            _Item("tests/a.py::test_keep_3"),
-        ],
+    pytest_progress_plugin.pytest_collection_finish(
+        _Session(["tests/a.py::test_keep_1", "tests/a.py::test_keep_2", "tests/a.py::test_keep_3"])
     )
 
     selection = json.loads(selection_path.read_text())
@@ -369,11 +359,7 @@ def test_progress_plugin_records_collection_duration_and_summary(
     pytest_progress_plugin.pytest_sessionstart(object())
     pytest_progress_plugin.pytest_collection(object())
     pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["tests/a.py::test_keep"]),
-        object(),
-        [_Item("tests/a.py::test_keep")],
-    )
+    pytest_progress_plugin.pytest_collection_finish(_Session(["tests/a.py::test_keep"]))
     pytest_progress_plugin.pytest_runtest_logreport(_Report("test_slow", "setup", "passed", duration=1.5))
     pytest_progress_plugin.pytest_runtest_logreport(_Report("test_fast", "call", "passed", duration=0.1))
     pytest_progress_plugin.pytest_sessionfinish(object(), 0)
@@ -401,11 +387,7 @@ def test_progress_plugin_retains_controller_selection_through_session_finish(
     selection_path = tmp_path / "selection.json"
     monkeypatch.setenv("POLYLOGUE_PYTEST_SELECTION_PATH", str(selection_path))
     pytest_progress_plugin.pytest_sessionstart(object())
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["tests/a.py::test_keep"]),
-        object(),
-        [_Item("tests/a.py::test_keep")],
-    )
+    pytest_progress_plugin.pytest_collection_finish(_Session(["tests/a.py::test_keep"]))
 
     pytest_progress_plugin.pytest_sessionfinish(object(), 0)
 
@@ -426,9 +408,7 @@ def test_nested_pytest_session_keeps_outer_progress_and_artifacts_isolated(
     monkeypatch.setenv("POLYLOGUE_PYTEST_SUMMARY_PATH", str(outer_summary))
 
     pytest_progress_plugin.pytest_sessionstart(object())
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["tests/outer.py::test_outer"]), object(), [_Item("tests/outer.py::test_outer")]
-    )
+    pytest_progress_plugin.pytest_collection_finish(_Session(["tests/outer.py::test_outer"]))
     pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/outer.py::test_outer", "call", "passed"))
 
     pytest_progress_plugin.pytest_sessionstart(object())
@@ -438,9 +418,7 @@ def test_nested_pytest_session_keeps_outer_progress_and_artifacts_isolated(
     assert nested_selection != outer_selection
     assert nested_summary != outer_summary
     assert nested_events != outer_events
-    pytest_progress_plugin.pytest_collection_modifyitems(
-        _Session(["tests/inner.py::test_inner"]), object(), [_Item("tests/inner.py::test_inner")]
-    )
+    pytest_progress_plugin.pytest_collection_finish(_Session(["tests/inner.py::test_inner"]))
     pytest_progress_plugin.pytest_runtest_logreport(_Report("tests/inner.py::test_inner", "call", "passed"))
     pytest_progress_plugin.pytest_sessionfinish(object(), 0)
 
@@ -477,9 +455,7 @@ def test_progress_plugin_merges_xdist_collection_facts_without_double_counting(
         pytest_progress_plugin.pytest_sessionstart(object())
         pytest_progress_plugin.pytest_collection(object())
         pytest_progress_plugin.pytest_deselected([_Item("tests/a.py::test_skip")])
-        pytest_progress_plugin.pytest_collection_modifyitems(
-            _Session(["tests/a.py::test_keep"]), object(), [_Item("tests/a.py::test_keep")]
-        )
+        pytest_progress_plugin.pytest_collection_finish(_Session(["tests/a.py::test_keep"]))
         pytest_progress_plugin.pytest_sessionfinish(object(), 0)
 
     monkeypatch.delenv("PYTEST_XDIST_WORKER")

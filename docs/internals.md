@@ -42,7 +42,7 @@ debugging landmarks. For a task-to-owner map, start with
 | `storage/sqlite/connection_profile.py` | Canonical read/write SQLite timeouts, cache, mmap, and PRAGMA profiles |
 | `storage/repository/__init__.py` | Repository facade (10-mixin composition: archive reads, archive writes, raw, vectors, and six insight readers — profile, run-projection, timeline, thread, summary, topology) |
 | `storage/search/query_builders.py` | Lexical search |
-| `storage/search_providers/hybrid.py` | Hybrid retrieval (RRF fusion) |
+| `storage/sqlite/archive_tiers/archive.py` | Scoped session ranking and SQL hybrid lane fusion |
 
 ### Sources and Pipeline
 
@@ -1133,6 +1133,11 @@ the real window structurally unbounded: acquisition prefetched 128 artifacts
 and committed references in batches of 500, so a slow following artifact
 could age an earlier blob past 60 seconds. Source v4 therefore reserves at
 the only boundary that closes the race: before final-path visibility.
+
+Publication listings expose the canonical `liveness_state` and its `blockers`,
+separately from physical blob presence. Status counts blocked receipts in
+`retained_blocked_count`, including those whose blob is absent; unavailable
+reference authority cannot certify either an unreferenced or a missing receipt.
 
 Publication reconciliation has no TTL. It classifies and retains receipts by
 default, including missing-path receipts: absence is not proof that a paused

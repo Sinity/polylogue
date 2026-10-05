@@ -463,6 +463,10 @@ def execute_source_item_admission(
     conn.execute("SAVEPOINT source_item_raw_admission")
     try:
         if member.entry_ordinal is not None:
+            if plan.request.captured_zip_coordinate is None:
+                from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+                raise RetainedZipMembershipUnprovedError("ZIP source member requires its captured member receipt")
             overlap = conn.execute(
                 "SELECT 1 FROM source_item_member_dispositions "
                 "WHERE source_generation_id=? AND source_item_id=? AND entry_ordinal=?",

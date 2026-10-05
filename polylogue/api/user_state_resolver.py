@@ -15,13 +15,15 @@ block-derived identifier and only validated for non-empty ``target_id``.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
-from contextlib import closing
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TypedDict
 
 from polylogue.api.archive import open_readonly_connection
+from polylogue.core.compute import compute_adapter, current_cancellation
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, resolve
 from polylogue.core.user_state_targets import (
     TARGET_ATTACHMENT,
@@ -50,6 +52,29 @@ _INSIGHT_QUERIES: dict[str, str] = {
 }
 
 
+@contextmanager
+def _read_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
+    cancellation = current_cancellation()
+    if cancellation is not None:
+        cancellation.register_connection(conn)
+    primary: BaseException | None = None
+    try:
+        yield conn
+    except BaseException as failure:
+        primary = failure
+    try:
+        conn.close()
+    except BaseException as cleanup:
+        if primary is not None:
+            raise BaseExceptionGroup("existence probe and connection settlement failed", [primary, cleanup]) from None
+        raise
+    if cancellation is not None:
+        cancellation.unregister_connection(conn)
+    if primary is not None:
+        raise primary
+
+
 def _index_db_path(archive_root: Path) -> Evidence[Path]:
     """Locate the readable `index.db` carrying the canonical ``sessions`` table.
 
@@ -61,9 +86,7 @@ def _index_db_path(archive_root: Path) -> Evidence[Path]:
     if not candidate.exists():
         return Empty()
     try:
-        with closing(
-            open_readonly_connection(candidate, timeout_class="interactive-read", validate_schema=False)
-        ) as conn:
+        with _read_connection(candidate) as conn:
             row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
     except sqlite3.Error as exc:
         return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
@@ -86,7 +109,7 @@ def _existence(evidence: Evidence[bool], *, subject: str) -> bool:
 
 
 def _row_exists_sync(db_path: Path, sql: str, params: tuple[object, ...]) -> bool:
-    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
+    with _read_connection(db_path) as conn:
         row = conn.execute(sql, params).fetchone()
     return row is not None
 
@@ -95,13 +118,25 @@ async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) 
     """Existence probe against the `index.db`. A missing index means
     nothing is materialized, so the row does not exist; an unreadable one
     means the question was not answered."""
-    located = _index_db_path(archive_root)
-    if not isinstance(located, Measured):
-        return located if isinstance(located, Unavailable) else Empty()
-    try:
-        return Measured(await asyncio.to_thread(_row_exists_sync, located.value, sql, params))
-    except sqlite3.Error as exc:
-        return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
+
+    def read() -> Evidence[bool]:
+        located = _index_db_path(archive_root)
+        if not isinstance(located, Measured):
+            return located if isinstance(located, Unavailable) else Empty()
+        try:
+            return Measured(_row_exists_sync(located.value, sql, params))
+        except sqlite3.Error as exc:
+            return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
+
+    return (
+        await compute_adapter()
+        .submit(
+            read,
+            admission_class="interactive-read",
+            estimated_bytes=len(sql.encode("utf-8")) + sum(len(str(value).encode("utf-8")) for value in params),
+        )
+        .wait()
+    )
 
 
 def _block_exists_sync(
@@ -111,7 +146,7 @@ def _block_exists_sync(
     message_id: str,
     block_index: int,
 ) -> bool:
-    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
+    with _read_connection(db_path) as conn:
         row = conn.execute(
             """
             SELECT 1
@@ -136,21 +171,34 @@ async def _block_exists(
         block_index = int(block_index_token)
     except ValueError:
         return Empty()
-    located = _index_db_path(archive_root)
-    if not isinstance(located, Measured):
-        return located if isinstance(located, Unavailable) else Empty()
-    try:
-        return Measured(
-            await asyncio.to_thread(
-                _block_exists_sync,
-                located.value,
-                session_id=session_id,
-                message_id=message_id,
-                block_index=block_index,
+
+    def read() -> Evidence[bool]:
+        located = _index_db_path(archive_root)
+        if not isinstance(located, Measured):
+            return located if isinstance(located, Unavailable) else Empty()
+        try:
+            return Measured(
+                _block_exists_sync(
+                    located.value,
+                    session_id=session_id,
+                    message_id=message_id,
+                    block_index=block_index,
+                )
             )
+        except sqlite3.Error as exc:
+            return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
+
+    return (
+        await compute_adapter()
+        .submit(
+            read,
+            admission_class="interactive-read",
+            estimated_bytes=len(session_id.encode("utf-8"))
+            + len(message_id.encode("utf-8"))
+            + len(block_index_token.encode("utf-8")),
         )
-    except sqlite3.Error as exc:
-        return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
+        .wait()
+    )
 
 
 def parse_block_target_id(target_id: str) -> tuple[str, str]:

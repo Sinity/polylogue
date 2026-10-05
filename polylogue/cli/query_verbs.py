@@ -1277,7 +1277,7 @@ def read_verb(
     primary_view = view_tokens[0]
     if all_matches and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
-    if all_matches and continuation is not None and not _spec_is_exact_session_ref(request.query_spec()):
+    if all_matches and continuation is not None and not request.query_spec().is_exact_session_ref():
         raise click.UsageError("read --all cannot broadcast a session-bound --continuation across sessions.")
     if full and limit is not None and primary_view in {"messages", "raw"}:
         raise click.UsageError("read --full and --limit are mutually exclusive for paginated session-body views.")
@@ -1453,11 +1453,11 @@ def read_verb(
 
     handler_metadata = READ_VIEW_HANDLER_METADATA[primary_view]
     session_id = None
-    exact_session_ref = _spec_is_exact_session_ref(request.query_spec())
+    explicit_session_scope = request.query_spec().session_id is not None
     if (
         destination == RenderDestination.BROWSER
         or first_only
-        or exact_session_ref
+        or explicit_session_scope
         or not handler_metadata.accepts_query_set
     ):
         from polylogue.cli.select import machine_output_requested
@@ -2628,21 +2628,6 @@ def _execute_query_verb(
     execute_query_request(env, request)
 
 
-def _spec_is_exact_session_ref(spec: object) -> bool:
-    return bool(
-        getattr(spec, "session_id", None)
-        and not any(
-            (
-                getattr(spec, "query_terms", ()),
-                getattr(spec, "contains_terms", ()),
-                getattr(spec, "exclude_text_terms", ()),
-                getattr(spec, "similar_text", None),
-                getattr(spec, "similar_session_id", None),
-            )
-        )
-    )
-
-
 def _is_direct_session_ref(ref: str | None) -> bool:
     """Return whether a positional ref belongs to the session read route."""
     if ref is None:
@@ -2666,12 +2651,9 @@ def _resolve_target_session_id(
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params, resolve_single_session_id
 
-    if request.query_terms:
-        explicit = request.params.get("conv_id")
-        if isinstance(explicit, str) and explicit:
-            return explicit
+    if request.query_spec().has_filters():
         spec = request.query_spec()
-        if _spec_is_exact_session_ref(spec):
+        if spec.is_exact_session_ref():
             return cast("str", spec.session_id)
         return resolve_single_session_id(
             request, env=env, operation=operation, first_only=first_only, machine_output=machine_output
@@ -2695,22 +2677,21 @@ def _resolve_query_action_session_id(
     ``machine_output`` is the verb's own output contract: a JSON/JSONL format
     refuses an ambiguous selection with its candidates even on a terminal.
     """
-    if request.query_terms:
+    if request.query_spec().has_filters():
         from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
-        from polylogue.cli.session_rows import query_session_rows
+        from polylogue.cli.session_rows import query_session_selection
         from polylogue.cli.verb_cardinality import check_cardinality
 
-        explicit = request.params.get("conv_id")
-        if isinstance(explicit, str) and explicit:
-            return explicit
         spec = request.query_spec()
-        if _spec_is_exact_session_ref(spec):
+        if spec.is_exact_session_ref():
             return cast("str", spec.session_id)
         if not spec.latest and not spec.has_filters():
             return None
 
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
-        rows = query_session_rows(env.config, request, limit=resolve_limit)
+        selection = query_session_selection(env.config, request, limit=resolve_limit)
+        selection.require_authoritative()
+        rows = selection.rows
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
@@ -2721,7 +2702,9 @@ def _resolve_query_action_session_id(
                 # chooser offers the whole selection.
                 if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
                     return list(rows)
-                return query_session_rows(env.config, request, limit=None)
+                complete = query_session_selection(env.config, request, limit=None)
+                complete.require_authoritative()
+                return list(complete.rows)
 
             return resolve_ambiguous_selection(
                 env,
@@ -2768,20 +2751,19 @@ def _resolve_query_action_session_ids(
     miss used to come back as a context image built from unrelated sessions
     and be handed to a resume/handoff as if it answered the query.
     """
-    from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.session_rows import query_session_selection
     from polylogue.cli.verb_cardinality import check_cardinality
 
-    explicit = request.params.get("conv_id")
-    if isinstance(explicit, str) and explicit:
-        return [explicit]
     spec = request.query_spec()
-    if _spec_is_exact_session_ref(spec):
+    if spec.is_exact_session_ref():
         return [cast("str", spec.session_id)]
     if not spec.latest and not spec.has_filters():
         # Query terms that narrow nothing are not a selection at all; the
         # caller may still use the raw text as a relevance hint.
         return []
-    session_ids = query_session_ids(env.config, request, limit=1 if first_only else limit)
+    selection = query_session_selection(env.config, request, limit=1 if first_only else limit)
+    selection.require_authoritative()
+    session_ids = selection.ids
     # ``allow_all=True``: this is the multi-session route, so several
     # matches are the normal case. Zero always raises regardless.
     check_cardinality(

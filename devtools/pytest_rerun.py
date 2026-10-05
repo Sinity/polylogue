@@ -329,6 +329,8 @@ def rerun_cost_dir(step_dir: Path) -> Path:
 def rerun_environment(env: Mapping[str, str], *, step_dir: Path) -> dict[str, str]:
     """The rerun is one process (no xdist worker settings) with its own cost directory."""
     rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+    # A failure-only rerun cannot reauthorize a tainted complete graph.
+    rerun_env.pop("POLYLOGUE_TESTMON_COMPLETE", None)
     rerun_env[SUITE_COST_DIR_ENV] = str(rerun_cost_dir(step_dir))
     return rerun_env
 

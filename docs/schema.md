@@ -91,33 +91,28 @@ compact indexed `action_pairs` and `delegation_facts` relations, query-time
 read models (`session_profiles`, `session_latency_profiles`), whose freshness the converger derives from the
 owning session's sort key and content hash.
 
-### `embeddings.db` — vectors (rebuildable, expensive)
+### `embeddings.db` — purchased vectors and their state
 
-`message_embeddings` (a `vec0` virtual table, 1024-dimensional float
-embeddings) and `message_embeddings_meta` are **content-addressed**: both are
-keyed by `embedding_input_hash = SHA-256(model, embedder input text)` — a pure
-function of exactly what is sent to the embedding provider, deliberately
-excluding every identity-bearing field (`session_id`, `message_id`,
-`position`, `variant_index`, ...), the same philosophy as the block evidence
-hash (`blocks` table). A hash's presence in `message_embeddings_meta` **is**
-freshness — there is no per-vector "needs_reindex" state, and identical text
-across forked/replayed/coincidentally-duplicate messages is stored exactly
-once (dedup). `message_embedding_refs` is the rebuildable per-message mapping
-(`message_id -> embedding_input_hash`) that resolves a vector back to the
-message(s) that currently reference it; it is rewritten per session re-embed,
-while the vector/meta rows themselves are write-once and never deleted by
-ordinary re-embed (an index rebuild or lineage-normalization shift that
-renumbers a message cannot invalidate its vector as long as the text is
-unchanged). `embedding_derivation_state`, `embedding_status`, and the
-inspectable `embedding_failures` lifecycle ledger remain **session**-scoped
-attempt/generation bookkeeping (unchanged in shape) — the derivation state
-owns the exact source/recipe/output key and active attempt generation; status
-flags are compatibility projections rather than independent freshness
-authority. Populated only when embedding is enabled with a valid Voyage key
-(see [Architecture § Embedding Pipeline](architecture.md#embedding-pipeline)).
-Rebuildable, but re-embedding costs Voyage API calls — content-addressing is
-what makes a rebuild (index reset, lineage renormalization) NOT imply a
-re-embed for text that has not changed.
+`message_embeddings` is the installed `vec0` virtual table with 1024-dimensional
+float vectors. Its logical address is `vector_derivation_hash`; the matching
+`message_embeddings_meta` row carries model, dimension, recipe and output
+contract identity. `message_embedding_refs` binds current canonical message
+identity and content hash to that purchased output. Shared references preserve
+one output across sessions. `embedding_derivation_state`, `embedding_status`
+and `embedding_failures` retain session-scoped derivation and attempt state.
+These purchased vectors cannot be replayed from Source, and no product route
+replaces this tier.
+
+`excision_embedding_completions` records a fixed operation/attempt binding,
+plan and original Source-command/Embeddings-intent hashes, scoped postimage
+digest and six deletion counts. The actual paid writer inserts this fact in
+the same transaction as the selected deletions. It certifies that transaction;
+the original Source/Audit command remains the mutation authority. Recovery
+checks both that binding and current selected/surviving reference state.
+Facts contain no purchased vector or transcript bytes and remain with their
+tier while the canonical attempt remains recoverable. A live completion also
+requires physical native close. Fresh archives use version 1; this declaration
+does not authorize importing or replacing an earlier paid archive.
 
 ### `audit.db` — durable authorization and continuity evidence
 

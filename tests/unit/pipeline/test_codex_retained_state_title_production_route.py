@@ -1,10 +1,9 @@
 """Projected Codex thread titles reach Codex assembly.
 
-Both routes that will run during the production reindex are driven end to
-end here: ``_process_ingest_batch_sync`` (pipeline ingest) and
-``_enrich_retained_parse_results`` (retained-raw replay). Neither test hands
+The supplied resident owner drives both first ingestion and retained replay
+end to end here. Neither route hands
 assembly a ``retained_state_titles`` key -- the evidence is produced by the
-real writer (``apply_prepared_state_snapshot`` over a real ``state_5.sqlite``
+real writer (``prepare_codex_state_source_terminal`` over a real ``state_5.sqlite``
 export) and must be found by the route itself. Sever either consumer and both
 sessions fall back to the content-heuristic first-prompt title, which is
 exactly what these assertions reject.
@@ -12,18 +11,20 @@ exactly what these assertions reject.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import sys
+from builtins import BaseExceptionGroup
+from contextlib import closing
 from pathlib import Path
 
 import pytest
 
 from polylogue.core.enums import Provider, TitleSource
-from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
 from polylogue.sources.assembly_codex import resolve_retained_codex_state_titles
 from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.agent_thread_state import (
     read_provenance,
     read_spawn_edges,
@@ -31,8 +32,8 @@ from polylogue.storage.sqlite.agent_thread_state import (
     thread_id_from_context_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.retained_replay import replay_retained_components
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+from tests.infra.live_ingest import prepared_live_convergence_owner
 
 _THREAD_ID = "3f2a9c10-7b41-4d55-9a6e-1c2b3d4e5f60"
 _CURATED_TITLE = "Curated thread title from state db"
@@ -61,7 +62,7 @@ def _write_state_db(
     title: str = _CURATED_TITLE,
     edge: tuple[str, str, str] | None = None,
 ) -> None:
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         conn.executescript(
             """
             CREATE TABLE threads (
@@ -87,64 +88,64 @@ def _write_state_db(
 def _archive_with_retained_state_export(tmp_path: Path) -> Path:
     """Retain the state export and project it through its production route."""
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
     state_path = tmp_path / "state_5.sqlite"
     _write_state_db(state_path)
-    store = BlobStore(archive_root / "blob")
-    export = snapshot_sqlite_to_blob(state_path, store)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=store.blob_path(export.blob_hash).read_bytes(),
-            source_path=str(state_path),
-            acquired_at_ms=1_767_000_000_000,
-        )
-        archive.commit()
-    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
+    _record_state_export(archive_root, state_path, acquired_at_ms=1_767_000_000_000)
     return archive_root
 
 
+async def _record_state_export_async(archive_root: Path, state_path: Path, *, acquired_at_ms: int) -> None:
+    """Acquire the actual logical export and settle its original resident owner."""
+
+    def acquire() -> str:
+        bootstrap_archive_root(archive_root)
+        store = BlobStore(archive_root / "blob")
+        export = snapshot_sqlite_to_blob(state_path, store)
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=store.blob_path(export.blob_hash).read_bytes(),
+                source_path=str(state_path),
+                acquired_at_ms=acquired_at_ms,
+                captured_profile_key=export.captured_profile_key,
+            )
+            archive.commit()
+            return raw_id
+
+    raw_id = await run_archive_fixture_write(archive_root, acquire)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        await owner.replay_retained_raw_ids((raw_id,))
+
+
 def _record_state_export(archive_root: Path, state_path: Path, *, acquired_at_ms: int) -> None:
-    """Drive a retained state export through its production terminal route."""
-    store = BlobStore(archive_root / "blob")
-    export = snapshot_sqlite_to_blob(state_path, store)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=store.blob_path(export.blob_hash).read_bytes(),
-            source_path=str(state_path),
-            acquired_at_ms=acquired_at_ms,
-        )
-        archive.commit()
-    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
+    asyncio.run(_record_state_export_async(archive_root, state_path, acquired_at_ms=acquired_at_ms))
 
 
-def test_pipeline_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
+async def _record_rollout(archive_root: Path, source_path: str, *, ingest: bool) -> None:
+    def acquire() -> str:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_rollout_bytes(),
+                source_path=source_path,
+                acquired_at_ms=1_767_000_000_000,
+            )
+            archive.commit()
+            return raw_id
+
+    raw_id = await run_archive_fixture_write(archive_root, acquire)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        if ingest:
+            await owner.ingest_retained_raw_ids((raw_id,))
+        else:
+            await owner.replay_retained_raw_ids((raw_id,))
+
+
+def test_resident_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
     archive_root = _archive_with_retained_state_export(tmp_path)
-    content = _rollout_bytes()
-    store = BlobStore(archive_root / "blob")
-    raw_id, blob_size = store.write_from_bytes(content)
-    record = RawSessionRecord(
-        raw_id=raw_id,
-        source_name="codex",
-        source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
-        payload_provider=Provider.CODEX,
-        blob_size=blob_size,
-        acquired_at="2026-01-01T00:00:00+00:00",
-    )
-    assert record.sidecar_snapshot is None, "the route, not the test, must supply the evidence"
+    asyncio.run(_record_rollout(archive_root, str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"), ingest=True))
 
-    _process_ingest_batch_sync(
-        [record],
-        db_path=archive_root / "index.db",
-        archive_root_str=str(archive_root),
-        blob_root_str=str(store.root),
-        validation_mode="advisory",
-        ingest_workers=1,
-        measure_ingest_result_size=False,
-    )
-
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
+    with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         row = index_conn.execute(
             "SELECT title, title_source FROM sessions WHERE native_id = ?",
             (_THREAD_ID,),
@@ -160,15 +161,6 @@ def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> N
     archive_root = _archive_with_retained_state_export(tmp_path)
     content = _rollout_bytes()
     source_path = str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl")
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=content,
-            source_path=source_path,
-            acquired_at_ms=1_767_000_000_000,
-        )
-        archive.commit()
-
     sessions = parse_stream_payload(
         Provider.CODEX,
         [json.loads(line) for line in content.decode("utf-8").splitlines()],
@@ -177,8 +169,8 @@ def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> N
     )
     assert sessions and sessions[0].title != _CURATED_TITLE
 
-    replay_retained_components(archive_root, selected_raw_ids=[raw_id])
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
+    asyncio.run(_record_rollout(archive_root, source_path, ingest=False))
+    with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         title = index_conn.execute(
             "SELECT title, title_source FROM sessions WHERE native_id = ?", (_THREAD_ID,)
         ).fetchone()
@@ -199,35 +191,133 @@ def test_unknown_export_codex_raw_publishes_under_its_resolved_provider(tmp_path
     returns False. A real title change between preparation and publication
     still refuses the carrier.
     """
-    from polylogue.operations.raw_observation_derivation import (
-        make_raw_observation_derivation,
-        raw_observation_frame,
-    )
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from polylogue.storage.derived.raw import RawObservationReplacement
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
 
     archive_root = _archive_with_retained_state_export(tmp_path)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.UNKNOWN,
-            payload=_rollout_bytes(),
-            source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
-            acquired_at_ms=1_767_000_000_001,
-        )
-        archive.commit()
-    adapter = make_raw_observation_derivation(archive_root)
-    frame = raw_observation_frame(archive_root)
 
-    stale = adapter.compute(frame, raw_id)
-    assert stale.prepared_inputs is not None
-    artifact = stale.prepared_inputs[raw_id].prepared_artifact
-    assert artifact is not None and artifact.resolved_provider is Provider.CODEX
-    state_path = tmp_path / "state_5.sqlite"
-    state_path.unlink()
-    _write_state_db(state_path, title="Renamed thread title")
-    _record_state_export(archive_root, state_path, acquired_at_ms=1_767_000_000_002)
-    assert adapter.publish(frame, stale) is False
+    async def exercise_original_creator() -> None:
+        def acquire() -> str:
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                raw_id = archive.write_raw_payload(
+                    provider=Provider.UNKNOWN,
+                    payload=_rollout_bytes(),
+                    source_path=str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl"),
+                    acquired_at_ms=1_767_000_000_001,
+                )
+                archive.commit()
+                return raw_id
 
-    assert adapter.publish(frame, adapter.compute(frame, raw_id)) is True
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
+        raw_id = await run_archive_fixture_write(archive_root, acquire)
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            # Establish genuine preparatory census/classification before holding
+            # the selected parser artifact for the stale-dependency experiment.
+            await owner.replay_retained_raw_ids((raw_id,))
+
+            retained: list[RawObservationReplacement] = []
+
+            def retire(replacement: RawObservationReplacement) -> None:
+                primary = sys.exception()
+                try:
+                    replacement.close()
+                except BaseException as cleanup:
+                    if primary is not None:
+                        raise BaseExceptionGroup(
+                            "title experiment and physical cleanup failed", [primary, cleanup]
+                        ) from primary
+                    raise
+                retained.remove(replacement)
+
+            def exercise() -> None:
+                adapter, index_path = owner._destination_adapter()
+                frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
+                stale = adapter.compute(frame, raw_id, replay_current=True)
+                retained.append(stale)
+                try:
+                    assert stale.prepared_inputs is not None
+                    artifact = stale.prepared_inputs[raw_id].prepared_artifact
+                    assert artifact is not None and artifact.resolved_provider is Provider.CODEX
+                    state_path = tmp_path / "state_5.sqlite"
+                    state_path.unlink()
+                    _write_state_db(state_path, title="Renamed thread title")
+
+                    def acquire_state() -> str:
+                        store = BlobStore(archive_root / "blob")
+                        export = snapshot_sqlite_to_blob(state_path, store)
+                        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                            state_raw = archive.write_raw_payload(
+                                provider=Provider.CODEX,
+                                payload=store.blob_path(export.blob_hash).read_bytes(),
+                                source_path=str(state_path),
+                                acquired_at_ms=1_767_000_000_002,
+                                captured_profile_key=export.captured_profile_key,
+                            )
+                            archive.commit()
+                            return state_raw
+
+                    state_raw = admit_stage_write("fixture.title.changed-state.acquire", acquire_state)
+                    previous: tuple[object, ...] | None = None
+                    while True:
+                        original: list[tuple[object, ...]] = []
+
+                        def select_original(
+                            reader: PreparedSessionSourceRead, captured: list[tuple[object, ...]] = original
+                        ) -> tuple[str, ...]:
+                            expanded, _keys = reader.expand_raw_membership_selection((state_raw,))
+                            captured.append(
+                                (
+                                    tuple((key, reader.raw_revision_descriptor(key)) for key in expanded),
+                                    tuple((key, reader.raw_parser_census_is_current(key)) for key in expanded),
+                                    reader.raw_membership_census_rows(expanded),
+                                )
+                            )
+                            return (state_raw,)
+
+                        prepared = adapter.compute(
+                            frame, state_raw, replay_current=True, select_retained_raw_ids=select_original
+                        )
+                        retained.append(prepared)
+                        assert len(original) == 1
+                        if previous == original[0]:
+                            retire(prepared)
+                            raise RetainedPreparationRetryableError("changed state refused without actual progress")
+                        previous = original[0]
+
+                        def publish_state(current: RawObservationReplacement = prepared) -> bool:
+                            return adapter.publish(frame, current)
+
+                        try:
+                            published = admit_stage_write("fixture.title.changed-state.publish", publish_state)
+                        finally:
+                            retire(prepared)
+                        if published:
+                            break
+                    assert (
+                        admit_stage_write("fixture.title.stale.publish", lambda: adapter.publish(frame, stale)) is False
+                    )
+                finally:
+                    retire(stale)
+                fresh = adapter.compute(frame, raw_id, replay_current=True)
+                retained.append(fresh)
+                try:
+                    assert (
+                        admit_stage_write("fixture.title.fresh.publish", lambda: adapter.publish(frame, fresh)) is True
+                    )
+                finally:
+                    retire(fresh)
+
+            await owner.run_prepared_sync(
+                "fixture.title.original-provider",
+                exercise,
+                settlement_owners=lambda: tuple(retained),
+                estimated_bytes=len(_rollout_bytes()),
+            )
+
+    asyncio.run(exercise_original_creator())
+    with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         row = index_conn.execute("SELECT title FROM sessions WHERE native_id = ?", (_THREAD_ID,)).fetchone()
     assert row == ("Renamed thread title",)
 
@@ -243,7 +333,6 @@ def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
     evidence.  Reversing the two initial acquisitions yields the same rows.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
     root_a = tmp_path / "codex-a"
     root_b = tmp_path / "codex-b"
     root_a.mkdir()
@@ -260,7 +349,7 @@ def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
     _write_state_db(initial_a, thread_id="a-new", title="A new")
     _record_state_export(archive_root, initial_a, acquired_at_ms=300)
 
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
+    with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         threads = sorted(read_thread_titles(index_conn).items())
         edges = sorted(read_spawn_edges(index_conn))
         states = dict(
@@ -289,7 +378,6 @@ def test_state_projection_keeps_disjoint_roots_and_omitted_evidence(
 def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Path) -> None:
     """A re-observed old payload is newer evidence, not its first acquisition."""
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
     state_path = tmp_path / "codex" / "state_5.sqlite"
     state_path.parent.mkdir()
     _write_state_db(state_path, thread_id="thread", title="A title")
@@ -304,7 +392,7 @@ def test_state_projection_uses_receipt_order_for_a_b_a_observations(tmp_path: Pa
     assert resolve_retained_codex_state_titles(
         archive_root, ["thread"], source_path=str(state_path.parent / "sessions" / "rollout-thread.jsonl")
     ) == {"thread": "A title"}
-    with sqlite3.connect(archive_root / "index.db") as index_conn:
+    with closing(sqlite3.connect(archive_root / "index.db")) as index_conn:
         provenance = read_provenance(index_conn)
     assert provenance is not None
     assert provenance.observed_at_ms == 300

@@ -23,7 +23,10 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
-from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
+from polylogue.archive.message.artifacts import (
+    classify_material_origin,
+    classify_message_type,
+)
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import (
@@ -232,8 +235,7 @@ def _extract_generation_timings(mapping: Mapping[str, object], timings: Generati
             # not a ChatGPT generation lifecycle measurement.
             continue
 
-        message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
-        message_id = str(message_id_raw)
+        message_id = _mapping_message_id(str(node_id), raw_node, raw_message)
         branch_key = _generation_branch_key(mapping, str(node_id), timings.branch_memo)
         native_timing_field_names = (
             "reasoning_start_time",
@@ -427,7 +429,9 @@ def _int_value(payload: Mapping[str, object], *keys: str) -> int | None:
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(value)
+            if math.isfinite(value) and value.is_integer():
+                return int(value)
+            continue
         if isinstance(value, str):
             try:
                 return int(value)
@@ -834,7 +838,7 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     if isinstance(value, str):
         try:
             parsed = int(value)
@@ -1165,6 +1169,11 @@ _TOOL_RESULT_CARRIER_TYPES: frozenset[BlockType] = frozenset(
 )
 
 
+def _mapping_message_id(node_id: str, node: Mapping[str, object], message: Mapping[str, object]) -> str:
+    """Use the provider's message, node or mapping identity, without inventing an ID."""
+    return str(message.get("id") or node.get("id") or node_id)
+
+
 def _owning_tool_call_id(
     mapping: Mapping[str, object], parent_id: str | None, memo: MutableMapping[str, str] | None = None
 ) -> str | None:
@@ -1203,11 +1212,11 @@ def _owning_tool_call_id(
         path.append(current)
         parent = node.get("parent")
         if not parent:
-            result, cycle = current, False
+            result, cycle = None, False
             break
         current = str(parent)
     else:
-        result = current
+        result = None
         cycle = isinstance(current, str) and bool(current)
     if memo is not None and not cycle and result is not None:
         for visited in path:
@@ -1484,6 +1493,8 @@ class SessionSpill(Protocol):
         """An empty string map for per-node memos and indexes."""
         ...
 
+    def set_attachment_record_origin(self, ordinal: int, raw_position: int) -> None: ...
+
     def connection(self) -> sqlite3.Connection:
         """The scratch database the session's selection tables live in."""
         ...
@@ -1529,6 +1540,21 @@ def _resolved_messages(entries: MessageEntries, active_path: _ActivePath) -> Ite
             if resolved is None and parent_id in emitted_message_ids:
                 resolved = parent_id
             message = message.model_copy(update={"parent_message_provider_id": resolved})
+        # Tool-result owners are mapping-node references until every message
+        # has been emitted. Resolve only those references through the same
+        # canonical node/message index as parents; TOOL_USE already carries
+        # its own emitted message ID. Missing owners remain unlinked.
+        if any(block.type is BlockType.TOOL_RESULT and block.tool_id is not None for block in message.blocks):
+            message = message.model_copy(
+                update={
+                    "blocks": [
+                        block.model_copy(update={"tool_id": entries.provider_for_node(block.tool_id)})
+                        if block.type is BlockType.TOOL_RESULT and block.tool_id is not None
+                        else block
+                        for block in message.blocks
+                    ]
+                }
+            )
         if active_leaf_position is not None:
             message = message.model_copy(update={"is_active_leaf": message.position == active_leaf_position})
         yield message
@@ -1545,6 +1571,8 @@ def _collect_message_entries(
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
     new_string_map: Callable[[], MutableMapping[str, str]] = dict,
+    attachment_origin: Callable[[int, int], None] | None = None,
+    attachment_occurrence: Callable[[ParsedAttachment, int], None] | None = None,
 ) -> _ActivePath:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
@@ -1599,7 +1627,7 @@ def _collect_message_entries(
             continue
         role = Role.normalize(str(raw_role))
         timestamp = msg.get("create_time")
-        msg_id = str(msg.get("id") or node.get("id") or "")
+        msg_id = _mapping_message_id(str(node_id), node, msg)
 
         # Extract parent message reference and calculate branch index
         parent_id = node.get("parent")
@@ -1623,7 +1651,8 @@ def _collect_message_entries(
 
         # Where this message's own attachments begin, so an asset named both
         # by a metadata row and by a content part collapses to one row.
-        message_attachment_ids = _MessageAttachmentIds(attachments, len(attachments), new_string_map())
+        attachment_start = len(attachments)
+        message_attachment_ids = _MessageAttachmentIds(attachments, attachment_start, new_string_map())
 
         # Extract attachments from message metadata
         raw_msg_metadata = msg.get("metadata")
@@ -1789,9 +1818,9 @@ def _collect_message_entries(
                     type=BlockType.TOOL_USE,
                     text=tool_call_text,
                     tool_name=tool_target,
-                    # tool_id = this node's own id, so the mapping-tree child
-                    # node that carries the result (parent == this id) can
-                    # link back via the same id below (polylogue-ah21: these
+                    # tool_id = this message's emitted id; the mapping-tree child
+                    # node that carries the result resolves its owner
+                    # to that message id below (polylogue-ah21: these
                     # were previously always NULL, leaving every ChatGPT
                     # tool_use/tool_result block pair unjoined).
                     tool_id=str(msg_id),
@@ -1820,7 +1849,7 @@ def _collect_message_entries(
             # addressed JSON tool-call branch above: tool_name = recipient
             # (e.g. "python", "container.exec") when the provider addressed a
             # tool for this call (polylogue-grub), falling back to
-            # "code_interpreter" when it didn't; tool_id = this node's own
+            # "code_interpreter" when it didn't; tool_id = this message's emitted
             # id, so the execution_output node (whose mapping-tree parent is
             # this call) can join back via the same id below -- the same
             # convention polylogue-ah21 established for the browser-capture
@@ -1838,7 +1867,7 @@ def _collect_message_entries(
             )
         elif content_type == "execution_output":
             # Code-interpreter output — top-level text, no parts (#1744).
-            # tool_id = the calling node's id (mapping-tree `parent`), the
+            # The mapping-tree `parent` resolves to the calling message's id, the
             # same identifier the code-interpreter TOOL_USE node above now
             # stamps onto itself (bd polylogue-4fm3) -- both sides of the
             # pair carry a shared tool_id and the `actions` view can join
@@ -1863,7 +1892,7 @@ def _collect_message_entries(
             # Computer-use tool result (April-era browsing/desktop-agent
             # layer, polylogue-xofj: 8,192 measured) -- a screenshot + DOM/
             # browser-state snapshot returned by the computer.do tool loop.
-            # tool_id = the calling node's id (mapping-tree `parent`), the
+            # The mapping-tree `parent` resolves to the calling message's id, the
             # same convention execution_output/code use above (polylogue-
             # 4fm3/polylogue-grub) so the actions view can join the pair.
             # is_error reads the same structural evidence execution_output
@@ -2249,6 +2278,14 @@ def _collect_message_entries(
                     )
                 else:
                     admission.materialized(AdmissionUnit.BLOCK, block_ordinal, block.type.value)
+        if attachment_origin is not None:
+            for attachment_ordinal in range(attachment_start, len(attachments)):
+                attachment_origin(attachment_ordinal, idx - 1)
+        if attachment_occurrence is not None:
+            for attachment_ordinal in range(attachment_start, len(attachments)):
+                attachment = attachments[attachment_ordinal]
+                attachment_occurrence(attachment, idx - 1)
+                attachments[attachment_ordinal] = attachment
         if not text and not content_blocks and not preserve_empty_messages:
             if admission is not None:
                 admission.unknown(
@@ -2262,7 +2299,12 @@ def _collect_message_entries(
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data")
-        message_type = forced_message_type or classify_text_message_type(text) or MessageType.MESSAGE
+        message_type = classify_message_type(
+            role=role,
+            message_type=forced_message_type or MessageType.MESSAGE,
+            text=text,
+            block_types=tuple(block.type for block in content_blocks),
+        )
         real_author = _real_author(author)
         material_origin = human_authored_override(
             role,
@@ -2402,8 +2444,8 @@ def looks_like(payload: object) -> bool:
     pattern already load-bearing for Codex (``codex.looks_like``).
 
     Use this only where a whole document/list-of-documents is available
-    (``dispatch._detect_provider_from_sequence``'s first-record check, and
-    direct callers validating an assembled export). For a single record
+    (the canonical sequence-document detector and direct callers
+    validating an assembled export). For a single record
     that may be an intentionally partial fragment (streamed JSONL lines,
     already-lowered single records), use ``looks_like_fragment`` instead --
     it lacks the document-identity fields this function requires.
@@ -2577,7 +2619,7 @@ def _aggregate_result_events(
             continue
         metadata = message.get("metadata")
         aggregate_result = metadata.get("aggregate_result") if isinstance(metadata, Mapping) else None
-        message_id = str(message.get("id") or node_id)
+        message_id = _mapping_message_id(str(node_id), node, message)
         if message_id not in emitted_message_ids:
             continue
         content = message.get("content")
@@ -2634,7 +2676,7 @@ def _message_authorship_events(
         real_author = _real_author(message.get("author"))
         if channel is None and real_author is None:
             continue
-        message_id = str(message.get("id") or node_id)
+        message_id = _mapping_message_id(str(node_id), node, message)
         if message_id not in emitted_message_ids:
             continue
         payload: dict[str, object] = {}
@@ -2665,7 +2707,7 @@ def _block_metadata_evidence_events(messages: Iterable[ParsedMessage]) -> Iterat
 
 def _iter_message_nodes(mapping: Mapping[str, object]) -> Iterator[tuple[str, Mapping[str, object]]]:
     """Every ``(provider_message_id, message)`` pair in mapping order."""
-    for node in mapping.values():
+    for node_id, node in mapping.items():
         if not isinstance(node, Mapping):
             continue
         message = node.get("message")
@@ -2673,7 +2715,7 @@ def _iter_message_nodes(mapping: Mapping[str, object]) -> Iterator[tuple[str, Ma
             continue
         # The same identity ``extract_messages_from_mapping`` mints, so the
         # events these feed bind to the message the parser emitted.
-        yield str(message.get("id") or node.get("id") or ""), message
+        yield _mapping_message_id(str(node_id), node, message), message
 
 
 def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> Iterator[ParsedSessionEvent]:
@@ -2980,7 +3022,13 @@ def _custom_gpt_event(
 
 
 @parser_admission("chatgpt")
-def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpill | None = None) -> ParsedSession:
+def parse(
+    payload: Mapping[str, object],
+    fallback_id: str,
+    *,
+    spill: SessionSpill | None = None,
+    attachment_occurrence: Callable[[ParsedAttachment, int], None] | None = None,
+) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, Mapping):
         mapping = {}
@@ -3010,6 +3058,8 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
         default_model_slug=conversation_model_slug,
         new_seen_set=spill.seen_set if spill is not None else set,
         new_string_map=spill.string_map if spill is not None else dict,
+        attachment_origin=spill.set_attachment_record_origin if spill is not None else None,
+        attachment_occurrence=attachment_occurrence,
     )
     emitted_message_ids = entries.emitted_provider_ids()
     session_events: MutableSequence[ParsedSessionEvent] = spill.events() if spill is not None else []

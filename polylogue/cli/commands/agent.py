@@ -41,7 +41,7 @@ def _emit(payload: dict[str, object], *, output_format: str) -> None:
                 continue
             name = item.get("client", "unknown")
             state = "ok"
-            if item.get("native_ok") is False or item.get("retained_drift"):
+            if item.get("native_ok") is False or item.get("asset_current") is False or item.get("retained_drift"):
                 state = "attention"
             click.echo(f"  {name}: {state}")
     problems = payload.get("problems")

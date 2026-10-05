@@ -88,8 +88,44 @@ class _IngestContext(BaseModel):
     source_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
+class _ExcisionContext(BaseModel):
+    """Frozen closure coordinates survive Source-first removal and rebuild."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    session_id: str
+    actor: str
+    found: bool
+    reason: str
+    cascade_lineage: bool
+    lineage_dependent_session_ids: list[str]
+    source_marker_inputs_pending: int = Field(ge=0)
+    source_marker_inputs_accepted: int = Field(ge=0)
+    marker_input_digests: list[str]
+    targets: list[dict[str, object]]
+    user_frame_epoch: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> _ExcisionContext:
+        from polylogue.security.excision import excision_target_from_replay, excision_target_replay
+
+        targets = [excision_target_from_replay(value) for value in self.targets]
+        expected = [*self.lineage_dependent_session_ids, self.session_id]
+        if [target.session_id for target in targets] != expected or len(set(expected)) != len(expected):
+            raise ValueError("excision replay requires the exact ordered original cascade")
+        if not self.cascade_lineage and self.lineage_dependent_session_ids:
+            raise ValueError("excision replay cannot widen a noncascade plan")
+        if targets[-1].found != self.found:
+            raise ValueError("excision replay existence must match its frozen target")
+        if any(target.session_exists and target.session_content_hash is None for target in targets):
+            raise ValueError("excision replay requires the original session content identity")
+        self.targets = [excision_target_replay(target) for target in targets]
+        return self
+
+
 _CONTEXT_MODELS: dict[str, type[BaseModel]] = {
     "mutate-delete-session": _DeleteContext,
+    "mutate-session-excision": _ExcisionContext,
     "mutate-bulk-tag-sessions": _TagContext,
     "mutate-bulk-set-metadata": _MetadataContext,
     "mutate-rebuild-insights": _InsightContext,

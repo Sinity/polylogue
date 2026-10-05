@@ -207,17 +207,6 @@ class SessionTimelineListQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class ThreadListQuery:
-    """Canonical thread read selection for repository/search runtime."""
-
-    since: str | None = None
-    until: str | None = None
-    limit: int | None = 50
-    offset: int = 0
-    query: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class SessionTagRollupListQuery:
     """Canonical tag-rollup selection for durable insight aggregate reads."""
 
@@ -239,32 +228,6 @@ class ArtifactObservationListQuery:
 
 
 @dataclass(frozen=True, slots=True)
-class RunProjectionListQuery:
-    """Canonical selection for source-derived run-projection read-models.
-
-    One query shape covers the run/observed-event/context-snapshot relations
-    computed on read by ``run_projection_relations.py``'s CTEs; each reader
-    honours only the filter fields that map to its relation's columns and
-    ignores the rest. ``sort`` selects ``position`` (default) or ``recency``
-    ordering.
-    """
-
-    session_id: str | None = None
-    run_ref: str | None = None
-    harness: str | None = None
-    role: str | None = None
-    status: str | None = None
-    kind: str | None = None
-    delivery_state: str | None = None
-    boundary: str | None = None
-    inheritance_mode: str | None = None
-    query: str | None = None
-    sort: str = "position"
-    limit: int | None = 50
-    offset: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class WorkEvidenceTraversalQuery:
     """One-hop, direction-aware graph traversal over a named corpus snapshot."""
 
@@ -277,7 +240,6 @@ class WorkEvidenceTraversalQuery:
 
 __all__ = [
     "ArtifactObservationListQuery",
-    "RunProjectionListQuery",
     "WorkEvidenceTraversalQuery",
     "SessionCountQueryKwargs",
     "SessionListQueryKwargs",
@@ -285,5 +247,4 @@ __all__ = [
     "SessionProfileListQuery",
     "SessionTagRollupListQuery",
     "SessionTimelineListQuery",
-    "ThreadListQuery",
 ]

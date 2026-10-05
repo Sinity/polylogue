@@ -18,7 +18,7 @@ pytestmark = pytest.mark.uses_real_clock
 def test_observer_metadata_custody_preserves_main_and_shm_locks(tmp_path: Path) -> None:
     if not hasattr(os, "O_PATH"):
         with pytest.raises(AuditLeafError):
-            VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving")
+            VerifiedAuditLeaf(tmp_path)
         return
     path = tmp_path / "audit.db"
     with closing(sqlite3.connect(path)) as writer:
@@ -30,7 +30,7 @@ def test_observer_metadata_custody_preserves_main_and_shm_locks(tmp_path: Path) 
         assert writer.execute("SELECT value FROM evidence").fetchone() == ("neutral",)
         expected = {"main": "protected", "shm": "protected"}
         assert sqlite_lock_state(path) == expected
-        with VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving") as leaf:
+        with VerifiedAuditLeaf(tmp_path) as leaf:
             leaf.assert_unchanged()
             assert leaf.identity_metadata().st_ino == path.stat().st_ino
             assert sqlite_lock_state(path) == expected
@@ -45,7 +45,7 @@ def test_observer_metadata_custody_refuses_missing_platform_capability(
 ) -> None:
     monkeypatch.delattr(os, "O_PATH", raising=False)
     with pytest.raises(AuditLeafError):
-        VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving")
+        VerifiedAuditLeaf(tmp_path)
 
 
 @pytest.mark.parametrize("constructor_fault", [False, True])
@@ -63,7 +63,7 @@ def test_verified_leaf_failed_descriptor_cleanup_retains_existing_native_owner(
     with closing(sqlite3.connect(path)) as connection:
         connection.execute("CREATE TABLE evidence(value TEXT)")
         connection.commit()
-    leaf = VerifiedAuditLeaf(tmp_path, identity_access="lock-preserving")
+    leaf = VerifiedAuditLeaf(tmp_path)
     real_close = os.close
     attempts: list[int] = []
     refused: list[int] = []

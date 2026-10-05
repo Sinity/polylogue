@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -7,6 +8,7 @@ import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
@@ -53,16 +55,19 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationPrincipal,
     MutationReceipt,
+    MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
     RecoveryBlockedError,
     RecoveryResolution,
     ReplayHandles,
+    StartedBoundMutation,
     TargetAuthorityPolicy,
     TargetDurability,
     TokenConsumedError,
     TokenExpiredError,
     build_plan,
+    take_started_bound_mutation,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.audit_continuity import (
@@ -631,6 +636,74 @@ def test_execute_bound_routes_the_effect_through_execute(tmp_path: Path, monkeyp
     assert actuator.calls == 1
 
 
+@pytest.mark.parametrize("exit_kind", ["success", "exception", "cancellation"])
+def test_bound_started_carrier_is_exact_one_shot_and_expires_on_every_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_kind: str
+) -> None:
+    """The participant borrows the real begin result; copied contexts cannot replay it."""
+    begun: list[StartedBoundMutation] = []
+    inherited: list[Context] = []
+    plans: list[MutationPlan] = []
+    original_begin = OperationExecutor.begin_bound
+
+    def record_begin(self: OperationExecutor, *args: Any, **kwargs: Any) -> StartedBoundMutation:
+        started = original_begin(self, *args, **kwargs)
+        begun.append(started)
+        return started
+
+    class Participant(_Actuator):
+        def apply(self, plan: MutationPlan, args: object) -> MutationReceipt:
+            plans.append(plan)
+            inherited.append(copy_context())
+            # Equal plans and equal participant instances confer no authority.
+            with pytest.raises(MutationTransactionError):
+                take_started_bound_mutation(_Actuator(), plan)
+            with pytest.raises(MutationTransactionError):
+                take_started_bound_mutation(self, replace(plan))
+            # A copied context on a foreign thread cannot consume the original.
+            foreign_context = copy_context()
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(foreign_context.run, take_started_bound_mutation, self, plan)
+                with pytest.raises(MutationTransactionError):
+                    future.result()
+            assert take_started_bound_mutation(self, plan) is begun[0]
+            assert begun[0].operation_id is not None
+            with pytest.raises(MutationTransactionError):
+                inherited[0].run(take_started_bound_mutation, self, plan)
+            if exit_kind == "exception":
+                raise RuntimeError("participant failed after transfer")
+            if exit_kind == "cancellation":
+                raise asyncio.CancelledError()
+            return super().apply(plan, args)
+
+    monkeypatch.setattr(OperationExecutor, "begin_bound", record_begin)
+    actuator = Participant()
+    executor = OperationExecutor(audit=_audit(tmp_path), token_factory=lambda: "started-carrier-token")
+    binding = _binding(actuator)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:test",
+        archive_identity_digest="identity:test",
+        parameter_digest="params:test",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    if exit_kind == "success":
+        receipt = executor.execute_bound(binding, preview, authorization, object())
+        assert receipt.operation_id == begun[0].operation_id
+    else:
+        failure = RuntimeError if exit_kind == "exception" else asyncio.CancelledError
+        with pytest.raises(failure):
+            executor.execute_bound(binding, preview, authorization, object())
+    assert len(begun) == 1
+    assert plans == [begun[0].plan]
+    with pytest.raises(MutationTransactionError):
+        take_started_bound_mutation(actuator, plans[0])
+    with pytest.raises(MutationTransactionError):
+        inherited[0].run(take_started_bound_mutation, actuator, plans[0])
+
+
 def test_prepare_bound_uses_the_declared_durable_target_for_legacy_actuators() -> None:
     """Fallback target construction cannot downgrade a durable policy to derived."""
 
@@ -831,7 +904,7 @@ def test_audit_leaf_rejects_group_writable_main_and_sidecar_files(tmp_path: Path
 def test_audit_leaf_serializes_writers_across_the_main_and_sidecar_namespace(tmp_path: Path) -> None:
     """A second writer cannot validate then race the first SQLite namespace owner.
 
-    Anti-vacuity: without the nonblocking main-leaf lock, both contexts open
+    Anti-vacuity: without the nonblocking directory lock, both contexts open
     and can independently create or replace the audit sidecar namespace.
     """
 
@@ -3058,3 +3131,142 @@ def test_a_progressing_paged_handshake_keeps_its_authority(
         audit.accept_execution_batch(authorization_refs, _principal())
     record = audit.machine_request(executing)
     assert record is not None and record["artifact_kind"] == "execution-batch"
+
+
+def test_recovery_discovery_does_not_bind_the_pre_begin_lease(tmp_path: Path) -> None:
+    from polylogue.core.write_lease import current_write_lease
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+
+    bootstrap_archive_root(tmp_path)
+
+    def discover() -> None:
+        audit = AuditRepository.for_archive_root(tmp_path)
+        executor = OperationExecutor(audit=audit, archive_root=tmp_path)
+        assert current_write_lease() is None
+        executor._resolve_dead_operations(prepared_excision_only=True)
+        assert current_write_lease() is None
+
+    asyncio.run(run_archive_fixture_prepare(discover))
+
+
+def test_recovery_discovery_borrows_the_actual_coordinated_audit_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bootstrap_archive_root(tmp_path)
+    observed: list[str] = []
+
+    def execute() -> None:
+        audit = AuditRepository.for_archive_root(tmp_path)
+        executor = OperationExecutor(audit=audit, archive_root=tmp_path)
+        original = audit._bind_machine_result
+
+        def bind_result(conn: sqlite3.Connection, mutation: AuditMutation, result: object) -> None:
+            assert audit._coordinated_connection is conn
+            executor._resolve_dead_operations(prepared_excision_only=True)
+            with audit.recovery_discovery_read(), audit._connection() as discovered:
+                assert discovered is conn
+            observed.append(mutation.kind)
+            original(conn, mutation, result)
+
+        monkeypatch.setattr(audit, "_bind_machine_result", bind_result)
+        from polylogue.storage.archive_identity import ArchiveIdentity
+
+        instance = audit.ensure_archive_authority(now_ms=1_700_000_000_000)
+        identity = ArchiveIdentity.resolve(tmp_path)
+        actuator = _Actuator()
+        preview = executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id=instance,
+            archive_identity_digest=identity.authority_identity_digest,
+            parameter_digest="params:fixture",
+        )
+        authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+        receipt = executor.execute_bound(_binding(actuator), preview, authorization, object())
+        assert receipt.status == "applied"
+        assert actuator.calls == 1
+
+    asyncio.run(run_archive_fixture_write(tmp_path, execute))
+    assert "consume_authorization_and_start" in observed
+
+
+@pytest.mark.parametrize("cancel_waiter", [False, True])
+def test_recovery_discovery_settles_original_reader_contention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_waiter: bool
+) -> None:
+    from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError
+
+    bootstrap_archive_root(tmp_path)
+    audit = AuditRepository.for_archive_root(tmp_path)
+    original_lock = audit._continuity._execution_lock
+    contended = threading.Event()
+    rendezvous = threading.Event()
+
+    class ObservedLock:
+        def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+            acquired = original_lock.acquire(blocking, timeout)
+            if not acquired and blocking:
+                contended.set()
+                rendezvous.set()
+            return acquired
+
+        def release(self) -> None:
+            original_lock.release()
+
+    monkeypatch.setattr(audit._continuity, "_execution_lock", ObservedLock())
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=1)
+
+    def discover() -> tuple[int, bool]:
+        assert current_write_lease() is None
+        with pytest.raises(AuditContinuityPendingError):
+            with audit.settled_machine_read():
+                raise AssertionError("completion read waited behind a held continuity reader")
+        with audit.recovery_discovery_read():
+            rows = audit.orphaned_operations()
+        return len(rows), current_write_lease() is None
+
+    submitted = None
+    try:
+        with audit.settled_machine_read():
+            submitted = adapter.submit(discover)
+            submitted.future.add_done_callback(lambda _future: rendezvous.set())
+            rendezvous.wait()
+            if submitted.future.done():
+                submitted.future.result()
+            assert contended.is_set()
+            assert not submitted.future.done()
+            if cancel_waiter:
+                submitted.cancellation.cancel()
+                with pytest.raises(DaemonOperationCancelled):
+                    submitted.future.result()
+                assert submitted.future.done()
+            else:
+                assert current_write_lease() is None
+        if not cancel_waiter:
+            assert submitted.future.result() == (0, True)
+        assert original_lock.acquire(blocking=False)
+        original_lock.release()
+    finally:
+        if submitted is not None and not submitted.future.done():
+            submitted.cancellation.cancel()
+        adapter.shutdown(wait=True)
+    assert not any(thread.is_alive() for thread in adapter.executor._threads)
+
+
+def test_recovery_discovery_preserves_original_pending_head_refusal(tmp_path: Path) -> None:
+    from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+    from tests.infra.audit_completion import make_source_completion_control
+
+    _root, audit, payload, install = make_source_completion_control(tmp_path)
+    install(payload)
+
+    def discover() -> None:
+        with pytest.raises(AuditContinuityPendingError):
+            with audit.recovery_discovery_read():
+                raise AssertionError("an unpromoted Source command was admitted")
+
+    asyncio.run(run_archive_fixture_prepare(discover))

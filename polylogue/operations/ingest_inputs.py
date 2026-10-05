@@ -27,6 +27,7 @@ from polylogue.sources.source_staging import (
     read_staging_receipt,
     write_bound_input,
 )
+from polylogue.sources.sqlite_export import source_byte_page
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, snapshot_sqlite_to_blob
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.runtime import RawSessionRecord
@@ -55,7 +56,6 @@ def spool_connection(path: Path, *, read_only: bool = False) -> Iterator[sqlite3
     """Own one private spool transaction and its exact artifact through settlement."""
     if read_only:
         with readonly_connection_context(path, validate_schema=False, lifetime_dependencies=(path,)) as conn:
-            conn.execute("PRAGMA temp_store=FILE").close()
             yield conn
         return
     owner = open_scratch_connection(path, lifetime_dependencies=(path,))
@@ -287,37 +287,45 @@ def retain_input_page(
         receipt_row = conn.execute("SELECT body FROM receipt").fetchone()
         receipt = None if receipt_row is None else json.loads(receipt_row[0])
     batch: list[FrozenSourceInput] = []
-    for coordinate, physical_name, logical_path, captured_member in rows:
-        check_stop()
-        physical = Path(physical_name)
-        with _bind_ingest_input_row((coordinate, physical_name, logical_path, captured_member), receipt) as binding:
-            captured_identity = binding.captured_identity
-            if is_sqlite_path(binding.source_path):
-                blob_hash = snapshot_sqlite_to_blob(
-                    physical, publisher, heartbeat=check_stop, source_binding=binding
-                ).blob_hash
-            else:
-                accepted_revision: dict[str, object] = {}
+    with source_byte_page() as reader:
+        for coordinate, physical_name, logical_path, captured_member in rows:
+            check_stop()
+            physical = Path(physical_name)
+            with _bind_ingest_input_row((coordinate, physical_name, logical_path, captured_member), receipt) as binding:
+                captured_identity = binding.captured_identity
+                if is_sqlite_path(binding.source_path):
+                    blob_hash = snapshot_sqlite_to_blob(
+                        physical, publisher, heartbeat=check_stop, source_binding=binding
+                    ).blob_hash
+                else:
+                    accepted_revision: dict[str, object] = {}
 
-                def retain_bytes(
-                    destination: IO[bytes],
-                    *,
-                    revision: dict[str, object] = accepted_revision,
-                    accepted: SourceInputBinding = binding,
-                ) -> None:
-                    revision.update(write_bound_input(accepted, destination))
+                    def retain_bytes(
+                        destination: IO[bytes],
+                        *,
+                        revision: dict[str, object] = accepted_revision,
+                        accepted: SourceInputBinding = binding,
+                    ) -> None:
+                        revision.update(write_bound_input(accepted, destination, reader=reader))
 
-                blob_hash, blob_size = publisher.write_from_writer(retain_bytes, heartbeat=check_stop)
-                if (accepted_revision["content_revision"], accepted_revision["size_bytes"]) != (blob_hash, blob_size):
-                    raise ValueError("retained input differs from its proved descriptor bytes")
-        publication_id = publisher.receipt_id(blob_hash)
-        if publication_id is None:
-            raise RuntimeError("retained input has no publication reservation identity")
-        batch.append(
-            FrozenSourceInput(
-                str(coordinate), captured_identity.semantic_source_path, blob_hash, publication_id, captured_identity
+                    blob_hash, blob_size = publisher.write_from_writer(retain_bytes, heartbeat=check_stop)
+                    if (accepted_revision["content_revision"], accepted_revision["size_bytes"]) != (
+                        blob_hash,
+                        blob_size,
+                    ):
+                        raise ValueError("retained input differs from its proved descriptor bytes")
+            publication_id = publisher.receipt_id(blob_hash)
+            if publication_id is None:
+                raise RuntimeError("retained input has no publication reservation identity")
+            batch.append(
+                FrozenSourceInput(
+                    str(coordinate),
+                    captured_identity.semantic_source_path,
+                    blob_hash,
+                    publication_id,
+                    captured_identity,
+                )
             )
-        )
     return tuple(batch)
 
 

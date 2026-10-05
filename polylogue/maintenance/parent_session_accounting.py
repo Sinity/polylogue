@@ -200,12 +200,6 @@ class ParentSessionAccountingReport:
         return "; ".join(parts)
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if not table_exists(conn, table):
-        return set()
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-
-
 def _source_path_available(archive_root: Path | None, source_path: str) -> bool:
     if not source_path:
         return False
@@ -279,8 +273,7 @@ def audit_parent_session_accounting(
             untyped_total=untyped_total,
             origins=origins,
         )
-    source_columns = _table_columns(source, "raw_sessions")
-    if not source_columns:
+    if not table_exists(source, "raw_sessions"):
         return ParentSessionAccountingReport(
             available=False,
             reason="source.db.raw_sessions is absent",

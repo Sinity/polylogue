@@ -142,17 +142,17 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
     assert archive.read_session.call_count == 3
 
 
-def test_ranked_chronicle_count_sort_keeps_the_requested_pool(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity (Codex P1, #5695): clear the window for a ranked count sort
-    and the semantic pool falls back to its default size, so ``offset=150``
-    removes every candidate even when more matches exist."""
+def test_ranked_chronicle_count_sort_uses_full_composed_order_before_its_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared ranked reader settles composed comparison keys before paging."""
     import polylogue.archive.query.archive_execution as archive_execution
     from polylogue.archive.query.plan import SessionQueryPlan
 
-    fetched: list[tuple[SessionQueryPlan, object]] = []
+    fetched: list[tuple[SessionQueryPlan, object, object]] = []
 
     def capture(plan: SessionQueryPlan, *_args: object, **kwargs: object) -> list[object]:
-        fetched.append((plan, kwargs.get("complete")))
+        fetched.append((plan, kwargs.get("complete"), kwargs.get("full_sort")))
         return []
 
     monkeypatch.setattr(archive_execution, "_archive_summaries", capture)
@@ -162,8 +162,9 @@ def test_ranked_chronicle_count_sort_keeps_the_requested_pool(monkeypatch: pytes
         vector_provider=None,
     )
 
-    ((plan, complete),) = fetched
+    ((plan, complete, full_sort),) = fetched
     assert complete is False
+    assert full_sort is True
     assert plan.offset == 150
     assert plan.limit == 1
 
@@ -174,7 +175,7 @@ def test_ranked_chronicle_count_sort_keeps_the_requested_pool(monkeypatch: pytes
         ({"sort": "messages"}, True),
         ({"sort": "tokens", "limit": 1}, True),
         ({"sort": "date"}, False),
-        ({"sort": "messages", "similar_text": "neutral probe"}, False),
+        ({"sort": "messages", "similar_text": "neutral probe"}, True),
     ],
 )
 def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[str, object], scan: bool) -> None:

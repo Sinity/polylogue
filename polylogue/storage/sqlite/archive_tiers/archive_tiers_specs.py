@@ -610,8 +610,8 @@ BLOCKS_SPEC = _make_table_spec(
             domain_name="semantic_type",
             domain_transform=_optional_text_value,
         ),
-        _raw_column("media_type", "media_type TEXT"),
-        _raw_column("language", "language TEXT"),
+        _raw_column("media_type", "media_type TEXT", record_name="media_type", domain_name="media_type"),
+        _raw_column("language", "language TEXT", record_name="language", domain_name="language"),
         # Display name of a DOCUMENT/IMAGE block (a project document's file
         # name), projected from parser ``metadata["name"]``; ``metadata`` has
         # no column of its own.
@@ -1593,6 +1593,10 @@ SESSION_MODEL_USAGE_SPEC = _make_table_spec(
         ),
         _raw_column("provider_cost_usd", """provider_cost_usd       REAL"""),
         _raw_column("catalog_cost_usd", """catalog_cost_usd        REAL"""),
+        _raw_column(
+            "provider_lanes_complete",
+            """provider_lanes_complete INTEGER NOT NULL DEFAULT 1 CHECK(provider_lanes_complete IN (0, 1))""",
+        ),
         _raw_column("cost_credits", """cost_credits            REAL"""),
         _raw_column(
             "declared",
@@ -2144,7 +2148,7 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
 # Embeddings tier (polylogue-a7xr.27)
 #
 # The index tier renders every CREATE TABLE from a TableColumnSpec; the
-# embeddings tier now does too. Its five STRICT tables are declared here so a
+# embeddings tier now does too. Its content and completion STRICT tables are declared here so a
 # column addition touches the spec and the tier's lifecycle delta only, and so
 # its two closed vocabularies generate their CHECK from the Python owner
 # (polylogue-3szyi) instead of a hand-typed value list. The vec0 virtual table
@@ -2278,12 +2282,40 @@ EMBEDDING_FAILURES_SPEC = _make_table_spec(
     ),
 )
 
+EXCISION_EMBEDDING_COMPLETIONS_SPEC = _make_table_spec(
+    "excision_embedding_completions",
+    (
+        _raw_column("operation_id", "operation_id TEXT NOT NULL"),
+        _raw_column("attempt_id", "attempt_id TEXT NOT NULL"),
+        _raw_column("plan_hash", "plan_hash BLOB NOT NULL CHECK(length(plan_hash) = 32)"),
+        _raw_column(
+            "source_command_sha256", "source_command_sha256 BLOB NOT NULL CHECK(length(source_command_sha256) = 32)"
+        ),
+        _raw_column(
+            "embeddings_intent_sha256",
+            "embeddings_intent_sha256 BLOB NOT NULL CHECK(length(embeddings_intent_sha256) = 32)",
+        ),
+        _raw_column("postimage_sha256", "postimage_sha256 BLOB NOT NULL CHECK(length(postimage_sha256) = 32)"),
+        _raw_column("deleted_refs", "deleted_refs INTEGER NOT NULL CHECK(deleted_refs >= 0)"),
+        _raw_column("deleted_meta", "deleted_meta INTEGER NOT NULL CHECK(deleted_meta >= 0)"),
+        _raw_column("deleted_vectors", "deleted_vectors INTEGER NOT NULL CHECK(deleted_vectors >= 0)"),
+        _raw_column("deleted_status", "deleted_status INTEGER NOT NULL CHECK(deleted_status >= 0)"),
+        _raw_column("deleted_failures", "deleted_failures INTEGER NOT NULL CHECK(deleted_failures >= 0)"),
+        _raw_column(
+            "deleted_derivation_state", "deleted_derivation_state INTEGER NOT NULL CHECK(deleted_derivation_state >= 0)"
+        ),
+        _raw_column("completed_at_ms", "completed_at_ms INTEGER NOT NULL CHECK(completed_at_ms >= 0)"),
+    ),
+    table_constraints=("PRIMARY KEY(operation_id, attempt_id)",),
+)
+
 EMBEDDINGS_TABLE_SPECS = {
     "message_embeddings_meta": MESSAGE_EMBEDDINGS_META_SPEC,
     "message_embedding_refs": MESSAGE_EMBEDDING_REFS_SPEC,
     "embedding_status": EMBEDDING_STATUS_SPEC,
     "embedding_derivation_state": EMBEDDING_DERIVATION_STATE_SPEC,
     "embedding_failures": EMBEDDING_FAILURES_SPEC,
+    "excision_embedding_completions": EXCISION_EMBEDDING_COMPLETIONS_SPEC,
 }
 
 INDEX_TABLE_SPECS = {

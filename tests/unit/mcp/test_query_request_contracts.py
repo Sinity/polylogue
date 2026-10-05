@@ -54,8 +54,10 @@ def test_archive_query_filters_forward_max_words() -> None:
 def test_mcp_query_boundary_rejects_unknown_and_allows_only_declared_paste_alias() -> None:
     with pytest.raises(QuerySpecError, match="bogus.*accepted alternatives"):
         build_session_query_request(bogus=True)
-    with pytest.raises(QuerySpecError, match="has_paste.*filter_has_paste"):
+    with pytest.raises(QuerySpecError) as refusal:
         build_query_spec(has_paste=True)
+    assert refusal.value.field == "has_paste"
+    assert refusal.value.value == "unknown MCP query parameter; accepted alternatives: has_paste_evidence"
 
     mcp_spec = build_query_spec(has_paste_evidence=True)
     structured_spec = SessionQuerySpec.from_params({"filter_has_paste": True}, strict=True)

@@ -7,9 +7,10 @@ future web/API surfaces can inspect the same vocabulary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
+from polylogue.archive.session_projections import bind_session_list_projection_contracts
 from polylogue.core.json import JSONDocument
 
 ViewEvidencePolicy = Literal["required", "optional", "unavailable", "omitted"]
@@ -84,7 +85,7 @@ class SessionViewProfile:
         }
 
 
-READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
+_READ_VIEW_PROFILE_TEMPLATES: tuple[SessionViewProfile, ...] = (
     SessionViewProfile(
         view_id="summary",
         label="Summary",
@@ -434,7 +435,11 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
     ),
 )
 
-READ_VIEW_PROFILE_BY_ID: dict[str, SessionViewProfile] = {profile.view_id: profile for profile in READ_VIEW_PROFILES}
+READ_VIEW_PROFILE_BY_ID = bind_session_list_projection_contracts(
+    {profile.view_id: profile for profile in _READ_VIEW_PROFILE_TEMPLATES},
+    lambda profile, name: replace(profile, view_id=name),
+)
+READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = tuple(READ_VIEW_PROFILE_BY_ID.values())
 
 READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
     "messages": ReadViewHttpCapability(

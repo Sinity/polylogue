@@ -64,6 +64,19 @@
       "default": null,
       "title": "Detail"
     },
+    "domain_receipt": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Domain Receipt"
+    },
     "key": {
       "anyOf": [
         {

@@ -487,3 +487,32 @@ def test_highly_compressible_valid_member_is_retained_without_ratio_refusal(tmp_
     assert len(records) == 1
     assert records[0].data is not None
     assert store.read_all(records[0].data.blob_hash or "") == payload
+
+
+def test_empty_retained_zip_does_not_allocate_a_disposition_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = tmp_path / "empty.zip"
+    with zipfile.ZipFile(original, "w"):
+        pass
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, blob_size, identity = _retain_container(store, original)
+
+    def forbidden_spool() -> None:
+        pytest.fail("a disposition-free container allocated private member storage")
+
+    monkeypatch.setattr(retained_acquisition, "PickleSpool", forbidden_spool)
+    assert (
+        list(
+            iter_retained_source_records(
+                enumeration_fingerprint="b" * 64,
+                source_path=str(original),
+                blob_hash=blob_hash,
+                blob_size=blob_size,
+                blob_store=store,
+                captured_identity=identity,
+                on_member_disposition=lambda *_fields: None,
+            )
+        )
+        == []
+    )

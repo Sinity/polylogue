@@ -15,6 +15,7 @@ import re
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import NotRequired, TypedDict
 
 from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
@@ -132,7 +133,14 @@ def canonical_schema_manifest(tier: ArchiveTier, *, version: int | None = None) 
     )
 
 
-def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> dict[str, object]:
+class SchemaManifestDiff(TypedDict):
+    missing: list[tuple[str, str]]
+    extra: list[tuple[str, str]]
+    wrong_definition: list[tuple[str, str, str, str]]
+    version: NotRequired[dict[str, int]]
+
+
+def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> SchemaManifestDiff:
     expected_by_name = {(kind, name): sql for kind, name, sql in expected.objects}
     actual_by_name = {(kind, name): sql for kind, name, sql in actual.objects}
     missing = sorted(set(expected_by_name) - set(actual_by_name))

@@ -80,6 +80,7 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
             archive_root,
             compute_adapter=compute,
             write_bridge=bridge,
+            write_coordinator=coordinator,
         )
         profiles = compose_session_profile_callback(
             archive_root,

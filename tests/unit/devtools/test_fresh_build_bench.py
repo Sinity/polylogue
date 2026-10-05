@@ -35,6 +35,7 @@ from devtools.fresh_build_bench.report import (
 )
 from devtools.fresh_build_bench.run import REQUIRED_READINESS_DOMAINS, Observation, RunConfig, _daemon_env
 from devtools.fresh_build_bench.sampler import thread_group
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _event(ts: str, event: str, **fields: object) -> str:
@@ -350,7 +351,10 @@ def test_event_times_share_the_driver_clock_and_stop_at_promotion(tmp_path: Path
     summary = analyse_events(events, origin_unix=origin)
     assert summary["milestones_s"]["promoted_s"] == 20.0
     assert summary["by_source"]["codex"] == {"groups": 1, "files": 1, "seconds": 3.0}
-    assert analyse_events(tmp_path / "absent.jsonl") == {"event_count": 0}
+    absent = analyse_events(tmp_path / "absent.jsonl")
+    assert absent["event_count"] == 0
+    assert absent["coverage"]["file_present"] is False
+    assert absent["coverage"]["complete"] is False
 
 
 def test_stratum_boundary_is_one_draw(tmp_path: Path) -> None:
@@ -1058,16 +1062,31 @@ def test_debt_waiting_on_its_scheduled_retry_is_not_a_stall(tmp_path: Path, monk
     assert captured["outcome"] == "terminal"
 
 
-def test_a_failed_retry_attempt_is_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity (Codex P1, #5678): leave attempts out of the progress key
-    and retries that keep failing are read as no progress."""
+def test_repeated_failed_retries_are_activity_without_useful_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry counters must not indefinitely renew the useful-progress clock."""
     frames = [
         {"cursor_complete": 1, "open_debt": 1, "debt_by_stage": {"s": 1}, "debt_attempts": attempt}
         for attempt in range(1, 5)
     ]
-    captured = _scripted_run(tmp_path, monkeypatch, [*frames, _terminal_frame()], stall_timeout_s=900.0)
+    captured = _scripted_run(tmp_path, monkeypatch, frames, stall_timeout_s=900.0)
+    assert captured["outcome"] == "stalled"
+    last = captured["observations"][-1]
+    assert last.useful_progress_at_s is None
+    assert last.activity_at_s == last.t
 
+
+def test_retry_activity_can_eventually_finish_without_becoming_useful_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Declared backoff can recover; only the actual readiness/publication moves progress."""
+    waiting = {"cursor_complete": 1, "open_debt": 1, "debt_by_stage": {"s": 1}, "debt_waiting_by_stage": {"s": 1}}
+    frames = [{**waiting, "debt_attempts": attempt} for attempt in range(1, 5)]
+    captured = _scripted_run(tmp_path, monkeypatch, [*frames, _terminal_frame()], stall_timeout_s=900.0)
     assert captured["outcome"] == "terminal"
+    assert all(frame.useful_progress_at_s is None for frame in captured["observations"][:4])
+    assert captured["observations"][4].useful_progress_at_s == captured["observations"][4].t
 
 
 def test_the_wall_clock_step_over_the_run_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2068,3 +2087,167 @@ def test_an_interrupted_receipt_skips_the_archive_census(tmp_path: Path, monkeyp
     assert receipt["qualified"] is False
     report.build_receipt(outcome="terminal", **arguments)
     assert len(entered) == 1
+
+
+@pytest.mark.parametrize("origin", [None, _ts("2026-09-27T10:00:00.000000Z")])
+def test_event_coverage_exposes_every_dropped_record(tmp_path: Path, origin: float | None) -> None:
+    """Malformed/non-object/unusable records must invalidate complete coverage in either clock mode."""
+    from devtools.fresh_build_bench.report import _events_lossless
+
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n".join(
+            [
+                _event("00.000", "daemon.run.start"),
+                "{bad",
+                "[]",
+                "{}",
+                _event("01.000", "daemon.cold_build.generation_promoted"),
+            ]
+        )
+        + "\n"
+    )
+    result = analyse_events(path, origin_unix=origin)
+    assert result["event_count"] == 2
+    assert result["coverage"] == {
+        "file_present": True,
+        "lines": 5,
+        "valid_events": 2,
+        "malformed_json": 1,
+        "non_object": 1,
+        "invalid_event": 1,
+        "complete": False,
+    }
+    assert not _events_lossless(result, {"dropped": 0, "failures": 0, "undrained": 0})
+
+
+@pytest.mark.parametrize(
+    "delivery",
+    [
+        None,
+        {},
+        {"dropped": 0, "failures": 0},
+        {"dropped": 0, "failures": None, "undrained": 0},
+        {"dropped": 0, "failures": 0, "undrained": 1},
+        {"dropped": False, "failures": 0, "undrained": 0},
+    ],
+)
+def test_unknown_or_nonzero_terminal_delivery_cannot_claim_lossless(tmp_path: Path, delivery: Any) -> None:
+    """Absent counters differ from measured zero even when every recorded line parses."""
+    from devtools.fresh_build_bench.report import _events_lossless
+
+    path = tmp_path / "events.jsonl"
+    path.write_text(_event("00.000", "daemon.run.start") + "\n")
+    events = analyse_events(path)
+    assert events["coverage"]["complete"] is True
+    assert not _events_lossless(events, delivery)
+    assert _events_lossless(events, {"dropped": 0, "failures": 0, "undrained": 0})
+
+
+def test_batch_missing_and_null_metrics_remain_unknown(tmp_path: Path) -> None:
+    """Partial measurements cannot masquerade as a measured zero total."""
+    import sqlite3
+
+    path = tmp_path / "ops.db"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE daemon_events(kind TEXT,payload_json TEXT)")
+        for payload in [
+            {"input_bytes": 0, "parse_time_s": 1, "total_time_s": 0},
+            {"input_bytes": None, "total_time_s": 0},
+        ]:
+            conn.execute("INSERT INTO daemon_events VALUES('ingestion_batch',?)", (json.dumps(payload),))
+    result = analyse_batches(path)
+    assert result["batches"] == 2
+    assert result["totals"]["input_bytes"] is None
+    assert result["totals"]["parse_time_s"] is None
+    assert result["totals"]["ingested_bytes"] is None
+    assert result["totals"]["total_time_s"] == 0
+    assert result["metric_coverage"]["input_bytes"] == {"observed": 1, "missing": 1}
+    assert result["metric_coverage"]["ingested_bytes"] == {"observed": 0, "missing": 2}
+
+
+def test_refresh_rechecks_event_coverage_and_terminal_delivery(tmp_path: Path) -> None:
+    """Refreshing cannot keep a previously claimed lossless verdict on unparsed evidence."""
+    from devtools.fresh_build_bench.report import refresh
+
+    path = tmp_path / "events.jsonl"
+    path.write_text(_event("09.000", "daemon.cold_build.generation_promoted") + "\n{bad\n")
+    (tmp_path / "stacks.json").write_text(json.dumps({"log_delivery": {"dropped": 0, "failures": 0, "undrained": 0}}))
+    receipt = _receipt(qualified=True, started_at_unix=_ts("2026-09-27T10:00:00.000000Z"))
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt))
+    result = refresh(receipt_path)
+    assert result["checks"]["events_lossless"] is False
+    assert result["event_log"]["malformed_json"] == 1
+    assert result["qualified"] is False
+
+
+@pytest.mark.parametrize("origin", [None, _ts("2026-09-27T10:00:00.000000Z")])
+def test_event_log_without_any_usable_record_has_incomplete_coverage(tmp_path: Path, origin: float | None) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text("{bad\n[]\n{}\n", encoding="utf-8")
+    result = analyse_events(path, origin_unix=origin)
+    assert result["event_count"] == 0
+    assert result["coverage"]["lines"] == 3
+    assert result["coverage"]["complete"] is False
+
+
+def test_parse_failure_does_not_count_as_reduced_required_work() -> None:
+    from devtools.fresh_build_bench.run import _useful_progress
+
+    pending = Observation(0.0, raw_rows=1, raw_pending=1)
+    failed = Observation(1.0, raw_rows=1, raw_failed=1)
+    accepted = Observation(1.0, raw_rows=1)
+    assert not _useful_progress(pending, failed)
+    assert _useful_progress(pending, accepted)
+
+
+@pytest.mark.parametrize("with_debt", [False, True])
+def test_observation_preserves_scheduled_retry_evidence_without_counting_activity_as_progress(
+    tmp_path: Path, with_debt: bool, frozen_clock: FrozenClock
+) -> None:
+    import sqlite3
+
+    from devtools.fresh_build_bench.run import observe
+
+    due = "2099-01-01T00:00:00+00:00"
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            "CREATE TABLE ingest_cursor(excluded INTEGER,byte_offset INTEGER,stat_size INTEGER,failure_count INTEGER,deferred_end_offset INTEGER,next_retry_at TEXT)"
+        )
+        conn.execute("INSERT INTO ingest_cursor VALUES(0,0,10,2,NULL,?)", (due,))
+        if with_debt:
+            conn.execute("CREATE TABLE convergence_debt(stage TEXT,attempts INTEGER,next_retry_at TEXT)")
+            conn.execute("INSERT INTO convergence_debt VALUES('lineage',3,?)", (due,))
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("CREATE TABLE empty(value INTEGER)")
+    observation = observe(tmp_path, frozen_clock.monotonic())
+    assert observation.error is None
+    assert observation.cursor_failures == 2
+    assert observation.cursor_retry_waiting == 1
+    assert observation.cursor_next_retry_at == due
+    assert observation.debt_next_retry_at == (due if with_debt else None)
+    assert observation.debt_waiting_by_stage == ({"lineage": 1} if with_debt else {})
+    assert observation.useful_progress_at_s is None
+
+
+def test_human_receipt_exposes_unparsed_event_coverage() -> None:
+    from devtools.fresh_build_bench.report import render
+
+    receipt = _receipt(
+        candidate={"git_sha": "0" * 40, "dirty": False},
+        corpus={"kind": "sample", "digest": "c", "total_bytes": 0, "file_count": 0},
+        budgets={},
+        event_log={
+            "file_present": True,
+            "lines": 3,
+            "valid_events": 2,
+            "malformed_json": 1,
+            "non_object": 0,
+            "invalid_event": 0,
+            "complete": False,
+        },
+    )
+    rendered = render(receipt)
+    assert "malformed_json=1" in rendered
+    assert "complete=False" in rendered

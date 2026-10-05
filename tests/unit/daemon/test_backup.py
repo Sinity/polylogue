@@ -17,10 +17,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import zip_member_raw_id
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode, zip_member_raw_id
 from polylogue.operations import archive_backup as backup_operations
 from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
 from polylogue.storage import backup_package as backup_mod
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.backup_blob_closure import (
@@ -38,6 +39,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
     initialize_archive_database,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 from tests.infra.durable_tier_fixtures import (
@@ -49,6 +51,39 @@ from tests.infra.durable_tier_fixtures import (
 )
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, db_setup
+
+
+def _record_zip_fixture_coordinate(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    container: Path,
+    *,
+    mode: MemberAddressingMode,
+    canonical_container: Path | None = None,
+    content_identity: str | None = None,
+    member_name: str = "conversations.json",
+) -> None:
+    declared = canonical_container or container
+    record_raw_container_coordinate(
+        conn,
+        raw_id,
+        coordinate_format="zip-v2",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode=mode,
+        content_identity=content_identity,
+        captured_coordinate=CapturedZipMemberCoordinate(
+            str(declared.resolve()),
+            str(declared.resolve()),
+            member_name,
+            0,
+            0,
+            mode,
+            hashlib.sha256(container.read_bytes()).hexdigest(),
+            zip_acquisition_fingerprint(Provider.CHATGPT),
+        ),
+        manage_transaction=False,
+    )
 
 
 def _tier_files(*tiers: ArchiveTier) -> list[str]:
@@ -692,11 +727,7 @@ def test_full_evidence_backup_carries_recovered_missing_raw_blob(
             (blob_hash, raw_id, "raw_payload", recorded_path, len(payload), 1),
         )
         if source_kind == "zip":
-            conn.execute(
-                "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
-                " VALUES (?, 'zip-v2', ?, ?)",
-                (raw_id, 0, 0),
-            )
+            _record_zip_fixture_coordinate(conn, raw_id, source_path, mode=MemberAddressingMode.ELEMENT_OF_CONTAINER)
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
@@ -839,10 +870,12 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash, raw_id, "raw_payload", retired_recorded_path, len(payload), 1),
         )
-        conn.execute(
-            "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
-            " VALUES (?, 'zip-v2', ?, ?)",
-            (raw_id, 0, 0),
+        _record_zip_fixture_coordinate(
+            conn,
+            raw_id,
+            source_path,
+            mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            canonical_container=tmp_path / "retired-root" / "inbox" / "export.zip",
         )
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
@@ -861,11 +894,11 @@ def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> No
     assert retained_source_location({"source_path": source}, tmp_path) == (source, False)
 
 
-def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
+def test_full_evidence_backup_refuses_coordinate_less_zip_row(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A legacy ZIP row still replays through acquisition without coordinate metadata."""
+    """An operational suffix cannot establish a missing member coordinate."""
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / "legacy.zip"
     records = [
@@ -878,12 +911,7 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     payload = dumps_bytes(records[2])
     blob_hash = hashlib.sha256(payload).digest()
     recorded_path = f"{source_path}:conversations.json"
-    # No ``raw_container_coordinates`` row for this raw id: the replay path
-    # reads the coordinate columns through a LEFT JOIN and must work from the
-    # recorded member suffix alone. The pre-reset version of this fixture
-    # dropped the whole table, which this lineage's source tier carries from
-    # birth -- that made the archive contradict its own format marker and the
-    # backup was refused before the replay under test ran.
+    # The intentionally absent coordinate receipt must remain unproven.
     with seed_durable_tier(archive_root / "source.db") as conn:
         conn.execute(
             """
@@ -911,9 +939,8 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
 
     result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
 
-    assert result.ok, result.error
-    assert result.verified
-    assert result.verification["recovered_source_blob_count"] == 1
+    assert not result.ok
+    assert result.verification["recovered_source_blob_count"] == 0
 
 
 def test_full_evidence_backup_streams_a_recovered_whole_zip_member(
@@ -958,6 +985,13 @@ def test_full_evidence_backup_streams_a_recovered_whole_zip_member(
         conn.execute(
             "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
             (blob_hash, hashlib.sha256(member).hexdigest(), "raw_payload", recorded_path, len(member), 1),
+        )
+
+        _record_zip_fixture_coordinate(
+            conn,
+            hashlib.sha256(member).hexdigest(),
+            source_path,
+            mode=MemberAddressingMode.WHOLE_MEMBER,
         )
 
     original_read = zipfile.ZipExtFile.read
@@ -1282,6 +1316,14 @@ def test_backup_reanchors_dead_root_before_zip_member_replay(
             ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, 1, 'passed')""",
             ("zip-dead-root", stale_source_path, blob_hash, len(member_payload)),
         )
+        _record_zip_fixture_coordinate(
+            conn,
+            "zip-dead-root",
+            zip_path,
+            mode=MemberAddressingMode.WHOLE_MEMBER,
+            canonical_container=tmp_path / "old-clone" / "inbox" / "bundle.zip",
+            member_name="conversation.json",
+        )
 
     unproven: list[dict[str, str]] = []
     proofs = backup_mod._source_recoverability_proofs(
@@ -1320,12 +1362,12 @@ def test_backup_proves_zip_member_by_structural_identity_after_reserialization(
             ) VALUES (?, 'chatgpt-export', 'chatgpt', ?, 0, ?, ?, 1, 'passed')""",
             ("structural-zip", source_path, blob_hash, len(dumps_bytes(expected))),
         )
-        conn.execute(
-            """INSERT INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index,
-                addressing_mode, content_identity
-            ) VALUES (?, 'zip-v2', 0, 0, 'element_of_container', ?)""",
-            ("structural-zip", content_identity),
+        _record_zip_fixture_coordinate(
+            conn,
+            "structural-zip",
+            zip_path,
+            mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            content_identity=content_identity,
         )
         assert (
             conn.execute("SELECT lower(hex(blob_hash)) FROM raw_sessions WHERE raw_id='structural-zip'").fetchone()[0]
@@ -2183,20 +2225,10 @@ def test_backup_reservation_only_bytes_are_not_committed_reference_debt(tmp_path
 
 
 def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> None:
-    """An authoritative source missing a declared blob carrier column is refused.
+    """A canonical blob-owner query refuses a missing carrier column.
 
-    ``raw_hook_events.blob_hash`` is the carrier column ``BLOB_OWNERS``
-    declares for the hook-event owner, so a source tier that still carries the
-    stamp this runtime writes -- and is therefore taken as canonical authority
-    -- cannot be read past it. The pre-reset fixture dropped ``native_id``,
-    which no longer appears in ``BLOB_OWNERS``, so nothing refused.
-
-    Anti-vacuity: remove the ``raw_hook_events`` entry from ``BLOB_OWNERS`` (or
-    the ``_column_exists`` branch in ``_schema_blockers``) and the damaged
-    source is read as if it were complete. The companion test
-    ``test_full_evidence_backup_keeps_index_only_attachment`` removes the same
-    column under a *foreign* stamp and pins the opposite outcome -- fallback,
-    not refusal -- so a blanket refusal cannot pass either.
+    Removing raw_hook_events from BLOB_OWNERS would make this damaged source
+    look complete. The actual owner query must fail before copying any bytes.
     """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -2206,7 +2238,7 @@ def test_backup_refuses_source_schema_without_hook_evidence(tmp_path: Path) -> N
     backup_root = tmp_path / "backup"
     backup_root.mkdir()
 
-    with pytest.raises(RuntimeError, match="raw_hook_events is missing columns: blob_hash"):
+    with pytest.raises(RuntimeError):
         backup_mod._copy_referenced_blobs(
             source_db=archive_root / "source.db",
             source_blob_root=archive_root / "blob",

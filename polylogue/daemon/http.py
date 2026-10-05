@@ -5231,20 +5231,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return runtime.call(request, principal, client_disconnect=disconnected)
 
     def _send_daemon_operation(self, payload: dict[str, object]) -> None:
-        from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-
-        if len(json.dumps(payload, separators=(",", ":")).encode()) > MAX_OPERATION_RESULT_BYTES:
-            payload["result"] = None
-            payload["outcome"] = "indeterminate" if payload.get("accepted_reference") else "failed"
-            payload["error"] = {"code": "result_too_large", "retryable": False}
-            self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, payload)
-            return
         status = (
             HTTPStatus.ACCEPTED if payload["outcome"] in {"accepted", "running", "indeterminate"} else HTTPStatus.OK
         )
         if payload["outcome"] in {"failed", "rejected", "timed-out", "cancelled"}:
             status = HTTPStatus.CONFLICT
-        self._send_json(status, payload)
+        from polylogue.operations.read_result_transport import TRANSFER_BYTES, staged_json_response
+
+        with staged_json_response(payload, append_newline=True) as staged:
+            size = staged.seek(0, 2)
+            staged.seek(0)
+            self.send_response(status.value)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(size))
+            self._send_request_id_header()
+            self.end_headers()
+            while chunk := staged.read(TRANSFER_BYTES):
+                self.wfile.write(chunk)
 
     def _read_bounded_json_body(self, max_bytes: int) -> dict[str, object] | None:
         raw_content_length = self.headers.get("Content-Length")
@@ -5603,6 +5606,7 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         webui_dist_root: Path | None = None,
         archive_root: Path | None = None,
         watch_sources: Sequence[Any] | None = None,
+        execution_kernel: BoundedComputeAdapter | None = None,
     ) -> None:
         super().__init__(server_address, handler_class)
         validate_declared_route_reachability(handler_class)
@@ -5621,16 +5625,18 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
                 raise RuntimeError("HTTP daemon requires an archive root")
             archive_root = Path(configured_archive_root)
         self.archive_root = archive_root.resolve()
-        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
-        if write_bridge is None:
-            self._owned_write_runtime = _StandaloneWriteRuntime(self.archive_root)
-            write_bridge = self._owned_write_runtime.bridge
-        self.write_bridge: DaemonWriteThreadBridge = write_bridge
-        self.execution_kernel = BoundedComputeAdapter(
+        self.execution_kernel = execution_kernel or BoundedComputeAdapter(
             max_workers=_ARCHIVE_QUERY_MAX_WORKERS,
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )
+        self._owned_write_runtime: _StandaloneWriteRuntime | None = None
+        if write_bridge is None:
+            self._owned_write_runtime = _StandaloneWriteRuntime(
+                self.archive_root, compute_adapter=self.execution_kernel
+            )
+            write_bridge = self._owned_write_runtime.bridge
+        self.write_bridge: DaemonWriteThreadBridge = write_bridge
         self._compute_close_lock = threading.Lock()
         self._compute_closed = False
         # Diagnostic alias; every submission goes through the adapter above.
@@ -5656,10 +5662,18 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             write_bridge=self.write_bridge,
             now=time,
         )
+        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
         self.operation_runtime = DaemonOperationRuntime(
             self.archive_root,
             write_bridge=self.write_bridge,
             execution_kernel=self.execution_kernel,
+            raw_observation_owner=RawObservationConvergenceOwner(
+                self.archive_root,
+                compute_adapter=self.execution_kernel,
+                write_bridge=self.write_bridge,
+                write_coordinator=self.write_bridge.coordinator,
+            ),
             owner_loop=self.write_bridge.owner_loop,
             session_maintenance=self.session_profile_callback.maintenance,
             read_dependencies_factory=lambda: DaemonReadDependencies(
@@ -5708,6 +5722,34 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         super().server_close()
 
 
+async def _recover_startup_with_compute(
+    bridge: DaemonWriteThreadBridge, kernel: BoundedComputeAdapter, archive_root: Path
+) -> None:
+    """Use the eventual daemon creator for original preparation and short publication."""
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.core.write_lease import adopt_write_lease
+    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from polylogue.storage.sqlite.connection_profile import retained_native_settlement_owners_on_current_thread
+
+    def admit_write(actor: str, work: Callable[[], Any]) -> Any:
+        with bridge.hold(actor) as delegation, adopt_write_lease(delegation):
+            return work()
+
+    def recover() -> None:
+        kernel.require_current_creator()
+        with stage_write_admission(admit_write):
+            recover_interrupted_operations(archive_root, input_demand=kernel.amend_current_input_demand)
+
+    await bridge.coordinator.run_prepared_sync(
+        "daemon.operation_recovery.startup",
+        recover,
+        submit_worker=lambda worker: (
+            kernel.submit(propagate(worker), admission_class="control", estimated_bytes=0, exclusive_bytes=True).future
+        ),
+        settlement_owners=retained_native_settlement_owners_on_current_thread,
+    )
+
+
 class _StandaloneWriteRuntime:
     """Coordinator loop for HTTP-server use outside ``polylogued``.
 
@@ -5715,7 +5757,7 @@ class _StandaloneWriteRuntime:
     derivation task of its own.
     """
 
-    def __init__(self, archive_root: Path) -> None:
+    def __init__(self, archive_root: Path, *, compute_adapter: BoundedComputeAdapter) -> None:
         ready = threading.Event()
         self.loop = asyncio.new_event_loop()
         self.coordinator: DaemonWriteCoordinator | None = None
@@ -5736,12 +5778,14 @@ class _StandaloneWriteRuntime:
             raise RuntimeError("standalone daemon HTTP writer loop failed to start")
         assert self.coordinator is not None
         self.bridge: DaemonWriteThreadBridge = DaemonWriteThreadBridge(self.coordinator, self.loop)
-        from polylogue.operations.mutation_replay import recover_interrupted_operations
         from polylogue.operations.operation_context import prepare_operation_journals
 
         try:
             self.bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
-            self.bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
+            recovery = asyncio.run_coroutine_threadsafe(
+                _recover_startup_with_compute(self.bridge, compute_adapter, archive_root), self.loop
+            )
+            self.bridge._await_owner_settlement("daemon.operation_recovery.startup", recovery)
         except BaseException:
             self.close()
             raise

@@ -30,12 +30,16 @@ saw -- a file that was never acquired is absent from both.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, BinaryIO, Protocol
 
+from polylogue.archive.artifact_taxonomy import ArtifactKind, strong_path_classification
 from polylogue.archive.revision_authority import raw_receipt_order_sql
+from polylogue.core.compute_cancel import check_compute_cancelled
+from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     resolve_tool_outputs_dir,
@@ -101,6 +105,7 @@ class _RetainedRow:
     blob_hash: str
     blob_size: int
     file_mtime_ms: int | None
+    raw_id: str
 
 
 def _prefix_range(prefix: str) -> tuple[str, str]:
@@ -135,18 +140,18 @@ class RetainedSidecarResolver:
         archive_root: Path,
         *,
         blob_root: Path | None = None,
-        source_conn: sqlite3.Connection | None = None,
+        source_read: RetainedSidecarSourceRead | None = None,
     ) -> None:
         self._archive_root = Path(archive_root)
         self._blob_root = blob_root
-        self._pinned_source_conn = source_conn
+        self._source_read = source_read
 
     def claude_code_scope(self, source_path: str | Path | None) -> RetainedSidecarScope:
         tool_results_dir = resolve_tool_results_dir(source_path)
         if tool_results_dir is None or source_path is None:
             return UNRESOLVED_SIDECAR_SCOPE
         with self._source_reader() as conn:
-            if conn is None:
+            if conn is None and self._source_read is None:
                 return UNRESOLVED_SIDECAR_SCOPE
             rows = self._children_of(conn, tool_results_dir)
             if not rows:
@@ -164,7 +169,7 @@ class RetainedSidecarResolver:
         if tool_outputs_dir is None:
             return UNRESOLVED_SIDECAR_SCOPE
         with self._source_reader() as conn:
-            if conn is None:
+            if conn is None and self._source_read is None:
                 return UNRESOLVED_SIDECAR_SCOPE
             rows = self._children_of(conn, tool_outputs_dir)
         if not rows:
@@ -185,8 +190,8 @@ class RetainedSidecarResolver:
         scope traced back to here names *why* the tier did not answer rather
         than being indistinguishable from a scope holding no retained members.
         """
-        if self._pinned_source_conn is not None:
-            yield self._pinned_source_conn
+        if self._source_read is not None:
+            yield None
             return
         source_db = self._archive_root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
         with open_tier_reader(ArchiveTier.SOURCE, source_db) as acquired:
@@ -200,7 +205,7 @@ class RetainedSidecarResolver:
             else:
                 yield acquired.connection
 
-    def _children_of(self, conn: sqlite3.Connection, directory: Path) -> list[_RetainedRow]:
+    def _children_of(self, conn: sqlite3.Connection | None, directory: Path) -> list[_RetainedRow]:
         """Latest retained row per file directly inside ``directory``.
 
         Direct children only, matching what a directory listing of the scope
@@ -209,17 +214,17 @@ class RetainedSidecarResolver:
         """
         prefix = f"{directory.as_posix()}/"
         low, high = _prefix_range(prefix)
-        rows = conn.execute(
-            f"""
-            SELECT source_path, hex(blob_hash), blob_size, file_mtime_ms
-            FROM raw_sessions
-            WHERE source_path >= ? AND source_path < ?
-            ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
-            """,
-            (low, high),
-        ).fetchall()
+        if self._source_read is not None:
+            scope = self._source_read.retained_children_rows(low, high)
+        else:
+            if conn is None:
+                raise RuntimeError("retained sidecar query has no admitted Source reader")
+            scope = _retained_rows(conn, _RETAINED_CHILDREN_SQL, (low, high))
+        with scope as cursor:
+            rows = cursor.fetchall()
         latest: dict[str, _RetainedRow] = {}
-        for source_path, blob_hash, blob_size, file_mtime_ms in rows:
+        for source_path, blob_hash, blob_size, file_mtime_ms, raw_id in rows:
+            check_compute_cancelled()
             remainder = str(source_path)[len(prefix) :]
             if not remainder or "/" in remainder:
                 continue
@@ -230,11 +235,14 @@ class RetainedSidecarResolver:
                     blob_hash=str(blob_hash).lower(),
                     blob_size=int(blob_size),
                     file_mtime_ms=int(file_mtime_ms) if file_mtime_ms is not None else None,
+                    raw_id=str(raw_id),
                 ),
             )
         return sorted(latest.values(), key=lambda row: row.source_path)
 
-    def _retained_siblings(self, conn: sqlite3.Connection, source_path: str | Path) -> tuple[SiblingTranscript, ...]:
+    def _retained_siblings(
+        self, conn: sqlite3.Connection | None, source_path: str | Path
+    ) -> tuple[SiblingTranscript, ...]:
         """Retained transcripts sharing this scope, excluding ``source_path``.
 
         The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
@@ -254,18 +262,14 @@ class RetainedSidecarResolver:
         # receipt, as ``retained_assembly`` ranks currency: bytes that return
         # to an earlier value reuse that raw row, so ``acquired_at_ms`` is its
         # first sighting and would rank an intervening revision newest.
-        rows = conn.execute(
-            f"""
-            SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
-                   r.append_start_offset, r.append_end_offset, r.raw_id, r.predecessor_raw_id
-            FROM raw_sessions AS r
-            WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
-            ORDER BY r.source_path,
-                {raw_receipt_order_sql("r")},
-                r.raw_id
-            """,
-            (root_path.as_posix(), low, high),
-        ).fetchall()
+        if self._source_read is not None:
+            scope = self._source_read.retained_sibling_rows(root_path.as_posix(), low, high)
+        else:
+            if conn is None:
+                raise RuntimeError("retained sibling query has no admitted Source reader")
+            scope = _retained_rows(conn, _RETAINED_SIBLINGS_SQL, (root_path.as_posix(), low, high))
+        with scope as cursor:
+            rows = cursor.fetchall()
         own = path.as_posix()
         revisions: dict[str, list[_RevisionRow]] = {}
         for (
@@ -278,6 +282,7 @@ class RetainedSidecarResolver:
             raw_id,
             predecessor_raw_id,
         ) in rows:
+            check_compute_cancelled()
             candidate = str(candidate_path)
             if candidate == own:
                 continue
@@ -296,16 +301,19 @@ class RetainedSidecarResolver:
             )
         siblings: list[SiblingTranscript] = []
         for candidate, candidate_rows in sorted(revisions.items()):
+            check_compute_cancelled()
             fulls = [row for row in candidate_rows if row[1] != "append"]
             if not fulls:
                 # Only deltas retained: the largest is the best partial view.
                 largest = max(candidate_rows, key=lambda row: row[2])
                 siblings.append(
-                    SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs([largest[0]]))
+                    SiblingTranscript(
+                        coordinate=candidate, open_records=self._records_from_blobs([(largest[5], largest[0])])
+                    )
                 )
                 continue
             baseline = fulls[-1]
-            blob_hashes = [baseline[0]]
+            blob_hashes = [(baseline[5], baseline[0])]
             end = baseline[2]
             last_raw_id = baseline[5]
             # Rows are in receipt order. A step must be admitted after the
@@ -318,9 +326,11 @@ class RetainedSidecarResolver:
             # thousands of appends is walked in linear time.
             appends_by_predecessor: dict[str, list[tuple[int, _RevisionRow]]] = {}
             for index, row in enumerate(candidate_rows):
+                check_compute_cancelled()
                 if row[1] == "append" and row[3] is not None and row[6] is not None:
                     appends_by_predecessor.setdefault(row[6], []).append((index, row))
             while True:
+                check_compute_cancelled()
                 steps = [
                     (index, row)
                     for index, row in appends_by_predecessor.get(last_raw_id, ())
@@ -329,17 +339,18 @@ class RetainedSidecarResolver:
                 if len(steps) != 1:
                     break
                 last_position, step = steps[0]
-                blob_hashes.append(step[0])
+                blob_hashes.append((step[5], step[0]))
                 assert step[4] is not None
                 end = step[4]
                 last_raw_id = step[5]
             siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
         return tuple(siblings)
 
-    def _records_from_blobs(self, blob_hashes: list[str]) -> Callable[[], Iterator[object]]:
+    def _records_from_blobs(self, blob_hashes: list[tuple[str, str]]) -> Callable[[], Iterator[object]]:
         def open_records() -> Iterator[object]:
-            for blob_hash in blob_hashes:
-                yield from self._records_from_blob(blob_hash)()
+            for raw_id, blob_hash in blob_hashes:
+                check_compute_cancelled()
+                yield from self._records_from_blob(raw_id, blob_hash)()
 
         return open_records
 
@@ -361,18 +372,114 @@ class RetainedSidecarResolver:
             filename=Path(row.source_path).name,
             byte_size=row.blob_size,
             file_mtime_ms=row.file_mtime_ms,
-            read_text=self._text_from_blob(row.blob_hash),
+            read_text=self._text_from_blob(row.raw_id, row.blob_hash),
         )
 
-    def _text_from_blob(self, blob_hash: str):  # type: ignore[no-untyped-def]
+    def _text_from_blob(self, raw_id: str, blob_hash: str) -> Callable[[], str]:
         def read() -> str:
+            check_compute_cancelled()
+            if self._source_read is not None:
+                with self._source_read.open_sidecar_payload(raw_id, bytes.fromhex(blob_hash)) as handle:
+                    return handle.read().decode("utf-8", errors="replace")
             return self._blob_path(blob_hash).read_text(encoding="utf-8", errors="replace")
 
         return read
 
-    def _records_from_blob(self, blob_hash: str) -> Callable[[], Iterator[object]]:
+    def _records_from_blob(self, raw_id: str, blob_hash: str) -> Callable[[], Iterator[object]]:
         def open_records() -> Iterator[object]:
-            with self._blob_path(blob_hash).open("rb") as handle:
+            check_compute_cancelled()
+            scope = (
+                self._source_read.open_sidecar_payload(raw_id, bytes.fromhex(blob_hash))
+                if self._source_read is not None
+                else self._blob_path(blob_hash).open("rb")
+            )
+            with scope as handle:
                 yield from iter_jsonl_records(lambda: iter(handle))
 
         return open_records
+
+
+_RETAINED_CHILDREN_SQL = f"""
+    SELECT source_path, hex(blob_hash), blob_size, file_mtime_ms, raw_id
+    FROM raw_sessions
+    WHERE source_path >= ? AND source_path < ?
+    ORDER BY {raw_receipt_order_sql("raw_sessions")} DESC, raw_id DESC
+"""
+
+
+_RETAINED_SIBLINGS_SQL = f"""
+    SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
+           r.append_start_offset, r.append_end_offset, r.raw_id, r.predecessor_raw_id
+    FROM raw_sessions AS r
+    WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
+    ORDER BY r.source_path, {raw_receipt_order_sql("r")}, r.raw_id
+"""
+
+
+class RetainedSidecarSourceRead(Protocol):
+    """The resolver's two declared predicates and retained byte capability."""
+
+    def retained_children_rows(self, low: str, high: str) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+    def retained_sibling_rows(
+        self,
+        root_path: str,
+        low: str,
+        high: str,
+    ) -> AbstractContextManager[sqlite3.Cursor]: ...
+
+    def open_sidecar_payload(self, raw_id: str, blob_hash: bytes) -> AbstractContextManager[BinaryIO]: ...
+
+
+@contextmanager
+def _retained_rows(
+    connection: sqlite3.Connection,
+    sql: str,
+    parameters: tuple[object, ...],
+) -> Iterator[sqlite3.Cursor]:
+    """Retain the actual statement and settle it through the canonical cursor owner."""
+    from polylogue.storage.io_phase_metrics import connection_cursor
+
+    with connection_cursor(connection, sql, parameters) as cursor:
+        yield cursor
+
+
+def select_retained_claude_sidecar_owner_raw_ids(
+    reader: PreparedSessionSourceRead,
+    acquired_raw_ids: Sequence[str],
+) -> tuple[str, ...]:
+    """Select retained transcript owners from actual newly acquired sidecar scopes.
+
+    The caller lends its original prepared Source reader before hydration;
+    paths only select retained rows and never authorize a filesystem read.
+    Canonical replay owns revision selection and subsequent publication.
+    """
+    scopes: set[Path] = set()
+    for raw_id in acquired_raw_ids:
+        check_compute_cancelled()
+        provider, _blob_hash, source_path, _kind, _size = reader.raw_revision_descriptor(raw_id)
+        if provider is not Provider.CLAUDE_CODE:
+            continue
+        path = Path(source_path)
+        classification = strong_path_classification(path, provider=provider)
+        if classification is not None and classification.kind is ArtifactKind.TOOL_RESULT_SIDECAR:
+            scopes.add(path.parent.parent)
+    owners: dict[str, None] = {}
+    for session_dir in sorted(scopes):
+        check_compute_cancelled()
+        root_path = (session_dir.parent / f"{session_dir.name}.jsonl").as_posix()
+        low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
+        with reader.retained_sibling_rows(root_path, low, high) as rows:
+            for row in rows:
+                check_compute_cancelled()
+                source_path, raw_id = str(row[0]), str(row[6])
+                if source_path != root_path and not source_path.endswith(".jsonl"):
+                    continue
+                provider, _hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
+                if provider is Provider.CLAUDE_CODE:
+                    owners.setdefault(raw_id, None)
+    return tuple(owners)
+
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead

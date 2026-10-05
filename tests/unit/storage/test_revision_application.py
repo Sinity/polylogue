@@ -9,6 +9,7 @@ import pytest
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
+    FullRevisionReplacementAuthorization,
     FullSnapshotFoldAuthorization,
     RevisionApplicationReceipt,
     assert_session_fts_exact_sync,
@@ -387,3 +388,102 @@ def test_equal_frontier_fold_authorization_is_bound_to_one_exact_head() -> None:
             ),
             decided_at_ms=30,
         )
+
+
+def _full_replacement_authorization(
+    previous: RevisionApplicationReceipt, incoming: RevisionApplicationReceipt
+) -> FullRevisionReplacementAuthorization:
+    assert previous.accepted_raw_id is not None
+    assert incoming.accepted_raw_id is not None
+    assert incoming.accepted_source_revision is not None
+    assert incoming.accepted_content_hash is not None
+    assert incoming.accepted_frontier is not None
+    return FullRevisionReplacementAuthorization(
+        logical_source_key=incoming.logical_source_key,
+        previous_head=(
+            previous.session_id,
+            previous.accepted_raw_id,
+            previous.accepted_source_revision,
+            previous.accepted_content_hash,
+            previous.accepted_frontier_kind,
+            previous.accepted_frontier,
+            previous.acquisition_generation,
+            previous.append_end_offset,
+        ),
+        full_raw_id=incoming.raw_id,
+        full_source_revision=incoming.source_revision,
+        accepted_raw_id=incoming.accepted_raw_id,
+        accepted_source_revision=incoming.accepted_source_revision,
+        append_end_offset=incoming.append_end_offset,
+        acquisition_generation=incoming.acquisition_generation,
+        session_id=incoming.session_id,
+        content_hash=incoming.accepted_content_hash,
+        byte_length=incoming.accepted_frontier,
+    )
+
+
+@pytest.mark.parametrize("frontier", [50, 100])
+def test_exact_selected_full_replacement_is_independent_of_byte_extent(frontier: int) -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript(INDEX_DDL)
+        previous = _receipt()
+        record_revision_application_sync(connection, previous, decided_at_ms=1)
+        incoming = _receipt(generation=2, revision="changed-full", frontier=frontier)
+        authorization = _full_replacement_authorization(previous, incoming)
+        record_revision_application_sync(
+            connection, replace(incoming, full_replacement_authorization=authorization), decided_at_ms=2
+        )
+        head = _head_rows(connection)[0]
+        assert head[2:8] == (
+            incoming.accepted_raw_id,
+            incoming.accepted_source_revision,
+            incoming.accepted_content_hash,
+            "byte",
+            frontier,
+            2,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"raw_id": "different-full"},
+        {"accepted_raw_id": "different-tip"},
+        {"source_revision": "different-full-hash"},
+        {"accepted_source_revision": "different-tip-hash"},
+        {"acquisition_generation": 3},
+        {"session_id": "codex-session:different"},
+        {"accepted_content_hash": b"x" * 32},
+        {"accepted_frontier": 49},
+        {"append_end_offset": 50},
+        {"decision": ApplicationDecision.APPLIED_APPEND},
+    ],
+)
+def test_selected_full_replacement_refuses_changed_receipt_operands(changes: dict[str, Any]) -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript(INDEX_DDL)
+        previous = _receipt()
+        record_revision_application_sync(connection, previous, decided_at_ms=1)
+        original_head = _head_rows(connection)
+        incoming = _receipt(generation=2, revision="changed-full", frontier=50)
+        authorization = _full_replacement_authorization(previous, incoming)
+        changed = replace(incoming, full_replacement_authorization=authorization, **changes)
+        with pytest.raises(RuntimeError):
+            record_revision_application_sync(connection, changed, decided_at_ms=2)
+        assert _head_rows(connection) == original_head
+
+
+def test_selected_full_replacement_refuses_a_changed_original_head() -> None:
+    with sqlite3.connect(":memory:") as connection:
+        connection.executescript(INDEX_DDL)
+        previous = _receipt()
+        incoming = _receipt(generation=2, revision="changed-full", frontier=50)
+        authorization = _full_replacement_authorization(previous, incoming)
+        current = _receipt(generation=3, revision="concurrent-full", frontier=120)
+        record_revision_application_sync(connection, current, decided_at_ms=1)
+        original_head = _head_rows(connection)
+        with pytest.raises(RuntimeError):
+            record_revision_application_sync(
+                connection, replace(incoming, full_replacement_authorization=authorization), decided_at_ms=2
+            )
+        assert _head_rows(connection) == original_head

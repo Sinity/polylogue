@@ -61,7 +61,7 @@ compares every profile identity against its fixture oracle.
 
 ## Insight projections
 
-Registry-backed projections use the insight descriptor's fetch/payload contract.
+Registry-backed projections use the insight descriptor's fetch/payload contract and forward the requested offset to descriptors that declare pagination, after their session filters and before their result window. For descriptors that declare `query`, `expression` is that projection's text search, without a second DSL parser. For example, `query(projection="threads", expression="strong", limit=1, offset=1)` selects the second strong work thread. Reference expressions retain their existing reference-pipeline precedence. Descriptors without a query field retain their declared filters.
 `postmortem` and `pathologies` call their analysis facades and attach the shared
 terminal `outcome` at the MCP operation boundary. An empty, complete scope is
 `empty`; a truncated scope or missing profiles/digests is `degraded` even when
@@ -91,3 +91,5 @@ once as a `ConfirmationGate` on the maintenance contract
 have no target transaction while remaining live write-gated tools
 (`polylogue/mcp/declarations/registry.py:199-227`). Outside the target algebra
 is not the same as not a tool; the manual lists them.
+
+MCP insight maintenance forwards an explicit session-ID selection to the sealed daemon planner. Omission selects the full scope; an empty list remains an empty explicit scope. Orchestration `get` preserves its owner’s terminal verdict and gaps in the shared object-shaped outcome envelope, while leaving the evidence fields unchanged.

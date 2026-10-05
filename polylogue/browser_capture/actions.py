@@ -2,21 +2,19 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import fcntl
 import hashlib
 import json
 import os
 import re
 import tempfile
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Any, TypeVar, cast
+from typing import Any, BinaryIO, TypeVar, cast
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -30,13 +28,13 @@ from polylogue.browser_capture.models import (
     BrowserActionRequest,
     BrowserActionUpdateRequest,
 )
+from polylogue.core.durable_fs import clone_or_copy_replace, sync_directory
 from polylogue.core.json import dumps_bytes
 from polylogue.paths import browser_capture_spool_root
 
 ACTION_DIRNAME = "browser-actions"
 ACTION_MAX_ACTIVE = 5_000
-ACTION_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
-ACTION_TOTAL_ATTACHMENT_MAX_BYTES = 16 * 1024 * 1024
+ACTION_ATTACHMENT_CHUNK_BYTES = 64 * 1024
 ACTION_LEASE_SECONDS = 180
 ACTION_EVENT_LIMIT = 100
 _SAFE_TOKEN = re.compile(r"[^A-Za-z0-9._-]+")
@@ -82,8 +80,78 @@ def _action_path(root: Path, action_id: str) -> Path:
     return _action_dir(root, action_id) / "action.json"
 
 
+def _ensure_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    # Re-sync existing ancestors too: an earlier interrupted creation may
+    # have left directories visible without their parent entries settled.
+    parent = path.parent
+    while True:
+        sync_directory(parent)
+        if parent.parent == parent:
+            break
+        parent = parent.parent
+
+
+def _attachment_input_path(root: Path, reference: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{64}", reference):
+        raise ValueError("invalid browser action attachment reference")
+    return root / ".inputs" / reference
+
+
+@contextmanager
+def _open_verified_attachment(path: Path, digest: str, size: int | None = None) -> Iterator[BinaryIO]:
+    with path.open("rb") as stream:
+        actual_size = os.fstat(stream.fileno()).st_size
+        if size is not None and actual_size != size:
+            raise BrowserActionConflictError("browser action attachment integrity mismatch")
+        hasher = hashlib.sha256()
+        while chunk := stream.read(ACTION_ATTACHMENT_CHUNK_BYTES):
+            hasher.update(chunk)
+        if hasher.hexdigest() != digest:
+            raise BrowserActionConflictError("browser action attachment integrity mismatch")
+        stream.seek(0)
+        yield stream
+
+
+def store_action_attachment(read: Callable[[int], bytes], size: int, *, spool_path: Path | None = None) -> str:
+    """Retain exactly one streamed original input before returning its SHA reference."""
+    if size < 0:
+        raise ValueError("invalid browser action attachment size")
+    root = action_root(spool_path)
+    inputs = root / ".inputs"
+    _ensure_directory(inputs)
+    descriptor, name = tempfile.mkstemp(prefix=".upload-", dir=inputs)
+    temporary = Path(name)
+    try:
+        hasher = hashlib.sha256()
+        remaining = size
+        with os.fdopen(descriptor, "wb") as stream:
+            while remaining:
+                requested = min(remaining, ACTION_ATTACHMENT_CHUNK_BYTES)
+                chunk = read(requested)
+                if not chunk or len(chunk) > requested:
+                    raise ValueError("incomplete browser action attachment body")
+                stream.write(chunk)
+                hasher.update(chunk)
+                remaining -= len(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+        digest = hasher.hexdigest()
+        target = _attachment_input_path(root, digest)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            with _open_verified_attachment(target, digest, size):
+                pass
+        sync_directory(inputs)
+        return digest
+    finally:
+        temporary.unlink(missing_ok=True)
+        sync_directory(inputs)
+
+
 def _atomic_write(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(path.parent)
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temp_name)
     try:
@@ -92,6 +160,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        sync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -119,7 +188,7 @@ def _serialized(function: Callable[..., _T]) -> Callable[..., _T]:
     def guarded(*args: Any, **kwargs: Any) -> _T:
         with _ACTION_LOCK:
             root = action_root(cast(Path | None, kwargs.get("spool_path")))
-            root.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(root)
             descriptor = os.open(root / ".queue.lock", os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -179,8 +248,8 @@ def browser_action_capabilities() -> dict[str, object]:
             "operations": ["conversation.create", "conversation.reply"],
             "submit_policies": ["stage_only", "submit_once"],
             "attachments": True,
-            "max_attachment_bytes": ACTION_ATTACHMENT_MAX_BYTES,
-            "max_total_attachment_bytes": ACTION_TOTAL_ATTACHMENT_MAX_BYTES,
+            "attachment_chunk_bytes": ACTION_ATTACHMENT_CHUNK_BYTES,
+            "attachment_upload": True,
             "presentations": [
                 {
                     "surface": "chat",
@@ -302,32 +371,25 @@ def enqueue_action(
         raise BrowserActionQuotaError("active browser action quota exceeded")
 
     attachments: list[BrowserActionAttachment] = []
-    decoded: list[tuple[BrowserActionAttachment, bytes]] = []
-    total = 0
+    sources: list[tuple[BrowserActionAttachment, Path]] = []
     attachment_names: set[str] = set()
     for index, item in enumerate(request.attachments, start=1):
         if item.name in attachment_names:
             raise ValueError(f"duplicate browser action attachment name: {item.name!r}")
         attachment_names.add(item.name)
-        try:
-            content = base64.b64decode(item.content_base64, validate=True)
-        except (binascii.Error, ValueError) as exc:
-            raise ValueError(f"invalid base64 for browser action attachment {item.name!r}") from exc
-        if len(content) > ACTION_ATTACHMENT_MAX_BYTES:
-            raise BrowserActionQuotaError("browser action attachment byte quota exceeded")
-        total += len(content)
-        if total > ACTION_TOTAL_ATTACHMENT_MAX_BYTES:
-            raise BrowserActionQuotaError("browser action total attachment byte quota exceeded")
-        digest = hashlib.sha256(content).hexdigest()
+        source = _attachment_input_path(root, item.attachment_ref)
+        with _open_verified_attachment(source, item.attachment_ref) as stream:
+            size = os.fstat(stream.fileno()).st_size
+        digest = item.attachment_ref
         attachment = BrowserActionAttachment(
             attachment_id=f"a{index}-{digest[:16]}",
             name=item.name,
             mime_type=item.mime_type,
-            size_bytes=len(content),
+            size_bytes=size,
             sha256=digest,
         )
         attachments.append(attachment)
-        decoded.append((attachment, content))
+        sources.append((attachment, source))
 
     now = _now()
     approval_reason = _approval_reason_for(request)
@@ -358,8 +420,11 @@ def enqueue_action(
         detail=f"held for explicit operator approval: {approval_reason}" if approval_reason else None,
     )
     try:
-        for attachment, content in decoded:
-            _atomic_write(_action_dir(root, action_id) / "attachments" / attachment.attachment_id, content)
+        for attachment, source in sources:
+            target = _action_dir(root, action_id) / "attachments" / attachment.attachment_id
+            _ensure_directory(target.parent)
+            with _open_verified_attachment(source, attachment.sha256, attachment.size_bytes) as stream:
+                clone_or_copy_replace(stream, target)
         _write_action(root, action)
     except Exception:
         for path in sorted(_action_dir(root, action_id).glob("**/*"), reverse=True):
@@ -606,28 +671,28 @@ def decide_action_approval(
     return action
 
 
-def read_action_attachment(
+@contextmanager
+def open_action_attachment(
     action_id: str,
     attachment_id: str,
     *,
     spool_path: Path | None = None,
-) -> tuple[BrowserActionAttachment, bytes] | None:
+) -> Iterator[tuple[BrowserActionAttachment, BinaryIO] | None]:
     root = action_root(spool_path)
     action = _read_action(_action_path(root, action_id))
-    if action is None:
-        return None
-    attachment = next((item for item in action.attachments if item.attachment_id == attachment_id), None)
+    attachment = (
+        next((item for item in action.attachments if item.attachment_id == attachment_id), None) if action else None
+    )
     if attachment is None:
-        return None
-    content = (_action_dir(root, action_id) / "attachments" / attachment.attachment_id).read_bytes()
-    if len(content) != attachment.size_bytes or hashlib.sha256(content).hexdigest() != attachment.sha256:
-        raise BrowserActionConflictError("browser action attachment integrity mismatch")
-    return attachment, content
+        yield None
+        return
+    path = _action_dir(root, action_id) / "attachments" / attachment.attachment_id
+    with _open_verified_attachment(path, attachment.sha256, attachment.size_bytes) as stream:
+        yield attachment, stream
 
 
 __all__ = [
-    "ACTION_ATTACHMENT_MAX_BYTES",
-    "ACTION_TOTAL_ATTACHMENT_MAX_BYTES",
+    "ACTION_ATTACHMENT_CHUNK_BYTES",
     "BrowserActionConflictError",
     "BrowserActionLeaseError",
     "BrowserActionQuotaError",
@@ -639,7 +704,8 @@ __all__ = [
     "enqueue_action",
     "get_action",
     "list_actions",
-    "read_action_attachment",
+    "open_action_attachment",
+    "store_action_attachment",
     "reconcile_action",
     "update_action",
 ]

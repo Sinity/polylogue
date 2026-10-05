@@ -250,13 +250,29 @@ def test_raw_materialization_snapshot_accepts_parser_confirmed_empty_non_session
             acquired_at_ms=1,
             post_parse=True,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            [],
-            parser_fingerprint=raw_authority_parser_fingerprint(),
-            censused_at_ms=1,
-            revision_authority=None,
-        )
+
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        publish_prepared_revision_source,
+        replace_raw_membership_census,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with (
+        write_lease("test.readiness-census", archive_root=tmp_path),
+        PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
+    ):
+        with seal.original_read_snapshot(), seal.source_producer():
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=1,
+                revision_authority=None,
+            )
+        permit = seal.prepare_source_mutation()
+        publish_prepared_revision_source(seal, permit)
 
     parser_census = cast(
         Mapping[str, object], raw_materialization_readiness_snapshot(tmp_path)["raw_authority_parser_census"]
@@ -549,14 +565,30 @@ def test_raw_materialization_snapshot_reads_append_census_writer_contract(tmp_pa
             source_index=-1,
             acquired_at_ms=1,
         )
-        archive.replace_raw_membership_census(
-            raw_id,
-            None,
-            parser_fingerprint=raw_authority_parser_fingerprint(),
-            censused_at_ms=0,
-            detail=BYTE_AUTHORITY_CENSUS_DETAIL,
-            revision_authority=RawRevisionAuthority.BYTE_PROVEN,
-        )
+
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        publish_prepared_revision_source,
+        replace_raw_membership_census,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    with (
+        write_lease("test.readiness-census", archive_root=tmp_path),
+        PreparedIndexMutation(tmp_path / "index.db", archive_root=tmp_path) as seal,
+    ):
+        with seal.original_read_snapshot(), seal.source_producer():
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                None,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=BYTE_AUTHORITY_CENSUS_DETAIL,
+                revision_authority=RawRevisionAuthority.BYTE_PROVEN,
+            )
+        permit = seal.prepare_source_mutation()
+        publish_prepared_revision_source(seal, permit)
 
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 

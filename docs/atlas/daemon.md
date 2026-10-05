@@ -16,9 +16,17 @@ available to the original owner. A supervised service constructs its coroutine
 inside the owned task, so cancellation before startup leaves no unawaited
 watcher coroutine.
 
+Before a new mutation begins, recovery discovery reads orphaned operations and
+unrouted file-replacement plans through the settled Audit continuity view. It
+does not acquire writer custody on the preparation creator. Discovery already
+inside an admitted Audit command instead borrows that command's original
+connection under its same-root writer lease. Both discovery scopes end before
+any recovery actuator runs (`AuditRepository.recovery_discovery_read`;
+`OperationExecutor._resolve_dead_operations`).
+
 The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 
-`run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:1944`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2557-2558`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2785-2798`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner. The daemon hands both callbacks to the live watcher (`polylogue/daemon/cli.py:2939-2952`); after an admitted batch the intake adapter calls the watcher's lease-free embedding and profile convergence (`polylogue/operations/intake_adapters.py:1041-1049`; `polylogue/sources/live/watcher.py:1282-1302`); the periodic sweep and backlog services are registered in `periodic_services` (`polylogue/daemon/cli.py:2845-2877`). These are source-route facts, not live deployment evidence.
+`run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:1953`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2595-2596`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2823-2840`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner. `run_daemon_services` hands both callbacks to the live watcher (`polylogue/daemon/cli.py:2988-3003`); after an admitted batch `FileIntakeAdapter.admit_page` calls the watcher's lease-free embedding and profile convergence (`polylogue/operations/intake_adapters.py:1068-1077`; `polylogue/sources/live/watcher.py:1334-1356`); the periodic sweep and backlog services are registered in `periodic_services` (`polylogue/daemon/cli.py:2888-2943`). These are source-route facts, not live deployment evidence.
 
 Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are stripped from both rendered forms when `POLYLOGUE_LOG_REDACT=1` is set, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:482-486`; `polylogue/logging.py:770-781`; `polylogue/daemon/convergence.py:1120-1126`).
 
@@ -61,6 +69,8 @@ hands the accepted fields to the stdlib bridge, which emits them on the
 detecting those call sites needs a second rule with its own baseline; see
 `docs/structured-logging.md:285`.
 
+The live watcher passes acquired Raw IDs to the supplied resident Raw owner for retained publication. When derived schema authority blocks that owner, the watcher keeps Source acquisition active without opening a replacement parser or publication owner.
+
 ## Domain derivations
 
 The typed kernel validates prerequisite names against the supplied ordered domain list. It pages required and excess keys, inspects authoritative output, computes outside the writer lease, and admits each replacement through the writer bridge. Publication adopts the coordinator's delegation on the existing compute worker, so preparation observers retain their creator. Its joined native cleanup boundary drains publication handles before the delegation and writer gate retire. Process-local continuation state is disposable. Reports distinguish pending policy work from failed attempts (`polylogue/daemon/derivation.py:375-428`; `polylogue/daemon/derivation.py:481-498`; `polylogue/daemon/convergence.py:110-123`).
@@ -87,11 +97,11 @@ Every declared `PERIODIC` service runs through one runner rather than its own `w
 
 Readiness derives from domain inspection and is reported separately from operation health. FTS does not consult a freshness ledger, and debt cannot certify insight readiness (`polylogue/daemon/fts_status.py:162-168`; `polylogue/readiness/claim_guard.py:1-26`; `polylogue/storage/sqlite/archive_tiers/archive.py:1`).
 
-Hook capture is two ordinary steps, not a route of its own. Producers append one line per event to a per-process NDJSON carrier; the watcher exposes one carrier directory per harness and the fair-intake dispatcher's ordinary file adapter admits them under a `hook_carrier` class, so the durable cost is paid once per carrier revision rather than once per event (`polylogue/sources/live/watcher.py:285-305`; `polylogue/operations/intake_adapters.py:1147-1165`). The events themselves are a derivation keyed by carrier raw id: it decodes the retained bytes, compares the coordinates they imply against the recorded ones, and publishes the missing events in one source-tier transaction with no blob publication (`polylogue/storage/derived/hook_events.py:207-232`; `polylogue/storage/derived/hook_events.py:318-345`; `polylogue/storage/sqlite/archive_tiers/source_write.py:977-1010`).
+Hook capture is two ordinary steps, not a route of its own. Producers append one line per event to a per-process NDJSON carrier; `hook_carrier_watch_sources` exposes one carrier directory per harness and the fair-intake dispatcher's ordinary file adapter admits them under a `hook_carrier` class, so the durable cost is paid once per carrier revision rather than once per event (`polylogue/sources/live/watcher.py:270-293`; `polylogue/operations/intake_adapters.py:1900-1917`). `HookEventsDerivation._inspect`, `compute` and `publish` implement the derivation keyed by carrier raw id: it decodes the retained bytes, compares the coordinates they imply against the recorded ones, and publishes the missing events in one source-tier transaction with no blob publication (`polylogue/storage/derived/hook_events.py:250-277`; `polylogue/storage/derived/hook_events.py:292-373`; `polylogue/storage/sqlite/archive_tiers/source_write.py:944-1026`).
 
-`FairIntakeDispatcher` is the only intake authority: it discovers a bounded page per class, plans it against the class's byte share, and hands the whole page to one adapter call, which runs one `ingest_files` batch under one writer hold and one embedding/session-profile convergence pass for the page, both off that hold (`polylogue/daemon/intake.py:368-393`; `polylogue/operations/intake_adapters.py:488-493`; `polylogue/operations/intake_adapters.py:601-608`; `polylogue/sources/live/watcher.py:1246-1254`). Outcomes stay per item, read back from `LiveBatchMetrics` by path, so the deficit, retry and isolation accounting is unchanged by the batching. The watcher itself owns no queue: a filesystem event bumps an intake revision and sets the dispatcher's wakeup (`polylogue/sources/live/watcher.py:540-545`).
+`FairIntakeDispatcher._service_class` owns page planning and admission: it discovers a bounded page per class, plans it against the class's byte share, and hands the whole page to one adapter call, which runs one `ingest_files` batch under one writer hold and one embedding/session-profile convergence pass for the page, both off that hold (`polylogue/daemon/intake.py:461-528`; `polylogue/operations/intake_adapters.py:887-892`; `polylogue/operations/intake_adapters.py:1068-1077`; `polylogue/sources/live/watcher.py:1298-1328`). Outcomes stay per item, read back from `LiveBatchMetrics` by path, so the deficit, retry and isolation accounting is unchanged by the batching. `LiveWatcher._note_intake_hint` owns the filesystem hint: it bumps an intake revision and sets the dispatcher's wakeup (`polylogue/sources/live/watcher.py:574-587`).
 
-Fair intake applies a process-local cooldown to repeated retryable failures. A stale cursor refusal remains retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:456-460`; `polylogue/daemon/intake.py:430-434`; `polylogue/operations/intake_adapters.py:514-522`).
+`FairIntakeDispatcher._service_class` applies a process-local cooldown to repeated retryable failures. `FileIntakeAdapter.admit_page` keeps a stale cursor refusal retryable even when the same batch reports successful files. Terminal refusal isolates only the affected item (`polylogue/daemon/intake.py:607-665`; `polylogue/daemon/intake.py:590-605`; `polylogue/operations/intake_adapters.py:936-947`).
 
 A current retained decode refusal remains a failed derivation outcome. Its exact raw coordinate, parser census, support status and trusted failure carrier are validated by the canonical raw adapter. A later deliberate pass reports that same typed refusal from metadata without parsing the bytes again. Fair intake excludes the exact terminal item and discovery leaves it out of retry backlog; infrastructure failures and unavailable exact-key outcomes remain retryable (`polylogue/storage/derived/raw.py`, `polylogue/daemon/derivation.py`, `polylogue/operations/intake_adapters.py`).
 
@@ -131,3 +141,21 @@ Catch-up stage-event history carries `stage_events_available` and a typed
 unavailable reason. Empty readable history remains available; failed authority
 keeps the mode degraded. Status and workload telemetry read only current ops
 tables; unavailable counts never stand in for exact zero.
+
+Normal client read and mutation requests bind the installed client version and canonical Index schema version before their single operation POST. The client resolves those expectations after the existing peer-checked socket connects, so an absent daemon does not load the storage or version graph. Explicit caller preconditions remain unchanged. Status discovery and the original operation status, await, cancel and result controls remain available without inferred version preconditions, so a client can inspect an incompatible daemon or recover already accepted work. Session-delete preview cancellation remains a version-bound mutation.
+
+The Unix operation listener keeps accepted sockets until their original handlers physically finish. Slow request bodies and response consumers have no transport deadline. Shutdown stops new handler admission, interrupts retained socket reads and writes, then joins the original handlers while the runtime owner loop remains available to settle admitted work.
+
+Receipt waits bind the control request execution deadline to its actual `timeout_ms` wait budget. The transport retains its existing response allowance, so the forced final receipt read after an exhausted completion budget does not inherit the normal 30-second control deadline. Accepted mutation identity, cancellation and durable outcome reconciliation remain unchanged.
+
+
+Session Excision prepares and executes under the original request-bound authority,
+then retains the complete canonical domain receipt before retiring its source
+witness. The bounded mutation result carries scalar counts and a document identity
+(request ID, byte length and SHA-256). `operation.result` pages that same retained
+product under its original principal and archive identity; retrieval never reruns
+the mutation. A failed terminal metadata transfer retains custody for retry.
+The CLI stages and verifies the complete length, digest and UTF-8 before emitting
+machine JSON with `domain_receipt`; human output uses the scalar counts. Failed
+product delivery preserves the committed mutation receipt and reports a delivery
+failure rather than a new mutation refusal.

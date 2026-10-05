@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping, MutableSequence, Sequence
+import math
+from collections.abc import Callable, Iterable, Mapping, MutableSequence, Sequence
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
@@ -134,19 +136,51 @@ def is_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> bool:
     header = next(records, None)
     if not isinstance(header, dict) or "messages" in header or not looks_like_gemini_cli(header):
         return False
+    return all(_gemini_cli_checkpoint_record(record) for record in records)
+
+
+def _gemini_cli_checkpoint_record(record: JSONValue) -> bool:
+    if not isinstance(record, dict):
+        return False
+    if set(record) == {"$set"} and isinstance(record["$set"], dict):
+        return True
+    return (
+        isinstance(record.get("id"), str)
+        and isinstance(record.get("type"), str)
+        and isinstance(record.get("timestamp"), str)
+        and "content" in record
+    )
+
+
+def fold_gemini_cli_checkpoint_records(
+    payload: Iterable[JSONValue],
+    *,
+    append_message: Callable[[JSONValue], None],
+    replace_messages: Callable[[Iterable[JSONValue]], None],
+) -> JSONDocument | None:
+    """Fold the canonical checkpoint law into caller-owned provisional messages.
+
+    The caller discards provisional messages when this returns None. Every
+    input record is consumed even after refusal, preserving suffix decode errors.
+    """
+    records = iter(payload)
+    header = next(records, None)
+    admitted = isinstance(header, dict) and "messages" not in header and looks_like_gemini_cli(header)
+    document: dict[str, JSONValue] = dict(header) if isinstance(header, dict) else {}
     for record in records:
-        if not isinstance(record, dict):
-            return False
-        if set(record) == {"$set"} and isinstance(record["$set"], dict):
+        admitted = admitted and _gemini_cli_checkpoint_record(record)
+        if not admitted or not isinstance(record, dict):
             continue
-        if not (
-            isinstance(record.get("id"), str)
-            and isinstance(record.get("type"), str)
-            and isinstance(record.get("timestamp"), str)
-            and "content" in record
-        ):
-            return False
-    return True
+        patch = record.get("$set")
+        if set(record) == {"$set"} and isinstance(patch, dict):
+            for key, value in patch.items():
+                if key == "messages":
+                    replace_messages(value if isinstance(value, list) else ())
+                else:
+                    document[key] = value
+        else:
+            append_message(record)
+    return json_document(document) if admitted else None
 
 
 def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocument | None:
@@ -174,28 +208,18 @@ def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocum
 
     Returns ``None`` when the payload is not this shape.
     """
-    if not is_gemini_cli_checkpoint_stream(payload):
-        return None
-    records = list(payload)
-    header = records[0]
-    if not isinstance(header, dict):
-        return None
-    document: dict[str, JSONValue] = dict(header)
     messages: list[JSONValue] = []
-    for record in records[1:]:
-        if not isinstance(record, dict):
-            continue
-        patch = record.get("$set")
-        if set(record) == {"$set"} and isinstance(patch, dict):
-            for key, value in patch.items():
-                if key == "messages":
-                    messages = list(value) if isinstance(value, list) else []
-                else:
-                    document[key] = value
-            continue
-        messages.append(record)
+
+    def replace_messages(values: Iterable[JSONValue]) -> None:
+        messages[:] = values
+
+    document = fold_gemini_cli_checkpoint_records(
+        payload, append_message=messages.append, replace_messages=replace_messages
+    )
+    if document is None:
+        return None
     document["messages"] = messages
-    return json_document(document)
+    return document
 
 
 #: Root fields :func:`looks_like_hermes` reads.
@@ -751,12 +775,18 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        return int(value) if value >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     if isinstance(value, str):
         try:
-            parsed = int(float(value))
+            parsed = int(value)
         except ValueError:
-            return None
+            try:
+                number = Decimal(value)
+                if not number.is_finite() or not math.isfinite(float(number)) or number != number.to_integral_value():
+                    return None
+                parsed = int(number)
+            except (InvalidOperation, ValueError, OverflowError):
+                return None
         return parsed if parsed >= 0 else None
     return None
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
 from typing import IO, BinaryIO
 
 import ijson
@@ -30,12 +30,12 @@ def _decode_json_bytes(blob: bytes) -> str | None:
 
 
 def _iter_json_stream(
-    handle: BinaryIO | IO[bytes],
+    handle: BinaryIO | IO[bytes] | Iterable[bytes],
     path_name: str,
     unpack_lists: bool = True,
     *,
     fail_on_decode_error: bool = False,
-) -> Iterable[JsonValue]:
+) -> Generator[JsonValue, None, None]:
     for value in iter_json_stream_with(
         logger,
         ijson,

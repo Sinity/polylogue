@@ -43,8 +43,8 @@ class SQLiteQueryStore(
         session_id: str,
         *,
         node_offset: int = 0,
-        node_limit: int = 200,
-        edge_limit: int = 500,
+        node_limit: int | None = 200,
+        edge_limit: int | None = 500,
     ) -> SessionTopology | None:
         """Read one graph page in one SQLite snapshot, including its root walk."""
         from polylogue.storage.derived.topology.derivation import derive_session_topology_async

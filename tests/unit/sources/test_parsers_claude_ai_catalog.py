@@ -1171,6 +1171,23 @@ def test_claude_ai_repeated_id_summaries_order_by_content() -> None:
     assert session_content_hash(forward) == session_content_hash(reverse)
 
 
+def test_claude_ai_identical_repeated_summaries_preserve_owner_ambiguity() -> None:
+    from polylogue.core.message_owner import MessageOwnerAmbiguityError
+    from polylogue.pipeline.ids import session_content_hash
+
+    carrier = {
+        "uuid": "m1",
+        "sender": "assistant",
+        "text": "same",
+        "created_at": "2026-01-01T00:00:00Z",
+        "compaction_summary": [{"type": "text", "text": "alpha"}],
+    }
+    session = parse_ai({"uuid": "claude-identical", "chat_messages": [carrier, dict(carrier)]}, "fallback")
+    assert [message.provider_message_id for message in session.messages] == ["m1", "m1"]
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_content_hash(session)
+
+
 def test_claude_ai_effective_thinking_mode_reaches_the_model_configuration() -> None:
     """The top-level effective thinking mode is the session's thinking configuration.
 

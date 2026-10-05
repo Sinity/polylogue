@@ -12,9 +12,8 @@ from polylogue.archive.semantic.pricing import (
     CATALOG_PROVENANCE,
     PRICING,
     _normalize_model,
-    estimate_cost,
+    catalog_cost_for_tokens,
     estimate_session_cost,
-    pricing_catalog_source,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd, get_credit_rate
 from polylogue.archive.semantic.tokenizer import TOKENIZER_VERSION, estimate_tokens_from_words_split
@@ -114,7 +113,12 @@ def compute_session_cost(
         if model_usage
         else (_per_model_from_messages(session) if session is not None else {})
     )
-    if session is not None and model_usage and not any(breakdown.total_tokens for breakdown in per_model.values()):
+    if (
+        session is not None
+        and model_usage
+        and all(row.provider_lanes_complete for row in model_usage)
+        and not any(breakdown.total_tokens for breakdown in per_model.values())
+    ):
         # session_model_usage carries model identity but no real usage
         # counters for every row (e.g. chatgpt-export/claude-ai-export
         # exports, which don't carry provider token counters -- see
@@ -152,18 +156,18 @@ def compute_session_cost(
         norm = breakdown.normalized_model
         api_cost = 0.0
         credit_cost = 0.0
-        raw_model_key = (breakdown.provider_model_name or "").strip().casefold()
-        catalog_priced = norm is not None and (raw_model_key in PRICING or pricing_catalog_source(norm) is not None)
+        projected_cost, _ = catalog_cost_for_tokens(
+            breakdown.provider_model_name or norm,
+            breakdown.input_tokens,
+            breakdown.output_tokens,
+            breakdown.cache_read_tokens,
+            breakdown.cache_write_tokens,
+        )
+        catalog_priced = projected_cost is not None
         all_catalog_priced = all_catalog_priced and catalog_priced
 
         if norm:
-            api_cost = estimate_cost(
-                input_tokens=breakdown.input_tokens,
-                output_tokens=breakdown.output_tokens,
-                model=breakdown.provider_model_name or norm,
-                cache_read_tokens=breakdown.cache_read_tokens,
-                cache_write_tokens=breakdown.cache_write_tokens,
-            )
+            api_cost = projected_cost or 0.0
             credit_cost = float(
                 compute_credit_cost(
                     norm,
@@ -340,7 +344,11 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
             total_tokens=(
                 base_total + row.input_tokens + row.output_tokens + row.cache_read_tokens + row.cache_write_tokens
             ),
-            confidence="reported",
+            confidence=(
+                "reported"
+                if row.provider_lanes_complete and (existing is None or existing.confidence != "partial")
+                else "partial"
+            ),
             provenance="provider_reported",
         )
     for key, breakdown in per_model.items():

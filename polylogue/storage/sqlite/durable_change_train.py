@@ -745,12 +745,24 @@ def _invoke_runtime_consumers(
                 elif reference.endswith(":initialize_archive_tier"):
                     with sqlite_connection(":memory:") as probe:
                         value(probe, train.tier)
+                elif reference.endswith(":write_source_blob_refs"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("attachment reference writer requires Source")
+                    detail = _probe_attachment_coordinate_writer(cast(Callable[..., object], value))
                 elif reference.endswith(":write_source_hook_event"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_hook_event_writer(cast(Callable[..., object], value))
+                elif reference.endswith(":read_frontier_journal_state") or reference.endswith(
+                    ":read_frontier_inspection_mark"
+                ):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError("frontier dependency probes require the Source train")
+                    detail = _probe_frontier_dependency_read(
+                        cast(Callable[..., object], value), journal=reference.endswith(":read_frontier_journal_state")
+                    )
                 elif reference.endswith(":record_raw_profile_identity") or reference.endswith(
                     ":read_raw_profile_identity"
                 ):
@@ -950,6 +962,37 @@ def _invoke_runtime_consumers(
                 )
             )
     return tuple(results)
+
+
+def _probe_attachment_coordinate_writer(writer: Callable[..., object]) -> str:
+    """Prove equal bytes keep distinct provider coordinates and raw ownership."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+
+    with sqlite_connection(":memory:") as probe:
+        initialize_runtime_tier_probe(probe, ArchiveTier.SOURCE)
+        blob_hash = hashlib.sha256(b"attachment-coordinate-probe").digest()
+        writer(
+            probe,
+            "attachment-coordinate-raw",
+            lambda: (
+                ArchiveSourceBlobRef(
+                    blob_hash=blob_hash,
+                    ref_type="attachment",
+                    source_path=f"attachment:{file_id}",
+                    size_bytes=27,
+                    acquired_at_ms=1,
+                )
+                for file_id in ("file-a", "file-b")
+            ),
+        )
+        rows = probe.execute("SELECT ref_id, source_path, blob_hash FROM blob_refs ORDER BY source_path").fetchall()
+        if rows != [
+            ("attachment-coordinate-raw", "attachment:file-a", blob_hash),
+            ("attachment-coordinate-raw", "attachment:file-b", blob_hash),
+        ]:
+            raise DurableChangeTrainError("attachment writer collapsed equal-content coordinates")
+    return "retained two equal-content attachment coordinates under their original raw owner"
 
 
 def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
@@ -2463,6 +2506,7 @@ def execute_durable_change_train(
     runtime_consumer_results: Sequence[DurableRuntimeConsumerResult] | None = None,
     schema_replay_proof: DurableMigrationReplayProof | None = None,
     release_archive_ownership: Callable[[], None],
+    allow_pristine_source_baseline: bool = False,
 ) -> DurableChangeTrainExecution:
     """Execute every persisted train state while the caller holds archive ownership.
 
@@ -2635,6 +2679,7 @@ def execute_durable_change_train(
                 train,
                 backup_manifest=backup_manifest,
                 evidence_ref=f"proof:maintenance-backup:{train.train_id}",
+                allow_pristine_source_baseline=allow_pristine_source_baseline,
             )
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
@@ -2950,3 +2995,43 @@ __all__ = [
     "write_durable_change_train_manifest",
     "load_durable_change_train_manifest",
 ]
+
+
+def _probe_frontier_dependency_read(operation: Callable[..., object], *, journal: bool) -> str:
+    """Exercise the installed journal and absent-measurement read contracts."""
+    from contextlib import ExitStack
+
+    from polylogue.storage.frontier_inspection import declared_frontier_triggers
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_runtime_tier_probe
+
+    with tempfile.TemporaryDirectory(prefix="frontier-runtime-probe-") as directory, ExitStack() as stack:
+        root = Path(directory)
+        handles: dict[ArchiveTier, sqlite3.Connection] = {}
+        for tier in (ArchiveTier.SOURCE, ArchiveTier.INDEX, ArchiveTier.OPS):
+            path = root / f"{tier.value}.db"
+            connection = stack.enter_context(sqlite_connection(path))
+            initialize_runtime_tier_probe(connection, tier, probe_path=path)
+            connection.commit()
+            handles[tier] = connection
+        if journal:
+            result = operation(
+                source=handles[ArchiveTier.SOURCE],
+                index=handles[ArchiveTier.INDEX],
+                ops=handles[ArchiveTier.OPS],
+                source_path=root / "source.db",
+                index_path=root / "index.db",
+                ops_path=root / "ops.db",
+                source_triggers=declared_frontier_triggers(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE]),
+                index_triggers=declared_frontier_triggers(ARCHIVE_DDL_BY_TIER[ArchiveTier.INDEX]),
+                cursor_triggers=declared_frontier_triggers(ARCHIVE_DDL_BY_TIER[ArchiveTier.OPS]),
+            )
+            if any(
+                getattr(result, name) != 0
+                for name in ("source_high", "source_floor", "index_high", "index_floor", "cursor_high", "cursor_floor")
+            ):
+                raise DurableChangeTrainError("empty installed frontier journal has unexpected coverage")
+            return "read exact installed dependency triggers and empty three-tier journal coverage"
+        if operation(handles[ArchiveTier.OPS]) is not None:
+            raise DurableChangeTrainError("empty frontier measurement was falsely available")
+        return "unmeasured installed frontier remains unavailable"

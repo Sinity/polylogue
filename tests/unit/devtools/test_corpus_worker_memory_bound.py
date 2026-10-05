@@ -10,7 +10,8 @@ Where the pool's cgroup layout is absent entirely the fallback is the declared
 slice budget, still never the host.  Measured on sinnix-prime 2026-09-15: the
 live ``agentctl-pytest.slice`` is a *user*-manager unit with
 ``MemoryHigh=12G`` / ``MemoryMax=14G``, and a process inside it reads 12078 MiB
-(heavy) or 4932 MiB (quick) remaining -- three workers and one.  Querying the
+(heavy) or 4932 MiB (quick) remaining. Corpus concurrency additionally
+retains its qualified ceiling of two.  Querying the
 system manager for that unit reports ``infinity`` and describes nothing.
 
 Anti-vacuity:
@@ -247,7 +248,7 @@ def test_an_idle_host_runs_the_full_width(tmp_path: Path) -> None:
     workers, basis = memory_bounded_worker_cap(
         meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **_unbounded_cgroup(tmp_path)
     )
-    assert workers == CORPUS_MAX_WORKERS
+    assert workers == 2
     assert basis["narrowed"] is False
     assert basis["cgroup_available_mib"] is None
 
@@ -511,18 +512,7 @@ def test_a_membership_this_mount_cannot_resolve_constrains_nothing(tmp_path: Pat
 
 
 def test_an_idle_pytest_slice_runs_the_declared_corpus_width(tmp_path: Path) -> None:
-    """The declared width is what the slice holds, so an idle slice yields all of it.
-
-    The width is derived from the slice's own ceiling rather than declared
-    beside it, which is what keeps the two from disagreeing: a corpus that
-    asks for more than its sizing rule allows is narrowed on every start and
-    never once runs at the width it declares.
-
-    Anti-vacuity: declare ``CORPUS_MAX_WORKERS`` as a literal either side of
-    ``width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)`` and this goes red -- wider
-    overruns the soft ceiling the slice kills for, narrower leaves the slot
-    holding memory it never spends.
-    """
+    """An idle live slice admits the qualified width, even if three fit arithmetically."""
     paths = _pytest_slice(tmp_path, current_mib=0)
     workers, basis = memory_bounded_worker_cap(
         requested=CORPUS_MAX_WORKERS, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths
@@ -531,10 +521,9 @@ def test_an_idle_pytest_slice_runs_the_declared_corpus_width(tmp_path: Path) -> 
     assert workers == CORPUS_MAX_WORKERS
     assert basis["narrowed"] is False
     assert basis["basis"] == "cgroup_budget"
-    # The declared width is the widest whose peak fits the ceiling as its owner
-    # sized it -- no second discount applied to an already-headroomed figure.
+    # Arithmetic fit does not qualify width three after its observed stall.
     assert _peak_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_HIGH_MIB
-    assert _peak_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_HIGH_MIB
+    assert _peak_mib(3) < PYTEST_SLICE_HIGH_MIB
 
 
 def test_the_pytest_slice_bounds_a_host_with_memory_to_spare(tmp_path: Path) -> None:
@@ -1072,27 +1061,20 @@ def test_an_unmeasured_run_reports_no_verdict_rather_than_a_false_one() -> None:
     """
     assert corroborate_profile(None, _OBSERVED_SIZING) is None
     assert corroborate_profile(_OBSERVED_CORPUS_RUN, None) is None
+    assert corroborate_profile({**_OBSERVED_CORPUS_RUN, "incomplete": "unreadable custody"}, _OBSERVED_SIZING) is None
     assert corroborate_profile({"unmeasured": "no sample observed the process group"}, _OBSERVED_SIZING) is None
     assert corroborate_profile({"peak": {"rss_kib": 0}, "processes": []}, _OBSERVED_SIZING) is None
     assert corroborate_profile(_OBSERVED_CORPUS_RUN, {"workers": "wide"}) is None
 
 
 def test_the_shipped_profile_is_the_charge_the_slice_accounts() -> None:
-    """The default width leaves margin under the declared ceiling, at the charge.
-
-    Anti-vacuity: replace the width-aware ``charge_mib`` projection with the
-    historical width-2 constant and the declared width rises to a number whose
-    charge exceeds ``PYTEST_SLICE_MEMORY_HIGH_MIB``, which the third assertion
-    catches. The cache term no longer carries that weight: it is now a measured
-    ~25 MiB, so zeroing it does not move the width, and the anon model is what
-    does.
-    """
+    """The observed charge model remains independent of the qualified width."""
     assert MEASURED_CHARGE.worker_cache_mib > 0, "page cache is part of what memory.high accounts"
     assert MEASURED_CHARGE.worker_anon_mib > MEASURED_CHARGE.worker_cache_mib, (
         "anon dominates the charge; the 2026-09-21 sampler read-back is what says so"
     )
     assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS) <= PYTEST_SLICE_MEMORY_HIGH_MIB
-    assert MEASURED_CHARGE.charge_mib(CORPUS_MAX_WORKERS + 1) > PYTEST_SLICE_MEMORY_HIGH_MIB
+    assert MEASURED_CHARGE.charge_mib(3) < PYTEST_SLICE_MEMORY_HIGH_MIB
 
 
 def test_the_anonymous_model_records_both_fit_points_and_residuals() -> None:
@@ -1288,3 +1270,21 @@ def test_sizing_telemetry_names_the_profile_that_admitted_the_run(tmp_path: Path
     assert basis is not None
     assert basis["controller_peak_mib"] == FOCUSED_CHARGE.controller_mib
     assert basis["worker_peak_cache_mib"] == FOCUSED_CHARGE.worker_cache_mib
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_unreadable_live_limits_keep_the_qualified_corpus_width(tmp_path: Path, live: bool) -> None:
+    paths = (
+        _pytest_slice(tmp_path, current_mib=0)
+        if live
+        else {"process_cgroup": tmp_path / "absent-cgroup", "cgroup_root": tmp_path / "absent-root"}
+    )
+    workers, basis = memory_bounded_worker_cap(
+        requested=8,
+        max_workers=8,
+        meminfo=tmp_path / "absent-meminfo",
+        **paths,
+    )
+    assert workers == 2
+    assert basis["basis"] == ("cgroup_budget" if live else "declared_budget")
+    assert basis["predicted_charge_mib"] == round(MEASURED_CHARGE.charge_mib(2), 1)

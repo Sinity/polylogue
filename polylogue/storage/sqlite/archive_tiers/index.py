@@ -663,17 +663,6 @@ CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
     retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
 ) STRICT;
 INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
-CREATE TRIGGER IF NOT EXISTS raw_existence_session_insert AFTER INSERT ON sessions
-WHEN NEW.raw_id IS NOT NULL
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_session_update AFTER UPDATE OF raw_id ON sessions
-WHEN NEW.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_head_insert AFTER INSERT ON raw_revision_heads
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
-CREATE TRIGGER IF NOT EXISTS raw_existence_head_update AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
-WHEN NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
-BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
 CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
 BEGIN UPDATE raw_existence_journal_control
      SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
@@ -1313,14 +1302,9 @@ FROM grouped g
 LEFT JOIN repo_json r ON r.thread_id = g.thread_id
 LEFT JOIN origin_json o ON o.thread_id = g.thread_id;
 
--- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
--- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
--- (session_insight_thread_queries.list_threads) had zero production
--- callers; the live "analyze threads" search path
--- (list_thread_insights below) already does a manual LIKE substring scan
--- over thread_id/session title/repo/branch and never touched threads_fts.
--- list_threads now does the same LIKE scan over threads.search_text
--- instead of an FTS5 MATCH. See lifecycle.py's v63 declaration.
+-- ArchiveStore owns public thread text search and lowers it before paging.
+-- It uses session facts and the public payload's support vocabulary, without
+-- an independently materialized thread FTS index.
 
 CREATE VIEW IF NOT EXISTS thread_sessions AS
 SELECT COALESCE(root_session_id, session_id) AS thread_id, session_id,
@@ -2368,6 +2352,42 @@ LEFT JOIN repo_json rj
   ON rj.source_name = dm.source_name AND rj.bucket_day = dm.bucket_day AND rj.tag = dm.tag
 GROUP BY dm.tag, dm.bucket_day, dm.source_name;
 
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_insert AFTER INSERT ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_update AFTER UPDATE ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_update_old_key AFTER UPDATE OF raw_id ON sessions
+WHEN OLD.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_sessions_delete AFTER DELETE ON sessions
+WHEN OLD.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_insert AFTER INSERT ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_update AFTER UPDATE ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_update_old_key AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
+WHEN OLD.accepted_raw_id IS NOT NULL AND NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_heads_delete AFTER DELETE ON raw_revision_heads
+WHEN OLD.accepted_raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_insert AFTER INSERT ON raw_revision_applications
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_update AFTER UPDATE ON raw_revision_applications
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_update_old_key AFTER UPDATE OF raw_id ON raw_revision_applications
+WHEN OLD.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_frontier_raw_revision_applications_delete AFTER DELETE ON raw_revision_applications
+WHEN OLD.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (OLD.raw_id); END;
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into

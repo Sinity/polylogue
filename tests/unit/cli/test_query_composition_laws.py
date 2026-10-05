@@ -21,7 +21,11 @@ from polylogue.archive.query.expression import compile_expression, parse_unit_so
 from polylogue.archive.query.unit_results import query_unit_rows
 from polylogue.cli import cli
 from polylogue.config import Source
-from polylogue.operations.canonical_archive_ingest import ingest_sources_archive, scoped_one_shot_archive_owner
+from polylogue.operations.canonical_archive_ingest import (
+    ingest_sources_archive,
+    one_shot_compute_owner,
+    scoped_one_shot_archive_owner,
+)
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces.payloads import (
@@ -79,7 +83,8 @@ def query_cardinality_archive(tmp_path_factory: pytest.TempPathFactory) -> _Prep
 
         async def ingest_owned_clone() -> ParseResult:
             with scoped_one_shot_archive_owner(clone.root):
-                return await ingest_sources_archive(clone.root, sources)
+                async with one_shot_compute_owner() as adapter:
+                    return await ingest_sources_archive(clone.root, sources, compute_adapter=adapter)
 
         result = asyncio.run(ingest_owned_clone())
     assert result.parse_failures == 0

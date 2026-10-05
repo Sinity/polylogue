@@ -8,23 +8,37 @@ keyed account scope, never an account identifier or provider credential.
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
+import os
+import secrets
 import sqlite3
+import tempfile
 import threading
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
-from uuid import uuid4
+from typing import BinaryIO, cast
+from uuid import UUID, uuid4
+
+import ijson
 
 from polylogue.browser_capture.capture_job_events import (
     project_capture_job_timelines,
     read_capture_job_events,
     read_capture_job_retention,
+)
+from polylogue.browser_capture.capture_stream import (
+    CaptureSummary,
+    StagedCapture,
+    stage_capture_body,
+    stage_capture_chunks,
+    stage_retained_capture,
+    summarize_capture_file,
 )
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes
@@ -32,23 +46,6 @@ from polylogue.core.digest import digest as profile_digest
 from polylogue.paths import browser_capture_spool_root
 
 _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
-
-# A capture-job event is a control message: a kind, a few refs, and a small
-# structured payload. It is not a capture envelope and never carries
-# conversation content -- that travels the capture route, which owns the spool
-# quota. The registry database lives outside the spool directory whose
-# capture bodies the receiver reserves space for, so an uncapped event body
-# grows registry.sqlite3 without any reservation noticing. 64 KiB is well below the local
-# attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
-# content) and still far above any real event: the largest payloads are a
-# handful of refs and a reason string.
-CAPTURE_JOB_EVENT_MAX_BYTES = 64 * 1024
-# Every event is client-driven and a job's lifetime is bounded by its
-# conversations. A job past this many events is looping, not progressing.
-# Refusing is an explicit, observable stop: ``gc`` collects only jobs already
-# retention-eligible and completed/abandoned, so a job the client keeps active
-# is never reclaimed and its events would otherwise accumulate forever.
-CAPTURE_JOB_EVENT_MAX_COUNT = 10_000
 
 
 class CaptureJobError(Exception):
@@ -80,6 +77,161 @@ def canonical_digest(value: object) -> str:
         raise CaptureJobError(400, "non_canonical_key_collision") from exc
     except (CanonicalizationError, TypeError, UnicodeEncodeError) as exc:
         raise CaptureJobError(400, "non_canonical_json") from exc
+
+
+def _canonical_checkpoint_parts(events: Iterable[tuple[str, object]]) -> Iterator[bytes]:
+    """Encode vetted JSON tokens under CAPTURE without retaining the tree.
+
+    Objects must already be in normalized key order. The tokenizer and scalar
+    encoder allocate a complete token; streaming does not solve that residual.
+    """
+    frames: list[dict[str, object]] = []
+    started = False
+
+    def start_value() -> bytes:
+        nonlocal started
+        if not frames:
+            if started:
+                raise CaptureJobError(400, "invalid_checkpoint")
+            started = True
+            return b""
+        frame = frames[-1]
+        if frame["kind"] == "array":
+            if frame["populated"]:
+                return b","
+            frame["populated"] = True
+        elif frame["pending"]:
+            frame["pending"] = False
+        else:
+            raise CaptureJobError(400, "invalid_checkpoint")
+        return b""
+
+    try:
+        for event, value in events:
+            if event == "map_key":
+                if not frames or frames[-1]["kind"] != "map" or frames[-1]["pending"]:
+                    raise CaptureJobError(400, "invalid_checkpoint")
+                frame = frames[-1]
+                encoded = canonical_bytes(value, CAPTURE)
+                key = json.loads(encoded)
+                previous = frame["previous"]
+                if previous is not None and key <= previous:
+                    raise CaptureJobError(400, "checkpoint_noncanonical_key_order")
+                if frame["populated"]:
+                    yield b","
+                frame.update(previous=key, key=key, populated=True, pending=True)
+                yield encoded
+                yield b":"
+            elif event in {"start_map", "start_array"}:
+                yield start_value()
+                yield b"{" if event == "start_map" else b"["
+                frames.append(
+                    {
+                        "kind": "map" if event == "start_map" else "array",
+                        "populated": False,
+                        "pending": False,
+                        "previous": None,
+                        "key": None,
+                    }
+                )
+            elif event in {"end_map", "end_array"}:
+                if not frames:
+                    raise CaptureJobError(400, "invalid_checkpoint")
+                frame = frames.pop()
+                if frame["pending"] or frame["kind"] != ("map" if event == "end_map" else "array"):
+                    raise CaptureJobError(400, "invalid_checkpoint")
+                yield b"}" if event == "end_map" else b"]"
+            else:
+                if event not in {"null", "boolean", "number", "string"}:
+                    raise CaptureJobError(400, "invalid_checkpoint")
+                yield start_value()
+                yield canonical_bytes(value, CAPTURE)
+    except (ijson.JSONError, UnicodeError, CanonicalizationError, TypeError) as exc:
+        raise CaptureJobError(400, "non_canonical_json") from exc
+    if not started or frames:
+        raise CaptureJobError(400, "invalid_checkpoint")
+
+
+def _canonical_checkpoint_digest(stream: BinaryIO) -> tuple[str, str | None]:
+    """Hash canonical tokens, to compare with both exact wire and declared SHA."""
+    hasher = hashlib.sha256()
+    conversation_ref = None
+
+    def observed_events() -> Iterator[tuple[str, object]]:
+        nonlocal conversation_ref
+        for prefix, event, value in ijson.parse(stream):
+            if prefix == "conversation_ref" and event == "string":
+                conversation_ref = json.loads(canonical_bytes(value, CAPTURE))
+            yield event, value
+
+    for part in _canonical_checkpoint_parts(observed_events()):
+        hasher.update(part)
+    return "sha256:" + hasher.hexdigest(), conversation_ref
+
+
+def _stored_checkpoint_payload_events(stream: BinaryIO | sqlite3.Blob) -> Iterator[tuple[str, object]]:
+    """Select the payload from the shipped canonical checkpoint wrapper.
+
+    The complete wrapper is consumed even after its payload ends. A missing
+    or repeated payload is a refusal, so conversion cannot publish a selected
+    prefix of corrupt state and then retire its original row.
+    """
+    found = False
+    selecting = False
+    depth = 0
+    root_depth = 0
+    pending_payload = False
+    for event, value in ijson.basic_parse(stream):
+        if selecting:
+            yield event, value
+            if event in {"start_map", "start_array"}:
+                depth += 1
+            elif event in {"end_map", "end_array"}:
+                depth -= 1
+            if depth == 0:
+                selecting = False
+        elif pending_payload:
+            pending_payload = False
+            found = True
+            yield event, value
+            if event in {"start_map", "start_array"}:
+                selecting = True
+                depth = 1
+        elif event == "map_key" and root_depth == 1 and value == "payload":
+            if found:
+                raise CaptureJobError(500, "stored_checkpoint_invalid")
+            pending_payload = True
+        if event in {"start_map", "start_array"}:
+            if root_depth == 0 and event != "start_map":
+                raise CaptureJobError(500, "stored_checkpoint_invalid")
+            root_depth += 1
+        elif event in {"end_map", "end_array"}:
+            root_depth -= 1
+    if not found or selecting or pending_payload or root_depth:
+        raise CaptureJobError(500, "stored_checkpoint_invalid")
+
+
+class _CheckpointPartReader:
+    """Adapt canonical token parts to the existing bounded staging reader."""
+
+    def __init__(self, parts: Iterator[bytes]) -> None:
+        self._parts = parts
+        self._pending = memoryview(b"")
+
+    def read(self, size: int) -> bytes:
+        if size <= 0:
+            return b""
+        result = bytearray()
+        while len(result) < size:
+            if not self._pending:
+                try:
+                    self._pending = memoryview(next(self._parts))
+                except StopIteration:
+                    break
+            consumed = min(size - len(result), len(self._pending))
+            result.extend(self._pending[:consumed])
+            self._pending = self._pending[consumed:]
+        return bytes(result)
 
 
 def capture_job_database_path(spool_path: Path | None = None) -> Path:
@@ -119,8 +271,8 @@ class CaptureJobRegistry:
     spool_path: Path | None
     receiver_id: str
 
-    protocol_min: int = 1
-    protocol_max: int = 1
+    protocol_min: int = 2
+    protocol_max: int = 2
 
     def capabilities(self) -> dict[str, object]:
         return {
@@ -128,47 +280,54 @@ class CaptureJobRegistry:
             "protocol_min": self.protocol_min,
             "protocol_max": self.protocol_max,
             "scope_namespace": capture_job_scope_namespace(self.spool_path),
+            "checkpoint_transport": "canonical-artifact-v1",
         }
 
     def _connect(self) -> sqlite3.Connection:
         path = capture_job_database_path(self.spool_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(path, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        identity = _database_identity(path)
-        if identity is not None and identity in _SCHEMA_READY:
-            return connection
-        with _SCHEMA_LOCK:
-            # Serialize schema inspection and upgrades once per database file.
-            # Ordinary reads never take a write transaction.
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                self._ensure_schema(connection)
-            except BaseException:
-                connection.rollback()
-                connection.close()
-                raise
-            connection.commit()
+        try:
+            connection.row_factory = sqlite3.Row
             identity = _database_identity(path)
-            if identity is not None:
-                _SCHEMA_READY.add(identity)
-        return connection
+            if identity is not None and identity in _SCHEMA_READY:
+                connection.execute("PRAGMA synchronous=FULL")
+                connection.execute("PRAGMA foreign_keys=ON")
+                return connection
+            with _SCHEMA_LOCK:
+                # WAL configuration also mutates the database. Serialize the
+                # whole cold setup and recheck after another opener finishes.
+                connection.execute("PRAGMA synchronous=FULL")
+                connection.execute("PRAGMA foreign_keys=ON")
+                identity = _database_identity(path)
+                if identity is None or identity not in _SCHEMA_READY:
+                    connection.execute("PRAGMA journal_mode=WAL")
+                    connection.execute("BEGIN IMMEDIATE")
+                    self._ensure_schema(connection)
+                    connection.commit()
+                    identity = _database_identity(path)
+                    if identity is not None:
+                        _SCHEMA_READY.add(identity)
+            return connection
+        except BaseException:
+            # Closing the original creator connection rolls back incomplete
+            # setup, including failures before schema admission.
+            connection.close()
+            raise
 
-    @staticmethod
-    def _ensure_schema(connection: sqlite3.Connection) -> None:
+    def _ensure_schema(self, connection: sqlite3.Connection) -> None:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
-                job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
+                job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, scope_key TEXT NOT NULL,
+                scope_kind TEXT NOT NULL, invocation_json TEXT,
                 intent_key TEXT NOT NULL, intent_json TEXT NOT NULL, revision INTEGER NOT NULL,
-                checkpoint_json TEXT, checkpoint_sequence INTEGER, checkpoint_digest TEXT,
+                checkpoint_artifact_ref TEXT, checkpoint_size INTEGER,
+                checkpoint_sequence INTEGER, checkpoint_digest TEXT,
                 receipt_json TEXT, retry_json TEXT NOT NULL, lease_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 retention_json TEXT NOT NULL DEFAULT '{"state":"active","hold_reason":null,"timeline_authoritative":true}',
                 retention_declared INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(provider, account_scope, intent_key)
+                UNIQUE(provider, scope_key, intent_key)
             ) STRICT"""
         )
         connection.execute(
@@ -185,6 +344,80 @@ class CaptureJobRegistry:
             ) STRICT"""
         )
         connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_native_acquisitions (
+                job_id TEXT NOT NULL, acquisition_id TEXT NOT NULL,
+                binding_json TEXT NOT NULL, member_names_json TEXT NOT NULL, state TEXT NOT NULL,
+                plan_digest TEXT, header_json TEXT, final_receipt_json TEXT,
+                PRIMARY KEY(job_id, acquisition_id),
+                FOREIGN KEY(job_id) REFERENCES capture_jobs(job_id) ON DELETE CASCADE
+            ) STRICT"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_native_members (
+                job_id TEXT NOT NULL, acquisition_id TEXT NOT NULL, member_name TEXT NOT NULL,
+                sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL, metadata_json TEXT NOT NULL,
+                PRIMARY KEY(job_id, acquisition_id, member_name),
+                FOREIGN KEY(job_id, acquisition_id)
+                    REFERENCES capture_job_native_acquisitions(job_id, acquisition_id) ON DELETE CASCADE
+            ) STRICT"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_native_plan (
+                job_id TEXT NOT NULL, acquisition_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                descriptor_json TEXT NOT NULL, descriptor_digest TEXT NOT NULL,
+                PRIMARY KEY(job_id, acquisition_id, ordinal),
+                FOREIGN KEY(job_id, acquisition_id)
+                    REFERENCES capture_job_native_acquisitions(job_id, acquisition_id) ON DELETE CASCADE
+            ) STRICT"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_native_artifacts (
+                job_id TEXT NOT NULL, acquisition_id TEXT NOT NULL, purpose TEXT NOT NULL,
+                sha256 TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                PRIMARY KEY(job_id, acquisition_id, purpose),
+                FOREIGN KEY(job_id, acquisition_id)
+                    REFERENCES capture_job_native_acquisitions(job_id, acquisition_id) ON DELETE CASCADE
+            ) STRICT"""
+        )
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS capture_job_native_assets (
+                job_id TEXT NOT NULL, acquisition_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                outcome_json TEXT NOT NULL, sha256 TEXT, size_bytes INTEGER,
+                PRIMARY KEY(job_id, acquisition_id, ordinal),
+                FOREIGN KEY(job_id, acquisition_id, ordinal)
+                    REFERENCES capture_job_native_plan(job_id, acquisition_id, ordinal) ON DELETE CASCADE
+            ) STRICT"""
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_native_member_artifact ON capture_job_native_members(sha256)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_native_asset_artifact ON capture_job_native_assets(sha256)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_native_prepared_artifact ON capture_job_native_artifacts(sha256)"
+        )
+        # Normalize diagnostic metadata once on database open. Original custody
+        # rows and messages survive; a historical message cannot prove errno.
+        for row in connection.execute("SELECT source_digest, diagnostic FROM capture_job_orphans"):
+            try:
+                diagnostic = json.loads(row["diagnostic"])
+            except (ValueError, TypeError):
+                diagnostic = None
+            if not (
+                isinstance(diagnostic, dict)
+                and set(diagnostic) == {"message", "errno_class"}
+                and isinstance(diagnostic["message"], str)
+                and (diagnostic["errno_class"] is None or isinstance(diagnostic["errno_class"], str))
+            ):
+                diagnostic = {"message": row["diagnostic"], "errno_class": None}
+            encoded = json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+            if encoded != row["diagnostic"]:
+                connection.execute(
+                    "UPDATE capture_job_orphans SET diagnostic=? WHERE source_digest=?",
+                    (encoded, row["source_digest"]),
+                )
+        connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_job_update_receipts (
                 job_id TEXT NOT NULL, request_id TEXT NOT NULL, request_digest TEXT NOT NULL,
                 receipt_json TEXT NOT NULL, PRIMARY KEY(job_id, request_id)
@@ -199,14 +432,55 @@ class CaptureJobRegistry:
                 UNIQUE(job_id, request_id), UNIQUE(job_id, event_revision)
             ) STRICT"""
         )
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_job_events)")}
-        if "job_revision" not in columns:
-            connection.execute("ALTER TABLE capture_job_events ADD COLUMN job_revision INTEGER NOT NULL DEFAULT 0")
         job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
+        if "account_scope" in job_columns:
+            # _connect owns the complete schema transaction. Publishing just
+            # this conversion would expose a partially initialized registry.
+            connection.execute("ALTER TABLE capture_jobs RENAME COLUMN account_scope TO scope_key")
+            connection.execute("ALTER TABLE capture_jobs ADD COLUMN scope_kind TEXT NOT NULL DEFAULT 'account'")
+            connection.execute("ALTER TABLE capture_jobs ADD COLUMN invocation_json TEXT")
+            job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS capture_job_discovery ON capture_jobs(provider, scope_key, created_at DESC, job_id DESC)"
+        )
+        if "checkpoint_artifact_ref" not in job_columns:
+            connection.execute("ALTER TABLE capture_jobs ADD COLUMN checkpoint_artifact_ref TEXT")
+        if "checkpoint_size" not in job_columns:
+            connection.execute("ALTER TABLE capture_jobs ADD COLUMN checkpoint_size INTEGER")
+        if "checkpoint_json" in job_columns:
+            # This is shipped disposable job state. Publish immutable custody
+            # before the transaction retires its predecessor column. A failed
+            # conversion leaves the original row available on the next open.
+            for row in connection.execute(
+                "SELECT rowid, job_id, checkpoint_digest FROM capture_jobs WHERE checkpoint_json IS NOT NULL"
+            ):
+                with connection.blobopen("capture_jobs", "checkpoint_json", row["rowid"], readonly=True) as blob:
+                    digest = hashlib.sha256()
+                    size = 0
+                    for part in _canonical_checkpoint_parts(_stored_checkpoint_payload_events(blob)):
+                        digest.update(part)
+                        size += len(part)
+                    if "sha256:" + digest.hexdigest() != row["checkpoint_digest"]:
+                        raise CaptureJobError(500, "stored_checkpoint_digest_mismatch")
+                    blob.seek(0)
+                    reader = _CheckpointPartReader(_canonical_checkpoint_parts(_stored_checkpoint_payload_events(blob)))
+                    staged = stage_capture_body(reader.read, size, spool_root=self._spool_root())
+                    try:
+                        if reader.read(1):
+                            raise CaptureJobError(500, "stored_checkpoint_invalid")
+                        artifact_ref = self._publish_checkpoint_artifact(staged, row["checkpoint_digest"])
+                    finally:
+                        staged.discard()
+                connection.execute(
+                    "UPDATE capture_jobs SET checkpoint_artifact_ref=?, checkpoint_size=? WHERE job_id=?",
+                    (artifact_ref, size, row["job_id"]),
+                )
+            connection.execute("ALTER TABLE capture_jobs DROP COLUMN checkpoint_json")
         if "retention_json" not in job_columns:
             connection.execute(
                 'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
             )
+
         if "retention_declared" not in job_columns:
             connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
             # Rows predating the bit may already hold a deliberate retention
@@ -222,6 +496,83 @@ class CaptureJobRegistry:
                 ") ELSE 1 END"
             )
 
+    def _spool_root(self) -> Path:
+        return self.spool_path or browser_capture_spool_root()
+
+    def _checkpoint_artifact_path(self, digest: object) -> Path:
+        if not isinstance(digest, str) or len(digest) != 71 or not digest.startswith("sha256:"):
+            raise CaptureJobError(400, "invalid_checkpoint_digest")
+        try:
+            int(digest[7:], 16)
+        except ValueError as exc:
+            raise CaptureJobError(400, "invalid_checkpoint_digest") from exc
+        if digest[7:] != digest[7:].lower():
+            raise CaptureJobError(400, "invalid_checkpoint_digest")
+        return self._spool_root() / "capture-jobs" / "artifacts" / (digest[7:] + ".checkpoint")
+
+    def _publish_checkpoint_artifact(self, staged: StagedCapture, digest: str) -> str:
+        if "sha256:" + staged.sha256 != digest:
+            raise CaptureJobError(400, "checkpoint_digest_mismatch")
+        target = self._checkpoint_artifact_path(digest)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # Link publishes without replacing an immutable artifact another
+            # checkpoint or reader already owns.
+            os.link(staged.path, target)
+        except FileExistsError:
+            with target.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != staged.sha256:
+                    raise CaptureJobError(500, "checkpoint_artifact_corrupt") from None
+        for directory in (target.parent, target.parent.parent, self._spool_root()):
+            descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return digest
+
+    @contextmanager
+    def checkpoint_artifact(self, job_id: str, digest: str, body: dict[str, object]) -> Iterator[tuple[BinaryIO, int]]:
+        """Open exact scoped custody while the current lease is fenced.
+
+        Checkpoint replacement retains receipt roots. The shared inode lock
+        must be respected by terminal-job artifact collection, so cancellation
+        or replacement cannot remove the bytes of an admitted read.
+        """
+        handle = None
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = self._require_scoped(
+                    connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+                )
+                self._require_live_lease(job_id, row, body)
+                rooted = (
+                    row["checkpoint_artifact_ref"] == digest
+                    or connection.execute(
+                        "SELECT 1 FROM capture_job_receipts WHERE job_id=? AND checkpoint_digest=? LIMIT 1",
+                        (job_id, digest),
+                    ).fetchone()
+                )
+                if not rooted:
+                    raise CaptureJobError(404, "checkpoint_artifact_not_owned")
+                try:
+                    handle = self._checkpoint_artifact_path(digest).open("rb")
+                except FileNotFoundError as exc:
+                    raise CaptureJobError(500, "checkpoint_artifact_missing") from exc
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+                size = os.fstat(handle.fileno()).st_size
+            # The immutable inode lock carries custody after scope admission.
+            # Hashing an arbitrarily large artifact must not retain the writer
+            # transaction and block unrelated job controls or cancellation.
+            if "sha256:" + hashlib.file_digest(handle, "sha256").hexdigest() != digest:
+                raise CaptureJobError(500, "checkpoint_artifact_corrupt")
+            handle.seek(0)
+            yield handle, size
+        finally:
+            if handle is not None:
+                handle.close()
+
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         connection = self._connect()
@@ -231,16 +582,31 @@ class CaptureJobRegistry:
         finally:
             connection.close()
 
-    def _validate_scope(self, provider: object, account_scope: object, protocol: object) -> tuple[str, str]:
+    def _validate_scope(self, provider: object, scope: object, protocol: object) -> tuple[str, dict[str, object]]:
         if not isinstance(provider, str) or not provider or provider != provider.lower():
             raise CaptureJobError(400, "invalid_provider")
-        if not isinstance(account_scope, str) or not account_scope.startswith("h1:") or len(account_scope) != 46:
-            raise CaptureJobError(400, "invalid_account_scope")
-        if not isinstance(protocol, int) or not self.protocol_min <= protocol <= self.protocol_max:
-            raise CaptureJobError(
-                426, "incompatible_client", {"receiver_min": self.protocol_min, "receiver_max": self.protocol_max}
-            )
-        return provider, account_scope
+        self._validate_protocol(protocol)
+        if not isinstance(scope, dict):
+            raise CaptureJobError(400, "invalid_capture_scope")
+        if scope.get("kind") == "account":
+            key = scope.get("key")
+            if set(scope) != {"kind", "key"} or not isinstance(key, str) or not key.startswith("h1:") or len(key) != 46:
+                raise CaptureJobError(400, "invalid_account_scope")
+        elif scope.get("kind") == "invocation":
+            capability = scope.get("resume_capability")
+            if set(scope) != {"kind", "resume_capability"} or not isinstance(capability, str) or not capability:
+                raise CaptureJobError(400, "invalid_invocation_scope")
+        else:
+            raise CaptureJobError(400, "invalid_capture_scope")
+        return provider, scope
+
+    @staticmethod
+    def _scope_summary(row: sqlite3.Row) -> dict[str, object]:
+        # Invocation capabilities are returned only at their explicit creation
+        # boundary. Listing a job never grants the authority to resume it.
+        return (
+            {"kind": "account", "key": row["scope_key"]} if row["scope_kind"] == "account" else {"kind": "invocation"}
+        )
 
     def _validate_protocol(self, protocol: object) -> None:
         if not isinstance(protocol, int) or not self.protocol_min <= protocol <= self.protocol_max:
@@ -272,7 +638,7 @@ class CaptureJobRegistry:
         return {
             "job_id": row["job_id"],
             "provider": row["provider"],
-            "account_scope": row["account_scope"],
+            "scope": self._scope_summary(row),
             "intent_key": row["intent_key"],
             "intent_version": intent["version"],
             "intent_digest": intent["digest"],
@@ -282,7 +648,16 @@ class CaptureJobRegistry:
             "checkpoint_digest": row["checkpoint_digest"],
             "retry": retry,
             "retention": retention,
-            "checkpoint": json.loads(row["checkpoint_json"]) if row["checkpoint_json"] else None,
+            "checkpoint": (
+                {
+                    "sequence": row["checkpoint_sequence"],
+                    "digest": row["checkpoint_digest"],
+                    "artifact_ref": row["checkpoint_artifact_ref"],
+                    "size_bytes": row["checkpoint_size"],
+                }
+                if row["checkpoint_artifact_ref"]
+                else None
+            ),
             "latest_receipt": latest_receipt,
             "checkpoint_updated_at": latest_receipt["acknowledged_at"] if latest_receipt else None,
             "lease_generation": lease["generation"] if lease else 0,
@@ -334,7 +709,7 @@ class CaptureJobRegistry:
         value = json.loads(row["lease_json"]) if row["lease_json"] else None
         return value if isinstance(value, dict) else None
 
-    def _require_live_lease(self, job_id: str, row: sqlite3.Row, body: dict[str, object]) -> dict[str, object]:
+    def _require_lease_identity(self, job_id: str, row: sqlite3.Row, body: dict[str, object]) -> dict[str, object]:
         lease = self._lease(row)
         supplied_proof = body.get("proof")
         expected_proof = self._proof(job_id, lease) if lease else ""
@@ -346,38 +721,112 @@ class CaptureJobRegistry:
             or not hmac.compare_digest(supplied_proof, expected_proof)
         ):
             raise CaptureJobError(409, "lease_replaced")
+        return lease
+
+    def _require_live_lease(self, job_id: str, row: sqlite3.Row, body: dict[str, object]) -> dict[str, object]:
+        lease = self._require_lease_identity(job_id, row, body)
         expires_at = lease.get("expires_at")
         if not isinstance(expires_at, str) or datetime.fromisoformat(expires_at.replace("Z", "+00:00")) <= _now():
             raise CaptureJobError(409, "lease_expired")
         return lease
 
-    def _census_legacy_orphans(self, connection: sqlite3.Connection) -> list[dict[str, object]]:
+    @contextmanager
+    def artifact_progress(
+        self, job_id: str, body: dict[str, object], *, native: bool = False
+    ) -> Iterator[Callable[[], None]]:
+        """Keep one admitted physical operation fenced as actual work resumes.
+
+        A network pause alone does not revoke its unchanged authority. Only
+        this process-local admission can renew that lease after expiry; every
+        new request still requires a live lease. Replacement or explicit job
+        authority pause is checked before extending it, never overwritten.
+        """
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+            )
+            self._require_live_lease(job_id, job, body)
+            if native and json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                raise CaptureJobError(409, "capture_authority_paused")
+            if native:
+                _job, acquisition = self._native_row(connection, job_id, body)
+                if acquisition["state"] == "cancelled":
+                    raise CaptureJobError(409, "native_acquisition_cancelled")
+        active = True
+
+        def progress() -> None:
+            if not active:
+                raise RuntimeError("capture artifact operation has settled")
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                job = self._require_scoped(
+                    connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+                )
+                lease = self._require_lease_identity(job_id, job, body)
+                if native and json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                    raise CaptureJobError(409, "capture_authority_paused")
+                if native:
+                    acquisition = connection.execute(
+                        "SELECT state FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+                        (job_id, body.get("acquisition_id")),
+                    ).fetchone()
+                    if acquisition is None or acquisition["state"] == "cancelled":
+                        raise CaptureJobError(409, "native_acquisition_cancelled")
+                now = _now()
+                expires_at = datetime.fromisoformat(str(lease["expires_at"]).replace("Z", "+00:00"))
+                if expires_at <= now + timedelta(seconds=60):
+                    renewed = {**lease, "expires_at": _stamp(now + timedelta(seconds=120))}
+                    connection.execute(
+                        "UPDATE capture_jobs SET lease_json=? WHERE job_id=?", (canonical_json(renewed), job_id)
+                    )
+
+        try:
+            yield progress
+        finally:
+            active = False
+
+    def _census_legacy_orphans(self, connection: sqlite3.Connection) -> None:
         root = backfill_checkpoint_root(self.spool_path)
-        unreadable: list[dict[str, object]] = []
         if root.is_dir():
-            for path in sorted(root.glob("*.json")):
+            for path in root.glob("*.json"):
                 try:
-                    raw = path.read_bytes()
+                    with path.open("rb") as stream:
+                        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                        stream.seek(0)
+                        valid = False
+                        try:
+                            for prefix, event, _value in ijson.parse(stream):
+                                if prefix == "checkpoint" and event not in {"map_key", "end_map", "end_array"}:
+                                    valid = event == "start_map"
+                        except (ijson.JSONError, UnicodeError):
+                            valid = False
                 except OSError as exc:
-                    unreadable.append(
-                        {
-                            "orphan_kind": "unreadable_legacy_checkpoint",
-                            "source_digest": "path-sha256:"
+                    connection.execute(
+                        """INSERT INTO capture_job_orphans VALUES (?, ?, ?, ?)
+                        ON CONFLICT(source_digest) DO UPDATE SET orphan_kind=excluded.orphan_kind, diagnostic=excluded.diagnostic""",
+                        (
+                            "path-sha256:"
                             + hashlib.sha256(str(path).encode("utf-8", errors="surrogatepass")).hexdigest(),
-                            "diagnostic": "checkpoint bytes could not be read",
-                            "created_at": _stamp(),
-                            "errno_class": type(exc).__name__,
-                        }
+                            "unreadable_legacy_checkpoint",
+                            json.dumps(
+                                {"message": "checkpoint bytes could not be read", "errno_class": type(exc).__name__},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ),
+                            _stamp(),
+                        ),
                     )
                     continue
-                digest = "sha256:" + hashlib.sha256(raw).hexdigest()
-                try:
-                    payload = json.loads(raw)
-                    valid = isinstance(payload, dict) and isinstance(payload.get("checkpoint"), dict)
-                except json.JSONDecodeError:
-                    valid = False
                 kind = "legacy_backfill_checkpoint" if valid else "malformed_legacy_checkpoint"
-                diagnostic = "account scope unavailable; explicit migration or abandonment required"
+                diagnostic = json.dumps(
+                    {
+                        "message": "account scope unresolved; captured custody retained pending ownership proof",
+                        "errno_class": None,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
                 connection.execute(
                     """INSERT INTO capture_job_orphans VALUES (?, ?, ?, ?)
                     ON CONFLICT(source_digest) DO UPDATE SET
@@ -385,27 +834,92 @@ class CaptureJobRegistry:
                         diagnostic=excluded.diagnostic""",
                     (digest, kind, diagnostic, _stamp()),
                 )
-        rows = connection.execute(
-            "SELECT source_digest, orphan_kind, diagnostic, created_at FROM capture_job_orphans ORDER BY created_at"
-        ).fetchall()
-        return [*map(dict, rows), *unreadable]
 
     def _require_scoped(
-        self, connection: sqlite3.Connection, job_id: str, provider: object, account_scope: object, protocol: object
+        self, connection: sqlite3.Connection, job_id: str, provider: object, scope: object, protocol: object
     ) -> sqlite3.Row:
-        normalized_provider, normalized_scope = self._validate_scope(provider, account_scope, protocol)
+        normalized_provider, normalized_scope = self._validate_scope(provider, scope, protocol)
         row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
-        if (
-            row is None
-            or not hmac.compare_digest(row["provider"], normalized_provider)
-            or not hmac.compare_digest(row["account_scope"], normalized_scope)
-        ):
+        matches = row is not None and hmac.compare_digest(row["provider"], normalized_provider)
+        if matches and row is not None and row["scope_kind"] == normalized_scope["kind"]:
+            if row["scope_kind"] == "account":
+                matches = hmac.compare_digest(row["scope_key"], str(normalized_scope["key"]))
+            else:
+                invocation = json.loads(row["invocation_json"])
+                matches = hmac.compare_digest(
+                    invocation["resume_capability"], str(normalized_scope["resume_capability"])
+                )
+        else:
+            matches = False
+        if not matches:
             raise CaptureJobError(404, "capture_job_not_found")
         return cast(sqlite3.Row, row)
 
+    def _creation_scope(
+        self, provider: object, scope: object, protocol: object
+    ) -> tuple[str, str, str, dict[str, object] | None]:
+        if isinstance(scope, dict) and scope.get("kind") == "invocation":
+            if set(scope) != {"kind", "creation_token", "binding"}:
+                raise CaptureJobError(400, "invalid_invocation_scope")
+            token, binding = scope["creation_token"], scope["binding"]
+            if not isinstance(token, str) or not token or not isinstance(binding, dict):
+                raise CaptureJobError(400, "invalid_invocation_scope")
+            try:
+                UUID(token)
+            except ValueError as exc:
+                raise CaptureJobError(400, "invalid_invocation_scope") from exc
+            required = {
+                "preparation_instance_id",
+                "extension_instance_id",
+                "acquisition_sequence",
+                "raw_revision",
+                "native_id",
+                "source_url",
+                "document_id",
+                "invocation_id",
+            }
+            original_witness = {"extension_instance_id", "acquisition_sequence", "invocation_id"}
+            if set(binding) != required or any(
+                not isinstance(binding[key], str) or not binding[key] for key in required - original_witness
+            ):
+                raise CaptureJobError(400, "invalid_invocation_binding")
+            sequence = binding["acquisition_sequence"]
+            if sequence is not None and (type(sequence) is not int or not 1 <= sequence <= (1 << 53) - 1):
+                raise CaptureJobError(400, "invalid_invocation_binding")
+            invocation_id = binding["invocation_id"]
+            if invocation_id is not None and (not isinstance(invocation_id, str) or not invocation_id):
+                raise CaptureJobError(400, "invalid_invocation_binding")
+            observed_instance = binding["extension_instance_id"]
+            if observed_instance is not None and (not isinstance(observed_instance, str) or not observed_instance):
+                raise CaptureJobError(400, "invalid_invocation_binding")
+            # The creation token authorizes this preparation operation. It does
+            # not manufacture observation order for a passive or historical raw
+            # revision whose original invocation witness was never retained.
+            validated_provider, _ = self._validate_scope(
+                provider, {"kind": "invocation", "resume_capability": token}, protocol
+            )
+            key = "v1:" + hashlib.sha256(token.encode()).hexdigest()
+            return (
+                validated_provider,
+                "invocation",
+                key,
+                {"binding": binding, "resume_capability": secrets.token_urlsafe(32)},
+            )
+        validated_provider, validated_scope = self._validate_scope(provider, scope, protocol)
+        return validated_provider, "account", str(validated_scope["key"]), None
+
+    def _creation_response(self, row: sqlite3.Row, created: bool) -> dict[str, object]:
+        result: dict[str, object] = {"created": created, "job": self._summary(row)}
+        if row["scope_kind"] == "invocation":
+            invocation = json.loads(row["invocation_json"])
+            result["scope"] = {"kind": "invocation", "resume_capability": invocation["resume_capability"]}
+        else:
+            result["scope"] = self._scope_summary(row)
+        return result
+
     def create(self, body: dict[str, object]) -> tuple[int, dict[str, object]]:
-        provider, scope = self._validate_scope(
-            body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+        provider, scope_kind, scope_key, invocation = self._creation_scope(
+            body.get("provider"), body.get("scope"), body.get("client_protocol")
         )
         intent = self._intent(body.get("intent"))
         self.gc()
@@ -413,26 +927,32 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             found = connection.execute(
-                "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=? AND intent_key=?",
-                (provider, scope, intent["intent_key"]),
+                "SELECT * FROM capture_jobs WHERE provider=? AND scope_key=? AND intent_key=?",
+                (provider, scope_key, intent["intent_key"]),
             ).fetchone()
             if found is not None:
                 if json.loads(found["intent_json"])["digest"] != intent["digest"]:
                     raise CaptureJobError(409, "intent_key_conflict")
-                return 200, {"created": False, "job": self._summary(found)}
+                if found["scope_kind"] != scope_kind or (
+                    invocation is not None and json.loads(found["invocation_json"])["binding"] != invocation["binding"]
+                ):
+                    raise CaptureJobError(409, "invocation_binding_conflict")
+                return 200, self._creation_response(found, False)
             job_id = str(uuid4())
             connection.execute(
                 # Named columns, not positional: a receiver database created by an
                 # earlier build carries extra columns this build never writes.
                 """INSERT INTO capture_jobs (
-                    job_id, provider, account_scope, intent_key, intent_json, revision,
-                    checkpoint_json, checkpoint_sequence, checkpoint_digest, receipt_json,
+                    job_id, provider, scope_key, scope_kind, invocation_json, intent_key, intent_json, revision,
+                    checkpoint_artifact_ref, checkpoint_sequence, checkpoint_digest, receipt_json,
                     retry_json, lease_json, created_at, updated_at, retention_json
-                ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?)""",
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?)""",
                 (
                     job_id,
                     provider,
-                    scope,
+                    scope_key,
+                    scope_kind,
+                    json.dumps(invocation, separators=(",", ":")) if invocation is not None else None,
                     intent["intent_key"],
                     canonical_json(intent),
                     canonical_json({"state": "ready", "attempt": 0}),
@@ -452,12 +972,12 @@ class CaptureJobRegistry:
                 {"provider": provider, "intent_key": intent["intent_key"]},
                 advance_revision=False,
             )
-            return 201, {"created": True, "job": self._summary(row)}
+            return 201, self._creation_response(row, True)
 
     def discover(self, body: dict[str, object]) -> dict[str, object]:
-        provider, scope = self._validate_scope(
-            body.get("provider"), body.get("account_scope"), body.get("client_protocol")
-        )
+        provider, scope = self._validate_scope(body.get("provider"), body.get("scope"), body.get("client_protocol"))
+        if scope["kind"] != "account":
+            raise CaptureJobError(403, "invocation_discovery_forbidden")
         intent_key = body.get("intent_key")
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
@@ -465,21 +985,85 @@ class CaptureJobRegistry:
         # create() only for an unknown intent, so these two routes are where
         # retired jobs are collected. Collecting before listing means the
         # client never adopts a job this pass is about to delete.
-        self.gc()
+        if body.get("cursor") is None:
+            self.gc()
+        cursor = body.get("cursor")
+        if cursor is not None and (
+            not isinstance(cursor, dict)
+            or set(cursor) != {"created_at", "job_id"}
+            or any(not isinstance(value, str) for value in cursor.values())
+        ):
+            raise CaptureJobError(400, "invalid_capture_job_cursor")
         with self._connection() as connection:
+            connection.execute("BEGIN")
+            parameters: list[object] = [provider, scope["key"]]
+            predicate = "provider=? AND scope_kind='account' AND scope_key=?"
+            if intent_key:
+                predicate += " AND intent_key=?"
+                parameters.append(intent_key)
+            total = connection.execute("SELECT COUNT(*) FROM capture_jobs WHERE " + predicate, parameters).fetchone()[0]
+            if cursor is not None:
+                predicate += " AND (created_at, job_id) < (?, ?)"
+                parameters.extend([cursor["created_at"], cursor["job_id"]])
             rows = connection.execute(
-                "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
-                + (" AND intent_key=?" if intent_key else "")
-                + " ORDER BY updated_at DESC",
-                (provider, scope, intent_key) if intent_key else (provider, scope),
+                "SELECT * FROM capture_jobs WHERE " + predicate + " ORDER BY created_at DESC, job_id DESC LIMIT 26",
+                parameters,
             ).fetchall()
-            return {"jobs": [self._summary(row) for row in rows]}
+            jobs = [self._summary(row) for row in rows[:25]]
+            after = {"created_at": rows[24]["created_at"], "job_id": rows[24]["job_id"]} if len(rows) > 25 else None
+            return {"jobs": jobs, "total": total, "cursor": after, "has_more": after is not None}
 
-    def list_orphans(self, protocol: object) -> dict[str, object]:
-        """Reconcile the spool's legacy checkpoint root into the orphan census."""
+    def list_orphans(self, protocol: object, cursor: str | None = None) -> dict[str, object]:
+        """Reconcile retained custody and read one page from its existing owner."""
         self._validate_protocol(protocol)
+        if cursor is not None and not isinstance(cursor, str):
+            raise CaptureJobError(400, "invalid_orphan_cursor")
         with self._connection() as connection:
-            return {"orphans": self._census_legacy_orphans(connection)}
+            connection.execute("BEGIN IMMEDIATE")
+            if cursor is None:
+                self._census_legacy_orphans(connection)
+            total = connection.execute("SELECT COUNT(*) FROM capture_job_orphans").fetchone()[0]
+            rows = connection.execute(
+                "SELECT * FROM capture_job_orphans WHERE source_digest > ? ORDER BY source_digest LIMIT 26",
+                (cursor or "",),
+            ).fetchall()
+            after = rows[24]["source_digest"] if len(rows) > 25 else None
+            return {
+                "orphans": [
+                    {**dict(row), "diagnostic": diagnostic["message"], "errno_class": diagnostic["errno_class"]}
+                    for row in rows[:25]
+                    for diagnostic in [json.loads(row["diagnostic"])]
+                ],
+                "total": total,
+                "cursor": after,
+                "has_more": after is not None,
+            }
+
+    @contextmanager
+    def inspect_orphan(self, source_digest: str, protocol: object) -> Iterator[tuple[BinaryIO, int]]:
+        """Open exact retained evidence without asserting an account or consuming it.
+
+        The legacy producer is retired. Hash and send the same open inode so
+        inspection cannot select another file by a filename supplied by a client.
+        """
+        self._validate_protocol(protocol)
+        if not source_digest.startswith("sha256:") or len(source_digest) != 71:
+            raise CaptureJobError(400, "invalid_orphan_digest")
+        try:
+            bytes.fromhex(source_digest[7:])
+        except ValueError as exc:
+            raise CaptureJobError(400, "invalid_orphan_digest") from exc
+        root = backfill_checkpoint_root(self.spool_path)
+        for path in root.glob("*.json"):
+            with path.open("rb") as stream:
+                observed = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                if not hmac.compare_digest(source_digest, observed):
+                    continue
+                size = stream.seek(0, 2)
+                stream.seek(0)
+                yield stream, size
+                return
+        raise CaptureJobError(404, "orphan_payload_not_found")
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connection() as connection:
@@ -488,7 +1072,7 @@ class CaptureJobRegistry:
                 connection,
                 job_id,
                 body.get("provider"),
-                body.get("account_scope"),
+                body.get("scope"),
                 body.get("client_protocol"),
             )
             receipts = [
@@ -553,18 +1137,6 @@ class CaptureJobRegistry:
             raise CaptureJobError(400, "invalid_capture_job_event")
         if not isinstance(payload, dict):
             raise CaptureJobError(400, "invalid_capture_job_event")
-        refs_bytes = len(canonical_json(refs).encode("utf-8"))
-        payload_bytes = len(canonical_json(payload).encode("utf-8"))
-        if refs_bytes > CAPTURE_JOB_EVENT_MAX_BYTES or payload_bytes > CAPTURE_JOB_EVENT_MAX_BYTES:
-            raise CaptureJobError(
-                400,
-                "capture_job_event_too_large",
-                {
-                    "max_bytes": CAPTURE_JOB_EVENT_MAX_BYTES,
-                    "refs_bytes": refs_bytes,
-                    "payload_bytes": payload_bytes,
-                },
-            )
         existing = connection.execute(
             "SELECT * FROM capture_job_events WHERE job_id=? AND request_id=?", (job_id, request_id)
         ).fetchone()
@@ -582,12 +1154,6 @@ class CaptureJobRegistry:
         event_revision = connection.execute(
             "SELECT COALESCE(MAX(event_revision), -1) + 1 FROM capture_job_events WHERE job_id=?", (job_id,)
         ).fetchone()[0]
-        if event_revision >= CAPTURE_JOB_EVENT_MAX_COUNT:
-            raise CaptureJobError(
-                400,
-                "capture_job_event_limit_exhausted",
-                {"max_events": CAPTURE_JOB_EVENT_MAX_COUNT, "event_count": event_revision},
-            )
         job_revision = expected_revision + 1 if advance_revision else expected_revision
         now = _stamp()
         event_id = str(uuid4())
@@ -653,7 +1219,7 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
-                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             self._require_live_lease(job_id, row, body)
             existing = connection.execute(
@@ -675,7 +1241,7 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN")
             self._require_scoped(
-                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             events, next_cursor = read_capture_job_events(connection, job_id, limit, before_revision)
             return {
@@ -713,7 +1279,7 @@ class CaptureJobRegistry:
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
-                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             lease = json.loads(row["lease_json"]) if row["lease_json"] else None
             generation = lease["generation"] if lease else 0
@@ -845,18 +1411,10 @@ class CaptureJobRegistry:
         if retry is None and ttl is None and retention is None:
             raise CaptureJobError(400, "empty_capture_job_update")
         request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl, "retention": retention})
-        # Retention joined the digest after update receipts were already
-        # durable. A retry/TTL-only request replayed against a receipt written
-        # before that recomputes a different digest, so its stored shape stays
-        # an accepted match. A retention-bearing request has no legacy shape
-        # and can only match the current digest.
-        legacy_digest = (
-            canonical_digest({"retry": retry, "lease_ttl_seconds": ttl}) if retention is None else request_digest
-        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
-                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             lease = self._require_live_lease(job_id, row, body)
             existing = connection.execute(
@@ -864,9 +1422,7 @@ class CaptureJobRegistry:
                 (job_id, request_id),
             ).fetchone()
             if existing:
-                if not hmac.compare_digest(existing["request_digest"], request_digest) and not hmac.compare_digest(
-                    existing["request_digest"], legacy_digest
-                ):
+                if not hmac.compare_digest(existing["request_digest"], request_digest):
                     raise CaptureJobError(409, "request_id_conflict")
                 return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
             if body.get("expected_revision") != row["revision"]:
@@ -942,7 +1498,7 @@ class CaptureJobRegistry:
         deleted: list[str] = []
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            rows = connection.execute("SELECT * FROM capture_jobs ORDER BY updated_at").fetchall()
+            rows = connection.execute("SELECT * FROM capture_jobs ORDER BY updated_at")
             for row in rows:
                 if len(deleted) >= limit:
                     break
@@ -952,6 +1508,13 @@ class CaptureJobRegistry:
                 if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
                     continue
                 if retry.get("state") not in {"completed", "abandoned"}:
+                    continue
+                if connection.execute(
+                    "SELECT 1 FROM capture_job_native_acquisitions WHERE job_id=? AND final_receipt_json IS NULL LIMIT 1",
+                    (row["job_id"],),
+                ).fetchone():
+                    # A terminal scheduling choice is not capture acceptance.
+                    # Unpublished native bytes remain inspectable custody.
                     continue
                 if lease is not None:
                     expires_at = lease.get("expires_at")
@@ -970,41 +1533,742 @@ class CaptureJobRegistry:
                 connection.execute("DELETE FROM capture_job_update_receipts WHERE job_id=?", (row["job_id"],))
                 connection.execute("DELETE FROM capture_jobs WHERE job_id=?", (row["job_id"],))
                 deleted.append(row["job_id"])
+        # Job retirement must commit before any artifact is removed. Otherwise
+        # a crash could restore a row whose payload had already been deleted.
+        self._collect_checkpoint_artifacts()
         return {"deleted": deleted, "count": len(deleted)}
 
-    @staticmethod
-    def _checkpoint_refs(row: sqlite3.Row, checkpoint: dict[str, object]) -> dict[str, object]:
-        """Name what a checkpoint advanced, for the conversation timeline.
+    def _collect_checkpoint_artifacts(self) -> None:
+        directory = self._spool_root() / "capture-jobs" / "artifacts"
+        if not directory.is_dir():
+            return
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    if entry.name.endswith(".native"):
+                        digest = entry.name.removesuffix(".native")
+                        rooted = connection.execute(
+                            "SELECT 1 FROM capture_job_native_members WHERE sha256=? "
+                            "UNION ALL SELECT 1 FROM capture_job_native_assets WHERE sha256=? "
+                            "UNION ALL SELECT 1 FROM capture_job_native_artifacts WHERE sha256=? LIMIT 1",
+                            (digest, digest, digest),
+                        ).fetchone()
+                    elif entry.name.endswith(".checkpoint"):
+                        digest = "sha256:" + entry.name.removesuffix(".checkpoint")
+                        rooted = connection.execute(
+                            "SELECT 1 FROM capture_jobs WHERE checkpoint_artifact_ref=? "
+                            "UNION ALL SELECT 1 FROM capture_job_receipts WHERE checkpoint_digest=? LIMIT 1",
+                            (digest, digest),
+                        ).fetchone()
+                    else:
+                        continue
+                    if rooted:
+                        continue
+                    try:
+                        with open(entry.path, "rb") as handle:
+                            try:
+                                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            except BlockingIOError:
+                                continue
+                            if os.stat(entry.path).st_ino == os.fstat(handle.fileno()).st_ino:
+                                os.unlink(entry.path)
+                    except FileNotFoundError:
+                        continue
 
-        A checkpoint payload that names its conversation is used verbatim.
-        Otherwise the job's own intent is the reference: a backfill ledger
-        advances one intent, and that is what its timeline is a timeline of.
-        """
-        payload = checkpoint.get("payload")
-        if isinstance(payload, dict):
-            conversation_ref = payload.get("conversation_ref")
-            if isinstance(conversation_ref, str) and conversation_ref:
-                return {"conversation_ref": conversation_ref}
-        return {"conversation_ref": f"intent:{row['intent_key']}"}
+    def _native_artifact_path(self, sha256: object) -> Path:
+        if not isinstance(sha256, str) or len(sha256) != 64:
+            raise CaptureJobError(400, "invalid_native_digest")
+        try:
+            if len(bytes.fromhex(sha256)) != 32 or sha256 != sha256.lower():
+                raise ValueError
+        except ValueError as exc:
+            raise CaptureJobError(400, "invalid_native_digest") from exc
+        return self._spool_root() / "capture-jobs" / "artifacts" / (sha256 + ".native")
 
-    def checkpoint(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+    def _publish_native_artifact(self, staged: StagedCapture) -> None:
+        target = self._native_artifact_path(staged.sha256)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(staged.path, target)
+        except FileExistsError:
+            with target.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != staged.sha256:
+                    raise CaptureJobError(500, "native_artifact_corrupt") from None
+        with target.open("rb") as handle:
+            os.fsync(handle.fileno())
+        for parent in (target.parent, target.parent.parent, self._spool_root()):
+            fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+
+    def _native_row(
+        self, connection: sqlite3.Connection, job_id: str, body: dict[str, object]
+    ) -> tuple[sqlite3.Row, sqlite3.Row]:
+        job = self._require_scoped(
+            connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+        )
+        self._require_live_lease(job_id, job, body)
+        row = connection.execute(
+            "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+            (job_id, body.get("acquisition_id")),
+        ).fetchone()
+        if row is None:
+            raise CaptureJobError(404, "native_acquisition_not_found")
+        if row["state"] == "cancelled":
+            raise CaptureJobError(409, "native_acquisition_cancelled")
+        return job, row
+
+    @contextmanager
+    def native_member_artifact(
+        self,
+        job_id: str,
+        member_name: str,
+        body: dict[str, object],
+        *,
+        progress: Callable[[], None] | None = None,
+    ) -> Iterator[tuple[BinaryIO, sqlite3.Row]]:
+        """Borrow exactly rooted raw bytes without holding the writer during IO."""
+        handle = None
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _, acquisition = self._native_row(connection, job_id, body)
+                member = connection.execute(
+                    "SELECT * FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
+                    (job_id, acquisition["acquisition_id"], member_name),
+                ).fetchone()
+                if member is None:
+                    raise CaptureJobError(404, "native_member_not_owned")
+                try:
+                    handle = self._native_artifact_path(member["sha256"]).open("rb")
+                except FileNotFoundError as exc:
+                    raise CaptureJobError(500, "native_artifact_missing") from exc
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            hasher = hashlib.sha256()
+            while chunk := handle.read(64 * 1024):
+                hasher.update(chunk)
+                if progress is not None:
+                    progress()
+            if os.fstat(handle.fileno()).st_size != member["size_bytes"] or hasher.hexdigest() != member["sha256"]:
+                raise CaptureJobError(500, "native_artifact_corrupt")
+            handle.seek(0)
+            yield handle, member
+        finally:
+            if handle is not None:
+                handle.close()
+
+    def native_begin(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        acquisition_id, binding = body.get("acquisition_id"), body.get("binding")
+        member_names = body.get("member_names")
+        if not isinstance(member_names, list) or any(not isinstance(name, str) for name in member_names):
+            raise CaptureJobError(400, "invalid_native_members")
+        if len(set(member_names)) != len(member_names):
+            raise CaptureJobError(400, "invalid_native_members")
+        members_json = json.dumps(sorted(member_names), separators=(",", ":"))
+        if not isinstance(acquisition_id, str) or not isinstance(binding, dict):
+            raise CaptureJobError(400, "invalid_native_acquisition")
+        try:
+            UUID(acquisition_id)
+        except ValueError as exc:
+            raise CaptureJobError(400, "invalid_native_acquisition") from exc
+        self._creation_scope(
+            body.get("provider"),
+            {"kind": "invocation", "creation_token": acquisition_id, "binding": binding},
+            body.get("client_protocol"),
+        )
+        binding_json = json.dumps(binding, separators=(",", ":"), sort_keys=True)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+            )
+            self._require_live_lease(job_id, job, body)
+            if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                raise CaptureJobError(409, "capture_authority_paused")
+            accepted_names = {"conversation"}
+            if job["provider"] == "grok":
+                accepted_names.add("responses")
+                if "response_nodes" in member_names:
+                    accepted_names.add("response_nodes")
+            if set(member_names) != accepted_names:
+                raise CaptureJobError(400, "invalid_native_members")
+            if job["scope_kind"] == "invocation" and json.loads(job["invocation_json"])["binding"] != binding:
+                raise CaptureJobError(409, "invocation_binding_conflict")
+            existing = connection.execute(
+                "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+                (job_id, acquisition_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["binding_json"] != binding_json or existing["member_names_json"] != members_json:
+                    raise CaptureJobError(409, "native_acquisition_conflict")
+                return {
+                    "job": self._summary(job),
+                    "acquisition_id": acquisition_id,
+                    "state": existing["state"],
+                    "duplicate": True,
+                }
+            if body.get("expected_revision") != job["revision"]:
+                raise CaptureJobError(409, "cas_mismatch", {"revision": job["revision"]})
+            connection.execute(
+                "INSERT INTO capture_job_native_acquisitions(job_id, acquisition_id, binding_json, member_names_json, state) VALUES (?, ?, ?, ?, 'acquiring')",
+                (job_id, acquisition_id, binding_json, members_json),
+            )
+            return {
+                "job": self._summary(job),
+                "acquisition_id": acquisition_id,
+                "state": "acquiring",
+                "duplicate": False,
+            }
+
+    def native_member(self, job_id: str, body: dict[str, object], staged: StagedCapture) -> dict[str, object]:
+        member, metadata = body.get("member_name"), body.get("metadata")
+        if member not in {"conversation", "responses", "response_nodes"} or not isinstance(metadata, dict):
+            raise CaptureJobError(400, "invalid_native_member")
+        if body.get("sha256") != staged.sha256 or body.get("size_bytes") != staged.size_bytes:
+            raise CaptureJobError(400, "native_member_integrity_mismatch")
+        metadata_json = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job, acquisition = self._native_row(connection, job_id, body)
+            if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                raise CaptureJobError(409, "capture_authority_paused")
+            if member not in json.loads(acquisition["member_names_json"]):
+                raise CaptureJobError(400, "invalid_native_member")
+            existing = connection.execute(
+                "SELECT * FROM capture_job_native_members WHERE job_id=? AND acquisition_id=? AND member_name=?",
+                (job_id, acquisition["acquisition_id"], member),
+            ).fetchone()
+            if existing is not None:
+                if (existing["sha256"], existing["size_bytes"], existing["metadata_json"]) != (
+                    staged.sha256,
+                    staged.size_bytes,
+                    metadata_json,
+                ):
+                    raise CaptureJobError(409, "native_member_conflict")
+                self._publish_native_artifact(staged)
+                return {
+                    "job": self._summary(job),
+                    "acquisition_id": acquisition["acquisition_id"],
+                    "member_name": member,
+                    "sha256": staged.sha256,
+                    "size_bytes": staged.size_bytes,
+                    "duplicate": True,
+                }
+            if acquisition["state"] != "acquiring":
+                raise CaptureJobError(409, "native_acquisition_sealed")
+            if body.get("expected_revision") != job["revision"]:
+                raise CaptureJobError(409, "cas_mismatch", {"revision": job["revision"]})
+            self._publish_native_artifact(staged)
+            connection.execute(
+                "INSERT INTO capture_job_native_members VALUES (?, ?, ?, ?, ?, ?)",
+                (job_id, acquisition["acquisition_id"], member, staged.sha256, staged.size_bytes, metadata_json),
+            )
+            return {
+                "job": self._summary(job),
+                "acquisition_id": acquisition["acquisition_id"],
+                "member_name": member,
+                "sha256": staged.sha256,
+                "size_bytes": staged.size_bytes,
+                "duplicate": False,
+            }
+
+    def native_cancel(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        """Fence one acquisition while retaining every committed artifact."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = self._require_scoped(
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
+            )
+            self._require_live_lease(job_id, job, body)
+            acquisition = connection.execute(
+                "SELECT * FROM capture_job_native_acquisitions WHERE job_id=? AND acquisition_id=?",
+                (job_id, body.get("acquisition_id")),
+            ).fetchone()
+            if acquisition is None:
+                raise CaptureJobError(404, "native_acquisition_not_found")
+            if acquisition["final_receipt_json"]:
+                raise CaptureJobError(409, "native_acquisition_published")
+            duplicate = acquisition["state"] == "cancelled"
+            connection.execute(
+                "UPDATE capture_job_native_acquisitions SET state='cancelled' WHERE job_id=? AND acquisition_id=?",
+                (job_id, acquisition["acquisition_id"]),
+            )
+            return {"acquisition_id": acquisition["acquisition_id"], "state": "cancelled", "duplicate": duplicate}
+
+    def native_prepare(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        """Seal canonical turns and an exact asset plan, retaining literal raw."""
+        from polylogue.browser_capture.models import BrowserCaptureProvenance
+        from polylogue.browser_capture.native_preparation import envelope_prefix
+        from polylogue.core.enums import Provider
+        from polylogue.core.sql_settlement import retain_native_sql_lifetimes
+        from polylogue.sources.parsers.browser_capture import parse_native_member_streams
+        from polylogue.sources.prepared_message_sink import ScratchSessionSpill, SqliteMessageStore
+        from polylogue.storage.sqlite.connection_profile import (
+            retained_native_sql_owners_for_lifetime,
+        )
+
+        with self.artifact_progress(job_id, body, native=True) as progress:
+            with self._connection() as connection:
+                job, acquisition = self._native_row(connection, job_id, body)
+                binding = json.loads(acquisition["binding_json"])
+                names = json.loads(acquisition["member_names_json"])
+                prepared = connection.execute(
+                    "SELECT * FROM capture_job_native_artifacts WHERE job_id=? AND acquisition_id=? AND purpose='prefix'",
+                    (job_id, acquisition["acquisition_id"]),
+                ).fetchone()
+                members_bound = {
+                    row["member_name"]: {"sha256": row["sha256"], "size_bytes": row["size_bytes"]}
+                    for row in connection.execute(
+                        "SELECT member_name, sha256, size_bytes FROM capture_job_native_members WHERE job_id=? AND acquisition_id=?",
+                        (job_id, acquisition["acquisition_id"]),
+                    )
+                }
+                revision = canonical_digest(
+                    {"provider": job["provider"], "native_id": binding["native_id"], "members": members_bound}
+                )
+                if set(members_bound) != set(names) or binding["raw_revision"] != revision:
+                    raise CaptureJobError(409, "native_raw_revision_conflict")
+                provenance = BrowserCaptureProvenance.model_validate(body.get("provenance"))
+                if any(
+                    getattr(provenance, field) != binding[field]
+                    for field in ("source_url", "extension_instance_id", "acquisition_sequence")
+                ):
+                    raise CaptureJobError(409, "native_provenance_conflict")
+                metadata = body.get("provider_meta", {})
+                if not isinstance(metadata, dict):
+                    raise CaptureJobError(400, "invalid_native_metadata")
+                header_json = json.dumps(
+                    {"provenance": provenance.model_dump(mode="json"), "provider_meta": metadata},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                if prepared is not None:
+                    if json.loads(acquisition["header_json"])["request"] != json.loads(header_json):
+                        raise CaptureJobError(409, "native_preparation_conflict")
+                    return {
+                        "job": self._summary(job),
+                        "acquisition_id": acquisition["acquisition_id"],
+                        "state": acquisition["state"],
+                        "plan_digest": acquisition["plan_digest"],
+                        "summary": json.loads(acquisition["header_json"])["summary"],
+                        "duplicate": True,
+                    }
+            scratch_root = self._spool_root() / "capture-jobs" / "preparation"
+            scratch_root.mkdir(parents=True, exist_ok=True)
+            directory = tempfile.TemporaryDirectory(prefix="native-", dir=scratch_root)
+            store = None
+            staged = None
+            try:
+                with retain_native_sql_lifetimes(directory):
+                    store = SqliteMessageStore(Path(directory.name) / "messages.sqlite")
+                    store.conn.execute(
+                        "CREATE TABLE capture_preparation_plan (ordinal INTEGER PRIMARY KEY, descriptor_json TEXT NOT NULL)"
+                    )
+                    spill = ScratchSessionSpill(store)
+                    with ExitStack() as stack:
+                        members = {
+                            name: stack.enter_context(
+                                self.native_member_artifact(job_id, name, body, progress=progress)
+                            )[0]
+                            for name in names
+                        }
+                        parsed = parse_native_member_streams(
+                            Provider.from_string(job["provider"]),
+                            members,
+                            binding["native_id"],
+                            spill,
+                            progress=progress,
+                        )
+                        # Full provider prose stays in the on-disk envelope; the
+                        # browser needs only acquisition/control summary facts.
+                        info = {
+                            "title": None,
+                            "turn_count": len(parsed.messages),
+                            "attachment_count": len(parsed.attachments),
+                            "session_kind": "temporary" if parsed.session_kind.value == "temporary" else "standard",
+                            "needs_follow_up": parsed.source_name is Provider.CHATGPT,
+                        }
+                        if parsed.source_name is Provider.CHATGPT:
+                            for message in parsed.messages:
+                                progress()
+                                if message.is_active_leaf and not message.active_leaf_fallback:
+                                    info["needs_follow_up"] = (
+                                        message.role.value != "assistant"
+                                        or message.delivery_status
+                                        not in {"finished_successfully", "finished", "complete", "completed"}
+                                    )
+                        sealed_header = json.dumps(
+                            {"request": json.loads(header_json), "summary": info}, sort_keys=True, separators=(",", ":")
+                        )
+                        staged = stage_capture_chunks(
+                            envelope_prefix(parsed, spill, members, provenance, metadata, progress),
+                            spool_root=self._spool_root(),
+                        )
+                    plan_hash = hashlib.sha256()
+                    for ordinal, descriptor in store.conn.execute(
+                        "SELECT ordinal, descriptor_json FROM capture_preparation_plan ORDER BY ordinal"
+                    ):
+                        progress()
+                        plan_hash.update(str(ordinal).encode("ascii") + b"\0" + descriptor.encode("ascii") + b"\n")
+                    plan_digest = "sha256:" + plan_hash.hexdigest()
+                    progress()
+                    with self._connection() as connection:
+                        connection.execute("BEGIN IMMEDIATE")
+                        job, acquisition = self._native_row(connection, job_id, body)
+                        if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                            raise CaptureJobError(409, "capture_authority_paused")
+                        if acquisition["state"] != "acquiring":
+                            if (acquisition["header_json"], acquisition["plan_digest"]) != (sealed_header, plan_digest):
+                                raise CaptureJobError(409, "native_preparation_conflict")
+                            return {
+                                "job": self._summary(job),
+                                "acquisition_id": acquisition["acquisition_id"],
+                                "state": acquisition["state"],
+                                "plan_digest": plan_digest,
+                                "summary": info,
+                                "duplicate": True,
+                            }
+                        self._publish_native_artifact(staged)
+                        connection.execute(
+                            "INSERT INTO capture_job_native_artifacts VALUES (?, ?, 'prefix', ?, ?)",
+                            (job_id, acquisition["acquisition_id"], staged.sha256, staged.size_bytes),
+                        )
+                        for ordinal, descriptor in store.conn.execute(
+                            "SELECT ordinal, descriptor_json FROM capture_preparation_plan ORDER BY ordinal"
+                        ):
+                            connection.execute(
+                                "INSERT INTO capture_job_native_plan VALUES (?, ?, ?, ?, ?)",
+                                (
+                                    job_id,
+                                    acquisition["acquisition_id"],
+                                    ordinal,
+                                    descriptor,
+                                    "sha256:" + hashlib.sha256(descriptor.encode("ascii")).hexdigest(),
+                                ),
+                            )
+                        connection.execute(
+                            "UPDATE capture_job_native_acquisitions SET state='prepared', header_json=?, plan_digest=? WHERE job_id=? AND acquisition_id=?",
+                            (sealed_header, plan_digest, job_id, acquisition["acquisition_id"]),
+                        )
+                        return {
+                            "job": self._summary(job),
+                            "acquisition_id": acquisition["acquisition_id"],
+                            "state": "prepared",
+                            "plan_digest": plan_digest,
+                            "summary": info,
+                            "duplicate": False,
+                        }
+            finally:
+                try:
+                    if staged is not None:
+                        staged.discard()
+                finally:
+                    try:
+                        if store is not None:
+                            store.close()
+                    finally:
+                        # Original native owners retain the exact directory on
+                        # failed close; no caller cleanup can retire their bytes.
+                        if not retained_native_sql_owners_for_lifetime(directory):
+                            directory.cleanup()
+
+    def native_plan(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        after = body.get("after", -1)
+        if type(after) is not int or after < -1:
+            raise CaptureJobError(400, "invalid_native_plan_cursor")
+        with self._connection() as connection:
+            _job, acquisition = self._native_row(connection, job_id, body)
+            if acquisition["plan_digest"] is None:
+                raise CaptureJobError(409, "native_preparation_pending")
+            rows = connection.execute(
+                "SELECT p.ordinal, p.descriptor_json, p.descriptor_digest, a.outcome_json FROM capture_job_native_plan p LEFT JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 65",
+                (job_id, acquisition["acquisition_id"], after),
+            ).fetchall()
+            more = len(rows) > 64
+            rows = rows[:64]
+            return {
+                "acquisition_id": acquisition["acquisition_id"],
+                "plan_digest": acquisition["plan_digest"],
+                "assets": [
+                    {
+                        "ordinal": row["ordinal"],
+                        "descriptor": json.loads(row["descriptor_json"]),
+                        "descriptor_digest": row["descriptor_digest"],
+                        "receipt": json.loads(row["outcome_json"]) if row["outcome_json"] else None,
+                    }
+                    for row in rows
+                ],
+                "after": rows[-1]["ordinal"] if more else None,
+            }
+
+    def native_asset(
+        self, job_id: str, body: dict[str, object], staged: StagedCapture | None = None
+    ) -> dict[str, object]:
+        ordinal, outcome = body.get("ordinal"), body.get("outcome")
+        if type(ordinal) is not int or ordinal < 0 or not isinstance(outcome, dict):
+            raise CaptureJobError(400, "invalid_native_asset_receipt")
+        status = outcome.get("status")
+        if not isinstance(status, str) or not status or (status == "acquired") != (staged is not None):
+            raise CaptureJobError(400, "invalid_native_asset_receipt")
+        if staged is not None and (body.get("sha256"), body.get("size_bytes")) != (staged.sha256, staged.size_bytes):
+            raise CaptureJobError(400, "native_asset_integrity_mismatch")
+        encoded = json.dumps(outcome, sort_keys=True, separators=(",", ":"))
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job, acquisition = self._native_row(connection, job_id, body)
+            if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                raise CaptureJobError(409, "capture_authority_paused")
+            if body.get("plan_digest") != acquisition["plan_digest"] or acquisition["plan_digest"] is None:
+                raise CaptureJobError(409, "native_plan_conflict")
+            plan = connection.execute(
+                "SELECT descriptor_digest, descriptor_json FROM capture_job_native_plan WHERE job_id=? AND acquisition_id=? AND ordinal=?",
+                (job_id, acquisition["acquisition_id"], ordinal),
+            ).fetchone()
+            if plan is None or body.get("descriptor_digest") != plan["descriptor_digest"]:
+                raise CaptureJobError(409, "native_asset_occurrence_conflict")
+            if status == "retained_native_bytes":
+                metadata = json.loads(plan["descriptor_json"])["provider_meta"]
+                if (outcome.get("sha256"), outcome.get("size_bytes")) != (
+                    metadata.get("native_inline_sha256"),
+                    metadata.get("native_inline_size_bytes"),
+                ) or metadata.get("native_inline_sha256") is None:
+                    raise CaptureJobError(409, "native_inline_receipt_conflict")
+            existing = connection.execute(
+                "SELECT * FROM capture_job_native_assets WHERE job_id=? AND acquisition_id=? AND ordinal=?",
+                (job_id, acquisition["acquisition_id"], ordinal),
+            ).fetchone()
+            sha, size = (staged.sha256, staged.size_bytes) if staged is not None else (None, None)
+            if existing is not None:
+                if (existing["outcome_json"], existing["sha256"], existing["size_bytes"]) != (encoded, sha, size):
+                    raise CaptureJobError(409, "native_asset_receipt_conflict")
+                if staged is not None:
+                    self._publish_native_artifact(staged)
+                return {"ordinal": ordinal, "plan_digest": acquisition["plan_digest"], "duplicate": True}
+            if acquisition["state"] != "prepared":
+                raise CaptureJobError(409, "native_acquisition_sealed")
+            if staged is not None:
+                self._publish_native_artifact(staged)
+            connection.execute(
+                "INSERT INTO capture_job_native_assets VALUES (?, ?, ?, ?, ?, ?)",
+                (job_id, acquisition["acquisition_id"], ordinal, encoded, sha, size),
+            )
+            return {"ordinal": ordinal, "plan_digest": acquisition["plan_digest"], "duplicate": False}
+
+    @contextmanager
+    def native_artifact(
+        self,
+        job_id: str,
+        body: dict[str, object],
+        *,
+        purpose: str | None = None,
+        ordinal: int | None = None,
+        progress: Callable[[], None] | None = None,
+    ) -> Iterator[tuple[BinaryIO, sqlite3.Row]]:
+        handle = None
+        try:
+            with self._connection() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                _job, acquisition = self._native_row(connection, job_id, body)
+                if purpose is not None:
+                    artifact = connection.execute(
+                        "SELECT * FROM capture_job_native_artifacts WHERE job_id=? AND acquisition_id=? AND purpose=?",
+                        (job_id, acquisition["acquisition_id"], purpose),
+                    ).fetchone()
+                else:
+                    artifact = connection.execute(
+                        "SELECT * FROM capture_job_native_assets WHERE job_id=? AND acquisition_id=? AND ordinal=? AND sha256 IS NOT NULL",
+                        (job_id, acquisition["acquisition_id"], ordinal),
+                    ).fetchone()
+                if artifact is None:
+                    raise CaptureJobError(404, "native_artifact_not_owned")
+                try:
+                    handle = self._native_artifact_path(artifact["sha256"]).open("rb")
+                except FileNotFoundError as exc:
+                    raise CaptureJobError(500, "native_artifact_missing") from exc
+                fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            hasher = hashlib.sha256()
+            while chunk := handle.read(64 * 1024):
+                hasher.update(chunk)
+                if progress is not None:
+                    progress()
+            if os.fstat(handle.fileno()).st_size != artifact["size_bytes"] or hasher.hexdigest() != artifact["sha256"]:
+                raise CaptureJobError(500, "native_artifact_corrupt")
+            handle.seek(0)
+            yield handle, artifact
+        finally:
+            if handle is not None:
+                handle.close()
+
+    def native_finalize(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
+        """Seal only the exact prepared plan's terminal, occurrence-bound assets."""
+        from polylogue.browser_capture.native_preparation import json_bytes, raw_chunks
+
+        with self.artifact_progress(job_id, body, native=True) as progress:
+            with self._connection() as connection:
+                job, acquisition = self._native_row(connection, job_id, body)
+                if acquisition["plan_digest"] is None or body.get("plan_digest") != acquisition["plan_digest"]:
+                    raise CaptureJobError(409, "native_plan_conflict")
+                final = connection.execute(
+                    "SELECT * FROM capture_job_native_artifacts WHERE job_id=? AND acquisition_id=? AND purpose='final'",
+                    (job_id, acquisition["acquisition_id"]),
+                ).fetchone()
+                if final is not None:
+                    return {
+                        "acquisition_id": acquisition["acquisition_id"],
+                        "sha256": final["sha256"],
+                        "size_bytes": final["size_bytes"],
+                        "duplicate": True,
+                    }
+                missing = connection.execute(
+                    "SELECT 1 FROM capture_job_native_plan p LEFT JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND a.ordinal IS NULL LIMIT 1",
+                    (job_id, acquisition["acquisition_id"]),
+                ).fetchone()
+                if missing is not None:
+                    raise CaptureJobError(409, "native_asset_receipts_pending")
+
+            def chunks() -> Iterator[bytes]:
+                with self.native_artifact(job_id, body, purpose="prefix", progress=progress) as (prefix, _row):
+                    yield from raw_chunks(prefix, progress)
+                after = -1
+                first = True
+                while True:
+                    progress()
+                    with self._connection() as connection:
+                        rows = connection.execute(
+                            "SELECT p.ordinal, p.descriptor_json, a.outcome_json, a.sha256, a.size_bytes FROM capture_job_native_plan p JOIN capture_job_native_assets a USING(job_id, acquisition_id, ordinal) WHERE p.job_id=? AND p.acquisition_id=? AND p.ordinal>? ORDER BY p.ordinal LIMIT 64",
+                            (job_id, acquisition["acquisition_id"], after),
+                        ).fetchall()
+                    if not rows:
+                        break
+                    for row in rows:
+                        progress()
+                        after = row["ordinal"]
+                        descriptor = json.loads(row["descriptor_json"])
+                        descriptor.pop("original_record_ordinal", None)
+                        descriptor.pop("original_record_key", None)
+                        descriptor["provider_meta"]["asset_acquisition"] = json.loads(row["outcome_json"])
+                        if not first:
+                            yield b","
+                        first = False
+                        if row["sha256"] is None:
+                            yield json_bytes(descriptor)
+                        else:
+                            descriptor["size_bytes"] = row["size_bytes"]
+                            descriptor["provider_meta"]["content_sha256"] = row["sha256"]
+                            yield json_bytes(descriptor)[:-1] + b',"content_base64":"'
+                            with self.native_artifact(job_id, body, ordinal=after, progress=progress) as (
+                                asset,
+                                _asset_row,
+                            ):
+                                while block := asset.read(65535):
+                                    progress()
+                                    yield base64.b64encode(block)
+                            yield b'"}'
+                yield b"]}}"
+
+            staged = stage_capture_chunks(chunks(), spool_root=self._spool_root())
+            try:
+                progress()
+                with self._connection() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    job, acquisition = self._native_row(connection, job_id, body)
+                    if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                        raise CaptureJobError(409, "capture_authority_paused")
+                    final = connection.execute(
+                        "SELECT sha256, size_bytes FROM capture_job_native_artifacts WHERE job_id=? AND acquisition_id=? AND purpose='final'",
+                        (job_id, acquisition["acquisition_id"]),
+                    ).fetchone()
+                    if final is not None:
+                        if (final["sha256"], final["size_bytes"]) != (staged.sha256, staged.size_bytes):
+                            raise CaptureJobError(409, "native_final_artifact_conflict")
+                    else:
+                        self._publish_native_artifact(staged)
+                        connection.execute(
+                            "INSERT INTO capture_job_native_artifacts VALUES (?, ?, 'final', ?, ?)",
+                            (job_id, acquisition["acquisition_id"], staged.sha256, staged.size_bytes),
+                        )
+                        connection.execute(
+                            "UPDATE capture_job_native_acquisitions SET state='sealed' WHERE job_id=? AND acquisition_id=?",
+                            (job_id, acquisition["acquisition_id"]),
+                        )
+                return {
+                    "acquisition_id": acquisition["acquisition_id"],
+                    "sha256": staged.sha256,
+                    "size_bytes": staged.size_bytes,
+                    "duplicate": final is not None,
+                }
+            finally:
+                staged.discard()
+
+    def native_publish(
+        self, job_id: str, body: dict[str, object], admit: Callable[[StagedCapture, CaptureSummary], dict[str, object]]
+    ) -> dict[str, object]:
+        """Record exact final admission under the same acquisition lease fence."""
+        with (
+            self.artifact_progress(job_id, body, native=True) as progress,
+            self.native_artifact(job_id, body, purpose="final", progress=progress) as (handle, artifact),
+        ):
+            staged = stage_retained_capture(
+                handle,
+                self._native_artifact_path(artifact["sha256"]),
+                size_bytes=artifact["size_bytes"],
+                sha256=artifact["sha256"],
+                spool_root=self._spool_root(),
+            )
+            try:
+                summary = summarize_capture_file(staged.path)
+                progress()
+                with self._connection() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    job, acquisition = self._native_row(connection, job_id, body)
+                    if json.loads(job["retry_json"])["state"] in {"held", "abandoned"}:
+                        raise CaptureJobError(409, "capture_authority_paused")
+                    if (
+                        body.get("plan_digest") != acquisition["plan_digest"]
+                        or body.get("sha256") != artifact["sha256"]
+                    ):
+                        raise CaptureJobError(409, "native_final_artifact_conflict")
+                    if acquisition["final_receipt_json"]:
+                        return cast(dict[str, object], json.loads(acquisition["final_receipt_json"]))
+                    payload = admit(staged, summary)
+                    connection.execute(
+                        "UPDATE capture_job_native_acquisitions SET state='published', final_receipt_json=? WHERE job_id=? AND acquisition_id=?",
+                        (json.dumps(payload, separators=(",", ":")), job_id, acquisition["acquisition_id"]),
+                    )
+                    return payload
+            finally:
+                staged.discard()
+
+    def checkpoint(self, job_id: str, body: dict[str, object], staged: StagedCapture) -> dict[str, object]:
         checkpoint = body.get("checkpoint")
         if (
             not isinstance(checkpoint, dict)
-            or not isinstance(checkpoint.get("sequence"), int)
+            or type(checkpoint.get("sequence")) is not int
             or checkpoint["sequence"] < 0
-            or checkpoint.get("digest") != canonical_digest(checkpoint.get("payload"))
+            or checkpoint["sequence"] > (1 << 53) - 1
+            or "payload" in checkpoint
         ):
             raise CaptureJobError(400, "invalid_checkpoint")
+        with staged.path.open("rb") as handle:
+            semantic_digest, conversation_ref = _canonical_checkpoint_digest(handle)
+        if semantic_digest != "sha256:" + staged.sha256 or checkpoint.get("digest") != semantic_digest:
+            raise CaptureJobError(400, "checkpoint_digest_mismatch")
         request_id = body.get("request_id")
         if not isinstance(request_id, str):
             raise CaptureJobError(400, "invalid_request_id")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
-                connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
+                connection, job_id, body.get("provider"), body.get("scope"), body.get("client_protocol")
             )
             self._require_live_lease(job_id, row, body)
+            # Custody is durable before either a new ref or a duplicate receipt
+            # is acknowledged. Retry after directory-fsync failure resyncs the
+            # existing immutable file instead of returning an unsafe ACK.
+            artifact_ref = self._publish_checkpoint_artifact(staged, semantic_digest)
             receipt_row = connection.execute(
                 "SELECT receipt_json, checkpoint_sequence, checkpoint_digest FROM capture_job_receipts WHERE job_id=? AND request_id=?",
                 (job_id, request_id),
@@ -1051,10 +2315,11 @@ class CaptureJobRegistry:
                 "acknowledged_at": now,
             }
             connection.execute(
-                "UPDATE capture_jobs SET revision=?, checkpoint_json=?, checkpoint_sequence=?, checkpoint_digest=?, receipt_json=?, updated_at=? WHERE job_id=?",
+                "UPDATE capture_jobs SET revision=?, checkpoint_artifact_ref=?, checkpoint_size=?, checkpoint_sequence=?, checkpoint_digest=?, receipt_json=?, updated_at=? WHERE job_id=?",
                 (
                     revision,
-                    canonical_json(checkpoint),
+                    artifact_ref,
+                    staged.size_bytes,
                     checkpoint["sequence"],
                     checkpoint["digest"],
                     canonical_json(receipt),
@@ -1078,7 +2343,7 @@ class CaptureJobRegistry:
                 "capture-attempted",
                 f"checkpoint:{job_id}:{checkpoint['sequence']}:{checkpoint['digest']}",
                 revision,
-                self._checkpoint_refs(row, checkpoint),
+                {"conversation_ref": conversation_ref or f"intent:{row['intent_key']}"},
                 {"checkpoint_sequence": checkpoint["sequence"], "checkpoint_digest": checkpoint["digest"]},
                 advance_revision=False,
             )

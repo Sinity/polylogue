@@ -4740,7 +4740,7 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
     """polylogue-ds4b4 item 1: the common append case must prove itself at
     capture time, never deferring to the batch ``RawAuthorityReconciler``.
 
-    ``append_ingest.py``'s ``_ingest_append_plans_archive`` already resolves
+    ``append_ingest.py``'s ``ingest_append_plans`` already resolves
     the byte-contiguous predecessor via ``raw_append_revision_parent`` and,
     once found, immediately classifies+applies the revision in the SAME
     ingest call (``archive.classify_raw_revision_cohort`` /

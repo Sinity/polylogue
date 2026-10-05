@@ -129,3 +129,34 @@ def test_acquisition_admits_a_symlinked_alias_of_the_destination_archive(tmp_pat
     records = _acquire(cache, destination)
 
     assert len(records) == 1
+
+
+def test_acquisition_prunes_a_nested_foreign_archive_and_keeps_provider_capture(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    capture = _write_session(imports / "capture")
+    foreign = _archive(imports / "foreign")
+    _write_session(foreign / "drive-cache" / "gemini")
+    records = _acquire(imports, _archive(tmp_path / "destination"))
+    assert [record.source_path for record in records] == [str(capture)]
+
+
+def test_nested_archive_pruning_is_shared_by_walk_and_census(tmp_path: Path) -> None:
+    from polylogue.core.enums import Provider
+    from polylogue.sources.source_walk import _walk_source_paths, census_source_root
+
+    imports = tmp_path / "imports"
+    capture = _write_session(imports / ".claude" / "projects" / "neutral-project")
+    _write_session(_archive(imports / "foreign") / "drive-cache" / "gemini")
+    assert _walk_source_paths(imports, provider=Provider.CLAUDE_CODE) == [capture]
+    census = census_source_root(imports, provider=Provider.CLAUDE_CODE)
+    assert census.candidate_count == 1
+    assert census.is_complete
+
+
+def test_nested_destination_archive_keeps_its_own_capture_subtree(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    destination = _archive(imports / "destination")
+    capture = _write_session(destination / "inbox")
+    _write_session(_archive(imports / "foreign") / "inbox")
+    records = _acquire(imports, destination)
+    assert [record.source_path for record in records] == [str(capture)]

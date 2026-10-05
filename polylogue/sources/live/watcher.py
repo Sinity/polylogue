@@ -40,6 +40,8 @@ from polylogue.sources.live.batch import (
     fingerprint_file,
 )
 from polylogue.sources.live.batch_support import (
+    _AppendPlan,
+    _AppendResult,
     _archive_blob_exists,
     claude_semantic_frontier_for_prefix,
     cursor_ctime_ns,
@@ -57,8 +59,9 @@ from polylogue.sources.live.cursor import (
 )
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
-from polylogue.sources.live.parse_prefetch import LiveParseStage, ReadSnapshot
 from polylogue.sources.live.source_selection import deepest_source_for_path
+from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -368,7 +371,7 @@ class LiveWatcher:
     no schedule of its own -- it turns a filesystem event into a bumped
     intake revision plus a wakeup, so the dispatcher's next pass is prompt
     rather than waiting out its idle delay. It also owns the batch
-    processor, the cursor store and the parse stage the adapter's ingest
+    processor, the cursor store and the supplied capture stage the adapter's ingest
     runs through.
     """
 
@@ -378,14 +381,15 @@ class LiveWatcher:
         sources: Iterable[WatchSource],
         *,
         cursor: CursorStore | None = None,
-        max_workers: int | None = None,
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
         write_coordinator: WriteCoordinator | None = None,
-        parse_stage: LiveParseStage | None = None,
-        read_snapshot: ReadSnapshot | None = None,
+        sqlite_capture_stage: LiveSQLiteCaptureStage | None = None,
         embedding_owner: EmbeddingConvergenceOwner | None = None,
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
+        append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
+        convergence_runner: Callable[..., Awaitable[Any]] | None = None,
+        retained_runner: Callable[[Sequence[str]], Awaitable[Sequence[PreparedRevisionReplayResult]]] | None = None,
         intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue
@@ -395,7 +399,6 @@ class LiveWatcher:
             initialize=write_coordinator is None,
             ops_db_path=Path(polylogue.archive_root) / "ops.db",
         )
-        self._max_workers = max_workers
         self._converger = converger
         self._write_coordinator = write_coordinator
         # Injected rather than imported: the provider call this owner performs
@@ -408,27 +411,9 @@ class LiveWatcher:
         self._intake_revisions = dict.fromkeys((source.root for source in self._sources), 0)
         self._event_emitter = event_emitter
         self._published_source_halts: dict[str, str] = {}
-        # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
-        # write coordinator is ever asked for the writer hold
-        # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
-        # with an active writer thread for the GIL regardless of interpreter
-        # build (see ``polylogue.sources.live.parse_prefetch`` for the full
-        # safety argument). An
-        # explicit ``parse_stage`` always wins (tests / callers that want to
-        # own the stage's lifecycle themselves); otherwise one is created
-        # here, owned by this watcher, and shut down in ``stop()``.
-        self._owns_parse_stage = parse_stage is None
-        # polylogue-bp12n.6: a stage the watcher owns also writes each parsed
-        # file's rows into a shard the writer copies. The directory is
-        # disposable scratch beside the tiers it feeds; nothing in it
-        # survives ``stop()``.
-        self._parse_stage: LiveParseStage | None = (
-            parse_stage
-            if parse_stage is not None
-            else LiveParseStage(
-                shard_directory=Path(polylogue.archive_root) / "blob" / ".staging" / "parse-shards",
-            )
-        )
+        # The watcher owns the supplied capture stage's lifecycle. The stage
+        # borrows the resident kernel and never shuts that kernel down.
+        self._sqlite_capture_stage = sqlite_capture_stage
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._watcher_ready = asyncio.Event()
@@ -442,8 +427,10 @@ class LiveWatcher:
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
             sync_runner=self._run_writer_sync,
-            parse_stage=self._parse_stage,
-            read_snapshot=read_snapshot,
+            append_runner=append_runner,
+            convergence_runner=convergence_runner,
+            retained_runner=retained_runner,
+            sqlite_capture_stage=self._sqlite_capture_stage,
         )
 
     async def _run_writer_sync(
@@ -557,8 +544,8 @@ class LiveWatcher:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._parse_stage is not None and self._owns_parse_stage:
-            self._parse_stage.shutdown()
+        if self._sqlite_capture_stage is not None:
+            self._sqlite_capture_stage.shutdown()
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook-carrier sources, preserving configured order.
@@ -1329,14 +1316,6 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
-    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
-        """Offer the paths a later batch will ingest in full for read-ahead parsing.
-
-        Nothing is read or submitted here: the next ingest filters and
-        submits the offer while it owns the stage under the ingest lock.
-        """
-        self._batch_processor.offer_parse_lookahead(paths, source_name=source_name)
-
     async def _ingest_files(
         self,
         paths: list[Path],
@@ -1356,22 +1335,17 @@ class LiveWatcher:
         """
         from polylogue.core.degraded import is_fully_degraded
 
-        try:
-            if not is_fully_degraded():
-                # A degraded batch returns its skip metrics without the gate.
-                self._batch_processor.require_cursor_authority(paths)
-            async with self._ingest_lock:
-                return await self._batch_processor.ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                    whole_archive_convergence=whole_archive_convergence,
-                )
-        finally:
-            # A lookahead belongs to the batch it was offered beside, including
-            # one the authority gate refused before it took the lock.
-            self._batch_processor.drop_parse_lookahead()
+        if not is_fully_degraded():
+            # A degraded batch returns its skip metrics without the gate.
+            self._batch_processor.require_cursor_authority(paths)
+        async with self._ingest_lock:
+            return await self._batch_processor.ingest_files(
+                paths,
+                queued_file_count=queued_file_count,
+                skipped_file_count=skipped_file_count,
+                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                whole_archive_convergence=whole_archive_convergence,
+            )
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""

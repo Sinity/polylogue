@@ -38,63 +38,70 @@ def _seed_raw_authority_blocker(
     minimal rows rather than driving a full frontier inspection -- sufficient
     to exercise ``BlockerResolveActuator.prepare``'s real read against
     ``source.db`` and, for non-frontier blockers,
-    ``resolve_raw_authority_blocker``'s real replan.
+    the prepared acknowledgement’s original-input replan.
 
     ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
-    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    frontier plan shape the prepared inspector writes. Without
     it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
     which the resolver re-derives from live evidence instead of trusting.
     """
-    raw_id = f"raw-{blocker_id}"
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        payload = (
-            b'{"type":"session_meta","payload":{"id":"' + blocker_id.encode() + b'"}}\n'
-            b'{"type":"response_item","payload":{"type":"message","id":"m-1",'
-            b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
-        )
-        archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=f"{blocker_id}.jsonl",
-            acquired_at_ms=1000,
-            raw_id=raw_id,
-        )
+    import asyncio
 
-    witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
-    input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
-    observed_json = "{}"
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        conn.execute("PRAGMA foreign_keys = ON")
-        # The blocker is keyed on the plan's content address and carries the
-        # plan snapshot itself: that snapshot, not a join into a plan ledger,
-        # is what every reader resolves against.
-        conn.execute(
-            """
-            INSERT INTO raw_authority_blockers (
-                blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
-                observed_json, created_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, 1000)
-            """,
-            (
-                blocker_id,
-                input_digest,
-                observed_pass_id,
-                reason,
-                json.dumps(
-                    {
-                        "plan_id": plan_id,
-                        "input_digest": input_digest,
-                        "input_raw_ids": [raw_id],
-                        "logical_keys": [],
-                        "authority_witness": {"schema": witness_schema},
-                        "source_preconditions": {},
-                        "index_preconditions": {},
-                    }
+    from tests.infra.archive_templates import run_archive_fixture_write
+
+    def seed() -> None:
+        raw_id = f"raw-{blocker_id}"
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            payload = (
+                b'{"type":"session_meta","payload":{"id":"' + blocker_id.encode() + b'"}}\n'
+                b'{"type":"response_item","payload":{"type":"message","id":"m-1",'
+                b'"role":"user","content":[{"type":"input_text","text":"hi"}]}}\n'
+            )
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=f"{blocker_id}.jsonl",
+                acquired_at_ms=1000,
+                raw_id=raw_id,
+            )
+
+        witness_schema = "polylogue.raw-authority-frontier-plan.v1" if frontier else "polylogue.raw-authority-plan.v1"
+        input_digest = hashlib.sha256(plan_id.encode("utf-8")).hexdigest()
+        observed_json = "{}"
+        with sqlite3.connect(archive_root / "source.db") as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
+            # The blocker is keyed on the plan's content address and carries the
+            # plan snapshot itself: that snapshot, not a join into a plan ledger,
+            # is what every reader resolves against.
+            conn.execute(
+                """
+                INSERT INTO raw_authority_blockers (
+                    blocker_id, plan_input_digest, observed_pass_id, reason, expected_json,
+                    observed_json, created_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, 1000)
+                """,
+                (
+                    blocker_id,
+                    input_digest,
+                    observed_pass_id,
+                    reason,
+                    json.dumps(
+                        {
+                            "plan_id": plan_id,
+                            "input_digest": input_digest,
+                            "input_raw_ids": [raw_id],
+                            "logical_keys": [],
+                            "authority_witness": {"schema": witness_schema},
+                            "source_preconditions": {},
+                            "index_preconditions": {},
+                        }
+                    ),
+                    observed_json,
                 ),
-                observed_json,
-            ),
-        )
-        conn.commit()
+            )
+            conn.commit()
+
+    asyncio.run(run_archive_fixture_write(archive_root, seed))
 
 
 def test_raw_authority_blocker_resolution_cli_requires_confirmation(
@@ -220,10 +227,12 @@ def test_raw_authority_blocker_resolution_plain_output_reports_unknown_blocker(
     assert "not found or already resolved" in result.output
 
 
+@pytest.mark.parametrize("resolution", ["acknowledged", "  acknowledged  "])
 def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
+    resolution: str,
 ) -> None:
     """(b) daemon route: the listing is a read, but the resolution in its tail is a write."""
     root = cli_workspace["archive_root"]
@@ -272,7 +281,7 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
                 "--blocker-id",
                 "blocker-stale",
                 "--reason",
-                "acknowledged",
+                resolution,
                 "--yes",
             ],
             catch_exceptions=False,
@@ -1081,18 +1090,19 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
+@pytest.mark.parametrize("output_format", ["plain", "json"])
 def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     cli_runner: CliRunner,
+    output_format: str,
 ) -> None:
-    """The census is the daemon's ``maintenance.raw-authority-frontier`` operation.
+    """The daemon measures frontier coverage; the CLI submits and renders it.
 
-    It publishes durable blockers into ``source.db``, so the CLI submits it and
-    renders the census the daemon returned; the daemon-down matrix in
-    ``test_cli_operation_authority.py`` proves the command never writes
-    in-process. Anti-vacuity: run ``inspect_raw_authority_frontier`` in the CLI
-    again and the recorded submissions are empty.
+    The empty archive gains measured coverage without changing Source bytes.
+    The daemon-down matrix in ``test_cli_operation_authority.py`` proves the
+    command never executes in-process; local execution would leave the
+    recorded operation submissions empty.
     """
     import polylogue.cli.operation_kernel as operation_kernel
     from tests.infra.daemon_operations import cli_daemon_archive
@@ -1106,6 +1116,8 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
 
     monkeypatch.setattr(operation_kernel, "configured_mutation_operation", recording)
     with cli_daemon_archive(tmp_path / "archive", monkeypatch):
+        source_path = tmp_path / "archive" / "source.db"
+        source_before = source_path.read_bytes()
         result = cli_runner.invoke(
             cli,
             [
@@ -1114,23 +1126,28 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
                 "maintenance",
                 "raw-authority-frontier",
                 "--output-format",
-                "json",
+                output_format,
             ],
             catch_exceptions=False,
         )
+        assert source_path.read_bytes() == source_before
 
     assert result.exit_code == 0, result.output
     assert submitted == ["maintenance.raw-authority-frontier"]
-    payload = json.loads(result.stdout)
-    assert payload["schema"] == "polylogue.raw-authority-frontier-census.v1"
-    assert payload["accepted_head_count"] == 0
-    assert payload["plan_count"] == 0
-    # polylogue-6kur: the census reports obligations, never an executable
-    # plan count. Nothing applies a frontier plan.
-    assert "executable_plan_count" not in payload
-    assert payload["state_counts"] == {}
-    assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
-    assert "query_handle" not in payload
+    if output_format == "json":
+        payload = json.loads(result.stdout)
+        assert payload["mode"] == "full"
+        assert payload["healthy"]
+        assert payload["accepted_head_checks"] == payload["blocking_head_checks"] == 0
+        assert payload["cursor_checks"] == payload["cursor_ahead_count"] == payload["cursor_gap_count"] == 0
+        assert payload["pass_id"].startswith("raw-authority-frontier-pass:")
+        # Coverage reports observations, not executable plans or client query handles.
+        assert "executable_plan_count" not in payload
+        assert "state_counts" not in payload
+        assert "query_handle" not in payload
+    else:
+        assert "Frontier full: healthy=True heads=0 blocked=0" in result.stdout
+        assert "Cursors: checked=0 ahead=0 gaps=0" in result.stdout
 
     help_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "--help"])
     assert help_result.exit_code == 0
@@ -1151,7 +1168,7 @@ def test_raw_authority_frontier_cli_inspects_without_applying_plans(
         catch_exceptions=False,
     )
     assert frontier_help.exit_code == 0
-    assert "Record the raw-authority frontier census without applying plans." in frontier_help.output
+    assert "Measure current frontier coverage through the daemon preparation owner." in frontier_help.output
     for removed in ("--apply-plan", "--preview-census", "--yes"):
         assert removed not in frontier_help.output
 

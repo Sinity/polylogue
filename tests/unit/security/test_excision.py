@@ -17,7 +17,7 @@ of this PR shipped. ``test_apply_removes_rows_from_every_tier``
 exercises the real cross-tier DELETE statements against real archive-tier
 schemas (not a toy replica); commenting out any one tier's delete makes the
 corresponding assertion fail. ``TestLineageSafety`` exercises the real
-``session_links`` schema/FK and ``apply_session_excision``'s refuse-by-default
+``session_links`` schema/FK and the audited Excision operation's refuse-by-default
 guard; removing the ``find_lineage_dependents`` call (or the check that uses
 it) makes ``test_apply_without_cascade_refuses_and_does_not_mutate`` fail
 because the parent session would be silently deleted instead of raising.
@@ -29,7 +29,10 @@ import asyncio
 import json
 import sqlite3
 import uuid
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -37,7 +40,6 @@ import polylogue.security.excision as excision_module
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
     LineageDependentsError,
-    apply_session_excision,
     find_lineage_dependents,
     plan_session_excision,
     resolve_session_excision_target,
@@ -59,114 +61,10 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     write_source_raw_session_blob_ref,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.excision_execution import apply_excision_fault_control, execute_excision
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.excision_embeddings import seed_excision_session as _seed_session
+from tests.infra.excision_execution import execute_excision, recover_excision
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
-
-
-def _seed_session(
-    archive_root: Path,
-    *,
-    native_id: str,
-    payload: bytes = b'{"native_id": "x"}',
-    with_message: bool = True,
-    with_block: bool = True,
-    with_embedding: bool = False,
-) -> str:
-    """Seed a minimal but real session spanning source.db + index.db (+ optionally embeddings.db)."""
-
-    initialize_active_archive_root(archive_root)
-
-    source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
-    initialize_runtime_source_fixture(source_db)
-    initialize_archive_database(index_db, ArchiveTier.INDEX)
-
-    source_conn = sqlite3.connect(source_db)
-    source_conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        raw_id = write_source_raw_session(
-            source_conn,
-            origin="codex-session",
-            source_path=f"/fake/{native_id}.jsonl",
-            source_index=0,
-            payload=payload,
-            acquired_at_ms=1_000,
-            native_id=native_id,
-        )
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    index_conn = sqlite3.connect(index_db)
-    index_conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        index_conn.execute(
-            """
-            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash, created_at_ms, updated_at_ms)
-            VALUES (?, 'codex-session', ?, ?, zeroblob(32), 1000, 2000)
-            """,
-            (native_id, raw_id, f"Session {native_id}"),
-        )
-        session_id = index_conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", (native_id,)).fetchone()[
-            0
-        ]
-        message_id: object | None = None
-        if with_message:
-            index_conn.execute(
-                "INSERT INTO messages (session_id, native_id, position, role, content_hash) "
-                "VALUES (?, 'm1', 0, 'user', zeroblob(32))",
-                (session_id,),
-            )
-            message_id = index_conn.execute(
-                "SELECT message_id FROM messages WHERE session_id = ?", (session_id,)
-            ).fetchone()[0]
-            if with_block:
-                index_conn.execute(
-                    "INSERT INTO blocks (message_id, session_id, position, block_type, text) "
-                    "VALUES (?, ?, 0, 'text', 'hello secret')",
-                    (message_id, session_id),
-                )
-        index_conn.commit()
-    finally:
-        index_conn.close()
-
-    if with_embedding and with_message:
-        from polylogue.storage.embeddings.identity import EmbeddingRecipe, vector_derivation_hash
-        from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
-
-        embeddings_db = archive_root / "embeddings.db"
-        initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
-        emb_conn = sqlite3.connect(embeddings_db)
-        try:
-            try_load_sqlite_vec(emb_conn)
-            # Content-addressed (polylogue-q88p): vectors/meta are keyed by
-            # vector_derivation_hash, not message_id; message_embedding_refs
-            # is the per-message mapping excision must delete from.
-            input_hash = vector_derivation_hash(model="test-model", input_text=f"excision-fixture-{native_id}")
-            recipe = EmbeddingRecipe.current(model="test-model", dimensions=1024)
-            emb_conn.execute(
-                "INSERT INTO message_embeddings (vector_derivation_hash, embedding, model) VALUES (?, ?, ?)",
-                (input_hash.hex(), b"\x00\x00\x80\x3f" * 1024, "test-model"),
-            )
-            emb_conn.execute(
-                "INSERT INTO message_embeddings_meta (vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash) VALUES (?, ?, ?, ?, ?)",
-                (input_hash, "test-model", 1024, recipe.recipe_hash, recipe.output_contract_hash),
-            )
-            emb_conn.execute(
-                "INSERT INTO message_embedding_refs (message_id, session_id, origin, vector_derivation_hash) "
-                "VALUES (?, ?, 'codex-session', ?)",
-                (message_id, session_id, input_hash),
-            )
-            emb_conn.execute(
-                "INSERT INTO embedding_status (session_id, message_count_embedded) VALUES (?, 1)",
-                (session_id,),
-            )
-            emb_conn.commit()
-        finally:
-            emb_conn.close()
-
-    return str(session_id)
 
 
 def _seed_marker_carriers(
@@ -186,18 +84,16 @@ def _seed_marker_carriers(
         conn.execute("BEGIN IMMEDIATE")
         persist_pending_marker_input_sync(conn, pending, expected_incarnation_id=str(uuid.uuid4()))
         asyncio.run(append_accepted_marker_input(_AsyncConnection(conn), accepted))
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        for batch in (pending, accepted):
-            conn.execute(
-                "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
-                "VALUES (?, ?, '[]', ?)",
-                (batch.identity, batch.payload_sha256, str(uuid.uuid4())),
-            )
+    from tests.infra.excision_embeddings import seed_excision_marker_witnesses
+
+    seed_excision_marker_witnesses(archive_root, (pending, accepted))
     return pending, accepted
 
 
 class TestPlanSessionExcision:
     def test_not_found_for_unknown_session(self, tmp_path: Path) -> None:
+        with write_lease("test.excision-unknown-session", archive_root=tmp_path):
+            initialize_active_archive_root(tmp_path)
         plan = plan_session_excision(tmp_path, "codex-session:does-not-exist")
         assert plan.found is False
 
@@ -222,15 +118,27 @@ class TestPlanSessionExcision:
 
 class TestApplySessionExcision:
     def test_not_found_returns_found_false(self, tmp_path: Path) -> None:
-        receipt = apply_session_excision(tmp_path, "codex-session:nope", reason="r", actor="user:local")
-        assert receipt.found is False
+        initialize_active_archive_root(tmp_path)
+        receipt = execute_excision(tmp_path, "codex-session:nope", reason="r", actor="user:local")
+        assert receipt["found"] is False
+        assert receipt["complete"] is True
+        assert receipt["counts"] == {}
+        for name in (
+            "removed_blob_hashes",
+            "shared_blob_hashes",
+            "marker_input_digests",
+            "cascaded_session_ids",
+            "retained_hook_events",
+            "retained_source_containers",
+        ):
+            assert receipt[name] == []
 
     @pytest.mark.uses_real_clock("waits on real OS-thread scheduling to show the excision blocks behind the slot")
     def test_apply_waits_for_an_in_flight_blob_publication(self, tmp_path: Path) -> None:
         """Excision and a publisher's reserve-then-publish are mutually exclusive.
 
         Anti-vacuity: drop ``exclude_archive_blob_publishers`` from
-        ``apply_session_excision`` and the excision commits while a publisher
+        the audited Excision operation and the excision commits while a publisher
         holds its slot between reserving and publishing, so the publisher can
         move bytes the ledger now names into the blob namespace.
         """
@@ -267,7 +175,7 @@ class TestApplySessionExcision:
 
         session_id = _seed_session(tmp_path, native_id="resolve-under-lock")
         observed: list[bool] = []
-        original = excision_module._resolve_session_excision_target
+        original = excision_module._stage_excision_source_closure
 
         def probe(*args: object, **kwargs: object) -> object:
             with _writer_lock_path(tmp_path / "source.db").open("a+b") as lock:
@@ -280,8 +188,8 @@ class TestApplySessionExcision:
                     observed.append(False)
             return original(*args, **kwargs)  # type: ignore[arg-type]
 
-        monkeypatch.setattr(excision_module, "_resolve_session_excision_target", probe)
-        apply_excision_fault_control(tmp_path, session_id, reason="r", actor="user:local")
+        monkeypatch.setattr(excision_module, "_stage_excision_source_closure", probe)
+        execute_excision(tmp_path, session_id, reason="r", actor="user:local")
 
         assert observed == [True]
 
@@ -388,10 +296,37 @@ class TestApplySessionExcision:
             conn.close()
         assert remaining == 0
 
-    def test_apply_tombstones_marker_assertions_without_retaining_content(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize(
+        "inside_author,inside_scope,corruption",
+        [
+            (True, False, None),
+            (False, True, None),
+            (True, True, None),
+            (False, False, None),
+            (False, False, "author"),
+            (False, False, "scope"),
+            (True, True, "status"),
+        ],
+    )
+    def test_apply_tombstones_marker_assertions_without_retaining_content(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        inside_author: bool,
+        inside_scope: bool,
+        corruption: str | None,
+    ) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-marker-tombstone")
+        outside = _seed_session(tmp_path, native_id="marker-outside")
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            block_id = str(conn.execute("SELECT block_id FROM blocks LIMIT 1").fetchone()[0])
+            block_id = str(
+                conn.execute("SELECT block_id FROM blocks WHERE session_id=? LIMIT 1", (session_id,)).fetchone()[0]
+            )
+            outside_block = str(
+                conn.execute("SELECT block_id FROM blocks WHERE session_id=? LIMIT 1", (outside,)).fetchone()[0]
+            )
+        author = f"block:{block_id if inside_author else outside_block}"
+        scope = f"session:{session_id if inside_scope else outside}"
         user_db = tmp_path / "user.db"
         initialize_archive_database(user_db, ArchiveTier.USER)
         with sqlite3.connect(user_db) as conn:
@@ -404,21 +339,76 @@ class TestApplySessionExcision:
                 kind=AssertionKind.NOTE,
                 value={"marker_kind": "note", "arguments": {}},
                 body_text="secret marker body",
-                author_ref=f"block:{block_id}",
+                author_ref=author,
+                scope_ref=scope,
                 author_kind="agent",
                 now_ms=1,
             )
             conn.commit()
 
+        if corruption is not None:
+            from contextlib import contextmanager
+
+            from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+
+            original_statement = PreparedIndexMutation.user_statement
+            reached: list[bool] = []
+
+            @contextmanager
+            def corrupt_marker_statement(
+                seal: PreparedIndexMutation, sql: str, parameters: tuple[object, ...] = (), **kwargs: Any
+            ) -> Iterator[sqlite3.Cursor]:
+                if sql.startswith("UPDATE assertions SET target_ref='assertion:'"):
+                    reached.append(True)
+                    if corruption == "author":
+                        sql = sql.replace(
+                            "body_text=NULL, ", "body_text=NULL, author_ref='assertion:' || assertion_id, "
+                        )
+                    elif corruption == "scope":
+                        sql = sql.replace("body_text=NULL, ", "body_text=NULL, scope_ref=NULL, ")
+                    else:
+                        sql = sql.replace("status='deleted'", "status='active'")
+                with original_statement(seal, sql, parameters, **kwargs) as cursor:
+                    yield cursor
+
+            with sqlite3.connect(user_db) as user:
+                original_marker = user.execute(
+                    "SELECT * FROM assertions WHERE assertion_id='marker-excision-test'"
+                ).fetchone()
+            monkeypatch.setattr(PreparedIndexMutation, "user_statement", corrupt_marker_statement)
+            with pytest.raises(ReferenceSealError):
+                execute_excision(tmp_path, session_id, reason="remove marker", actor="user:local")
+            assert reached == [True]
+            with sqlite3.connect(user_db) as user:
+                assert (
+                    user.execute("SELECT * FROM assertions WHERE assertion_id='marker-excision-test'").fetchone()
+                    == original_marker
+                )
+            with sqlite3.connect(tmp_path / "index.db") as index:
+                assert index.execute("SELECT 1 FROM blocks WHERE block_id=?", (block_id,)).fetchone() == (1,)
+                assert index.execute("SELECT 1 FROM blocks WHERE block_id=?", (outside_block,)).fetchone() == (1,)
+            return
+
         execute_excision(tmp_path, session_id, reason="remove marker", actor="user:local")
 
         with sqlite3.connect(user_db) as conn:
             row = conn.execute(
-                "SELECT target_ref, value_json, body_text, evidence_refs_json, status "
+                "SELECT target_ref, value_json, body_text, evidence_refs_json, status, author_ref, scope_ref "
                 "FROM assertions WHERE assertion_id = ?",
                 ("marker-excision-test",),
             ).fetchone()
-        assert row == ("assertion:marker-excision-test", "{}", None, "[]", "deleted")
+        assert row == (
+            "assertion:marker-excision-test",
+            "{}",
+            None,
+            "[]",
+            "deleted",
+            "assertion:marker-excision-test" if inside_author else author,
+            None if inside_scope else scope,
+        )
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT 1 FROM blocks WHERE block_id=?", (block_id,)).fetchone() is None
+            assert index.execute("SELECT 1 FROM blocks WHERE block_id=?", (outside_block,)).fetchone() == (1,)
         # An all-status claim read serializes the tombstone. With an
         # ``excision-marker:`` target, ObjectRef validation raises here.
         from polylogue import Polylogue
@@ -428,7 +418,11 @@ class TestApplySessionExcision:
         )
         marker = next(claim for claim in claims if claim.assertion_id == "marker-excision-test")
         assert marker.target_ref == "assertion:marker-excision-test"
-        assert marker.model_dump(mode="json")["status"] == "deleted"
+        rendered = marker.model_dump(mode="json")
+        assert rendered["status"] == "deleted"
+        # Self is explicit retired provenance on this deleted tombstone, not
+        # a user/default author or a live agent claim.
+        assert rendered["author_ref"] == ("assertion:marker-excision-test" if inside_author else author)
 
     def test_apply_is_idempotent(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-4")
@@ -462,10 +456,10 @@ class TestApplySessionExcision:
         assert tuple(raw.raw_id for raw in target.raw_targets) == (raw_id,)
         assert tuple(marker.identity for marker in target.marker_input_targets) == (pending.identity,)
 
-        receipt = apply_excision_fault_control(tmp_path, session_id, reason="test", actor="user:test", now_ms=20)
-        assert receipt.found is True
-        assert receipt.counts["source_raw_rows"] == 1
-        assert receipt.counts["source_marker_inputs_pending"] == 1
+        receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:test")
+        assert receipt["found"] is True
+        assert receipt["counts"]["source_raw_rows"] == 1
+        assert receipt["counts"]["source_marker_inputs_pending"] == 1
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
             assert conn.execute(
@@ -485,23 +479,39 @@ class TestApplySessionExcision:
                 persist_pending_marker_input_sync(conn, changed_request, expected_incarnation_id=str(uuid.uuid4()))
             assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
 
+    @pytest.mark.parametrize("fault_site", ["source_commit", "paid_commit", "foreign_paid_attempt"])
     def test_retry_after_source_commit_before_index_commit(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault_site: str
     ) -> None:
-        session_id = _seed_session(tmp_path, native_id="crash-source-index")
-        original_connect = excision_module._connect_rw
+        session_id = _seed_session(tmp_path, native_id="crash-source-index", with_embedding=True)
+        from polylogue.storage.sqlite.reference_seal import _PreparedExcisionEmbeddingsChild
+
+        class SourceCommitInterruptionError(Exception):
+            pass
+
+        interruption = SourceCommitInterruptionError("after actual Source commit")
+        original_apply = _PreparedExcisionEmbeddingsChild.apply
         failed = False
 
-        def fail_user_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
+        def fail_paid_apply(child: _PreparedExcisionEmbeddingsChild) -> None:
             nonlocal failed
-            if path.name == "user.db" and not failed:
+            if not failed:
                 failed = True
-                raise RuntimeError("simulated crash after source commit")
-            return original_connect(path, archive_root=archive_root)
+                with sqlite3.connect(tmp_path / "source.db") as conn:
+                    assert conn.execute("SELECT count(*) FROM raw_sessions").fetchone() == (0,)
+                if fault_site != "source_commit":
+                    original_apply(child)
+                    with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+                        assert conn.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (0,)
+                        assert conn.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (1,)
+                raise interruption
+            original_apply(child)
 
-        monkeypatch.setattr(excision_module, "_connect_rw", fail_user_commit)
-        with pytest.raises(RuntimeError, match="simulated crash"):
-            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+        monkeypatch.setattr(_PreparedExcisionEmbeddingsChild, "apply", fail_paid_apply)
+        with pytest.raises(SourceCommitInterruptionError) as caught:
+            execute_excision(tmp_path, session_id, reason="crash", actor="user:test")
+        assert caught.value is interruption
+        assert failed
 
         # The durable marker exists while the rebuildable lookup key remains.
         assert resolve_session_excision_target(tmp_path, session_id).found is True
@@ -511,9 +521,42 @@ class TestApplySessionExcision:
         finally:
             source_conn.close()
 
-        receipt = apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
-        assert receipt.found is True
-        assert receipt.receipt_assertion_id is not None
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            original_attempts = conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+        if fault_site == "foreign_paid_attempt":
+            from polylogue.operations.mutation_transaction import RecoveryDeferredError
+
+            with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+                conn.execute(
+                    "UPDATE excision_embedding_completions SET attempt_id=?",
+                    ("attempt:" + "x" * 24,),
+                )
+            with pytest.raises(RecoveryDeferredError):
+                recover_excision(tmp_path)
+            with sqlite3.connect(tmp_path / "audit.db") as conn:
+                assert (
+                    conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+                    == original_attempts
+                )
+                assert conn.execute("SELECT status FROM operation_runs").fetchall() == [("interrupted",)]
+            with sqlite3.connect(tmp_path / "user.db") as conn:
+                assert conn.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone() == (0,)
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT count(*) FROM sessions WHERE session_id=?", (session_id,)).fetchone() == (
+                    1,
+                )
+            return
+        recover_excision(tmp_path)
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            assert (
+                conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall() == original_attempts
+            )
+            assert conn.execute("SELECT status FROM operation_runs").fetchall() == [("completed",)]
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            assert conn.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone() == (1,)
+        with sqlite3.connect(tmp_path / "embeddings.db") as conn:
+            assert conn.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (0,)
+            assert conn.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (1,)
         assert resolve_session_excision_target(tmp_path, session_id).found is False
 
     def test_source_first_retry_cleans_marker_witnesses_from_terminal_evidence(
@@ -526,19 +569,29 @@ class TestApplySessionExcision:
         """
         session_id = _seed_session(tmp_path, native_id="crash-marker-source-index")
         pending, accepted = _seed_marker_carriers(tmp_path, session_id)
-        original_connect = excision_module._connect_rw
+        from polylogue.storage.sqlite.reference_seal import _PreparedExcisionEmbeddingsChild
+
+        class MarkerSourceInterruptionError(Exception):
+            pass
+
+        interruption = MarkerSourceInterruptionError("after actual marker Source commit")
+        original_apply = _PreparedExcisionEmbeddingsChild.apply
         failed = False
 
-        def fail_user_open(path: Path, *, archive_root: Path) -> sqlite3.Connection:
+        def fail_paid_apply(child: _PreparedExcisionEmbeddingsChild) -> None:
             nonlocal failed
-            if path.name == "user.db" and not failed:
+            if not failed:
                 failed = True
-                raise RuntimeError("simulated source-first crash")
-            return original_connect(path, archive_root=archive_root)
+                with sqlite3.connect(tmp_path / "source.db") as conn:
+                    assert conn.execute("SELECT count(*) FROM excised_marker_inputs").fetchone() == (2,)
+                raise interruption
+            original_apply(child)
 
-        monkeypatch.setattr(excision_module, "_connect_rw", fail_user_open)
-        with pytest.raises(RuntimeError, match="source-first crash"):
-            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=10)
+        monkeypatch.setattr(_PreparedExcisionEmbeddingsChild, "apply", fail_paid_apply)
+        with pytest.raises(MarkerSourceInterruptionError) as caught:
+            execute_excision(tmp_path, session_id, reason="crash", actor="user:test")
+        assert caught.value is interruption
+        assert failed
 
         with sqlite3.connect(tmp_path / "source.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
@@ -569,11 +622,24 @@ class TestApplySessionExcision:
         assert prepared.context["source_marker_inputs_accepted"] == recovery_plan.source_marker_inputs_accepted
         assert prepared.context["marker_input_digests"] == list(recovery_plan.marker_input_digests)
 
-        receipt = apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=11)
-        assert receipt.counts["source_marker_inputs_pending"] == 1
-        assert receipt.counts["source_marker_inputs_accepted"] == 1
-        assert receipt.counts["index_marker_witnesses"] == 2
-        assert receipt.marker_input_digests == (pending.payload_sha256, accepted.payload_sha256)
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            original_attempts = conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+        recover_excision(tmp_path)
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            assert (
+                conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall() == original_attempts
+            )
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            row = conn.execute(
+                "SELECT value_json FROM assertions WHERE target_ref=? AND kind='excision_record'",
+                (f"session:{session_id}",),
+            ).fetchone()
+            assert row is not None
+            receipt = json.loads(row[0])
+        assert receipt["counts"]["source_marker_inputs_pending"] == 1
+        assert receipt["counts"]["source_marker_inputs_accepted"] == 1
+        assert receipt["counts"]["index_marker_witnesses"] == 2
+        assert receipt["marker_input_digests"] == [pending.payload_sha256, accepted.payload_sha256]
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
@@ -585,19 +651,31 @@ class TestApplySessionExcision:
     ) -> None:
         session_id = _seed_session(tmp_path, native_id="crash-receipt-index")
         pending, accepted = _seed_marker_carriers(tmp_path, session_id)
-        original_connect = excision_module._connect_rw
+        from polylogue.storage.sqlite.reference_seal import IndexMutationScope
+
+        class UserCommitInterruptionError(Exception):
+            pass
+
+        interruption = UserCommitInterruptionError("after actual User commit")
+        original_commit = IndexMutationScope.commit
         failed = False
 
-        def fail_index_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
+        def fail_index_commit(scope: IndexMutationScope) -> None:
             nonlocal failed
-            if path.name == "index.db" and not failed:
+            if not failed:
                 failed = True
-                raise RuntimeError("simulated crash after receipt commit")
-            return original_connect(path, archive_root=archive_root)
+                with sqlite3.connect(tmp_path / "user.db") as conn:
+                    assert conn.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone() == (
+                        1,
+                    )
+                raise interruption
+            original_commit(scope)
 
-        monkeypatch.setattr(excision_module, "_connect_rw", fail_index_commit)
-        with pytest.raises(RuntimeError, match="simulated crash"):
-            apply_excision_fault_control(tmp_path, session_id, reason="crash", actor="user:test", now_ms=20)
+        monkeypatch.setattr(IndexMutationScope, "commit", fail_index_commit)
+        with pytest.raises(UserCommitInterruptionError) as caught:
+            execute_excision(tmp_path, session_id, reason="crash", actor="user:test")
+        assert caught.value is interruption
+        assert failed
 
         with sqlite3.connect(tmp_path / "user.db") as conn:
             stored = conn.execute(
@@ -608,11 +686,23 @@ class TestApplySessionExcision:
             stored_value = json.loads(stored[0])
             assert stored_value["counts"]["index_marker_witnesses"] == 2
 
-        receipt = apply_excision_fault_control(tmp_path, session_id, reason="different", actor="other", now_ms=21)
-        assert receipt.found is True
-        assert receipt.reason == "crash"
-        assert receipt.actor == "user:test"
-        assert receipt.counts["index_marker_witnesses"] == 2
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            original_attempts = conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+        recover_excision(tmp_path)
+        with sqlite3.connect(tmp_path / "audit.db") as conn:
+            assert (
+                conn.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall() == original_attempts
+            )
+        with sqlite3.connect(tmp_path / "user.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT value_json FROM assertions WHERE target_ref=? AND kind='excision_record'",
+                    (f"session:{session_id}",),
+                ).fetchone()
+                == stored
+            )
+        assert stored_value["reason"] == "crash"
+        assert stored_value["actor"] == "user:test"
         with sqlite3.connect(tmp_path / "index.db") as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
@@ -652,7 +742,7 @@ class TestApplySessionExcision:
         excision leaves the newly written user assertion readable.
         """
         session_id = _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":1}')
-        apply_excision_fault_control(tmp_path, session_id, reason="first revision", actor="user:local", now_ms=10)
+        execute_excision(tmp_path, session_id, reason="first revision", actor="user:local")
         assert _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":2}') == session_id
 
         user_db = tmp_path / "user.db"
@@ -671,7 +761,7 @@ class TestApplySessionExcision:
                     now_ms=20,
                 )
 
-        apply_excision_fault_control(tmp_path, session_id, reason="second revision", actor="user:local", now_ms=30)
+        execute_excision(tmp_path, session_id, reason="second revision", actor="user:local")
         with sqlite3.connect(user_db) as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM assertions WHERE assertion_id = 'assertion-note:new-revision'"
@@ -700,13 +790,17 @@ class TestApplySessionExcision:
         specs = build_default_corpus_specs(providers=["codex"], count=1, messages_min=2, messages_max=3, seed=11)
         corpus_dir = tmp_path / "corpus"
         written = SyntheticCorpus.write_spec_artifacts(specs[0], corpus_dir, prefix="corpus")
-        sources = [Source(name="codex", path=file_path) for file_path in written.files]
+        outside_spec = build_default_corpus_specs(
+            providers=["codex"], count=1, messages_min=2, messages_max=3, seed=12
+        )[0]
+        outside_written = SyntheticCorpus.write_spec_artifacts(outside_spec, corpus_dir, prefix="outside")
+        sources = [Source(name="codex", path=file_path) for file_path in (*written.files, *outside_written.files)]
         assert sources
 
         # First ingest establishes the raw row + session normally.
         result_first = asyncio.run(ingest_one_shot_archive(archive_root, sources))
         assert result_first.excised_skips == 0
-        assert result_first.counts["sessions"] >= 1
+        assert result_first.counts["sessions"] == 2
 
         index_conn = sqlite3.connect(archive_root / "index.db")
         try:
@@ -715,6 +809,14 @@ class TestApplySessionExcision:
             index_conn.close()
         assert row is not None
         session_id = str(row[0])
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            outside_heads = conn.execute(
+                "SELECT * FROM raw_revision_heads WHERE session_id != ? ORDER BY logical_source_key", (session_id,)
+            ).fetchall()
+            outside_applications = conn.execute(
+                "SELECT * FROM raw_revision_applications WHERE session_id != ? ORDER BY decision_id", (session_id,)
+            ).fetchall()
+        assert outside_heads and outside_applications
         receipt = execute_excision(archive_root, session_id, reason="test", actor="user:local")
         assert receipt["found"] is True
         with sqlite3.connect(archive_root / "index.db") as conn:
@@ -724,6 +826,18 @@ class TestApplySessionExcision:
             assert conn.execute(
                 "SELECT COUNT(*) FROM raw_revision_applications WHERE session_id = ?", (session_id,)
             ).fetchone() == (0,)
+            assert (
+                conn.execute(
+                    "SELECT * FROM raw_revision_heads WHERE session_id != ? ORDER BY logical_source_key", (session_id,)
+                ).fetchall()
+                == outside_heads
+            )
+            assert (
+                conn.execute(
+                    "SELECT * FROM raw_revision_applications WHERE session_id != ? ORDER BY decision_id", (session_id,)
+                ).fetchall()
+                == outside_applications
+            )
 
         # Re-ingest the SAME unmodified file: must skip (not raise/abort).
         result_second = asyncio.run(ingest_one_shot_archive(archive_root, sources))
@@ -731,7 +845,9 @@ class TestApplySessionExcision:
 
         index_conn = sqlite3.connect(archive_root / "index.db")
         try:
-            remaining = index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            remaining = index_conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
         finally:
             index_conn.close()
         assert remaining == 0
@@ -1030,13 +1146,13 @@ class TestAttachmentBlobHashesAreExcisedToo:
 
     ``blob_refs`` groups every blob published under one raw ingestion by a
     shared ``ref_id`` (``ref_type IN ('raw_payload', 'attachment',
-    'sidecar')``). Before this fix, ``_apply_single_session_excision`` only
+    'sidecar')``). Before this fix, the canonical Excision producer only
     recorded an ``excised_content`` marker for the raw payload's own blob
     hash -- an attachment's distinct content hash was un-referenced (its
     ``blob_refs`` row deleted) but never durably marked excised, so an
     identical attachment blob re-acquired under the same raw ingestion could
     silently resurrect. Reverting the sibling-hash lookup in
-    ``_apply_single_session_excision`` (collapsing back to recording only
+    the canonical Excision producer (collapsing back to recording only
     ``raw_target.blob_hash``) makes ``test_attachment_blob_hash_recorded_in_excised_content``
     fail.
     """
@@ -1080,3 +1196,361 @@ class TestAttachmentBlobHashesAreExcisedToo:
             assert source_conn.execute("SELECT COUNT(*) FROM blob_refs WHERE ref_id = ?", (raw_id,)).fetchone()[0] == 0
         finally:
             source_conn.close()
+
+
+@pytest.mark.parametrize("shared", [False, True])
+@pytest.mark.parametrize("sink_failed", [False, True])
+def test_started_excision_effects_settle_before_sink_and_preserve_outside(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shared: bool,
+    sink_failed: bool,
+) -> None:
+    """Actual acquired Source + installed vec0 effects, independent of delivery."""
+    import hashlib
+
+    from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+    selected = _seed_session(
+        tmp_path, native_id="effect-selected", payload=b"selected acquired bytes", with_embedding=True
+    )
+    outside = _seed_session(
+        tmp_path, native_id="effect-outside", payload=b"outside acquired bytes", with_embedding=True
+    )
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        selected_messages = index.execute("SELECT message_id FROM messages WHERE session_id=?", (selected,)).fetchall()
+        selected_blocks = index.execute("SELECT block_id FROM blocks WHERE session_id=?", (selected,)).fetchall()
+        outside_messages = index.execute(
+            "SELECT * FROM messages WHERE session_id=? ORDER BY message_id", (outside,)
+        ).fetchall()
+        outside_blocks = index.execute(
+            "SELECT * FROM blocks WHERE session_id=? ORDER BY block_id", (outside,)
+        ).fetchall()
+    assert selected_messages and selected_blocks and outside_messages and outside_blocks
+    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+        assert try_load_sqlite_vec(paid)[0]
+        selected_hash = paid.execute(
+            "SELECT vector_derivation_hash FROM message_embedding_refs WHERE session_id=?", (selected,)
+        ).fetchone()[0]
+        original_vectors = paid.execute(
+            "SELECT vector_derivation_hash,embedding,model FROM message_embeddings ORDER BY vector_derivation_hash"
+        ).fetchall()
+        if shared:
+            paid.execute(
+                "UPDATE message_embedding_refs SET vector_derivation_hash=? WHERE session_id=?",
+                (selected_hash, outside),
+            )
+
+    import pickle
+
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit
+
+    actual_source_apply = KnownTierMutationPermit.apply_source_statements
+    compiled = []
+
+    def source_apply(permit, connection):
+        with permit._seal._owned_cursor(
+            permit._seal._scratch,
+            "SELECT compiled_actions FROM temp.known_tier_statements WHERE tier='source' "
+            "AND sql LIKE 'DELETE FROM raw_sessions WHERE%'",
+        ) as rows:
+            actions = pickle.loads(rows.fetchone()[0])
+            assert rows.fetchone() is None
+        assert ("raw_container_coordinates", sqlite3.SQLITE_DELETE) in actions
+        with permit._seal._owned_cursor(
+            permit._seal._scratch,
+            "SELECT count(*) FROM temp.known_tier_effects WHERE tier='source' AND table_name='raw_container_coordinates'",
+        ) as rows:
+            assert rows.fetchone()[0] == 0
+        with permit._seal._owned_cursor(
+            connection,
+            "SELECT count(*) FROM temp.sqlite_schema WHERE type='trigger' AND tbl_name='raw_container_coordinates'",
+        ) as rows:
+            assert rows.fetchone()[0] == 6
+        compiled.append(True)
+        return actual_source_apply(permit, connection)
+
+    monkeypatch.setattr(KnownTierMutationPermit, "apply_source_statements", source_apply)
+
+    class SinkFailureError(Exception):
+        pass
+
+    failure = SinkFailureError("exact effect sink failure")
+    reached = []
+
+    def sink(summary, literal):
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            assert index.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall() == [(outside,)]
+            assert index.execute("SELECT message_id FROM messages WHERE session_id=?", (selected,)).fetchall() == []
+            assert index.execute("SELECT block_id FROM blocks WHERE session_id=?", (selected,)).fetchall() == []
+            assert (
+                index.execute("SELECT * FROM messages WHERE session_id=? ORDER BY message_id", (outside,)).fetchall()
+                == outside_messages
+            )
+            assert (
+                index.execute("SELECT * FROM blocks WHERE session_id=? ORDER BY block_id", (outside,)).fetchall()
+                == outside_blocks
+            )
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            assert source.execute("SELECT native_id FROM raw_sessions").fetchall() == [("effect-outside",)]
+        with sqlite3.connect(tmp_path / "user.db") as user:
+            value = json.loads(
+                user.execute(
+                    "SELECT value_json FROM assertions WHERE assertion_id=?", (summary["receipt_assertion_id"],)
+                ).fetchone()[0]
+            )
+            assert value["counts"] == summary["counts"]
+        with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+            assert try_load_sqlite_vec(paid)[0]
+            assert paid.execute("SELECT session_id FROM message_embedding_refs").fetchall() == [(outside,)]
+            actual = paid.execute(
+                "SELECT vector_derivation_hash,embedding,model FROM message_embeddings ORDER BY vector_derivation_hash"
+            ).fetchall()
+            assert actual == (
+                original_vectors
+                if shared
+                else [row for row in original_vectors if row[0] != bytes(selected_hash).hex()]
+            )
+            assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone()[0] == 1
+        assert summary["counts"]["index_sessions"] == 1
+        assert summary["counts"]["index_messages"] == len(selected_messages)
+        assert summary["counts"]["index_blocks"] == len(selected_blocks)
+        assert summary["counts"]["source_raw_rows"] == 1
+        assert summary["counts"]["embeddings_vectors"] == 1
+        assert summary["counts"]["embeddings_vectors_gc"] == int(not shared)
+        assert summary["counts"]["embeddings_outputs"] == int(not shared)
+        assert summary["removed_blob_hashes_count"] == 1
+        reached.append(True)
+        if sink_failed:
+            raise failure
+
+    if sink_failed:
+        with pytest.raises(SinkFailureError) as caught:
+            execute_excision(tmp_path, selected, reason="synthetic removal", result_sink=sink)
+        assert caught.value is failure
+    else:
+        receipt = execute_excision(tmp_path, selected, reason="synthetic removal", result_sink=sink)
+        assert receipt["removed_blob_hashes"] == [hashlib.sha256(b"selected acquired bytes").hexdigest()]
+        assert receipt["shared_blob_hashes"] == []
+        assert receipt["complete"] is True
+    assert reached == [True] and compiled == [True]
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        event = audit.execute(
+            "SELECT operation_id,attempt_id,detail_json FROM operation_events WHERE event_type='excision_source_committed'"
+        ).fetchone()
+        assert event is not None
+        detail = json.loads(event[2])
+        assert detail["operation_id"] == event[0]
+        assert detail["attempt_id"] == event[1]
+        assert detail["targets"][0]["session_id"] == selected
+        assert audit.execute("SELECT state FROM operation_attempts WHERE attempt_id=?", (event[1],)).fetchone()[0] == (
+            "unknown" if sink_failed else "applied"
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert (
+            source.execute("SELECT pending_payload_json FROM audit_continuity_control WHERE singleton=1").fetchone()[0]
+            is None
+        )
+
+
+@pytest.mark.parametrize("fault", ["wrong_arguments", "precommit_cancel"])
+def test_started_excision_refuses_before_any_domain_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    from dataclasses import replace
+
+    from polylogue.core.compute import DaemonOperationCancelled
+    from polylogue.core.compute_cancel import compute_cancel
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+
+    selected = _seed_session(
+        tmp_path, native_id="precommit-selected", payload=b"selected original", with_embedding=True
+    )
+    cancelled = []
+    if fault == "wrong_arguments":
+        actual_apply = excision_module._apply_started_session_excision
+
+        def wrong(started, args, *, actuator):
+            return actual_apply(started, replace(args, reason="foreign reason"), actuator=actuator)
+
+        monkeypatch.setattr(excision_module, "_apply_started_session_excision", wrong)
+        failure_type = ReferenceSealError
+    else:
+        actual_prepare = PreparedIndexMutation.prepare_excision_embeddings_child
+
+        def cancel(seal):
+            child = actual_prepare(seal)
+            compute_cancel.get().set()
+            cancelled.append(True)
+            return child
+
+        monkeypatch.setattr(PreparedIndexMutation, "prepare_excision_embeddings_child", cancel)
+        failure_type = BaseExceptionGroup
+    with pytest.raises(failure_type) as caught:
+        execute_excision(tmp_path, selected, reason="original reason")
+    if fault == "precommit_cancel":
+        assert cancelled == [True]
+        assert len(caught.value.exceptions) == 2
+        assert tuple(type(error) for error in caught.value.exceptions) == (
+            asyncio.CancelledError,
+            DaemonOperationCancelled,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 1
+        assert source.execute("SELECT count(*) FROM excised_content").fetchone()[0] == 0
+        assert (
+            source.execute("SELECT pending_payload_json FROM audit_continuity_control WHERE singleton=1").fetchone()[0]
+            is None
+        )
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT session_id FROM sessions").fetchall() == [(selected,)]
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        assert user.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone()[0] == 0
+    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+        assert paid.execute("SELECT count(*) FROM message_embedding_refs").fetchone()[0] == 1
+        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("attempt", ["uncaptured_row", "unrecorded_action"])
+def test_started_source_compiled_dependency_does_not_authorize_outside_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, attempt: str
+) -> None:
+    from polylogue.storage.sqlite.reference_seal import (
+        KnownTierMutationPermit,
+        PreparedIndexMutation,
+        ReferenceSealError,
+    )
+    from polylogue.storage.sqlite.write_lease import current_sql_custody
+
+    selected = _seed_session(
+        tmp_path, native_id="guard-selected", payload=b"selected acquired bytes", with_embedding=True
+    )
+    outside = _seed_session(tmp_path, native_id="guard-outside", payload=b"outside acquired bytes", with_embedding=True)
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        outside_raw = source.execute("SELECT raw_id FROM raw_sessions WHERE native_id='guard-outside'").fetchone()[0]
+        source.execute(
+            "INSERT INTO raw_container_coordinates(raw_id,coordinate_format,entry_ordinal,split_index) VALUES(?,'zip-v2',0,0)",
+            (outside_raw,),
+        )
+    actual_cursor = PreparedIndexMutation._owned_cursor
+    actual_consume = KnownTierMutationPermit._consume_native_effect
+    attempted = []
+    guarded = []
+    sink = []
+
+    def cursor(seal, connection, sql, parameters=()):
+        custody = current_sql_custody()
+        permit = None if custody is None else custody.known_tier_authority
+        if (
+            isinstance(permit, KnownTierMutationPermit)
+            and permit.tier == "source"
+            and permit._connection is connection
+            and permit._active_statement_id is not None
+            and sql.startswith("DELETE FROM raw_sessions WHERE")
+        ):
+            attempted.append(True)
+            # Attempt hostile SQL on the actual original guarded writer. The
+            # declaration compiled DELETE here but captured no selected row;
+            # UPDATE was never in this exact statement's compiled closure.
+            sql = (
+                "DELETE FROM raw_container_coordinates WHERE raw_id=?"
+                if attempt == "uncaptured_row"
+                else "UPDATE raw_container_coordinates SET split_index=1 WHERE raw_id=?"
+            )
+            parameters = (outside_raw,)
+        return actual_cursor(seal, connection, sql, parameters)
+
+    def consume(permit, connection, table, phase, operation, old_rowid, new_rowid):
+        if table == "raw_container_coordinates":
+            guarded.append((phase, operation))
+        return actual_consume(permit, connection, table, phase, operation, old_rowid, new_rowid)
+
+    monkeypatch.setattr(PreparedIndexMutation, "_owned_cursor", cursor)
+    monkeypatch.setattr(KnownTierMutationPermit, "_consume_native_effect", consume)
+    expected = ReferenceSealError if attempt == "uncaptured_row" else sqlite3.DatabaseError
+    with pytest.raises(expected):
+        execute_excision(tmp_path, selected, reason="synthetic removal", result_sink=lambda *_: sink.append(True))
+    assert attempted == [True] and sink == []
+    assert guarded == ([("BEFORE", "DELETE")] if attempt == "uncaptured_row" else [])
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT count(*) FROM raw_sessions").fetchone()[0] == 2
+        assert source.execute("SELECT raw_id,split_index FROM raw_container_coordinates").fetchall() == [
+            (outside_raw, 0)
+        ]
+        assert source.execute("SELECT pending_payload_json FROM audit_continuity_control").fetchone()[0] is None
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT session_id FROM sessions ORDER BY session_id").fetchall() == sorted(
+            [(selected,), (outside,)]
+        )
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        assert user.execute("SELECT count(*) FROM assertions").fetchone()[0] == 0
+    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+        assert paid.execute("SELECT count(*) FROM message_embedding_refs").fetchone()[0] == 2
+        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone()[0] == 0
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        assert (
+            audit.execute(
+                "SELECT count(*) FROM operation_events WHERE event_type='excision_source_committed'"
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize("changed_column", ["carrier_digest", "incarnation_id", "dispositions_json"])
+def test_frozen_index_marker_cells_refuse_changed_native_witness_before_effects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed_column: str
+) -> None:
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.sqlite.connection_profile import (
+        NativeSQLCustodyOwner,
+        native_sql_owner_for_connection,
+        open_isolated_write_connection,
+    )
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+
+    session_id = _seed_session(tmp_path, native_id="frozen-marker-native-cells", with_embedding=True)
+    pending, _accepted = _seed_marker_carriers(tmp_path, session_id)
+    original_for_excision = PreparedIndexMutation.for_excision
+    changed = False
+
+    def for_excision(*args, **kwargs):
+        nonlocal changed
+        if not changed:
+
+            def change_native() -> None:
+                conn = open_isolated_write_connection(
+                    tmp_path / "index.db", purpose="fixture foreign marker change", archive_root=tmp_path
+                )
+                owner = native_sql_owner_for_connection(conn) or NativeSQLCustodyOwner(conn)
+                try:
+                    value = {
+                        "carrier_digest": "c" * 64,
+                        "incarnation_id": str(uuid.uuid4()),
+                        "dispositions_json": '[{"decision":"changed"}]',
+                    }[changed_column]
+                    conn.execute(
+                        f"UPDATE ingest_marker_witnesses SET {changed_column}=? WHERE request_key=?",
+                        (value, pending.identity),
+                    )
+                    conn.commit()
+                finally:
+                    owner.close()
+
+            admit_stage_write("test.foreign-marker-change", change_native)
+            changed = True
+        return original_for_excision(*args, **kwargs)
+
+    monkeypatch.setattr(PreparedIndexMutation, "for_excision", for_excision)
+    with pytest.raises(ReferenceSealError):
+        execute_excision(tmp_path, session_id, reason="exact marker refusal", actor="user:test")
+    assert changed
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT count(*) FROM raw_sessions").fetchone() == (1,)
+        assert source.execute("SELECT count(*) FROM excised_marker_inputs").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+        assert paid.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (1,)
+        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "user.db") as user:
+        assert user.execute("SELECT count(*) FROM assertions WHERE kind='excision_record'").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        assert index.execute("SELECT count(*) FROM sessions WHERE session_id=?", (session_id,)).fetchone() == (1,)

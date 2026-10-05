@@ -1049,7 +1049,10 @@ def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path
         assert measured.durable_valid is True
         assert measured.identities_match is False
         assert measured.observed_count == 2
-        assert measured.keys_json(sqlite_encoding=True) == '["chatgpt-export:a","chatgpt-export:b"]'
+        with measured.keys_json_stream(sqlite_encoding=True) as (length, chunks):
+            encoded = b"".join(chunks)
+        assert length == len(encoded)
+        assert encoded == b'["chatgpt-export:a","chatgpt-export:b"]'
         assert measured.connection.execute("PRAGMA temp_store").fetchone() == (1,)
         assert measured.connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
     conn.close()
@@ -1159,3 +1162,30 @@ def test_newer_raw_replaces_a_terminal_carrier(tmp_path: Path) -> None:
     ).fetchone()
     assert kept is not None
     assert (kept["raw_id"], kept["artifact_kind"]) == (kept_raw, "terminal_corrupt_input")
+
+
+@pytest.mark.parametrize("mode", [None, "whole_member", "element"])
+def test_container_coordinate_writer_refuses_missing_captured_receipt_before_persistence(
+    tmp_path: Path, mode: str | None
+) -> None:
+    from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
+    conn = _connect(tmp_path / "source.db")
+    try:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CHATGPT_EXPORT,
+            source_path="/fixture/export.zip:session.json",
+            source_index=0,
+            payload=b"{}",
+            acquired_at_ms=1,
+        )
+        before = tuple(conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone())
+        with pytest.raises(RetainedZipMembershipUnprovedError):
+            record_raw_container_coordinate(
+                conn, raw_id, coordinate_format="zip-v2", entry_ordinal=0, split_index=0, addressing_mode=mode
+            )
+        assert conn.execute("SELECT COUNT(*) FROM raw_container_coordinates").fetchone()[0] == 0
+        assert tuple(conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()) == before
+    finally:
+        conn.close()

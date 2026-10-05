@@ -24,7 +24,6 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.sources.parsers.browser_capture import (
-    COMPACT_BROWSER_CAPTURE_INGEST_FLAG,
     DOM_FALLBACK_INGEST_FLAG,
     NATIVE_BROWSER_CAPTURE_INGEST_FLAG,
     TEMPORARY_CHAT_INGEST_FLAG,
@@ -527,7 +526,7 @@ def test_browser_capture_compact_chatgpt_projection_uses_envelope_turns() -> Non
 
     assert [message.provider_message_id for message in parsed.messages] == ["u1", "a1"]
     assert [message.text for message in parsed.messages] == ["Draft the plan", "Here is the plan"]
-    assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
+    assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in parsed.ingest_flags
     assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in parsed.ingest_flags
     assert DOM_FALLBACK_INGEST_FLAG not in parsed.ingest_flags
 
@@ -1641,7 +1640,7 @@ def test_browser_capture_tool_turn_blocks_land_as_typed_tool_use_and_tool_result
     assert by_id["a1"].parent_message_provider_id == "result-1"
 
     if compact:
-        assert COMPACT_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
+        assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG in session.ingest_flags
         assert NATIVE_BROWSER_CAPTURE_INGEST_FLAG not in session.ingest_flags
     else:
         assert DOM_FALLBACK_INGEST_FLAG in session.ingest_flags

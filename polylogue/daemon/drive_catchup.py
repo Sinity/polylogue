@@ -10,7 +10,7 @@ from concurrent.futures import Future
 from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.core import compute
-from polylogue.core.compute import BoundedComputeAdapter, CancellationHandle
+from polylogue.core.compute import BoundedComputeAdapter, CancellationHandle, DaemonOperationCancelled
 from polylogue.core.compute_cancel import compute_cancel
 from polylogue.core.write_lease import adopt_write_lease, current_write_lease
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
@@ -62,7 +62,7 @@ class DriveCatchupExecution:
                 cancellation = cancellation or exc
         try:
             result = task.result()
-        except asyncio.CancelledError:
+        except (asyncio.CancelledError, DaemonOperationCancelled):
             if cancellation is not None:
                 raise cancellation from None
             raise
@@ -130,7 +130,6 @@ class DriveCatchupExecution:
             with (
                 self._bridge.hold(f"maintenance.drive_catchup.{actor}") as delegation,
                 adopt_write_lease(delegation),
-                compute.capture_compute_bridge()(),
             ):
                 try:
                     result = operation(prepared)

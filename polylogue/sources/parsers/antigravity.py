@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -216,6 +217,7 @@ class AntigravitySourceRole(StrEnum):
     """The admission role of one item below Antigravity's source root."""
 
     CONVERSATION_PROTOBUF = "conversation_protobuf"
+    EXPORT_DOCUMENT = "export_document"
     BRAIN_DOCUMENT = "brain_document"
     METADATA_SIDECAR = "metadata_sidecar"
     UNKNOWN = "unknown"
@@ -357,6 +359,7 @@ def census_source(root: Path) -> AntigravitySourceCensus:
         try:
             before = path.stat()
             digest = _file_digest(path)
+            classification = classify_source_path(path)
             after = path.stat()
         except OSError as exc:
             record_unreadable(path, f"source item is unreadable: {exc}")
@@ -372,7 +375,7 @@ def census_source(root: Path) -> AntigravitySourceCensus:
             AntigravitySourceItem(
                 path=path,
                 relative_path=_relative_path(path, root),
-                classification=classify_source_path(path),
+                classification=classification,
                 inspection=AntigravitySourceInspection.REGULAR,
                 size_bytes=after.st_size,
                 content_sha256=digest,
@@ -415,7 +418,7 @@ class AntigravityExportOutcome:
         return self.session is not None and self.error is None
 
 
-def classify_source_path(source_path: str | Path) -> AntigravitySourceClassification:
+def classify_source_path(source_path: str | Path, *, payload: object | None = None) -> AntigravitySourceClassification:
     """Classify every Antigravity path into a session, artifact, or unknown role."""
     path = Path(source_path)
     if path.suffix.lower() in _TRAJECTORY_DB_SUFFIXES and looks_like_trajectory_db_path(path):
@@ -443,6 +446,17 @@ def classify_source_path(source_path: str | Path) -> AntigravitySourceClassifica
             ArtifactKind(rule.kind),
             rule.fidelity_note,
         )
+    if rule is None and path.suffix.lower() not in _TRAJECTORY_DB_SUFFIXES and path.suffix.lower() != ".zip":
+        from polylogue.sources.origin_specs import recognize_json_source_class
+
+        recognition = recognize_json_source_class(Provider.ANTIGRAVITY, path, payload=payload)
+        if recognition is not None and recognition.source_class == "session":
+            return AntigravitySourceClassification(
+                AntigravitySourceRole.EXPORT_DOCUMENT,
+                True,
+                ArtifactKind.SESSION_DOCUMENT,
+                recognition.reason,
+            )
     return AntigravitySourceClassification(
         AntigravitySourceRole.UNKNOWN,
         False,
@@ -481,8 +495,9 @@ def _sqlite_columns(connection: sqlite3.Connection, table: str) -> frozenset[str
     directory, is the admission identity.
     """
     try:
-        quoted = '"' + table.replace('"', '""') + '"'
-        return frozenset(str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted})"))
+        from polylogue.sources.sqlite_export import readable_table_info
+
+        return frozenset(str(row[1]) for row in readable_table_info(connection, table))
     except Exception as error:
         if _is_trajectory_storage_error(error):
             return frozenset()
@@ -571,7 +586,9 @@ def _tool_outcome(
     )
     if isinstance(exit_code, bool):
         exit_code = None
-    if isinstance(exit_code, (int, float)):
+    if isinstance(exit_code, int) or (
+        isinstance(exit_code, float) and math.isfinite(exit_code) and exit_code.is_integer()
+    ):
         code = int(exit_code)
         return code != 0, code, None
     if isinstance(error, bool):

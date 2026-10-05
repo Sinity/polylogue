@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import sqlite3
 import sys
@@ -16,11 +17,10 @@ from typing import Any
 
 import pytest
 
-from polylogue.core.compute import BoundedComputeAdapter
-from polylogue.core.sql_settlement import SQLCustodyOwner, retained_native_sql_owners
+from polylogue.core.compute import BoundedComputeAdapter, RetainedSQLSettlement
+from polylogue.core.sql_settlement import NativeSQLSettlementEvidence, SQLCustodyOwner, retained_native_sql_owners
 from polylogue.pipeline import ids
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
-from polylogue.storage.sqlite.async_adapter import ArchiveReadAsyncAdapter
 from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.native_sql_descriptor_probe import selected_file_descriptors
@@ -119,10 +119,10 @@ async def test_native_cursor_failure_retains_physical_task_and_artifact_until_ex
         assert adapter.close(join_timeout_s=5) == ()
 
 
-@pytest.mark.parametrize("runtime", ["compute", "archive-read"])
 @pytest.mark.parametrize("projection_phase", ["writer", "readonly-page"])
+@pytest.mark.parametrize("await_physical", [False, True])
 async def test_failed_projection_close_retains_physical_future_context_and_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: str, projection_phase: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, projection_phase: str, await_physical: bool
 ) -> None:
     context = contextvars.ContextVar("settlement_test_context", default="absent")
     token = context.set("submitted-context")
@@ -131,13 +131,13 @@ async def test_failed_projection_close_retains_physical_future_context_and_artif
     observed_contexts: list[str] = []
     actual_connect = sqlite3.connect
     actual_close = WorkerSettlementConnection.close
+    projection: ids.SessionRevisionProjection | None = None
     if projection_phase == "readonly-page":
         with ThreadPoolExecutor(max_workers=1) as builder:
             projection = builder.submit(_projection, tmp_path / "prepared.db").result()
 
         def operation() -> object:
-            # The page reader closes before yielding; failure retains its
-            # creator worker and the projection's backing artifact.
+            assert projection is not None
             return next(iter(projection.message_hashes))
     else:
 
@@ -155,7 +155,8 @@ async def test_failed_projection_close_retains_physical_future_context_and_artif
             handles.append(handle)
             artifacts.append(Path(name.removeprefix("file:").split("?", 1)[0]).parent)
             return handle
-        return actual_connect(database, *args, **kwargs)
+        connection: sqlite3.Connection = actual_connect(database, *args, **kwargs)
+        return connection
 
     def close(handle: WorkerSettlementConnection) -> None:
         observed_contexts.append(context.get())
@@ -163,57 +164,58 @@ async def test_failed_projection_close_retains_physical_future_context_and_artif
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     monkeypatch.setattr(WorkerSettlementConnection, "close", close)
-    compute = BoundedComputeAdapter(max_workers=1) if runtime == "compute" else None
-    read = ArchiveReadAsyncAdapter(max_workers=1) if runtime == "archive-read" else None
+    compute = BoundedComputeAdapter(max_workers=1)
     completed = threading.Event()
     physical = None
-    if compute is not None:
-        submitted = compute.submit(operation)
-        physical = submitted.future
-        physical.add_done_callback(lambda _future: completed.set())
-        wrapper = asyncio.ensure_future(asyncio.wrap_future(physical))
-        inventory = compute.retained_sql_settlements
-        retry = compute.retry_sql_settlement
-    else:
-        assert read is not None
-        wrapper = asyncio.create_task(read.run(operation, on_completed=completed.set))
-        inventory = read.retained_sql_settlements
-        retry = read.retry_sql_settlement
+    inventory: Callable[[], tuple[RetainedSQLSettlement, ...]]
+    submitted = compute.submit(operation)
+    physical = submitted.future
+    physical.add_done_callback(lambda _future: completed.set())
+    wrapper = asyncio.ensure_future(submitted.wait() if await_physical else asyncio.wrap_future(physical))
+    inventory = compute.retained_sql_settlements
+    retry = compute.retry_sql_settlement
     try:
         await _pending(inventory)
         assert handles and artifacts[0].exists()
         assert not completed.is_set()
         if physical is not None:
             assert not physical.done()
-            assert compute is not None and compute.snapshot().active_units == 1
+            assert compute.snapshot().active_units == 1
         wrapper.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await wrapper
+        if await_physical:
+            await asyncio.sleep(0)
+            assert not wrapper.done()
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await wrapper
         assert not completed.is_set()
-        assert inventory()[0].owner_count == 1  # type: ignore[attr-defined]
+        assert inventory()[0].owner_count == 1
         assert artifacts[0].exists()
         assert observed_contexts and set(observed_contexts) == {"submitted-context"}
-        assert all(thread is handles[0].owner for _name, thread in handles[0].calls)
+        assert all((thread is handles[0].owner for _name, thread in handles[0].calls))
         for handle in handles:
             handle.allow_cleanup.set()
         retry()
         assert await asyncio.to_thread(completed.wait, 5)
         assert inventory() == ()
+        if await_physical:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await wrapper
+            assert any(isinstance(item, asyncio.CancelledError) for item in caught.value.exceptions)
+            assert any(isinstance(item, NativeConnectionSettlementError) for item in caught.value.exceptions)
         if physical is not None:
             with pytest.raises(NativeConnectionSettlementError):
                 physical.result()
-            assert compute is not None and compute.snapshot().active_units == 0
-        assert all(thread is handles[0].owner for _name, thread in handles[0].calls)
+            assert compute.snapshot().active_units == 0
+        assert all((thread is handles[0].owner for _name, thread in handles[0].calls))
         assert set(observed_contexts) == {"submitted-context"}
     finally:
         for handle in handles:
             handle.allow_cleanup.set()
         retry()
-        if compute is not None:
-            assert compute.close(join_timeout_s=5) == ()
-        if read is not None:
-            read.close()
+        assert compute.close(join_timeout_s=5) == ()
         if projection_phase == "readonly-page":
+            assert projection is not None
             projection.close()
         context.reset(token)
 
@@ -273,10 +275,9 @@ def test_retry_request_after_wake_survives_failed_following_close(monkeypatch: p
             retry.request()
 
 
-@pytest.mark.parametrize("runtime", ["compute", "archive-read"])
 @pytest.mark.parametrize("parent_kind", ["archive-reader", "construction-reader", "reference-seal", "shard-builder"])
 async def test_parent_native_close_retains_worker_until_all_parent_obligations_settle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime: str, parent_kind: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, parent_kind: str
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ArchiveStoreSettlementError
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
@@ -289,17 +290,16 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
     actual_connect = sqlite3.connect
 
     def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        # Construction returns an actual native subclass. The original
-        # parent's binding must remain visible after idle factory handoff.
         is_reader = str(database).startswith("file:") and "mode=ro" in str(database)
         is_shard = str(database).endswith("worker-shard.db")
-        if (is_shard if parent_kind == "shard-builder" else is_reader) and not handles:
+        if (is_shard if parent_kind == "shard-builder" else is_reader) and (not handles):
             kwargs["factory"] = WorkerSettlementConnection
             handle = actual_connect(database, *args, **kwargs)
             assert isinstance(handle, WorkerSettlementConnection)
             handles.append(handle)
             return handle
-        return actual_connect(database, *args, **kwargs)
+        connection: sqlite3.Connection = actual_connect(database, *args, **kwargs)
+        return connection
 
     construction_primary = LookupError("synthetic constructor failure after native ownership")
     if parent_kind == "construction-reader":
@@ -328,32 +328,26 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
         parent.close()
 
     monkeypatch.setattr(sqlite3, "connect", connect)
-    compute = BoundedComputeAdapter(max_workers=1) if runtime == "compute" else None
-    read = ArchiveReadAsyncAdapter(max_workers=1) if runtime == "archive-read" else None
+    compute = BoundedComputeAdapter(max_workers=1)
     completed = threading.Event()
     physical = None
-    if compute is not None:
-        physical = compute.submit(operation).future
-        physical.add_done_callback(lambda _future: completed.set())
-        wrapper = asyncio.ensure_future(asyncio.wrap_future(physical))
-        inventory = compute.retained_sql_settlements
-        retry = compute.retry_sql_settlement
-    else:
-        assert read is not None
-        wrapper = asyncio.create_task(read.run(operation, on_completed=completed.set))
-        inventory = read.retained_sql_settlements
-        retry = read.retry_sql_settlement
+    inventory: Callable[[], tuple[RetainedSQLSettlement, ...]]
+    physical = compute.submit(operation).future
+    physical.add_done_callback(lambda _future: completed.set())
+    wrapper = asyncio.ensure_future(asyncio.wrap_future(physical))
+    inventory = compute.retained_sql_settlements
+    retry = compute.retry_sql_settlement
     try:
         await _pending(inventory)
-        assert parents and handles and not completed.is_set()
+        assert parents and handles and (not completed.is_set())
         if parent_kind == "shard-builder":
             assert (root / "worker-shard.db").exists()
-        assert inventory()[0].owner_count == 1  # type: ignore[attr-defined]
+        assert inventory()[0].owner_count == 1
         if isinstance(parents[0], PreparedIndexMutation):
             assert parents[0]._scratch_directory is not None or parents[0]._observers
         if physical is not None:
             assert not physical.done()
-            assert compute is not None and compute.snapshot().active_units == 1
+            assert compute.snapshot().active_units == 1
         wrapper.cancel()
         with pytest.raises(asyncio.CancelledError):
             await wrapper
@@ -364,7 +358,7 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
         assert inventory() == ()
         if parent_kind == "shard-builder":
             assert not (root / "worker-shard.db").exists()
-        assert all(thread is handles[0].owner for _name, thread in handles[0].calls)
+        assert all((thread is handles[0].owner for _name, thread in handles[0].calls))
         if physical is not None:
             expected_error = (
                 BaseExceptionGroup
@@ -379,15 +373,12 @@ async def test_parent_native_close_retains_worker_until_all_parent_obligations_s
                 assert isinstance(caught.value, BaseExceptionGroup)
                 assert caught.value.exceptions[0] is construction_primary
                 assert isinstance(caught.value.exceptions[1], ArchiveStoreSettlementError)
-            assert compute is not None and compute.snapshot().active_units == 0
+            assert compute.snapshot().active_units == 0
     finally:
         for handle in handles:
             handle.allow_cleanup.set()
         retry()
-        if compute is not None:
-            assert compute.close(join_timeout_s=5) == ()
-        if read is not None:
-            read.close()
+        assert compute.close(join_timeout_s=5) == ()
 
 
 def test_nested_native_settlement_preserves_outer_sql_but_closes_new_parent_child(tmp_path: Path) -> None:
@@ -402,7 +393,7 @@ def test_nested_native_settlement_preserves_outer_sql_but_closes_new_parent_chil
         entry = capture_native_sql_owners()
         reader = archive._open_read_connection(tmp_path / "user.db")
         assert len(capture_native_sql_owners()) == len(entry) + 1
-        pending = []
+        pending: list[NativeSQLSettlementEvidence] = []
         failure = settle_native_sql(
             retry=SQLSettlementRetry(),
             preserved_native_owners=entry,
@@ -441,7 +432,8 @@ async def test_nested_compute_future_retains_parent_reservation_until_its_new_re
             assert isinstance(handle, WorkerSettlementConnection)
             handles.append(handle)
             return handle
-        return actual_connect(database, *args, **kwargs)
+        connection: sqlite3.Connection = actual_connect(database, *args, **kwargs)
+        return connection
 
     monkeypatch.setattr(sqlite3, "connect", connect)
     compute = BoundedComputeAdapter(max_workers=1)
@@ -590,7 +582,7 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
                 raw_id = archive.write_raw_payload(
                     provider=Provider.CHATGPT, payload=payload, source_path="raw-lifetime.json", acquired_at_ms=1
                 )
-        adapter = RawObservationDerivation(tmp_path)
+        adapter = RawObservationDerivation(tmp_path, compute_adapter=compute_adapter)
         frame = raw_observation_frame(tmp_path, raw_ids=(raw_id,))
         replacement = adapter.compute(frame, raw_id)
         prepared.append(replacement)
@@ -610,7 +602,8 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
             return adapter.publish(moved, replacement)
 
     monkeypatch.setattr(RawObservationReplacement, "_close_prepared_payload", close_payload)
-    adapter = BoundedComputeAdapter(max_workers=1)
+    compute_adapter = BoundedComputeAdapter(max_workers=1)
+    adapter = compute_adapter
     operation = adapter.submit(work)
     probe: int | None = None
     try:
@@ -650,3 +643,137 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
         assert adapter.close(join_timeout_s=5) == ()
         if probe is not None:
             os.close(probe)
+
+
+@pytest.mark.parametrize("exclusive_bytes", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_operation_prepared_phase_retains_original_creator_and_writer_until_native_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancelled: bool, exclusive_bytes: bool
+) -> None:
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.core.write_lease import current_write_lease
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+
+    actual_connect = sqlite3.connect
+    handles: list[WorkerSettlementConnection] = []
+    creators: list[threading.Thread] = []
+    entered_publication = threading.Event()
+    artifact_paths: list[Path] = []
+
+    def connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        if str(database).endswith("publication.db"):
+            kwargs["factory"] = WorkerSettlementConnection
+            handle = actual_connect(database, *args, **kwargs)
+            assert isinstance(handle, WorkerSettlementConnection)
+            handles.append(handle)
+            return handle
+        connection: sqlite3.Connection = actual_connect(database, *args, **kwargs)
+        return connection
+
+    monkeypatch.setattr(sqlite3, "connect", connect)
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=100)
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
+    runtime = DaemonOperationRuntime(
+        tmp_path,
+        write_bridge=bridge,
+        execution_kernel=adapter,
+        raw_observation_owner=RawObservationConvergenceOwner(
+            tmp_path, compute_adapter=adapter, write_bridge=bridge, write_coordinator=bridge.coordinator
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        runtime.prepared_compute_adapter()
+
+    def admitted_without_publication_admission() -> None:
+        from polylogue.core.stage_admission import stage_write_admission_bound
+
+        adapter.require_current_creator()
+        assert not stage_write_admission_bound()
+        with pytest.raises(RuntimeError):
+            runtime.prepared_compute_adapter()
+
+    await asyncio.wrap_future(adapter.submit(admitted_without_publication_admission).future)
+
+    def operation() -> int:
+        adapter.require_current_creator()
+        assert runtime.prepared_compute_adapter() is adapter
+        if exclusive_bytes:
+            runtime.prepared_compute_adapter().amend_current_input_demand(200)
+        else:
+            with pytest.raises(RuntimeError):
+                runtime.prepared_compute_adapter().amend_current_input_demand(200)
+        assert current_write_lease() is None
+        creators.append(threading.current_thread())
+        with scratch_connection_context(prefix="operation-prepared-", filename="phase.db", directory=tmp_path) as conn:
+            with contextlib.closing(conn.execute("CREATE TABLE prepared(value INTEGER)")):
+                pass
+            conn.commit()
+
+            def publish() -> int:
+                lease = current_write_lease()
+                assert lease is not None and lease.coordinator is coordinator
+                adapter.require_current_creator()
+                assert threading.current_thread() is creators[0]
+                with contextlib.closing(conn.execute("SELECT COUNT(*) FROM prepared")) as cursor:
+                    assert cursor.fetchone()[0] == 0
+                with scratch_connection_context(
+                    prefix="operation-publication-", filename="publication.db", directory=tmp_path
+                ) as publication:
+                    with contextlib.closing(publication.execute("PRAGMA database_list")) as cursor:
+                        artifact_paths.append(Path(cursor.fetchone()[2]))
+                    with contextlib.closing(publication.execute("CREATE TABLE effect(value INTEGER)")):
+                        pass
+                    with contextlib.closing(publication.execute("INSERT INTO effect VALUES (7)")):
+                        pass
+                    publication.commit()
+                    entered_publication.set()
+                    # This newly created publication child must settle before
+                    # the original writer delegation can leave the bridge.
+                    return 7
+
+            return admit_stage_write("operation.actual-prepared-publication", publish)
+
+    phase = asyncio.create_task(
+        runtime.prepared_phase("native-lifetime", operation, estimated_bytes=7, exclusive_bytes=exclusive_bytes)
+    )
+    try:
+        await _pending(adapter.retained_sql_settlements)
+        assert entered_publication.is_set()
+        assert bridge.coordinator is coordinator
+        assert handles and artifact_paths[0].exists()
+        assert adapter.snapshot().active_units == 1
+        assert adapter.snapshot().active_input_bytes == (207 if exclusive_bytes else 7)
+        assert adapter.snapshot().used_bytes == (100 if exclusive_bytes else 7)
+        assert coordinator.snapshot().active_actor == "operation.actual-prepared-publication"
+        assert not phase.done()
+        if cancelled:
+            phase.cancel()
+            await asyncio.sleep(0)
+            assert not phase.done()
+            assert adapter.snapshot().active_units == 1
+            assert coordinator.snapshot().active_actor == "operation.actual-prepared-publication"
+        handles[0].allow_cleanup.set()
+        adapter.retry_sql_settlement()
+        with pytest.raises((NativeConnectionSettlementError, BaseExceptionGroup)):
+            await phase
+        assert adapter.snapshot().active_units == 0
+        assert adapter.snapshot().active_input_bytes == adapter.snapshot().exclusive_byte_units == 0
+        assert adapter.retained_sql_settlements() == ()
+        assert coordinator.snapshot().active_actor is None
+        assert not artifact_paths[0].exists()
+        assert all(thread is creators[0] for _name, thread in handles[0].calls)
+    finally:
+        for handle in handles:
+            handle.allow_cleanup.set()
+        adapter.retry_sql_settlement()
+        if not phase.done():
+            with contextlib.suppress(BaseException):
+                await phase
+        adapter.shutdown(wait=True)
+        assert await coordinator.shutdown(timeout=float("inf"))

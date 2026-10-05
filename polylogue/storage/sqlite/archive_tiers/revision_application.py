@@ -40,6 +40,7 @@ class RevisionApplicationReceipt:
     append_end_offset: int | None = None
     detail: str = ""
     fold_authorization: FullSnapshotFoldAuthorization | None = None
+    full_replacement_authorization: FullRevisionReplacementAuthorization | None = None
 
     @property
     def decision_id(self) -> str:
@@ -104,6 +105,40 @@ class FullSnapshotFoldAuthorization:
             and receipt.accepted_frontier_kind == "byte"
             and receipt.accepted_frontier == self.frontier
             and receipt.append_end_offset is None
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class FullRevisionReplacementAuthorization:
+    """One selected Source full revision against its exact prepared Index head."""
+
+    logical_source_key: str
+    previous_head: tuple[object, ...]
+    full_raw_id: str
+    full_source_revision: str
+    accepted_raw_id: str
+    accepted_source_revision: str
+    append_end_offset: int | None
+    acquisition_generation: int
+    session_id: str
+    content_hash: bytes
+    byte_length: int
+
+    def permits(self, existing_head: tuple[object, ...], receipt: RevisionApplicationReceipt) -> bool:
+        return (
+            tuple(existing_head) == self.previous_head
+            and receipt.logical_source_key == self.logical_source_key
+            and receipt.decision is ApplicationDecision.SELECTED_BASELINE
+            and receipt.raw_id == self.full_raw_id
+            and receipt.accepted_raw_id == self.accepted_raw_id
+            and receipt.source_revision == self.full_source_revision
+            and receipt.accepted_source_revision == self.accepted_source_revision
+            and receipt.acquisition_generation == self.acquisition_generation
+            and receipt.session_id == self.session_id
+            and receipt.accepted_content_hash == self.content_hash
+            and receipt.accepted_frontier_kind == "byte"
+            and receipt.accepted_frontier == self.byte_length
+            and receipt.append_end_offset == self.append_end_offset
         )
 
 
@@ -338,8 +373,14 @@ def _record_revision_application_sync(
                 f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
                 f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier!r})"
             )
-        existing_frontier = int(existing_head[5])
-        if receipt.accepted_frontier < existing_frontier:
+        existing_frontier = existing_head[5]
+        if type(existing_frontier) is not int:
+            raise ValueError("accepted revision head requires an integer frontier")
+        authorized_full_replacement = (
+            receipt.full_replacement_authorization is not None
+            and receipt.full_replacement_authorization.permits(tuple(existing_head), receipt)
+        )
+        if receipt.accepted_frontier < existing_frontier and not authorized_full_replacement:
             raise RuntimeError(
                 "raw revision CAS rejected an older accepted frontier: "
                 f"logical_source_key={receipt.logical_source_key!r} "
@@ -370,12 +411,12 @@ def _record_revision_application_sync(
                 # claiming the same frontier with differing semantics) are real
                 # divergence and still require fold authorization to pass.
                 same_raw_supersede = receipt.accepted_raw_id == existing_head[1]
-                if not authorized_fold and not same_raw_supersede:
+                if not authorized_fold and not same_raw_supersede and not authorized_full_replacement:
                     raise RuntimeError(
                         "raw revision CAS rejected a conflicting accepted head: "
                         f"logical_source_key={receipt.logical_source_key!r} "
                         f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
-                        f"accepted_content_hash={_hash_prefix(existing_head[3])}, "
+                        f"accepted_content_hash={_head_hash_prefix(existing_head[3])}, "
                         f"frontier_kind={existing_head[4]!r}, frontier={existing_head[5]!r}) "
                         f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
                         f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}, "
@@ -451,3 +492,124 @@ __all__ = [
     "assert_session_fts_exact_sync",
     "record_revision_application_sync",
 ]
+
+
+REVISION_HEAD_ROW_FIELDS = (
+    "session_id",
+    "accepted_raw_id",
+    "accepted_source_revision",
+    "accepted_content_hash",
+    "accepted_frontier_kind",
+    "accepted_frontier",
+    "acquisition_generation",
+    "append_end_offset",
+)
+
+
+def prepare_revision_application_head(
+    existing_head: tuple[object, ...] | None,
+    receipt: RevisionApplicationReceipt,
+) -> tuple[object, ...] | None:
+    """Decide the exact head row using the publisher's canonical CAS law.
+
+    A non-head receipt leaves its preceding outcome intact. Ordered parent
+    preparation uses this same function for accepted, deferred and no-op
+    outcomes; it does not infer a head merely from a byte plan.
+    """
+    if receipt.accepted_raw_id is None or receipt.decision not in {
+        ApplicationDecision.SELECTED_BASELINE,
+        ApplicationDecision.APPLIED_APPEND,
+        ApplicationDecision.REPARSE_REAFFIRMATION,
+    }:
+        return existing_head
+    assert receipt.accepted_source_revision is not None
+    assert receipt.accepted_content_hash is not None
+    if existing_head is not None:
+        if receipt.accepted_frontier_kind not in {"byte", "semantic"} or receipt.accepted_frontier is None:
+            raise ValueError("accepted revision receipt requires a typed frontier")
+        if str(existing_head[4]) != receipt.accepted_frontier_kind:
+            raise RuntimeError(
+                "raw revision CAS rejected an incomparable accepted frontier: "
+                f"logical_source_key={receipt.logical_source_key!r} "
+                f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                f"frontier_kind={existing_head[4]!r}, frontier={existing_head[5]!r}) "
+                f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier!r})"
+            )
+        existing_frontier = existing_head[5]
+        if type(existing_frontier) is not int:
+            raise ValueError("accepted revision head requires an integer frontier")
+        authorized_full_replacement = (
+            receipt.full_replacement_authorization is not None
+            and receipt.full_replacement_authorization.permits(tuple(existing_head), receipt)
+        )
+        if receipt.accepted_frontier < existing_frontier and not authorized_full_replacement:
+            raise RuntimeError(
+                "raw revision CAS rejected an older accepted frontier: "
+                f"logical_source_key={receipt.logical_source_key!r} "
+                f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                f"frontier_kind={existing_head[4]!r}, frontier={existing_frontier}) "
+                f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier})"
+            )
+        if receipt.accepted_frontier == existing_frontier:
+            existing_semantics = (existing_head[0], existing_head[3], existing_head[4], existing_head[5])
+            accepted_semantics = (
+                receipt.session_id,
+                receipt.accepted_content_hash,
+                receipt.accepted_frontier_kind,
+                receipt.accepted_frontier,
+            )
+            if existing_semantics != accepted_semantics:
+                authorized_fold = receipt.fold_authorization is not None and receipt.fold_authorization.permits(
+                    existing_head, receipt
+                )
+                # Same-raw re-application: the incoming receipt derives from the
+                # exact same accepted raw evidence as the existing head (equal
+                # `accepted_raw_id`) -- typically a parser/identity fix reparsing
+                # the same content-addressed blob into a different content hash
+                # and/or session_id. That is re-derivation from identical
+                # evidence, not a genuine conflict, so it supersedes the existing
+                # head. Cross-raw conflicts (a different `accepted_raw_id`
+                # claiming the same frontier with differing semantics) are real
+                # divergence and still require fold authorization to pass.
+                same_raw_supersede = receipt.accepted_raw_id == existing_head[1]
+                if not authorized_fold and not same_raw_supersede and not authorized_full_replacement:
+                    raise RuntimeError(
+                        "raw revision CAS rejected a conflicting accepted head: "
+                        f"logical_source_key={receipt.logical_source_key!r} "
+                        f"existing(session_id={existing_head[0]!r}, accepted_raw_id={existing_head[1]!r}, "
+                        f"accepted_content_hash={_head_hash_prefix(existing_head[3])}, "
+                        f"frontier_kind={existing_head[4]!r}, frontier={existing_head[5]!r}) "
+                        f"incoming(session_id={receipt.session_id!r}, accepted_raw_id={receipt.accepted_raw_id!r}, "
+                        f"accepted_content_hash={_hash_prefix(receipt.accepted_content_hash)}, "
+                        f"frontier_kind={receipt.accepted_frontier_kind!r}, frontier={receipt.accepted_frontier!r})"
+                    )
+            elif tuple(existing_head) == (
+                receipt.session_id,
+                receipt.accepted_raw_id,
+                receipt.accepted_source_revision,
+                receipt.accepted_content_hash,
+                receipt.accepted_frontier_kind,
+                receipt.accepted_frontier,
+                receipt.acquisition_generation,
+                receipt.append_end_offset,
+            ):
+                return tuple(existing_head)
+    values = {
+        "session_id": receipt.session_id,
+        "accepted_raw_id": receipt.accepted_raw_id,
+        "accepted_source_revision": receipt.accepted_source_revision,
+        "accepted_content_hash": receipt.accepted_content_hash,
+        "accepted_frontier_kind": receipt.accepted_frontier_kind,
+        "accepted_frontier": receipt.accepted_frontier,
+        "acquisition_generation": receipt.acquisition_generation,
+        "append_end_offset": receipt.append_end_offset,
+    }
+    return tuple(values[field] for field in REVISION_HEAD_ROW_FIELDS)
+
+
+def _head_hash_prefix(value: object) -> str:
+    if value is not None and not isinstance(value, bytes):
+        raise ValueError("accepted revision head requires a byte content hash")
+    return _hash_prefix(value)

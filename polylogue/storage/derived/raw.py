@@ -14,57 +14,54 @@ import sqlite3
 import sys
 import tempfile
 import weakref
-import zipfile
 from builtins import BaseExceptionGroup
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
+    is_work_event_raw_id,
     parser_census_identity_measurement,
     raw_authority_parser_fingerprint,
 )
+from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.core.compute import (
+    BoundedComputeAdapter,
     DaemonBackpressureError,
     DaemonOperationCancelled,
     SubmittedOperation,
-    compute_adapter,
 )
-from polylogue.core.compute_cancel import compute_cancel_requested
-from polylogue.core.content_identity import ContentIdentityRefusal
+from polylogue.core.compute_cancel import check_compute_cancelled, compute_cancel_requested
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
     RAW_FAILURE_VALIDATION_FAILURE_KINDS,
+    CohortMembershipRefusalError,
     RetainedRawDecodeRefusalError,
-    raw_failure_outcome_code,
-    validated_raw_failure_evidence_kind,
 )
 from polylogue.core.sql_settlement import retain_native_sql_lifetimes
 from polylogue.logging import WARNING, emit
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
+from polylogue.storage.blob_store import (
+    BlobStore,
+    BlobVerificationCancelledError,
+    PreparedBlob,
+    blob_store_for_connection,
+)
 from polylogue.storage.raw_authority import (
     build_raw_replay_plan,
     iter_parser_census_logical_keys,
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
-from polylogue.storage.source_blob_restoration import (
-    read_prior_full_source_receipts,
-    read_raw_source_evidence,
-    retained_blob_source_candidates,
-    retained_source_location,
-    stage_exact_blob,
-    stage_exact_source_window_blob,
-)
+from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
@@ -76,10 +73,11 @@ if TYPE_CHECKING:
         PreparedMembershipReplay,
         PreparedRetainedAggregate,
         PreparedRetainedInput,
+        PreparedRevisionReplayResult,
+        RevisionCensusResult,
     )
     from polylogue.storage.index_generation import IndexGeneration
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import PreparedRawRevisionClassification
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
@@ -162,6 +160,8 @@ class StagedBlobRestorations:
 @dataclass(frozen=True, slots=True)
 class RawObservationReplacement:
     key: str
+    # Kernel diagnostic for selected coordinates/recipe, not a Source-value
+    # fingerprint. The original witness supplies actual publication authority.
     input_binding: str
     # ``ReplacementLike`` requires a payload; this adapter carries its inputs
     # in the typed fields below instead.
@@ -170,11 +170,21 @@ class RawObservationReplacement:
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None
     prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None
     prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None = None
-    classification_proofs: Mapping[str, PreparedRawRevisionClassification] | None = None
+    prepared_replay_adoption: Mapping[tuple[str, tuple[str, ...]], PreparedRevisionAdoption] | None = None
+    prepared_source_classification: PreparedRevisionSourceClassification | None = None
     verified_blob_stats: Mapping[str, tuple[int, int, int, int, int]] | None = None
     planned_accepted_raw_ids: Mapping[str, tuple[str, ...]] | None = None
+    prepared_revision_plans: Mapping[str, RevisionReplayPlan] | None = None
+    prepared_byte_outcomes: Mapping[str, PreparedRevisionReplayOutcome] | None = None
     prepared_membership_plans: Mapping[str, PreparedMembershipReplay] | None = None
+    prepared_replay_source: PreparedRetainedReplaySource | None = None
     needs_source_census: bool = False
+    prepared_source_census: PreparedRevisionSourceCensus | None = None
+    prepared_replay_schedule: ReplaySchedule | None = None
+    prepared_logical_keys: tuple[str, ...] = ()
+    prepared_membership_keys: tuple[str, ...] = ()
+    prepared_byte_logical_keys: tuple[str, ...] = ()
+    prepared_key_refusals: tuple[CohortMembershipRefusalError, ...] = ()
     needs_source_classification: bool = False
     scratch_directory: Path | None = None
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
@@ -205,7 +215,19 @@ class RawObservationReplacement:
         with retain_native_sql_lifetimes(*(() if self.scratch_owner is None else (self.scratch_owner,))):
             failures: list[BaseException] = []
             for close in (
-                partial(_close_prepared_carriers, self.prepared_writes or {}, self.prepared_membership_plans or {}),
+                partial(
+                    _close_prepared_carriers,
+                    self.prepared_writes or {},
+                    self.prepared_membership_plans or {},
+                    chain(
+                        (
+                            item.prepared_artifact
+                            for item in (self.prepared_inputs or {}).values()
+                            if item.prepared_artifact is not None
+                        ),
+                        (item.artifact for item in (self.prepared_aggregates or {}).values()),
+                    ),
+                ),
                 *(() if self.blob_restorations is None else (self.blob_restorations.discard,)),
             ):
                 try:
@@ -236,65 +258,19 @@ def _holds_several_sessions(artifact: PreparedJsonl | None) -> bool:
         return next(sessions, None) is not None and next(sessions, None) is not None
 
 
-class RawObservationDerivation:
-    """A paged raw adapter; no ops hint or backlog census certifies validity.
-
-    Preparation can run without a writer lease. Existing synchronous recovery
-    callers still hold their enclosing lease; their composition must move
-    before that production route can claim lease-free computation.
-    """
+class RawObservationInspection:
+    """Read retained Raw state without admitting computation or publication."""
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
 
+    def __init__(self, archive_root: Path, *, index_db_path: Path | None = None) -> None:
+        self.archive_root = archive_root
+        self._index_db_path = index_db_path
+
     @property
     def recipe_version(self) -> str:
         return raw_authority_parser_fingerprint()
-
-    def __init__(
-        self,
-        archive_root: Path,
-        *,
-        prepare_non_json_artifact: Callable[..., PreparedJsonl] | None = None,
-        index_db_path: Path | None = None,
-        owned_generation: IndexGeneration | None = None,
-    ) -> None:
-        self.archive_root = archive_root
-        self._prepare_non_json_artifact = prepare_non_json_artifact
-        self._index_db_path = index_db_path
-        self._owned_generation = owned_generation
-        if owned_generation is not None:
-            from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
-
-            destination = IndexMutationDestination.owned_inactive(owned_generation)
-            if Path(owned_generation.archive_root).resolve(strict=True) != archive_root.resolve(strict=True):
-                raise ValueError("retained replay generation belongs to another archive")
-            if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
-                raise ValueError("retained replay Index differs from its owned generation")
-            self._index_db_path = destination.index_path
-
-    @staticmethod
-    def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
-        stat = path.stat()
-        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
-
-    @contextmanager
-    def _preparation_archive(self) -> Iterator[ArchiveStore]:
-        if self._owned_generation is None:
-            from polylogue.operations.operation_context import open_operation_read
-
-            with open_operation_read(self.archive_root) as pinned:
-                yield pinned.archive
-            return
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
-
-        destination = IndexMutationDestination.owned_inactive(self._owned_generation)
-        with ArchiveStore.open_existing(
-            self.archive_root, read_only=True, index_path=destination.index_path
-        ) as archive:
-            yield archive
-            destination.validate()
 
     @contextmanager
     def _read(self) -> Iterator[sqlite3.Connection]:
@@ -465,32 +441,14 @@ class RawObservationDerivation:
         return bool(unresolved) and not classifier_superseded
 
     def _decode_refusal(self, conn: sqlite3.Connection, key: str) -> RetainedRawDecodeRefusalError | None:
+        from polylogue.core.raw_failure_evidence import retained_raw_decode_refusal_from_row
+        from polylogue.storage.sqlite.queries.raw_state import retained_raw_decode_refusal_sql
+
         row = conn.execute(
-            f"""SELECT a.artifact_kind, r.parse_error, a.support_status,
-              r.validation_status, a.classification_reason FROM raw_sessions r
-            JOIN raw_authority_parser_census c ON c.raw_id = r.raw_id
-            JOIN raw_artifacts a ON a.raw_id = r.raw_id
-              AND (a.origin IS r.origin OR a.origin IS {raw_provider_origin_sql(table_alias="r")})
-              AND a.source_path IS r.source_path AND a.source_index IS r.source_index
-            WHERE r.raw_id = ? AND c.parser_fingerprint = ? AND c.status = 'complete'
-              AND r.parse_error IS NOT NULL
-              AND a.support_status = 'decode_failed'
-              AND a.artifact_kind IN ({",".join("?" for _ in RAW_FAILURE_VALIDATION_FAILURE_KINDS)})
-            ORDER BY a.artifact_kind LIMIT 1""",
+            retained_raw_decode_refusal_sql(),
             (key, self.recipe_version, *sorted(RAW_FAILURE_VALIDATION_FAILURE_KINDS)),
         ).fetchone()
-        if row is None:
-            return None
-        kind = validated_raw_failure_evidence_kind(
-            row[0],
-            row[2],
-            validation_failed=row[3] == "failed",
-            classification_reason=row[4],
-            outcome_code=raw_failure_outcome_code(row[4]),
-        )
-        if kind is None:
-            return None
-        return RetainedRawDecodeRefusalError(key, kind, str(row[1]))
+        return retained_raw_decode_refusal_from_row(key, row)
 
     def terminal_decode_refusals(self, keys: Sequence[str]) -> Mapping[str, RetainedRawDecodeRefusalError]:
         """Read the same exact current receipt used by inspection and compute."""
@@ -747,62 +705,196 @@ class RawObservationDerivation:
             )
         return current is not None and output["evidence_key"] != current
 
-    def _binding(self, raw_ids: tuple[str, ...]) -> str:
-        with self._read() as conn:
-            parts = []
-            for raw_id in raw_ids:
-                for table, order in (
-                    ("raw_sessions", "raw_id"),
-                    ("raw_session_memberships", "logical_source_key"),
-                    ("raw_membership_census", "raw_id"),
-                    ("raw_authority_parser_census", "raw_id"),
-                    ("raw_artifacts", "artifact_id"),
-                ):
-                    parts.append(
-                        [
-                            tuple(row)
-                            for row in conn.execute(
-                                f"SELECT * FROM {table} WHERE raw_id = ? ORDER BY {order}", (raw_id,)
+
+def _publish_acquired_attachment_refs(
+    seal: PreparedIndexMutation,
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    *,
+    blob_store: BlobStore,
+) -> None:
+    """Settle exact acquired claims before derived replay can fail or skip."""
+    from polylogue.core.iterator_lifetime import settled_iterator
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        _PreparedSourceProducer,
+        publish_prepared_revision_source,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, _write_source_blob_refs
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+    artifacts: dict[int, PreparedJsonl] = {}
+    for retained in prepared_inputs.values():
+        artifact = retained.prepared_artifact
+        if artifact is not None and (artifact.error is not None or retained.parser_error is not None):
+            raise ValueError("errored retained input cannot publish attachment claims")
+        if artifact is not None and id(artifact) not in artifacts:
+            with closing(artifact.iter_attachment_claims()) as claims:
+                if next(claims, None) is not None:
+                    artifacts[id(artifact)] = artifact
+    if not artifacts:
+        return
+    has_refs = False
+    with seal.original_read_snapshot(), seal.source_producer():
+        reader = PreparedSessionSourceRead(seal, blob_store=blob_store)
+        producer = _PreparedSourceProducer(seal)
+        for artifact in artifacts.values():
+            original_raw_id, original_input = next(
+                (raw_id, item) for raw_id, item in prepared_inputs.items() if item.prepared_artifact is artifact
+            )
+            source_path = original_input.source_path
+            with settled_iterator(
+                artifact.iter_attachment_refs(
+                    source_path=source_path,
+                    acquired_at_ms=reader.raw_revision_observation_order(original_raw_id)[0],
+                    source_read=reader,
+                    before_input=seal.retain_prepared_blob_input,
+                )
+            ) as refs:
+                for ref in refs:
+                    # One exact published claim can prove several identical Raw
+                    # carriers; read its reservation once before receipt consumption.
+                    consumed = False
+                    for raw_id, retained in prepared_inputs.items():
+                        if retained.prepared_artifact is artifact:
+                            if retained.blob_hash != artifact.blob_hash:
+                                raise ValueError("acquired attachment carrier differs from its original Raw bytes")
+                            current_ref = replace(
+                                ref,
+                                acquired_at_ms=reader.raw_revision_observation_order(raw_id)[0],
+                                publication_receipt_id=None if consumed else ref.publication_receipt_id,
                             )
-                        ]
-                    )
-            return hashlib.sha256(repr(parts).encode()).hexdigest()
+
+                            def current_refs(
+                                current_ref: ArchiveSourceBlobRef = current_ref,
+                            ) -> Iterator[ArchiveSourceBlobRef]:
+                                yield current_ref
+
+                            _write_source_blob_refs(producer, raw_id, current_refs)
+                            consumed = True
+                            has_refs = True
+    if has_refs:
+        permit = seal.prepare_source_mutation()
+        admit_stage_write("retained-acquired-attachment-refs", partial(publish_prepared_revision_source, seal, permit))
+
+
+class RawObservationDerivation(RawObservationInspection):
+    """A paged raw adapter; no ops hint or backlog census certifies validity.
+
+    Preparation can run without a writer lease. Existing synchronous recovery
+    callers still hold their enclosing lease; their composition must move
+    before that production route can claim lease-free computation.
+    """
+
+    domain = RAW_OBSERVATION_DOMAIN
+    prerequisites: tuple[str, ...] = ()
+
+    def __init__(
+        self,
+        archive_root: Path,
+        *,
+        prepare_non_json_artifact: RetainedArtifactPreparer | None = None,
+        compute_adapter: BoundedComputeAdapter,
+        prepaid_blob_inputs: tuple[tuple[str, bytes, int], ...] = (),
+        index_db_path: Path | None = None,
+        owned_generation: IndexGeneration | None = None,
+    ) -> None:
+        super().__init__(archive_root, index_db_path=index_db_path)
+        self._prepare_non_json_artifact = prepare_non_json_artifact
+        self._compute_adapter = compute_adapter
+        self._prepaid_blob_inputs = prepaid_blob_inputs
+        self._index_db_path = index_db_path
+        self._owned_generation = owned_generation
+        if owned_generation is not None:
+            from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+            destination = IndexMutationDestination.owned_inactive(owned_generation)
+            if Path(owned_generation.archive_root).resolve(strict=True) != archive_root.resolve(strict=True):
+                raise ValueError("retained replay generation belongs to another archive")
+            if index_db_path is not None and index_db_path.resolve(strict=True) != destination.index_path:
+                raise ValueError("retained replay Index differs from its owned generation")
+            self._index_db_path = destination.index_path
 
     @staticmethod
-    def _source_replay_plans(archive: ArchiveStore, logical_keys: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
-        """Capture only source-backed byte plans; census may establish others later.
+    def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
+        stat = path.stat()
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
 
-        A multi-session raw's pending envelope is governed per session through
-        its memberships, so it has no one-session byte plan to capture.
-        """
-        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
-            pending_raw_envelope_has_membership_authority,
-        )
+    @contextmanager
+    def _preparation_archive(self) -> Iterator[ArchiveStore]:
+        if self._owned_generation is None:
+            from polylogue.operations.operation_context import open_operation_read
 
-        plans: dict[str, tuple[str, ...]] = {}
+            with open_operation_read(self.archive_root) as pinned:
+                yield pinned.archive
+            return
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+        destination = IndexMutationDestination.owned_inactive(self._owned_generation)
+        with ArchiveStore.open_owned_inactive_read(self._owned_generation) as archive:
+            yield archive
+            destination.validate()
+
+    def _selection_diagnostic(self, raw_ids: tuple[str, ...]) -> str:
+        digest = hashlib.sha256(self.recipe_version.encode())
+        for raw_id in raw_ids:
+            encoded = raw_id.encode()
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        return digest.hexdigest()
+
+    @staticmethod
+    def _source_replay_plans(
+        reader: PreparedSessionSourceRead,
+        logical_keys: tuple[str, ...],
+    ) -> dict[str, RevisionReplayPlan]:
+        """Capture byte plans on the parent's same original/selected Source view."""
+        plans: dict[str, RevisionReplayPlan] = {}
         for logical_key in logical_keys:
-            if pending_raw_envelope_has_membership_authority(archive.source_connection, logical_key):
+            if reader.pending_raw_envelope_has_membership_authority(
+                logical_key
+            ) or reader.raw_membership_logical_raw_ids(logical_key):
                 continue
-            candidate = archive.source_connection.execute(
-                "SELECT 1 FROM raw_sessions WHERE logical_source_key = ? AND source_revision IS NOT NULL LIMIT 1",
-                (logical_key,),
-            ).fetchone()
-            if candidate is not None:
-                plans[logical_key] = archive.raw_revision_replay_plan(logical_key).accepted_raw_ids
+            plan = reader.raw_revision_replay_plan(logical_key)
+            if plan.applications:
+                plans[logical_key] = plan
         return plans
 
-    def compute(self, frame: RawFrame, key: str, *, replay_current: bool = False) -> RawObservationReplacement:
+    def compute(
+        self,
+        frame: RawFrame,
+        key: str,
+        *,
+        replay_current: bool = False,
+        select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+    ) -> RawObservationReplacement:
         from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
 
+        self._compute_adapter.require_current_creator()
+        # Even an initially empty discovery holds exclusive byte admission
+        # before its witness can hydrate durable reference proof inputs.
+        self._compute_adapter.amend_current_input_demand(0)
         index_path = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
         destination = (
             None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
         )
-        seal = PreparedIndexMutation(index_path, archive_root=self.archive_root, destination=destination)
+        seal = PreparedIndexMutation(
+            index_path,
+            archive_root=self.archive_root,
+            destination=destination,
+            input_demand=self._compute_adapter.amend_current_input_demand,
+        )
         replacement: RawObservationReplacement | None = None
         try:
             replacement = replace(
-                self._compute_prepared(frame, key, replay_current=replay_current), reference_seal=seal
+                self._compute_prepared(
+                    frame,
+                    key,
+                    replay_current=replay_current,
+                    reference_seal=seal,
+                    select_retained_raw_ids=select_retained_raw_ids,
+                ),
+                reference_seal=seal,
             )
             seal.validate_observers_current()
             return replacement
@@ -816,7 +908,15 @@ class RawObservationDerivation:
                 raise BaseExceptionGroup("retained preparation and cleanup failed", [primary, cleanup]) from primary
             raise
 
-    def _compute_prepared(self, frame: RawFrame, key: str, *, replay_current: bool) -> RawObservationReplacement:
+    def _compute_prepared(
+        self,
+        frame: RawFrame,
+        key: str,
+        *,
+        replay_current: bool,
+        reference_seal: PreparedIndexMutation,
+        select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
+    ) -> RawObservationReplacement:
         from polylogue.core.prepared_file import VerificationCancelledError
         from polylogue.sources.dispatch import is_jsonl_source_path
         from polylogue.sources.revision_backfill import (
@@ -826,11 +926,6 @@ class RawObservationDerivation:
         )
         from polylogue.sources.sqlite_export import looks_like_logical_source_path
 
-        with self._read() as conn:
-            refusal = self._decode_refusal(conn, key)
-        if refusal is not None:
-            raise refusal
-
         # One component replay settles every member. The kernel classified the
         # page before it began publishing, so a sibling can still arrive here
         # with that old ``stale`` verdict after an earlier member has made the
@@ -838,19 +933,41 @@ class RawObservationDerivation:
         # boundary before parsing retained bytes again. The publication method
         # repeats this check, so a later race remains pending rather than being
         # certified from this observation alone.
-        if not replay_current and self.inspect(frame, (key,)).get(key) == "valid":
-            return RawObservationReplacement(
-                key,
-                "",
-                None,
-                (),
-                already_valid=True,
-            )
 
         with self._preparation_archive() as archive:
-            raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
-            binding = self._binding(raw_ids)
-            descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+
+            with (
+                reference_seal.original_read_snapshot(
+                    input_demand=self._compute_adapter.amend_current_input_demand,
+                    prepaid_blob_inputs=self._prepaid_blob_inputs,
+                ),
+                reference_seal.source_producer(),
+            ):
+                selection_read = PreparedSessionSourceRead(
+                    reference_seal,
+                    blob_store=BlobStore(self.archive_root / "blob"),
+                )
+                selected = (key,) if select_retained_raw_ids is None else tuple(select_retained_raw_ids(selection_read))
+                raw_ids, logical_keys = selection_read.expand_raw_membership_selection(selected)
+                for selected_raw_id in raw_ids:
+                    refusal = selection_read.raw_terminal_decode_refusal(selected_raw_id)
+                    if refusal is not None:
+                        raise refusal
+                descriptors = {raw_id: selection_read.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            if (
+                select_retained_raw_ids is None
+                and not replay_current
+                and self.inspect(frame, (key,)).get(key) == "valid"
+            ):
+                return RawObservationReplacement(
+                    key,
+                    "",
+                    None,
+                    (),
+                    already_valid=True,
+                )
+            binding = self._selection_diagnostic(raw_ids)
             # Classification and preparation both read retained bytes, so an
             # absent blob is restored before either runs.
             restorations = self._stage_absent_blob_restorations(archive, raw_ids, descriptors)
@@ -858,7 +975,6 @@ class RawObservationDerivation:
                 return RawObservationReplacement(key, binding, None, raw_ids, blob_restorations=restorations)
             process_prepared = bool(descriptors)
             if process_prepared:
-                from polylogue.core.sources import origin_from_provider
                 from polylogue.sources.prepared_merge import (
                     prepare_retained_cohort_artifact,
                     prepared_cohort_source_hash,
@@ -866,57 +982,54 @@ class RawObservationDerivation:
                 from polylogue.sources.revision_backfill import (
                     PreparedRetainedAggregate,
                     prepare_membership_replay,
+                    prepare_retained_replay_source,
                 )
                 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
-                    membership_key_has_pending_envelope_member,
-                    pending_raw_envelope_has_membership_authority,
-                    prepare_raw_revision_rebuild_classification,
-                    prepared_raw_revision_classification_current,
+                    membership_head_input_from_revision_head,
+                    prepare_membership_head_plan,
+                    prepare_membership_head_plan_from_inputs,
+                    prepared_parser_census_is_current,
                 )
                 from polylogue.storage.sqlite.archive_tiers.write import (
                     prepare_session_write,
                     prepared_session_rows_from_shard,
                 )
 
-                census_rows = archive.source_connection.execute(
-                    f"SELECT raw_id, parser_fingerprint, status FROM raw_authority_parser_census "
-                    f"WHERE raw_id IN ({','.join('?' for _ in raw_ids)})",
-                    raw_ids,
-                ).fetchall()
-                complete_census = {
-                    str(row[0]) for row in census_rows if row[1] == self.recipe_version and row[2] == "complete"
-                }
-                needs_source_census = len(raw_ids) > 1 and len(complete_census) != len(raw_ids)
-                classification_proofs: dict[str, PreparedRawRevisionClassification] = {}
+                with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                    complete_census = {
+                        raw_id for raw_id in raw_ids if prepared_parser_census_is_current(reference_seal, raw_id)
+                    }
+                # Every retained raw needs its actual parser authority before
+                # replay can select a session. A singleton can still refine an
+                # opaque acquisition identity or prove a non-session artifact.
+                needs_source_census = len(complete_census) != len(raw_ids)
+                prepared_source_classification = None
                 if not needs_source_census:
-                    for logical_key in logical_keys:
-                        has_byte_candidate = archive.source_connection.execute(
-                            "SELECT 1 FROM raw_sessions WHERE logical_source_key = ? "
-                            "AND source_revision IS NOT NULL LIMIT 1",
-                            (logical_key,),
-                        ).fetchone()
-                        if has_byte_candidate is None or pending_raw_envelope_has_membership_authority(
-                            archive.source_connection, logical_key
-                        ):
-                            continue
-                        classification_proofs[logical_key] = prepare_raw_revision_rebuild_classification(
-                            archive, logical_key
-                        )
-                    if any(
-                        not prepared_raw_revision_classification_current(archive, proof)
-                        for proof in classification_proofs.values()
-                    ):
-                        # The source must own the byte decision before the
-                        # accepted tip can select its sealed writer carrier.
+                    from polylogue.sources.revision_backfill import prepare_revision_source_classification
+
+                    prepared_source_classification = prepare_revision_source_classification(
+                        reference_seal,
+                        selection_read,
+                        selected_raw_ids=raw_ids,
+                        logical_keys=logical_keys,
+                        payload_store=BlobStore(self.archive_root / "blob"),
+                    )
+                    if prepared_source_classification is not None:
                         return RawObservationReplacement(
                             key,
                             binding,
                             None,
                             raw_ids,
-                            classification_proofs=classification_proofs,
+                            prepared_source_classification=prepared_source_classification,
                             needs_source_classification=True,
                         )
-                planned_accepted_raw_ids = self._source_replay_plans(archive, logical_keys)
+                with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                    prepared_revision_plans = self._source_replay_plans(
+                        selection_read, selection_read.raw_revision_rebuild_logical_keys(raw_ids)
+                    )
+                    planned_accepted_raw_ids = {
+                        key: plan.accepted_raw_ids for key, plan in prepared_revision_plans.items()
+                    }
                 material_store = BlobStore(self.archive_root / "blob")
                 material_staging = material_store._ensure_private_staging_root()
                 scratch_owner = tempfile.TemporaryDirectory(prefix=".raw-prepared-", dir=material_staging)
@@ -931,13 +1044,31 @@ class RawObservationDerivation:
                     prepared: dict[str, PreparedRetainedInput] = {}
                     aggregates: dict[str, PreparedRetainedAggregate] = {}
                     prepared_writes: dict[tuple[str, str], PreparedSessionWrite] = {}
+                    prepared_replay_adoption: dict[tuple[str, tuple[str, ...]], PreparedRevisionAdoption] = {}
                     membership_plans: dict[str, PreparedMembershipReplay] = {}
+                    prepared_byte_outcomes: dict[str, PreparedRevisionReplayOutcome] = {}
+                    prepared_replay_source: PreparedRetainedReplaySource | None = None
                     verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
+                    prepared_source_census: PreparedRevisionSourceCensus | None = None
+                    prepared_replay_schedule: ReplaySchedule | None = None
+                    prepared_logical_keys: tuple[str, ...] = ()
+                    prepared_membership_keys: tuple[str, ...] = ()
+                    prepared_byte_logical_keys: tuple[str, ...] = ()
+                    prepared_key_refusals: dict[str, CohortMembershipRefusalError] = {}
                     prepared_artifacts: dict[tuple[object, ...], PreparedJsonl] = {}
                     try:
                         for raw_id in raw_ids:
                             provider, blob_hash, path, kind, size = descriptors[raw_id]
                             blob_store = BlobStore(self.archive_root / "blob")
+                            # Verification consumes the same canonical CAS
+                            # input as parsing, so enroll it before the first
+                            # byte read rather than charging after verification.
+                            with reference_seal.original_read_snapshot():
+                                input_hash, input_size = reference_seal.retain_original_blob_input(raw_id)
+                                if input_hash != bytes.fromhex(blob_hash) or input_size != size:
+                                    raise RetainedPreparationRetryableError(
+                                        f"retained raw input identity changed before verification: {raw_id}"
+                                    )
                             blob_path = blob_store.blob_path(blob_hash)
                             try:
                                 before = self._blob_stat_identity(blob_path)
@@ -947,9 +1078,12 @@ class RawObservationDerivation:
                                 ) from exc
                             if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
-                            native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
-                            fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
-                            profile_identity = archive.raw_profile_identity(raw_id)
+
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                retained_read = PreparedSessionSourceRead(reference_seal, blob_store=blob_store)
+                                native_id = retained_read.raw_native_id(raw_id) if kind.value == "append" else None
+                                fallback_timestamp = retained_read.raw_revision_file_mtime(raw_id)
+                                profile_identity = retained_read.raw_profile_identity(raw_id)
                             artifact_key = (
                                 provider,
                                 blob_hash,
@@ -972,26 +1106,23 @@ class RawObservationDerivation:
                                         raise RetainedPreparationRetryableError(
                                             "non-JSON retained preparation requires an operations worker"
                                         )
-                                    submitted = compute_adapter().submit(
-                                        partial(
-                                            worker,
-                                            raw_id,
-                                            provider.value,
-                                            blob_hash,
-                                            path,
-                                            kind.value,
-                                            native_id,
-                                            str(self.archive_root / "blob"),
-                                            str(self.archive_root / "source.db"),
-                                            frame.source_revision,
-                                            str(scratch),
-                                            fallback_timestamp,
-                                        ),
-                                        admission_class="incremental-background",
-                                        estimated_bytes=size,
-                                    )
-                                    artifact = _await_reporting_stalls(submitted, subject=f"raw {raw_id}")
-                                except (DaemonBackpressureError, DaemonOperationCancelled) as exc:
+                                    # This carrier stays under the already admitted Raw
+                                    # reservation through publication and physical close.
+                                    check_compute_cancelled()
+
+                                    with (
+                                        reference_seal.original_read_snapshot(),
+                                        reference_seal.source_producer(),
+                                    ):
+                                        retained_read = PreparedSessionSourceRead(
+                                            reference_seal,
+                                            blob_store=blob_store,
+                                        )
+                                        artifact = worker(retained_read, raw_id, directory=scratch)
+                                    check_compute_cancelled()
+                                except DaemonOperationCancelled:
+                                    raise
+                                except DaemonBackpressureError as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained compute unavailable while preparing raw {raw_id}"
                                     ) from exc
@@ -1039,41 +1170,77 @@ class RawObservationDerivation:
                                 parser_decode_failure=artifact.decode_failure,
                                 missing_profile_identity=artifact.missing_profile_identity,
                                 retained_zip_membership_unproved=artifact.retained_zip_membership_unproved,
+                                unsupported_shape=artifact.unsupported_shape,
                                 captured_profile_key=profile_identity,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )
-                        if needs_source_census and not planned_accepted_raw_ids:
+                        # Each publisher commits/exposes its first Source unit on
+                        # this creator before the later census/session tape exists.
+                        for artifact in prepared_artifacts.values():
+                            if artifact.error is None:
+                                artifact.publish_blobs(reference_seal=reference_seal)
+                        _publish_acquired_attachment_refs(reference_seal, prepared, blob_store=material_store)
+                        from polylogue.sources.prepared_jsonl import complete_thread_projection_cohort
 
-                            def empty_artifact(artifact: PreparedJsonl) -> bool:
-                                if artifact.error is not None:
-                                    return False
-                                with closing(artifact.iter_sessions()) as sessions:
-                                    return next(sessions, None) is None
-
-                            if all(empty_artifact(artifact) for artifact in prepared_artifacts.values()):
-                                needs_source_census = False
-                        if not needs_source_census and len(complete_census) != len(raw_ids):
-                            for raw_id, retained in prepared.items():
-                                retained_artifact = retained.prepared_artifact
-                                if retained_artifact is None or archive.index_connection is None:
+                        with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                            state_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                            for retained_raw_id, retained_input in prepared.items():
+                                state_artifact = retained_input.prepared_artifact
+                                if state_artifact is None or state_artifact.codex_state_kind != "thread_state":
                                     continue
-                                for parsed_session in retained_artifact.iter_sessions():
-                                    _raise_if_compute_cancelled(f"raw {raw_id}")
-                                    session_id = (
-                                        f"{origin_from_provider(parsed_session.source_name).value}:"
-                                        f"{parsed_session.provider_session_id}"
-                                    )
-                                    existing = archive.index_connection.execute(
-                                        "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
-                                    ).fetchone()
-                                    if existing is not None and str(existing[0]) != raw_id:
-                                        needs_source_census = True
-                                if needs_source_census:
-                                    break
+                                state_observed_at, state_order = state_read.raw_revision_observation_order(
+                                    retained_raw_id
+                                )
+                                state_artifact.prepare_thread_projection(
+                                    reference_seal,
+                                    source_read=state_read,
+                                    raw_id=retained_raw_id,
+                                    blob_hash=retained_input.blob_hash,
+                                    observed_at_ms=state_observed_at,
+                                    observation_order=state_order,
+                                    source_path=retained_input.source_path,
+                                )
+                            complete_thread_projection_cohort(
+                                (
+                                    item.prepared_artifact
+                                    for item in prepared.values()
+                                    if item.prepared_artifact is not None
+                                ),
+                                reference_seal,
+                                source_read=state_read,
+                            )
+                        if not needs_source_census:
+                            from polylogue.sources.revision_backfill import (
+                                _prepared_retained_outcome,
+                                prepared_session_for_revision_key,
+                            )
+
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                member_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items():
+                                    if logical_key.startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX):
+                                        continue
+                                    for member_raw_id in accepted_raw_ids:
+                                        try:
+                                            original_output = _prepared_retained_outcome(
+                                                member_read, member_raw_id, prepared, stop=compute_cancel_requested
+                                            )
+                                            if isinstance(original_output, Exception):
+                                                raise CohortMembershipRefusalError(
+                                                    logical_key,
+                                                    member_raw_id,
+                                                    f"selector member did not parse: {original_output}",
+                                                ) from original_output
+                                            prepared_session_for_revision_key(
+                                                original_output[0], raw_id=member_raw_id, logical_source_key=logical_key
+                                            )
+                                        except CohortMembershipRefusalError as refusal:
+                                            prepared_key_refusals[logical_key] = refusal
+                                            break
                         for logical_key, accepted_raw_ids in (
                             planned_accepted_raw_ids.items() if not needs_source_census else ()
                         ):
-                            if len(accepted_raw_ids) < 2:
+                            if logical_key in prepared_key_refusals or len(accepted_raw_ids) < 2:
                                 continue
                             ordered: list[tuple[str, PreparedJsonl]] = []
                             for raw_id in accepted_raw_ids:
@@ -1086,15 +1253,12 @@ class RawObservationDerivation:
                             if len(ordered) != len(accepted_raw_ids):
                                 continue
                             try:
-                                aggregate = _await_reporting_stalls(
-                                    compute_adapter().submit(
-                                        partial(prepare_retained_cohort_artifact, ordered, scratch),
-                                        admission_class="incremental-background",
-                                        estimated_bytes=sum(descriptors[raw_id][4] for raw_id, _artifact in ordered),
-                                    ),
-                                    subject=f"cohort {logical_key}",
-                                )
-                            except (DaemonBackpressureError, DaemonOperationCancelled) as exc:
+                                check_compute_cancelled()
+                                aggregate = prepare_retained_cohort_artifact(ordered, scratch)
+                                check_compute_cancelled()
+                            except DaemonOperationCancelled:
+                                raise
+                            except DaemonBackpressureError as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort compute unavailable while preparing {logical_key}"
                                 ) from exc
@@ -1124,11 +1288,67 @@ class RawObservationDerivation:
                                 for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items()
                                 if accepted_raw_ids
                             )
+                        if needs_source_census:
+                            from polylogue.sources.revision_backfill import (
+                                PreparedRevisionSourceCensus,
+                                RevisionCensusResult,
+                                prepare_revision_source_census,
+                            )
+
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                census_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                census_state = prepare_revision_source_census(
+                                    reference_seal,
+                                    census_read,
+                                    selected_raw_ids=raw_ids,
+                                    prepared_inputs=prepared,
+                                )
+                                census_raw_ids, census_keys = census_read.expand_raw_membership_selection(raw_ids)
+                            prepared_source_census = PreparedRevisionSourceCensus(
+                                reference_seal.prepare_source_mutation(),
+                                RevisionCensusResult(
+                                    census_state.scanned,
+                                    census_state.classified,
+                                    census_state.quarantined,
+                                    census_raw_ids,
+                                    census_keys,
+                                ),
+                            )
+                        if not needs_source_census:
+                            from polylogue.sources.revision_backfill import (
+                                PreparedRevisionSourceCensus,
+                                RevisionCensusResult,
+                                prepare_revision_source_membership_conversion,
+                            )
+
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                conversion_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                converted = prepare_revision_source_membership_conversion(
+                                    reference_seal,
+                                    conversion_read,
+                                    logical_keys=tuple(key for key in logical_keys if key not in prepared_key_refusals),
+                                    prepared_inputs=prepared,
+                                    prepared_replay_plans=planned_accepted_raw_ids,
+                                )
+                                conversion_raw_ids: tuple[str, ...] = ()
+                                conversion_keys: tuple[str, ...] = ()
+                                if converted:
+                                    conversion_raw_ids, conversion_keys = (
+                                        conversion_read.expand_raw_membership_selection(raw_ids)
+                                    )
+                            if converted:
+                                prepared_source_census = PreparedRevisionSourceCensus(
+                                    reference_seal.prepare_source_mutation(),
+                                    RevisionCensusResult(0, converted, 0, conversion_raw_ids, conversion_keys),
+                                )
+                                needs_source_census = True
                         if not needs_source_census and archive.index_connection is not None:
                             # Keyed by (raw, session): one raw may carry several sessions.
+                            from polylogue.sources.revision_backfill import prepared_session_for_revision_key
+
                             selected_writes: dict[tuple[str, str], tuple[ParsedSession, PreparedJsonl]] = {}
                             for logical_key, accepted_raw_ids in planned_accepted_raw_ids.items():
-                                if not accepted_raw_ids:
+                                if logical_key in prepared_key_refusals or not accepted_raw_ids:
                                     continue
                                 tip_raw_id = accepted_raw_ids[-1]
                                 selected_artifact = (
@@ -1138,34 +1358,195 @@ class RawObservationDerivation:
                                 )
                                 if selected_artifact is None:
                                     continue
-                                selected_session: ParsedSession | None = None
-                                for candidate_session in selected_artifact.iter_sessions():
-                                    _raise_if_compute_cancelled(f"cohort {logical_key}")
-                                    if selected_session is not None:
-                                        raise RetainedPreparationRetryableError(
-                                            f"retained replay plan has no single prepared session for {logical_key}"
-                                        )
-                                    selected_session = candidate_session
-                                if selected_session is None:
-                                    raise RetainedPreparationRetryableError(
-                                        f"retained replay plan has no single prepared session for {logical_key}"
+                                try:
+                                    selected_session = prepared_session_for_revision_key(
+                                        selected_artifact.session_sequence(),
+                                        raw_id=tip_raw_id,
+                                        logical_source_key=logical_key,
                                     )
+                                except CohortMembershipRefusalError as refusal:
+                                    prepared_key_refusals[logical_key] = refusal
+                                    continue
                                 selected_writes[(tip_raw_id, _session_id(selected_session))] = (
                                     selected_session,
                                     selected_artifact,
                                 )
-                            for logical_key in logical_keys:
-                                if planned_accepted_raw_ids.get(
-                                    logical_key
-                                ) and not membership_key_has_pending_envelope_member(
-                                    archive.source_connection, logical_key
-                                ):
+                                if is_work_event_raw_id(logical_key):
                                     continue
-                                membership_plan = prepare_membership_replay(
-                                    archive, logical_key, prepared, stop=compute_cancel_requested
+                                with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                    adoption_read = PreparedSessionSourceRead(reference_seal, blob_store=material_store)
+                                    prepared_replay_adoption[(logical_key, accepted_raw_ids)] = (
+                                        adoption_read.prepare_raw_revision_replay_adoption(
+                                            [selected_session],
+                                            logical_source_key=logical_key,
+                                            raw_ids=accepted_raw_ids,
+                                        )
+                                    )
+                            from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                                prepared_raw_revision_file_mtime,
+                            )
+
+                            with (
+                                reference_seal.original_read_snapshot(
+                                    input_demand=self._compute_adapter.amend_current_input_demand,
+                                ),
+                                reference_seal.source_producer(),
+                            ):
+                                source_read = PreparedSessionSourceRead(
+                                    reference_seal,
+                                    blob_store=blob_store_for_connection(reference_seal.observer("source")),
                                 )
+                                from polylogue.sources.revision_backfill import (
+                                    _lineage_aware_replay_schedule,
+                                    _PreparedReplayInputs,
+                                )
+
+                                prepared_logical_keys = source_read.raw_revision_rebuild_logical_keys(raw_ids)
+                                _expanded_raw_ids, expanded_membership_keys = (
+                                    source_read.expand_raw_membership_selection(raw_ids)
+                                )
+                                # Event envelopes have singleton byte authority and
+                                # append to an existing target; they never replace
+                                # transcript membership or its accepted head.
+                                prepared_membership_keys = tuple(
+                                    key for key in expanded_membership_keys if not is_work_event_raw_id(key)
+                                )
+                                prepared_replay_schedule = _lineage_aware_replay_schedule(
+                                    {
+                                        logical_key
+                                        for logical_key in prepared_logical_keys
+                                        if not is_work_event_raw_id(logical_key)
+                                    },
+                                    source_read,
+                                    _PreparedReplayInputs(prepared),
+                                )
+                                prepared_byte_logical_keys = tuple(
+                                    logical_key
+                                    for logical_key in prepared_replay_schedule.order
+                                    if not (
+                                        source_read.pending_raw_envelope_has_membership_authority(logical_key)
+                                        or source_read.raw_membership_logical_raw_ids(logical_key)
+                                    )
+                                )
+                                for (tip_raw_id, session_id), (session, artifact) in selected_writes.items():
+                                    _raise_if_compute_cancelled(f"raw {tip_raw_id}")
+                                    if artifact.shard_path is None:
+                                        raise RetainedPreparationRetryableError(
+                                            f"retained replay shard is absent for raw {tip_raw_id}"
+                                        )
+                                    event_only = is_work_event_raw_id(tip_raw_id)
+                                    prepared_writes[(tip_raw_id, session_id)] = prepare_session_write(
+                                        reference_seal.observer("index"),
+                                        session,
+                                        merge_append=event_only,
+                                        fallback_timestamp=prepared_raw_revision_file_mtime(reference_seal, tip_raw_id),
+                                        source_read=source_read,
+                                        raw_id=tip_raw_id,
+                                        force_replace=not event_only,
+                                        prepared_rows=(
+                                            None
+                                            if event_only
+                                            else prepared_session_rows_from_shard(artifact.shard_path, session_id)
+                                        ),
+                                        before_input=reference_seal.before_index_input,
+                                    )
+                                from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                                    prepare_revision_replay_outcome,
+                                )
+
+                                for logical_key in prepared_byte_logical_keys:
+                                    if logical_key in prepared_key_refusals:
+                                        continue
+                                    byte_plan = prepared_revision_plans[logical_key]
+                                    if not byte_plan.accepted_raw_ids:
+                                        continue
+                                    byte_adoption = prepared_replay_adoption[(logical_key, byte_plan.accepted_raw_ids)]
+                                    if byte_adoption.session_id is None:
+                                        raise RetainedPreparationRetryableError(
+                                            "byte replay has no prepared adoption identity"
+                                        )
+                                    byte_tip = byte_plan.accepted_raw_ids[-1]
+                                    byte_session, _byte_artifact = selected_writes[(byte_tip, byte_adoption.session_id)]
+                                    byte_write = prepared_writes[(byte_tip, byte_adoption.session_id)]
+                                    prepared_byte_outcomes[logical_key] = prepare_revision_replay_outcome(
+                                        reference_seal,
+                                        source_read,
+                                        byte_plan,
+                                        byte_adoption,
+                                        aggregate_session=byte_session,
+                                        aggregate_content_hash=byte_write.rows.session_content_hash,
+                                        prepared_write=byte_write,
+                                    )
+                            for logical_key in logical_keys:
+                                if logical_key in prepared_key_refusals or is_work_event_raw_id(logical_key):
+                                    continue
+                                with (
+                                    reference_seal.original_read_snapshot(),
+                                    reference_seal.source_producer(),
+                                ):
+                                    membership_read = PreparedSessionSourceRead(
+                                        reference_seal,
+                                        blob_store=material_store,
+                                    )
+                                    if planned_accepted_raw_ids.get(logical_key) and not (
+                                        membership_read.membership_key_has_pending_envelope_member(logical_key)
+                                        or membership_read.raw_membership_logical_raw_ids(logical_key)
+                                    ):
+                                        continue
+                                    preceding_byte = prepared_byte_outcomes.get(logical_key)
+                                    effective_head_raw_id = (
+                                        (
+                                            None
+                                            if preceding_byte.effective_head is None
+                                            else str(preceding_byte.effective_head[1])
+                                        )
+                                        if preceding_byte is not None
+                                        else membership_read.raw_revision_head_raw_id(logical_key)
+                                    )
+                                    try:
+                                        membership_plan = prepare_membership_replay(
+                                            membership_read,
+                                            logical_key,
+                                            prepared,
+                                            head_raw_id=effective_head_raw_id,
+                                            stop=compute_cancel_requested,
+                                        )
+                                    except CohortMembershipRefusalError as refusal:
+                                        prepared_key_refusals[logical_key] = refusal
+                                        continue
+                                    if preceding_byte is None:
+                                        head_plan = prepare_membership_head_plan(
+                                            reference_seal.observer("index"),
+                                            membership_read,
+                                            logical_key,
+                                            membership_plan.classification,
+                                            before_input=reference_seal.before_index_input,
+                                        )
+                                    else:
+                                        head_plan = prepare_membership_head_plan_from_inputs(
+                                            membership_read,
+                                            logical_key,
+                                            membership_plan.classification,
+                                            existing_head=membership_head_input_from_revision_head(
+                                                preceding_byte.effective_head
+                                            ),
+                                            persisted_session=preceding_byte.effective_session_revision,
+                                        )
+                                    membership_plan = replace(membership_plan, head_plan=head_plan)
+                                    accepted_members = membership_plan.classification.accepted_raw_ids
+                                    if accepted_members:
+                                        prepared_replay_adoption[(logical_key, accepted_members)] = (
+                                            membership_read.prepare_raw_revision_replay_adoption(
+                                                [membership_plan.sessions[raw_id] for raw_id in accepted_members],
+                                                logical_source_key=logical_key,
+                                                raw_ids=accepted_members,
+                                            )
+                                        )
                                 membership_plans[logical_key] = membership_plan
-                                if not membership_plan.classification.accepted_raw_ids:
+                                if (
+                                    not membership_plan.classification.accepted_raw_ids
+                                    or head_plan.yield_to_head_raw_id is not None
+                                ):
                                     continue
                                 accepted_raw_id = membership_plan.classification.accepted_raw_ids[-1]
                                 accepted_session = membership_plan.sessions[accepted_raw_id]
@@ -1175,31 +1556,64 @@ class RawObservationDerivation:
                                         accepted_session,
                                         membership_artifact,
                                     )
-                            for (tip_raw_id, session_id), (session, artifact) in selected_writes.items():
-                                _raise_if_compute_cancelled(f"raw {tip_raw_id}")
-                                if artifact.shard_path is None:
-                                    raise RetainedPreparationRetryableError(
-                                        f"retained replay shard is absent for raw {tip_raw_id}"
-                                    )
-                                prepared_writes[(tip_raw_id, session_id)] = prepare_session_write(
-                                    archive.index_connection,
-                                    session,
-                                    merge_append=False,
-                                    fallback_timestamp=archive.raw_revision_file_mtime(tip_raw_id),
-                                    source_conn=archive.source_connection,
-                                    raw_id=tip_raw_id,
-                                    force_replace=True,
-                                    prepared_rows=prepared_session_rows_from_shard(artifact.shard_path, session_id),
-                                )
-                    except (BlobVerificationCancelledError, VerificationCancelledError) as exc:
-                        _close_prepared_carriers(prepared_writes, membership_plans)
-                        _cleanup_scratch(scratch_owner)
-                        raise RetainedPreparationRetryableError(
-                            "retained preparation cancelled during verification"
-                        ) from exc
-                    except BaseException:
-                        _close_prepared_carriers(prepared_writes, membership_plans)
-                        _cleanup_scratch(scratch_owner)
+                                    with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                        membership_source = PreparedSessionSourceRead(
+                                            reference_seal, blob_store=material_store
+                                        )
+                                        if membership_artifact.shard_path is None:
+                                            raise RetainedPreparationRetryableError("membership replay shard is absent")
+                                        member_session_id = _session_id(accepted_session)
+                                        prepared_writes[(accepted_raw_id, member_session_id)] = prepare_session_write(
+                                            reference_seal.observer("index"),
+                                            accepted_session,
+                                            merge_append=False,
+                                            fallback_timestamp=prepared_raw_revision_file_mtime(
+                                                reference_seal, accepted_raw_id
+                                            ),
+                                            source_read=membership_source,
+                                            raw_id=accepted_raw_id,
+                                            force_replace=True,
+                                            prepared_rows=prepared_session_rows_from_shard(
+                                                membership_artifact.shard_path, member_session_id
+                                            ),
+                                            before_input=reference_seal.before_index_input,
+                                        )
+                            # A later membership refusal supersedes any earlier
+                            # prepared byte outcome for that same original key.
+                            # The Source acknowledgement and writer consume the
+                            # same remaining outcomes, including shared Raw IDs.
+                            for refused_key in prepared_key_refusals:
+                                prepared_byte_outcomes.pop(refused_key, None)
+                            prepared_replay_source = prepare_retained_replay_source(
+                                reference_seal,
+                                prepared_inputs=prepared,
+                                byte_outcomes=prepared_byte_outcomes,
+                                membership_plans=membership_plans,
+                                adoptions=prepared_replay_adoption,
+                                prepared_writes=prepared_writes,
+                            )
+                            membership_plans = dict(prepared_replay_source.membership_plans)
+                    except BaseException as primary:
+                        failure = (
+                            DaemonOperationCancelled("retained preparation cancelled during verification")
+                            if isinstance(primary, (BlobVerificationCancelledError, VerificationCancelledError))
+                            else primary
+                        )
+
+                        def close_failed_payload() -> None:
+                            _close_prepared_carriers(
+                                prepared_writes,
+                                membership_plans,
+                                chain(prepared_artifacts.values(), (item.artifact for item in aggregates.values())),
+                            )
+                            _cleanup_scratch(scratch_owner)
+
+                        # The original seal releases settled SQL dependencies
+                        # before invoking this payload, and retains it on any
+                        # physical close failure for the original owner's retry.
+                        reference_seal.retain_preparation_payload(close_failed_payload)
+                        if failure is not primary:
+                            raise failure from primary
                         raise
                     return RawObservationReplacement(
                         key,
@@ -1209,11 +1623,21 @@ class RawObservationDerivation:
                         prepared_inputs=prepared,
                         prepared_aggregates=aggregates,
                         prepared_writes=prepared_writes,
-                        classification_proofs=classification_proofs,
+                        prepared_replay_adoption=prepared_replay_adoption,
+                        prepared_source_classification=prepared_source_classification,
                         verified_blob_stats=verified_blob_stats,
                         planned_accepted_raw_ids=planned_accepted_raw_ids,
+                        prepared_revision_plans=prepared_revision_plans,
+                        prepared_byte_outcomes=prepared_byte_outcomes,
                         prepared_membership_plans=membership_plans,
+                        prepared_replay_source=prepared_replay_source,
                         needs_source_census=needs_source_census,
+                        prepared_source_census=prepared_source_census,
+                        prepared_replay_schedule=prepared_replay_schedule,
+                        prepared_logical_keys=prepared_logical_keys,
+                        prepared_membership_keys=prepared_membership_keys,
+                        prepared_byte_logical_keys=prepared_byte_logical_keys,
+                        prepared_key_refusals=tuple(prepared_key_refusals.values()),
                         scratch_directory=scratch,
                         scratch_owner=scratch_owner,
                     )
@@ -1259,8 +1683,14 @@ class RawObservationDerivation:
                     # Present but unreadable: preparation reports it as a
                     # retryable disappearance, not as lost bytes.
                     continue
-                prepared, reason = self._stage_blob_from_recorded_source(
-                    archive, blob_store, raw_id, blob_hash=blob_hash, source_path=path
+                prepared, reason = stage_blob_from_recorded_source(
+                    archive.source_connection,
+                    self.archive_root,
+                    blob_store,
+                    raw_id,
+                    blob_hash=blob_hash,
+                    source_path=path,
+                    stop=compute_cancel_requested,
                 )
                 if prepared is None:
                     raise RetainedPreparationRetryableError(
@@ -1270,77 +1700,11 @@ class RawObservationDerivation:
                 staged_hashes.add(blob_hash)
         except BlobVerificationCancelledError as exc:
             _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
-            raise RetainedPreparationRetryableError("retained blob restoration cancelled") from exc
+            raise DaemonOperationCancelled("retained blob restoration cancelled") from exc
         except BaseException:
             _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
             raise
         return StagedBlobRestorations(blob_store, staged) if staged else None
-
-    def _stage_blob_from_recorded_source(
-        self,
-        archive: ArchiveStore,
-        blob_store: BlobStore,
-        raw_id: str,
-        *,
-        blob_hash: str,
-        source_path: str,
-    ) -> tuple[PreparedBlob | None, str | None]:
-        """Stage one absent blob from the first recorded source window holding its exact bytes.
-
-        The candidate windows come from ``retained_blob_source_candidates``,
-        the owner backup recoverability reads too. A ZIP member is replayed
-        through acquisition's ZIP admission (``zip_reacquired_unit``)
-        and staged only when the replayed value is byte-identical to the
-        blob; a structural-only match is ``inexact_payload``. Returns the
-        staged blob, or ``None`` with the last candidate's refusal reason.
-        """
-        conn = archive.source_connection
-        row = read_raw_source_evidence(conn, raw_id)
-        if row is None:
-            raise KeyError(raw_id)
-        prior_full_observations = read_prior_full_source_receipts(conn, row)
-        source_path, container_member = retained_source_location(row, self.archive_root)
-        candidates = retained_blob_source_candidates(
-            row,
-            container_member=container_member,
-            prior_full_observations=prior_full_observations,
-        )
-        if not candidates:
-            return None, "no_source_window"
-        reason: str | None = None
-        for candidate in candidates:
-            if candidate.window is not None:
-                prepared, reason = stage_exact_source_window_blob(
-                    blob_store,
-                    source_path=Path(source_path),
-                    window=candidate.window,
-                    blob_hash=blob_hash,
-                    stop=compute_cancel_requested,
-                )
-            else:
-                from polylogue.storage.source_zip_replay import zip_reacquired_unit
-
-                # The resolved unit streams from its member again: a preserved
-                # member can be gigabytes, so its bytes are never held whole.
-                unit, reason = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
-                prepared = None
-                if unit is not None and unit.open_payload is not None:
-                    try:
-                        with unit.open_payload() as unit_stream:
-                            prepared = stage_exact_blob(
-                                blob_store,
-                                unit_stream,
-                                blob_hash=blob_hash,
-                                size_bytes=unit.size_bytes,
-                                stop=compute_cancel_requested,
-                            )
-                    except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
-                        reason = f"error:{type(exc).__name__}"
-                    else:
-                        reason = None if prepared is not None else "inexact_payload"
-            if prepared is not None:
-                return prepared, None
-        return None, reason
 
     def _publish_blob_restorations(self, restorations: StagedBlobRestorations) -> None:
         """Reserve and publish staged restorations, then consume their receipts."""
@@ -1357,10 +1721,21 @@ class RawObservationDerivation:
             source_db, tuple((receipt, raw_by_hash[receipt.blob_hash]) for receipt in receipts)
         )
 
-    def publish(self, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
+    def publish(
+        self,
+        frame: RawFrame,
+        replacement: RawObservationReplacement,
+        *,
+        phase_receipt: Callable[
+            [Literal["census", "classification", "replay"], RevisionCensusResult | PreparedRevisionReplayResult], None
+        ]
+        | None = None,
+        publication_failure: Callable[[BaseException], None] | None = None,
+    ) -> bool:
         from polylogue.sources.revision_backfill import (
             RetainedPreparationRetryableError,
             apply_prepared_revision_census,
+            apply_prepared_revision_classification,
             apply_prepared_revision_replay,
         )
         from polylogue.storage.index_generation import ActiveWriterLease
@@ -1382,11 +1757,18 @@ class RawObservationDerivation:
                     raise RetainedPreparationRetryableError("retained publication lacks its original reference seal")
                 replacement.reference_seal.retain_publication_lifetime(lease, replacement._close_prepared_payload)
                 lifetime_bound = True
-                if not self._current(frame) or self._binding(replacement.raw_ids) != replacement.input_binding:
+                if not self._current(frame):
                     return False
-                refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
+                # This gate also covers early Blob restoration, whose branch
+                # does not reach a Source or Index permit. It must precede any
+                # exposure, and checks the same original observers after actual
+                # writer admission instead of copying a second value digest.
+                replacement.reference_seal.validate_observers_current()
+                frontier_refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
                 selected_paths = set(self.source_paths(replacement.raw_ids).values())
-                if refusal.unattributed_reason is not None or selected_paths.intersection(refusal.source_paths):
+                if frontier_refusal.unattributed_reason is not None or selected_paths.intersection(
+                    frontier_refusal.source_paths
+                ):
                     return False
                 if replacement.blob_restorations is not None:
                     self._publish_blob_restorations(replacement.blob_restorations)
@@ -1394,7 +1776,7 @@ class RawObservationDerivation:
                     # finds them present; this publication certifies no output.
                     return False
                 with self._preparation_archive() as archive:
-                    raw_ids, _keys = archive.expand_raw_membership_selection([replacement.key])
+                    raw_ids, _keys = archive.expand_raw_membership_selection(list(replacement.raw_ids))
                     if raw_ids != replacement.raw_ids:
                         return False
                     for raw_id in raw_ids:
@@ -1410,14 +1792,6 @@ class RawObservationDerivation:
                                 return False
                         elif not replacement.needs_source_classification:
                             return False
-                    if (
-                        replacement.planned_accepted_raw_ids is not None
-                        and self._source_replay_plans(archive, _keys) != replacement.planned_accepted_raw_ids
-                    ):
-                        return False
-                for prepared_input in (replacement.prepared_inputs or {}).values():
-                    if prepared_input.prepared_artifact is not None:
-                        prepared_input.prepared_artifact.publish_blobs(reference_seal=replacement.reference_seal)
                 for prepared in (replacement.prepared_inputs or {}).values():
                     if prepared.prepared_artifact is not None:
                         try:
@@ -1430,49 +1804,73 @@ class RawObservationDerivation:
                     except (OSError, ValueError):
                         return False
                 if replacement.needs_source_census:
-                    if replacement.prepared_inputs is None:
-                        return False
-                    apply_prepared_revision_census(
-                        self.archive_root,
-                        active_index_path=Path(frame.source_revision),
-                        selected_raw_ids=list(replacement.raw_ids),
-                        prepared_inputs=replacement.prepared_inputs,
+                    if replacement.prepared_source_census is None:
+                        raise RetainedPreparationRetryableError(
+                            "retained census lacks its original prepared Source tape"
+                        )
+                    receipt = apply_prepared_revision_census(
+                        replacement.reference_seal,
+                        replacement.prepared_source_census,
                     )
-                    refusal = self.terminal_decode_refusals((replacement.key,)).get(replacement.key)
+                    if phase_receipt is not None:
+                        phase_receipt("census", receipt)
+                    refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                     if refusal is not None:
                         raise refusal
                     return False
                 if replacement.needs_source_classification:
-                    if replacement.classification_proofs is None:
-                        return False
-                    try:
-                        apply_prepared_revision_census(
-                            self.archive_root,
-                            active_index_path=Path(frame.source_revision),
-                            selected_raw_ids=list(replacement.raw_ids),
-                            classification_proofs=replacement.classification_proofs,
+                    if replacement.prepared_source_classification is None:
+                        raise RetainedPreparationRetryableError(
+                            "retained classification lacks its original Source tape"
                         )
-                    except (PreparedRawClassificationStaleError, RetainedPreparationRetryableError):
+                    try:
+                        receipt = apply_prepared_revision_classification(
+                            replacement.reference_seal,
+                            replacement.prepared_source_classification,
+                            payload_store=BlobStore(self.archive_root / "blob"),
+                        )
+                    except (PreparedRawClassificationStaleError, RetainedPreparationRetryableError) as failure:
+                        if publication_failure is not None:
+                            publication_failure(failure)
                         return False
+                    if phase_receipt is not None:
+                        phase_receipt("classification", receipt)
+                    refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
+                    if refusal is not None:
+                        raise refusal
                     return False
                 if (
                     replacement.prepared_inputs is None
                     or replacement.prepared_aggregates is None
                     or replacement.prepared_writes is None
                     or replacement.planned_accepted_raw_ids is None
+                    or replacement.prepared_revision_plans is None
+                    or replacement.prepared_byte_outcomes is None
                     or replacement.prepared_membership_plans is None
+                    or replacement.prepared_replay_source is None
+                    or replacement.prepared_replay_adoption is None
+                    or replacement.prepared_replay_schedule is None
                 ):
                     return False
                 try:
-                    apply_prepared_revision_replay(
+                    replay_receipt = apply_prepared_revision_replay(
                         self.archive_root,
+                        reference_seal=replacement.reference_seal,
                         active_index_path=Path(frame.source_revision),
                         selected_raw_ids=list(replacement.raw_ids),
                         prepared_inputs=replacement.prepared_inputs,
                         prepared_aggregates=replacement.prepared_aggregates,
                         prepared_writes=replacement.prepared_writes,
-                        prepared_replay_plans=replacement.planned_accepted_raw_ids,
+                        prepared_replay_adoption=replacement.prepared_replay_adoption,
+                        prepared_replay_plans=replacement.prepared_revision_plans,
+                        prepared_byte_outcomes=replacement.prepared_byte_outcomes,
                         prepared_membership_plans=replacement.prepared_membership_plans,
+                        prepared_replay_source=replacement.prepared_replay_source,
+                        prepared_replay_schedule=replacement.prepared_replay_schedule,
+                        prepared_logical_keys=replacement.prepared_logical_keys,
+                        prepared_membership_keys=replacement.prepared_membership_keys,
+                        prepared_byte_logical_keys=replacement.prepared_byte_logical_keys,
+                        prepared_key_refusals=replacement.prepared_key_refusals,
                         bulk_fts=True,
                         # One publication is one component of a pass: each
                         # replayed session proves its own FTS rows, and the
@@ -1480,9 +1878,13 @@ class RawObservationDerivation:
                         # fts_readiness_binding stage after the burst.
                         exact_fts_audit=False,
                     )
-                except RetainedPreparationRetryableError:
+                except RetainedPreparationRetryableError as failure:
+                    if publication_failure is not None:
+                        publication_failure(failure)
                     return False
-                refusal = self.terminal_decode_refusals((replacement.key,)).get(replacement.key)
+                if phase_receipt is not None:
+                    phase_receipt("replay", replay_receipt)
+                refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                 if refusal is not None:
                     raise refusal
                 return True
@@ -1514,12 +1916,23 @@ class RawObservationDerivation:
 def _close_prepared_carriers(
     writes: Mapping[tuple[str, str], PreparedSessionWrite],
     plans: Mapping[str, PreparedMembershipReplay],
+    artifacts: Iterable[PreparedJsonl] = (),
 ) -> None:
     """Attempt each owner close before deleting their containing scratch tree."""
     failures: list[BaseException] = []
-    for carrier in chain(writes.values(), plans.values()):
+    carriers: Iterator[SQLCustodyOwner] = chain(writes.values(), plans.values())
+    for carrier in carriers:
         try:
             carrier.close()
+        except BaseException as exc:
+            failures.append(exc)
+    seen: set[int] = set()
+    for artifact in artifacts:
+        if id(artifact) in seen:
+            continue
+        seen.add(id(artifact))
+        try:
+            artifact.discard()
         except BaseException as exc:
             failures.append(exc)
     if failures:
@@ -1554,11 +1967,9 @@ _STILL_RUNNING = object()
 
 
 def _raise_if_compute_cancelled(subject: str) -> None:
-    """A checkpoint between retained-preparation phases (hashing, reconciliation)."""
+    """Stop an owned retained-preparation phase without surrendering cleanup."""
     if compute_cancel_requested():
-        from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
-
-        raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+        raise DaemonOperationCancelled(f"retained preparation cancelled for {subject}")
 
 
 #: How often a wait checks its caller's cancellation.
@@ -1616,3 +2027,27 @@ def _await_reporting_stalls(operation: SubmittedOperation[T], *, subject: str) -
                 subject_kind=subject.split(" ", 1)[0],
                 wait_ms=round(waited * 1000),
             )
+
+
+if TYPE_CHECKING:
+    from polylogue.core.sql_settlement import SQLCustodyOwner
+    from polylogue.sources.parsers.base import ParsedSession
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.sources.revision_backfill import (
+        PreparedMembershipReplay,
+        PreparedRetainedAggregate,
+        PreparedRetainedInput,
+        PreparedRetainedReplaySource,
+        PreparedRevisionSourceCensus,
+        PreparedRevisionSourceClassification,
+        ReplaySchedule,
+        RetainedArtifactPreparer,
+    )
+    from polylogue.storage.index_generation import IndexGeneration
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        PreparedRevisionAdoption,
+        PreparedRevisionReplayOutcome,
+    )
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, PreparedSessionWrite
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation

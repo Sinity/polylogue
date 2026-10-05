@@ -25,13 +25,17 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute import BoundedComputeAdapter, DaemonOperationCancelled
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import span
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers.write import IDENTITY_INVALIDATION_DEBT_STAGE
+
+if TYPE_CHECKING:
+    from polylogue.storage.derived.raw import RawObservationReplacement
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 #: The stage name the writer records its lineage-prefix losses under. Imported,
@@ -159,7 +163,9 @@ def _retained_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, .
     return (str(row[0]),)
 
 
-def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: str) -> str | None:
+def recompose_session_prefix(
+    archive_root: Path, index_path: Path, session_id: str, *, compute_adapter: BoundedComputeAdapter
+) -> str | None:
     """Re-derive one child's prefix. Return ``None`` on success, else the reason.
 
     Success is decided by re-reading :func:`unrecomposed_prefix_reason` after
@@ -181,13 +187,15 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     if not raw_ids:
         return "no retained raw revision is bound to this session, so its prefix cannot be re-derived"
     try:
-        adapter = make_raw_observation_derivation(archive_root, index_db_path=index_path)
+        adapter = make_raw_observation_derivation(
+            archive_root, compute_adapter=compute_adapter, index_db_path=index_path
+        )
         frame = raw_observation_frame(archive_root, raw_ids=raw_ids, index_db_path=index_path)
         for raw_id in raw_ids:
             replacement = adapter.compute(frame, raw_id, replay_current=True)
             publication_started = False
 
-            def publish(replacement=replacement) -> bool:
+            def publish(replacement: RawObservationReplacement = replacement) -> bool:
                 nonlocal publication_started
                 publication_started = True
                 return adapter.publish(frame, replacement)
@@ -213,7 +221,7 @@ def recompose_session_prefix(archive_root: Path, index_path: Path, session_id: s
     return f"retained raw evidence was replayed and the prefix is still missing ({reason})"
 
 
-def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
+def make_lineage_prefix_recompose_stage(db_path: Path, *, compute_adapter: BoundedComputeAdapter) -> ConvergenceStage:
     """Build the stage that drains recorded lineage-prefix losses."""
     archive_root = db_path.parent
 
@@ -240,7 +248,7 @@ def make_lineage_prefix_recompose_stage(db_path: Path) -> ConvergenceStage:
             refused: dict[str, str] = {}
             recomposed = 0
             for session_id in ordered:
-                reason = recompose_session_prefix(archive_root, index_path, session_id)
+                reason = recompose_session_prefix(archive_root, index_path, session_id, compute_adapter=compute_adapter)
                 if reason is None:
                     recomposed += 1
                 else:

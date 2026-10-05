@@ -600,7 +600,10 @@ def capture_bound_path(
                 validator.feed(data)
                 return destination.write(data)
 
-        settlement.update(write_bound_input(source_binding, ValidatingSink()))
+        from polylogue.sources.sqlite_export import source_byte_page
+
+        with source_byte_page() as reader:
+            settlement.update(write_bound_input(source_binding, ValidatingSink(), reader=reader))
         validator.finish()
 
     try:
@@ -672,7 +675,10 @@ def open_bound_container(
                     heartbeat()
                 return destination.write(data)
 
-        settlement.update(write_bound_input(source_binding, ProgressSink()))
+        from polylogue.sources.sqlite_export import source_byte_page
+
+        with source_byte_page() as reader:
+            settlement.update(write_bound_input(source_binding, ProgressSink(), reader=reader))
 
     prepared = blob_store.prepare_from_writer(retain, heartbeat=heartbeat)
     capture = None

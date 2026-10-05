@@ -10,6 +10,27 @@ import pytest
 from devtools import durable_write_census, verify_layering
 
 
+@pytest.mark.parametrize("literal_first", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+def test_caller_sql_cannot_inherit_another_functions_temporary_ddl(
+    tmp_path: Path, literal_first: bool, native: bool
+) -> None:
+    """An unrelated scratch statement must not hide arbitrary caller SQL."""
+    imports = "from polylogue.storage.io_phase_metrics import connection_cursor\n" if native else ""
+    call = "connection_cursor(conn, sql)" if native else "conn.execute(sql)"
+    caller = f"def execute_original(conn, sql: str):\n    {call}\n"
+    scratch = (
+        'def create_scratch(conn):\n    sql = "CREATE TEMP TABLE private_parts(value TEXT)"\n    conn.execute(sql)\n'
+    )
+    source = imports + (scratch + caller if literal_first else caller + scratch)
+    path = tmp_path / "polylogue" / "storage" / "writer.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    observation = durable_write_census.census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert [(item.function, item.parameter) for item in observation.helpers] == [("execute_original", "sql")]
+    assert observation.sites == ()
+
+
 @pytest.mark.parametrize(
     ("imports", "call"),
     [
@@ -47,8 +68,12 @@ def test_both_censuses_observe_original_cursor_sql_operand(tmp_path: Path, impor
         "seal._owned_cursor(connection=conn, sql=SQL)",
         "seal._source_statement_attempt(SQL, ())",
         "seal.source_statement(sql=SQL, parameters=(), table='assertions', writable_targets=())",
+        "seal.user_statement(sql=SQL, parameters=(), table='assertions', writable_targets=())",
+        "seal._selected_statement(SQL, (), table='assertions', writable_targets=())",
         "seal.original_rows('user', SQL)",
         "seal.source_rows(sql=SQL)",
+        "seal.user_rows(sql=SQL)",
+        "seal._selected_rows(SQL)",
         "seal.before_index_input('assertions', (), rowid_sql=SQL, parameters=())",
     ],
 )
@@ -268,3 +293,23 @@ def test_entrypoint_empty_precomputed_observations_do_not_discover_again(monkeyp
         verify_layering._entrypoint_tiers(tree, "mutate", {}, functions={}, imported_modules={}, direct_tiers={})
         == frozenset()
     )
+
+
+@pytest.mark.parametrize("mutation_first", [False, True])
+@pytest.mark.parametrize("native", [False, True])
+def test_local_sql_operand_cannot_borrow_another_functions_mutation(
+    tmp_path: Path, mutation_first: bool, native: bool
+) -> None:
+    """An unresolved local reader is not another function's durable UPDATE."""
+    imports = "from polylogue.storage.io_phase_metrics import connection_cursor\n" if native else ""
+    call = "connection_cursor(conn, sql)" if native else "conn.execute(sql)"
+    mutation_sql = "UPDATE assertions SET status='deleted'"
+    mutation = f"def mutate(conn):\n    sql = {mutation_sql!r}\n    {call}\n"
+    reader = f"def inspect(conn, query: bytes):\n    sql = query.decode()\n    {call}\n"
+    source = imports + (mutation + reader if mutation_first else reader + mutation)
+    path = tmp_path / "polylogue" / "storage" / "writer.py"
+    path.parent.mkdir(parents=True)
+    path.write_text(source)
+    observation = durable_write_census.census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert [(item.function, item.table) for item in observation.sites] == [("mutate", "assertions")]
+    assert observation.helpers == ()

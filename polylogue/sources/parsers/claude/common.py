@@ -737,6 +737,8 @@ def _owner_stable_key(
         value = _first_identity_field(item, field)
         if value is not None:
             evidence[field] = value
+    if (summary := _compaction_summary_material(item)) is not None:
+        evidence["compaction_summary"] = summary[0]
     block_ids = sorted(block.tool_id for block in blocks if block.tool_id)
     if block_ids:
         evidence["tool_ids"] = block_ids
@@ -867,23 +869,10 @@ def _occurrence_base(evidence_key: str) -> str:
     return evidence_key.split(":occurrence:", 1)[0]
 
 
-def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
-    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
-
-    When claude.ai compacts a conversation it stores the summary it carries
-    forward on the message where compaction took effect (``compaction_summary``:
-    text blocks with start/stop timestamps). The text is kept, keyed to that
-    message. It is deliberately not a ``compaction`` event: those carry
-    boundaries and a materialized summary message that effective-context reads
-    apply, and placing a summary message into claude.ai's branched message tree
-    (variant and attachment-owner coordinates) is not done here.
-
-    One event per emitted message, in the normalizer's canonical message
-    order: a repeated native id is one message per occurrence and keeps its
-    own summary, and an export listing the same messages in another array
-    order yields the same events in the same order.
-    """
-    summary_blocks = evidence.raw.get("compaction_summary")
+def _compaction_summary_material(
+    item: Mapping[str, object],
+) -> tuple[dict[str, object], str | None, str | None] | None:
+    summary_blocks = item.get("compaction_summary")
     if not isinstance(summary_blocks, list):
         return None
     texts: list[str] = []
@@ -908,6 +897,29 @@ def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSession
         payload["start_timestamp"] = start_timestamp
     if stop_timestamp is not None:
         payload["stop_timestamp"] = stop_timestamp
+    return payload, start_timestamp, stop_timestamp
+
+
+def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
+    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
+
+    When claude.ai compacts a conversation it stores the summary it carries
+    forward on the message where compaction took effect (``compaction_summary``:
+    text blocks with start/stop timestamps). The text is kept, keyed to that
+    message. It is deliberately not a ``compaction`` event: those carry
+    boundaries and a materialized summary message that effective-context reads
+    apply, and placing a summary message into claude.ai's branched message tree
+    (variant and attachment-owner coordinates) is not done here.
+
+    One event per emitted message, in the normalizer's canonical message
+    order: a repeated native id is one message per occurrence and keeps its
+    own summary, and an export listing the same messages in another array
+    order yields the same events in the same order.
+    """
+    material = _compaction_summary_material(evidence.raw)
+    if material is None:
+        return None
+    payload, start_timestamp, stop_timestamp = material
     return ParsedSessionEvent(
         event_type="claude_ai_compaction_summary",
         timestamp=stop_timestamp or start_timestamp or evidence.timestamp or evidence.updated_at,

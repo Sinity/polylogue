@@ -629,6 +629,27 @@ def _cost_components(usage: CostUsagePayload, pricing: ModelPricing) -> tuple[Co
     )
 
 
+def catalog_cost_for_tokens(
+    model: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int,
+    cache_write: int,
+) -> tuple[float | None, tuple[str, ...]]:
+    """Price measured disjoint lanes without rounding or guessing omitted rates."""
+    pricing = PRICING.get(_normalize_model(model)) if model else None
+    if model is None:
+        return None, ("missing_model",)
+    if pricing is None:
+        return None, ("missing_model_price",)
+    if pricing.input_usd_per_1m > 0 or pricing.output_usd_per_1m > 0:
+        if cache_read and pricing.cache_read_usd_per_1m == 0:
+            return None, ("missing_cache_read_price",)
+        if cache_write and pricing.cache_write_usd_per_1m == 0:
+            return None, ("missing_cache_write_price",)
+    return estimate_cost(input_tokens, output_tokens, model, cache_read, cache_write), ()
+
+
 def estimate_cost(
     input_tokens: int,
     output_tokens: int,
@@ -1039,6 +1060,7 @@ __all__ = [
     "model_cohort_key",
     "estimate_session_cost",
     "estimate_cost",
+    "catalog_cost_for_tokens",
     "estimate_message_cost",
     "generated_at",
     "harmonize_session_cost",

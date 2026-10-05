@@ -177,6 +177,7 @@ class _MeasuredCursor(sqlite3.Cursor):
 
 
 class _MeasuredConnection(sqlite3.Connection):
+    _native_creator: tuple[int, threading.Thread] | None = None
     _metric_tier: Tier | None = None
     _metric_context_exit = False
     _metric_statement_phase: Phase | None = None
@@ -376,7 +377,11 @@ def live_connection_cursors(connection: sqlite3.Connection) -> tuple[sqlite3.Cur
 
 
 def close_connection_cursor(connection: sqlite3.Connection, cursor: sqlite3.Cursor) -> None:
-    cast(_MeasuredConnection, connection).close_cursor(cursor)
+    if isinstance(connection, _MeasuredConnection):
+        connection.close_cursor(cursor)
+    else:
+        # Plain SQLite callers own their explicit connection context.
+        cursor.close()
 
 
 @contextmanager
@@ -394,15 +399,20 @@ def connection_cursor(
         raise
     finally:
         try:
-            if isinstance(connection, _MeasuredConnection):
-                close_connection_cursor(connection, cursor)
-            else:
-                # Plain SQLite callers own their explicit connection context.
-                cursor.close()
+            close_connection_cursor(connection, cursor)
         except BaseException as cleanup:
             if primary is not None:
                 raise BaseExceptionGroup("Statement and native cursor close failed", [primary, cleanup]) from primary
             raise
+
+
+def native_connection_created_on_current_thread(connection: sqlite3.Connection) -> bool:
+    """Prove the original measured factory's creator without adopting a handle."""
+    return (
+        isinstance(connection, _MeasuredConnection)
+        and getattr(connection, "_native_creator", None) == (os.getpid(), threading.current_thread())
+        and not connection._native_closed
+    )
 
 
 def connect_measured(database: str | Path, /, *args: Any, **kwargs: Any) -> sqlite3.Connection:
@@ -417,6 +427,7 @@ def connect_measured(database: str | Path, /, *args: Any, **kwargs: Any) -> sqli
     try:
         conn = sqlite3.connect(str(database), *args, factory=_MeasuredConnection, **kwargs)
         conn._metric_tier = tier
+        conn._native_creator = (os.getpid(), threading.current_thread())
         succeeded = True
         return conn
     finally:
@@ -436,6 +447,7 @@ __all__ = [
     "connect_measured",
     "live_connection_cursors",
     "native_connection_physically_closed",
+    "native_connection_created_on_current_thread",
     "settle_connection_cursors",
     "io_phase_process_snapshot",
     "io_phase_snapshot",

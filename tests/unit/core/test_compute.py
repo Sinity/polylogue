@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextvars
+import sqlite3
 import threading
+from builtins import BaseExceptionGroup
 from collections.abc import Callable
 
 import pytest
@@ -20,6 +22,193 @@ from polylogue.core.compute import (
 from polylogue.core.compute_cancel import check_compute_cancelled
 
 pytestmark = pytest.mark.uses_real_clock("compute worker synchronization uses OS waits")
+
+
+@pytest.mark.parametrize("wrong_context", ["outside", "adapter", "bridge_thread"])
+def test_preparation_creator_guard_refuses_an_unadmitted_or_transferred_reservation(wrong_context: str) -> None:
+    from polylogue.core.compute import capture_compute_bridge
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    other = BoundedComputeAdapter(max_workers=1, queue_units=0)
+
+    def parent() -> None:
+        adapter.require_current_creator()
+        if wrong_context == "adapter":
+            with pytest.raises(RuntimeError, match="admitted compute creator"):
+                other.require_current_creator()
+        else:
+            borrow = capture_compute_bridge()
+            failures: list[BaseException] = []
+
+            def joined_bridge() -> None:
+                with borrow():
+                    try:
+                        adapter.require_current_creator()
+                    except BaseException as failure:
+                        failures.append(failure)
+
+            bridge = threading.Thread(target=joined_bridge)
+            bridge.start()
+            bridge.join()
+            assert len(failures) == 1
+            assert isinstance(failures[0], RuntimeError)
+        adapter.require_current_creator()
+
+    try:
+        if wrong_context == "outside":
+            with pytest.raises(RuntimeError, match="admitted compute creator"):
+                adapter.require_current_creator()
+        else:
+            adapter.submit(parent).future.result(timeout=5)
+        assert adapter.snapshot().used_units == other.snapshot().used_units == 0
+    finally:
+        adapter.shutdown(wait=True)
+        other.shutdown(wait=True)
+
+
+def test_preparation_creator_guard_observes_actual_parent_cancellation() -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    cleaned: list[int] = []
+
+    def parent() -> None:
+        adapter.require_current_creator()
+        cancellation = current_cancellation()
+        assert cancellation is not None
+        cancellation.cancel()
+        try:
+            adapter.require_current_creator()
+        finally:
+            assert adapter.snapshot().active_units == 1
+            cleaned.append(threading.get_ident())
+
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            adapter.submit(parent).future.result(timeout=5)
+        assert len(cleaned) == 1 and cleaned[0] != threading.get_ident()
+        assert adapter.snapshot().active_units == 0
+    finally:
+        adapter.shutdown(wait=True)
+
+
+@pytest.mark.parametrize("capacity_bytes", [0, 100])
+@pytest.mark.parametrize("initial_input_bytes", [0, 7])
+def test_exclusive_byte_preparation_records_actual_growth_and_retries_after_release(
+    capacity_bytes: int,
+    initial_input_bytes: int,
+) -> None:
+    adapter = BoundedComputeAdapter(max_workers=2, queue_units=2, queue_bytes=capacity_bytes)
+    hydrated = threading.Event()
+    release = threading.Event()
+
+    def first_preparation() -> int:
+        adapter.require_current_creator()
+        before_discovery = adapter.snapshot()
+        assert before_discovery.used_bytes == capacity_bytes
+        assert before_discovery.exclusive_byte_units == 1
+        assert before_discovery.active_input_bytes == initial_input_bytes
+        adapter.amend_current_input_demand(200)
+        hydrated.set()
+        assert release.wait(5)
+        return adapter.snapshot().active_input_bytes
+
+    first = adapter.submit(first_preparation, estimated_bytes=initial_input_bytes, exclusive_bytes=True)
+    try:
+        assert hydrated.wait(5)
+        snapshot = adapter.snapshot()
+        assert snapshot.used_bytes == capacity_bytes
+        assert snapshot.active_input_bytes == initial_input_bytes + 200
+        assert snapshot.exclusive_byte_units == 1
+        with pytest.raises(DaemonBackpressureError):
+            adapter.submit(lambda: "second", estimated_bytes=11, exclusive_bytes=True)
+        with pytest.raises(DaemonBackpressureError):
+            adapter.submit(lambda: "ordinary", estimated_bytes=1)
+        release.set()
+        assert first.future.result(timeout=5) == initial_input_bytes + 200
+        second = adapter.submit(
+            lambda: ("second", adapter.snapshot().active_input_bytes), estimated_bytes=11, exclusive_bytes=True
+        )
+        assert second.future.result(timeout=5) == ("second", 11)
+        snapshot = adapter.snapshot()
+        assert snapshot.used_units == snapshot.used_bytes == snapshot.active_input_bytes == 0
+        assert snapshot.queued_input_bytes == snapshot.exclusive_byte_units == 0
+    finally:
+        release.set()
+        adapter.shutdown(wait=True)
+
+
+def test_cancelled_queued_exclusive_preparation_releases_its_entire_reservation_once() -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=100)
+    started = threading.Event()
+    release = threading.Event()
+    invoked = threading.Event()
+
+    def blocker() -> None:
+        started.set()
+        assert release.wait(5)
+
+    first = adapter.submit(blocker, estimated_bytes=0)
+    try:
+        assert started.wait(5)
+        queued = adapter.submit(invoked.set, estimated_bytes=7, exclusive_bytes=True)
+        before = adapter.snapshot()
+        assert before.used_units == 2
+        assert before.used_bytes == 100
+        assert before.exclusive_byte_units == 1
+        assert before.queued_input_bytes == 7
+        assert before.active_input_bytes == 0
+        queued.cancellation.cancel()
+        with pytest.raises(DaemonOperationCancelled):
+            queued.future.result(timeout=5)
+        assert not invoked.is_set()
+        after = adapter.snapshot()
+        assert after.used_units == 1
+        assert after.used_bytes == after.exclusive_byte_units == 0
+        assert after.queued_input_bytes == after.active_input_bytes == 0
+        queued.cancellation.cancel()
+        assert adapter.snapshot() == after
+        release.set()
+        first.future.result(timeout=5)
+        later = adapter.submit(lambda: adapter.snapshot().active_input_bytes, estimated_bytes=11, exclusive_bytes=True)
+        assert later.future.result(timeout=5) == 11
+        final = adapter.snapshot()
+        assert final.used_units == final.used_bytes == final.exclusive_byte_units == 0
+        assert final.queued_input_bytes == final.active_input_bytes == 0
+    finally:
+        release.set()
+        adapter.shutdown(wait=True)
+
+
+def test_ordinary_byte_admission_cannot_amend_its_held_demand() -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=100)
+
+    def ordinary() -> None:
+        with pytest.raises(RuntimeError):
+            adapter.amend_current_input_demand(200)
+        assert adapter.snapshot().active_input_bytes == 7
+        assert adapter.snapshot().used_bytes == 7
+
+    try:
+        adapter.submit(ordinary, estimated_bytes=7).future.result(timeout=5)
+        assert adapter.snapshot().active_input_bytes == 0
+    finally:
+        adapter.shutdown(wait=True)
+
+
+def test_exclusive_nested_preparation_requires_its_parent_exclusive_reservation() -> None:
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=100)
+    invoked = threading.Event()
+
+    def ordinary() -> None:
+        with pytest.raises(RuntimeError):
+            adapter.submit(invoked.set, exclusive_bytes=True)
+        assert not invoked.is_set()
+        assert adapter.snapshot().active_input_bytes == 7
+
+    try:
+        adapter.submit(ordinary, estimated_bytes=7).future.result(timeout=5)
+        assert adapter.snapshot().used_units == 0
+    finally:
+        adapter.shutdown(wait=True)
 
 
 def test_nested_compute_uses_one_worker_and_the_parent_reservation() -> None:
@@ -140,6 +329,7 @@ def test_ordered_map_waits_for_its_own_byte_reservation_without_dropping_input(
         units: int = 1,
         estimated_bytes: int = 0,
         cancellation: CancellationHandle | None = None,
+        exclusive_bytes: bool = False,
     ) -> SubmittedOperation[int]:
         nonlocal refusal_count
         try:
@@ -149,6 +339,7 @@ def test_ordered_map_waits_for_its_own_byte_reservation_without_dropping_input(
                 units=units,
                 estimated_bytes=estimated_bytes,
                 cancellation=cancellation,
+                exclusive_bytes=exclusive_bytes,
             )
         except DaemonBackpressureError:
             refusal_count += 1
@@ -255,8 +446,12 @@ def test_joined_async_bridge_reuses_one_worker_reservation_and_context() -> None
         adapter.shutdown(wait=True)
 
 
+@pytest.mark.parametrize("exclusive_bytes", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
 def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
     monkeypatch: pytest.MonkeyPatch,
+    exclusive_bytes: bool,
+    cancelled: bool,
 ) -> None:
     import asyncio
 
@@ -264,7 +459,7 @@ def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
     from polylogue.storage.io_phase_metrics import connect_measured
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError, NativeSQLCustodyOwner
 
-    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0, queue_bytes=100)
     opened = threading.Event()
     release_work = threading.Event()
     pending = threading.Event()
@@ -278,7 +473,7 @@ def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
         connection_type = type(connection)
         actual_close = connection_type.close
 
-        def close(current: object) -> None:
+        def close(current: sqlite3.Connection) -> None:
             if current is connection:
                 close_threads.append(threading.current_thread())
                 if not allow_close.is_set():
@@ -293,15 +488,21 @@ def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
         assert release_work.wait(5)
 
     async def parent_loop() -> None:
+        if exclusive_bytes:
+            adapter.amend_current_input_demand(200)
         run_coroutine_sync(bridge_unit())
 
-    operation = adapter.submit(lambda: asyncio.run(parent_loop()))
+    operation = adapter.submit(lambda: asyncio.run(parent_loop()), estimated_bytes=7, exclusive_bytes=exclusive_bytes)
     try:
         assert opened.wait(5)
         release_work.set()
         assert pending.wait(5)
+        if cancelled:
+            operation.cancellation.cancel()
         assert not operation.future.done()
         assert adapter.snapshot().used_units == 1
+        assert adapter.snapshot().used_bytes == (100 if exclusive_bytes else 7)
+        assert adapter.snapshot().active_input_bytes == (207 if exclusive_bytes else 7)
         allow_close.set()
         operation.retry_sql_settlement()
         with pytest.raises(NativeConnectionSettlementError):
@@ -309,8 +510,117 @@ def test_joined_bridge_failed_native_close_retains_parent_until_creator_retry(
         assert len(close_threads) >= 2
         assert all(thread is close_threads[0] for thread in close_threads)
         assert adapter.snapshot().used_units == 0
+        assert adapter.snapshot().active_input_bytes == 0
+        assert adapter.snapshot().exclusive_byte_units == 0
     finally:
         release_work.set()
         allow_close.set()
         operation.retry_sql_settlement()
+        adapter.shutdown(wait=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worker_failure", [False, True])
+async def test_async_read_cancellation_keeps_original_worker_until_physical_result(worker_failure: bool) -> None:
+    import asyncio
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    entered = threading.Event()
+    release = threading.Event()
+    settled = threading.Event()
+
+    def read() -> int:
+        entered.set()
+        try:
+            assert release.wait(5)
+            if worker_failure:
+                raise ValueError("original read failure")
+            return 1
+        finally:
+            settled.set()
+
+    submitted = adapter.submit(read, admission_class="interactive-read", estimated_bytes=7)
+    waiter = asyncio.create_task(submitted.wait())
+    try:
+        assert entered.wait(5)
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.sleep(0)
+        waiter.cancel()
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        assert adapter.snapshot().active_input_bytes == 7
+        release.set()
+        if worker_failure:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await waiter
+            assert any(isinstance(item, asyncio.CancelledError) for item in caught.value.exceptions)
+            assert any(isinstance(item, ValueError) for item in caught.value.exceptions)
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        assert settled.is_set()
+        assert submitted.future.done()
+        assert adapter.snapshot().used_units == 0
+    finally:
+        release.set()
+        assert adapter.close(join_timeout_s=5) == ()
+
+
+def test_nested_owned_read_uses_actual_admitted_compute_creator() -> None:
+    from polylogue.core.compute import compute_adapter
+
+    adapter = BoundedComputeAdapter(max_workers=1, queue_units=0)
+    try:
+
+        def read() -> tuple[bool, bool]:
+            creator = threading.get_ident()
+            assert compute_adapter() is adapter
+            nested = compute_adapter().submit(
+                threading.get_ident, admission_class="interactive-read", estimated_bytes=3
+            )
+            return nested.future.done(), nested.future.result() == creator
+
+        assert adapter.submit(read, admission_class="interactive-read", estimated_bytes=3).future.result(5) == (
+            True,
+            True,
+        )
+    finally:
+        assert adapter.close(join_timeout_s=5) == ()
+
+
+@pytest.mark.parametrize("capacity_bytes", [0, 100])
+def test_ordered_map_retains_unknown_input_exclusivity_until_each_worker_settles(capacity_bytes: int) -> None:
+    adapter = BoundedComputeAdapter(max_workers=2, queue_units=2, queue_bytes=capacity_bytes)
+
+    def capture(size: int) -> tuple[int, int]:
+        adapter.require_current_creator()
+        snapshot = adapter.snapshot()
+        assert snapshot.exclusive_byte_units == 1
+        assert snapshot.used_bytes == capacity_bytes
+        failures: list[BaseException] = []
+
+        def unrelated_read() -> None:
+            try:
+                with pytest.raises(DaemonBackpressureError):
+                    adapter.submit(lambda: None, estimated_bytes=1)
+            except BaseException as failure:
+                failures.append(failure)
+
+        reader = threading.Thread(target=unrelated_read)
+        reader.start()
+        reader.join(timeout=5)
+        assert not reader.is_alive()
+        assert not failures
+        return size, snapshot.active_input_bytes
+
+    try:
+        assert list(adapter.map(capture, (7, 11), estimated_bytes=lambda size: size, exclusive_bytes=True)) == [
+            (7, 7),
+            (11, 11),
+        ]
+        snapshot = adapter.snapshot()
+        assert snapshot.used_units == snapshot.used_bytes == snapshot.exclusive_byte_units == 0
+        assert adapter.submit(lambda: "settled", estimated_bytes=1).future.result(timeout=5) == "settled"
+    finally:
         adapter.shutdown(wait=True)

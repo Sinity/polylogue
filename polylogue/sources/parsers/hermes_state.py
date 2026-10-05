@@ -9,6 +9,7 @@ the authoritative live state shape.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
@@ -24,7 +25,12 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.provider_identity import profile_root_for_artifact
 from polylogue.sources.detection_projection import DetectorProjection
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
-from polylogue.sources.sqlite_export import LogicalExportError, logical_source_context, logical_source_shape
+from polylogue.sources.sqlite_export import (
+    LogicalExportError,
+    logical_source_context,
+    logical_source_shape,
+    readable_table_info,
+)
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
@@ -687,7 +693,7 @@ def _shape_has_required_tables(shape: Mapping[str, tuple[str, ...]]) -> bool:
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    return {str(row[1]) for row in readable_table_info(conn, table)}
 
 
 def _schema_version(conn: sqlite3.Connection) -> int | None:
@@ -1016,7 +1022,15 @@ def _usage_and_lifecycle_events(
     }
     has_cost_evidence = any(field in session_columns for field in _COST_FIELDS)
     if total_usage or has_cost_evidence:
-        cost_payload = {field: _row_value(row, field) for field in _COST_FIELDS if field in session_columns}
+        cost_payload = {
+            field: (
+                _optional_float(_row_value(row, field))
+                if field in {"estimated_cost_usd", "actual_cost_usd"}
+                else _row_value(row, field)
+            )
+            for field in _COST_FIELDS
+            if field in session_columns
+        }
         events.append(
             ParsedSessionEvent(
                 event_type="token_count",
@@ -1505,8 +1519,7 @@ def _non_negative_int(value: object) -> int | None:
     if isinstance(value, int):
         return value if value >= 0 else None
     if isinstance(value, float):
-        parsed = int(value)
-        return parsed if parsed >= 0 else None
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
     return None
 
 
@@ -1514,8 +1527,11 @@ def _optional_float(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        parsed = float(value)
-        return parsed if parsed >= 0 else None
+        try:
+            parsed = float(value)
+        except OverflowError:
+            return None
+        return parsed if math.isfinite(parsed) and parsed >= 0 else None
     return None
 
 

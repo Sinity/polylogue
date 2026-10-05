@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Pin the hook route in each worktree's config. Historical shell hooks use
-# `git config --local`, which writes the shared config even when
-# extensions.worktreeConfig is enabled. A per-worktree value therefore acts
-# as the durable read-side interception point for old checkouts.
-
+# Resolve product hooks from the shared checkout, and pin only this checkout.
 _polylogue_common_dir=$(git rev-parse --git-common-dir 2>/dev/null || true)
 if [ -z "$_polylogue_common_dir" ]; then
   exit 0
@@ -16,17 +12,16 @@ case "$_polylogue_common_dir" in
 esac
 _polylogue_common_dir=$(CDPATH= cd -- "$_polylogue_common_dir" && pwd -P)
 _polylogue_common_root=$(CDPATH= cd -- "$_polylogue_common_dir/.." && pwd -P)
-
-# Product checks are independent of Beads and live in the common checkout.
 _polylogue_hooks_path="$_polylogue_common_root/.githooks"
-# This is the shared installation anchor. The per-worktree values below are
-# higher-precedence guards against a branch-point shell hook restoring a
-# relative path in the common config.
-git -C "$_polylogue_common_root" config --local extensions.worktreeConfig true
-git -C "$_polylogue_common_root" config --local core.hooksPath "$_polylogue_hooks_path"
 
-while IFS= read -r _polylogue_worktree; do
-  [ -n "$_polylogue_worktree" ] || continue
-  [ -d "$_polylogue_worktree" ] || continue
-  git -C "$_polylogue_worktree" config --worktree core.hooksPath "$_polylogue_hooks_path"
-done < <(git -C "$_polylogue_common_root" worktree list --porcelain | sed -n 's/^worktree //p')
+# Read the exact scope that would be written. Effective values can mask a
+# missing common anchor or an incorrect worktree override.
+if [ "$(git config --local --get extensions.worktreeConfig || true)" != true ]; then
+  git config --local extensions.worktreeConfig true
+fi
+if [ "$(git config --local --get core.hooksPath || true)" != "$_polylogue_hooks_path" ]; then
+  git config --local core.hooksPath "$_polylogue_hooks_path"
+fi
+if [ "$(git config --worktree --get core.hooksPath || true)" != "$_polylogue_hooks_path" ]; then
+  git config --worktree core.hooksPath "$_polylogue_hooks_path"
+fi

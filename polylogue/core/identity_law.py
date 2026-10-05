@@ -138,3 +138,10 @@ __all__ = [
     "split_message_local_id",
     "transcript_order_sql",
 ]
+
+
+def attachment_acquisition_coordinate(provider_file_id: str | None, provider_attachment_id: str) -> str:
+    """Prefer the provider file identity shared by acquisition and reconvergence."""
+    if provider_file_id:
+        return f"attachment:{provider_file_id}"
+    return f"attachment-ref:{provider_attachment_id}"

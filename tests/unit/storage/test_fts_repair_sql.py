@@ -581,3 +581,113 @@ def test_partition_replace_outside_a_transaction_still_revalidates(test_conn: sq
 
     assert adapter.publish_partition(test_conn, stale) is False
     assert not test_conn.in_transaction
+
+
+def test_partition_deletes_page_canonical_and_residue_rows_under_actual_bind_limit(
+    test_conn: sqlite3.Connection,
+) -> None:
+    """Both populations exceed the bind budget, including signed rowid edges.
+
+    Restoring a whole-session rowid set breaches the observed read-page budget;
+    omitting residue or starting at rowid zero leaves searchable orphan rows.
+    """
+    restore_fts_triggers_sync(test_conn)
+    message_id = _seed_text_block(
+        test_conn, native_session_id="paged", native_message_id="message", text="paged canonical needle"
+    )
+    session_id = "unknown-export:paged"
+    test_conn.executemany(
+        "INSERT INTO blocks(message_id, session_id, position, block_type, text) VALUES (?, ?, ?, 'text', ?)",
+        ((message_id, session_id, position, "paged canonical needle") for position in range(1, 17)),
+    )
+    test_conn.execute("UPDATE blocks SET rowid = ? WHERE message_id = ? AND position = 0", (-(2**63), message_id))
+    for position in range(13):
+        rowid = -100 + position
+        test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (?, 'paged residue needle')", (rowid,))
+        test_conn.execute(
+            "INSERT INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id) VALUES (?, ?, NULL, ?)",
+            (rowid, f"{session_id}:n:removed:{position}", FtsDerivationAdapter.recipe_id),
+        )
+    test_conn.commit()
+    page_sizes: list[int] = []
+
+    class PageCursor:
+        def __init__(self, cursor: sqlite3.Cursor) -> None:
+            self.cursor = cursor
+            self.closed = False
+
+        def fetchall(self):  # type: ignore[no-untyped-def]
+            rows = self.cursor.fetchall()
+            page_sizes.append(len(rows))
+            assert len(rows) <= 4, "a delete read retained more than one connection-bounded page"
+            return rows
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            for count, row in enumerate(self.cursor, start=1):
+                assert count <= 4, "a delete read retained the whole partition"
+                yield row
+
+        def close(self) -> None:
+            self.cursor.close()
+            self.closed = True
+
+    class ObservedConnection:
+        def __init__(self) -> None:
+            self.last_page: PageCursor | None = None
+
+        def __getattr__(self, name: str):  # type: ignore[no-untyped-def]
+            return getattr(test_conn, name)
+
+        def execute(self, sql: str, params: tuple[object, ...] = ()):  # type: ignore[no-untyped-def]
+            if sql.startswith("DELETE FROM messages_fts") and self.last_page is not None:
+                assert self.last_page.closed, "delete began before its read cursor physically closed"
+            cursor = test_conn.execute(sql, params)
+            if sql.lstrip().startswith(("SELECT rowid", "SELECT i.rowid")):
+                self.last_page = PageCursor(cursor)
+                return self.last_page
+            return cursor
+
+    prior_limit = test_conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 4)
+    try:
+        repair_message_fts_index_sync(ObservedConnection(), [session_id])  # type: ignore[arg-type]
+    finally:
+        test_conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, prior_limit)
+    assert len(page_sizes) >= 10, page_sizes
+    assert max(page_sizes) == 4
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'residue'").fetchone()[0] == 0
+    assert (
+        test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'canonical'").fetchone()[0] == 17
+    )
+    assert FtsDerivationAdapter().inspect_partition(test_conn, session_id).valid
+
+
+def test_partition_page_interrupt_rolls_back_the_owned_batch(test_conn: sqlite3.Connection) -> None:
+    """An SQL interrupt after a deletion page cannot leave a partial batch."""
+    restore_fts_triggers_sync(test_conn)
+    session_ids = _seed_repair_batch(test_conn, 3)
+    test_conn.commit()
+    before = tuple(test_conn.execute("SELECT * FROM messages_fts_identity ORDER BY rowid"))
+    interrupted = False
+
+    def interrupt_after_delete(sql: str) -> None:
+        nonlocal interrupted
+        if sql.startswith("DELETE FROM messages_fts_identity") and not interrupted:
+            interrupted = True
+
+            def interrupt() -> int:
+                test_conn.set_progress_handler(None, 0)
+                return 1
+
+            test_conn.set_progress_handler(interrupt, 1)
+
+    test_conn.set_trace_callback(interrupt_after_delete)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="interrupt"):
+            repair_message_fts_index_sync(test_conn, session_ids)
+    finally:
+        test_conn.set_trace_callback(None)
+        test_conn.set_progress_handler(None, 0)
+    assert interrupted
+    assert not test_conn.in_transaction
+    assert tuple(test_conn.execute("SELECT * FROM messages_fts_identity ORDER BY rowid")) == before
+    assert all(FtsDerivationAdapter().inspect_partition(test_conn, session_id).valid for session_id in session_ids)

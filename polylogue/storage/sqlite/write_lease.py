@@ -1058,14 +1058,20 @@ def authorized_session_removal(
                 break
 
 
-def permitted_session_removals(*, archive_root: Path, assertion_content: bool = False) -> frozenset[str]:
+def permitted_session_removals(
+    *, archive_root: Path, assertion_content: bool = False, plan_hash: str | None = None
+) -> frozenset[str]:
     require_write_lease("observe authorized session removal", archive_root=archive_root)
     custody = current_sql_custody()
     if custody is None or custody.archive_root.resolve() != archive_root.resolve():
         return frozenset()
     custody.assert_namespace()
-    for _plan_hash, session_ids, thread, task, excise_assertions in reversed(custody._authorized_removals):
-        if thread is threading.current_thread() and task is _current_task():
+    for bound_hash, session_ids, thread, task, excise_assertions in reversed(custody._authorized_removals):
+        if (
+            thread is threading.current_thread()
+            and task is _current_task()
+            and (plan_hash is None or bound_hash == plan_hash)
+        ):
             return session_ids if not assertion_content or excise_assertions else frozenset()
     return frozenset()
 

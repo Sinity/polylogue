@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import closing
+from io import BytesIO
 from itertools import permutations
 from pathlib import Path
 
@@ -3468,3 +3469,100 @@ def test_prefetch_reparse_enriches_identically_to_the_inline_path(tmp_path: Path
     assert [session.title_source for session in prefetch_sessions] == [
         session.title_source for session in inline_sessions
     ]
+
+
+@pytest.mark.parametrize("later", [b"divergent", b"a", b"abcd", b"abcdef"])
+def test_full_byte_classifier_preserves_original_source_anchor(later: bytes) -> None:
+    original = b"abcd"
+    payloads = {"anchor": original, "later": later}
+    rows = [
+        ("anchor", "anchor-hash", len(original), "byte_proven", "prior", "root", 7),
+        ("later", "later-hash" if later != original else "anchor-hash", len(later), "quarantined", None, None, 0),
+    ]
+    updates = {
+        row[0]: row[1:]
+        for row in archive_revision_governance._classify_full_revision_byte_inputs(
+            rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+        )
+    }
+    assert updates["anchor"] == ("byte_proven", "prior", "root", 7)
+    if later == original:
+        assert updates["later"] == ("byte_proven", None, "root", 7)
+    elif later.startswith(original):
+        assert updates["later"] == ("byte_proven", "anchor", "root", 8)
+    else:
+        assert updates["later"] == ("quarantined", None, None, 0)
+
+
+def test_full_byte_classifier_preserves_proved_chain_when_late_fork_arrives() -> None:
+    payloads = {"base": b"a", "head": b"ab", "fork": b"ac"}
+    rows = [
+        ("base", "base-hash", 1, "byte_proven", None, "base", 0),
+        ("head", "head-hash", 2, "byte_proven", "base", "base", 1),
+        ("fork", "fork-hash", 2, "quarantined", None, None, 0),
+    ]
+    updates = archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    )
+    assert updates == (
+        ("base", "byte_proven", None, "base", 0),
+        ("head", "byte_proven", "base", "base", 1),
+        ("fork", "quarantined", None, None, 0),
+    )
+
+
+def test_full_byte_classifier_quarantines_late_interior_prefix_without_rebinding_head() -> None:
+    payloads = {"base": b"a", "head": b"abcd", "late": b"ab"}
+    rows = [
+        ("base", "base-hash", 1, "byte_proven", None, "base", 0),
+        ("head", "head-hash", 4, "byte_proven", "base", "base", 1),
+        ("late", "late-hash", 2, "quarantined", None, None, 0),
+    ]
+    assert archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    ) == (
+        ("base", "byte_proven", None, "base", 0),
+        ("head", "byte_proven", "base", "base", 1),
+        ("late", "quarantined", None, None, 0),
+    )
+
+
+def test_full_byte_classifier_initial_chain_duplicate_inherits_generation() -> None:
+    payloads = {"base": b"a", "middle": b"ab", "duplicate": b"ab", "head": b"abc"}
+    rows = [
+        (
+            raw_id,
+            "middle-hash" if raw_id in {"middle", "duplicate"} else raw_id + "-hash",
+            len(payload),
+            "quarantined",
+            None,
+            None,
+            0,
+        )
+        for raw_id, payload in payloads.items()
+    ]
+    actual = {
+        row[0]: row[1:]
+        for row in archive_revision_governance._classify_full_revision_byte_inputs(
+            rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+        )
+    }
+    assert actual["base"] == ("byte_proven", None, "base", 0)
+    assert actual["head"][0] == "byte_proven"
+    assert actual["head"][2:] == ("base", 2)
+    assert actual["middle"][2:] == ("base", 1)
+    assert actual["duplicate"][2:] == ("base", 1)
+
+
+def test_full_byte_classifier_preserves_asserted_baseline_without_extension_grant() -> None:
+    payloads = {"baseline": b"a", "later": b"ab"}
+    rows = [
+        ("baseline", "baseline-hash", 1, "asserted", None, None, 0),
+        ("later", "later-hash", 2, "quarantined", None, None, 0),
+    ]
+    assert archive_revision_governance._classify_full_revision_byte_inputs(
+        rows, lambda raw_id, _blob_hash: BytesIO(payloads[raw_id])
+    ) == (
+        ("baseline", "asserted", None, None, 0),
+        ("later", "quarantined", None, None, 0),
+    )

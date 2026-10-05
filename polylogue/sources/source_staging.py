@@ -20,7 +20,7 @@ from polylogue.core.provider_identity import captured_hermes_profile_key
 
 if TYPE_CHECKING:
     from polylogue.sources.parsers.hermes_identity import CapturedHermesProfile
-    from polylogue.sources.sqlite_export import BinaryWriteSink
+    from polylogue.sources.sqlite_export import BinaryWriteSink, SourceBytePage
     from polylogue.storage.sqlite.archive_tiers.source_items import CapturedSourceInputIdentity
 
 _STAGING_METADATA_SUFFIX = ".polylogue-import"
@@ -544,6 +544,9 @@ def stage_source_input(source: Path, staging_root: Path, *, check_stop: Callable
                     binding.source, backup_path, source_binding=binding, heartbeat=check_stop
                 )
                 os.replace(backup_path, destination)
+                sync_directory(destination.parent)
+                if staging_root != destination.parent:
+                    sync_directory(staging_root)
             finally:
                 backup_path.unlink(missing_ok=True)
             material = {
@@ -796,14 +799,17 @@ def _bound_byte_request(binding: SourceInputBinding, operation: str) -> dict[str
 def preflight_bound_bytes(
     binding: SourceInputBinding,
     *,
+    label: str,
     check_stop: Callable[[], None],
 ) -> dict[str, Any]:
     """Return shape evidence only after the accepted byte reader has settled."""
-    from polylogue.sources.sqlite_export import _exchange_source_worker, _ProgressSink
+    from polylogue.sources.sqlite_export import _ProgressSink, source_byte_page
 
     request = _bound_byte_request(binding, "preflight_bytes")
+    request["preflight_label"] = label
     request["progress"] = True
-    result = _exchange_source_worker(request, _ProgressSink(check_stop))
+    with source_byte_page() as reader:
+        result = reader.exchange(request, _ProgressSink(check_stop))
     _validate_byte_settlement(binding, result, extra_fields={"preflight"})
     if not isinstance(result["preflight"], dict):
         raise OSError(errno.EPROTO, "invalid source preflight evidence")
@@ -811,14 +817,18 @@ def preflight_bound_bytes(
     return result["preflight"]
 
 
-def write_bound_input(binding: SourceInputBinding, destination: BinaryWriteSink) -> dict[str, Any]:
-    """Deliver bytes privately, and return only after the proved reader settles."""
-    from polylogue.sources.sqlite_export import _exchange_source_worker
-
-    result = _exchange_source_worker(_bound_byte_request(binding, "bytes"), destination)
-    _validate_byte_settlement(binding, result)
-    _verify_staging_metadata_name(binding.metadata_anchor, binding.provenance)
-    return result
+def write_bound_input(
+    binding: SourceInputBinding, destination: BinaryWriteSink, *, reader: SourceBytePage
+) -> dict[str, Any]:
+    """Deliver one proved observation through its caller-owned byte page."""
+    try:
+        result = reader.exchange(_bound_byte_request(binding, "bytes"), destination)
+        _validate_byte_settlement(binding, result)
+        _verify_staging_metadata_name(binding.metadata_anchor, binding.provenance)
+        return result
+    except BaseException as error:
+        reader.reject(error)
+        raise
 
 
 def _validate_byte_settlement(

@@ -286,13 +286,15 @@ class _PinnedTopologySource:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]:
+    async def list_session_links_to_session(self, session_id: str, *, limit: int | None) -> list[dict[str, object]]:
         from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS
 
+        bound = "" if limit is None else " LIMIT ?"
+        args: tuple[object, ...] = (session_id,) if limit is None else (session_id, limit)
         rows = self.archive._conn.execute(
             f"SELECT {SESSION_LINK_COLUMNS} FROM session_links WHERE resolved_dst_session_id = ? "
-            "ORDER BY src_session_id, dst_origin, dst_native_id, link_type LIMIT ?",
-            (session_id, limit),
+            "ORDER BY src_session_id, dst_origin, dst_native_id, link_type" + bound,
+            args,
         ).fetchall()
         return [dict(row) for row in rows]
 

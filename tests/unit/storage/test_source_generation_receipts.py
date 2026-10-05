@@ -10,12 +10,14 @@ import pytest
 
 from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.operations.daemon_ingest import _spool_source_receipt
+from polylogue.operations.ingest_inputs import spool_connection
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import (
     SourceGenerationBlocker,
     _raw_receipt,
     source_generation_receipt_page,
 )
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import (
     RevisionApplicationReceipt,
@@ -33,7 +35,7 @@ from tests.infra.source_builders import observe_source_generation_receipt
 def _connections() -> tuple[sqlite3.Connection, sqlite3.Connection, str]:
     source = sqlite3.connect(":memory:")
     index = sqlite3.connect(":memory:")
-    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    source.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
     initialize_archive_tier(index, ArchiveTier.INDEX)
     source.execute("PRAGMA foreign_keys=ON")
     (item_id,) = publish_source_generation(
@@ -145,25 +147,52 @@ def test_receipt_requires_exact_source43_member_parser_application_head_and_sess
     assert stale.unresolved_raw_ids == ("raw-1",)
 
 
-def test_parser_census_writer_preserves_inherited_duplicate_receipt_spelling() -> None:
+def test_parser_census_writer_preserves_inherited_duplicate_receipt_spelling(tmp_path: Path) -> None:
     """Failed inherited census keeps its original sorted canonical JSON evidence."""
-    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+    from contextlib import closing
 
-    source, index, _item = _connections()
-    try:
-        record_current_parser_source_census(
-            source, "raw-1", inherited_logical_keys=("codex:session-1", "codex-session:session-1")
-        )
-        assert source.execute(
-            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
-        ).fetchone() == ("failed", '["codex-session:session-1", "codex-session:session-1"]')
-        record_current_parser_source_census(source, "raw-1", inherited_logical_keys=("codex:session-1",))
-        assert source.execute(
-            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'"
-        ).fetchone() == ("complete", '["codex-session:session-1"]')
-    finally:
-        source.close()
-        index.close()
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+    from polylogue.storage.sqlite.connection_profile import open_source_tier_write_connection
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    with write_lease("test.inherited-parser-census", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+        with closing(open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)) as source:
+            with closing(
+                source.execute(
+                    "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms,logical_source_key,revision_kind) "
+                    "VALUES ('raw-1','codex-session','synthetic/export.json',?,1,1,'codex:session-1','full')",
+                    (b"r" * 32,),
+                )
+            ):
+                pass
+            source.commit()
+        for keys, expected in (
+            (
+                ("codex:session-1", "codex-session:session-1"),
+                ("failed", '["codex-session:session-1", "codex-session:session-1"]'),
+            ),
+            (("codex:session-1",), ("complete", '["codex-session:session-1"]')),
+        ):
+            with PreparedIndexMutation.source_only(archive_root=tmp_path) as seal:
+                with seal.original_read_snapshot(), seal.source_producer():
+                    record_current_parser_source_census(seal, "raw-1", inherited_logical_keys=keys)
+                permit = seal.prepare_source_mutation()
+                with permit.hold_authority(), permit.mutation_connection() as source:
+                    with closing(source.execute("BEGIN IMMEDIATE")):
+                        pass
+                    permit.apply_source_statements(source)
+                    permit.allow_commit(source)
+                    source.commit()
+                    seal.accept_known_tier_commit(permit.committed())
+                with seal.original_read_snapshot():
+                    with seal.original_rows(
+                        "source",
+                        "SELECT status,logical_keys_json FROM raw_authority_parser_census WHERE raw_id='raw-1'",
+                    ) as rows:
+                        assert tuple(next(rows)) == expected
 
 
 def test_receipt_counts_all_application_witnesses_and_preserves_ambiguity() -> None:
@@ -206,8 +235,8 @@ def test_receipt_spools_one_raws_complete_logical_denominator_without_collecting
         keys.append(f"codex:{native_id}")
         source.execute(
             "INSERT INTO raw_session_memberships(raw_id, logical_source_key, provider_session_id, source_revision, "
-            "normalized_content_hash, message_count, acquisition_generation, decision) "
-            "VALUES ('raw-1', ?, ?, 'revision-1', ?, 1, 1, 'applied')",
+            "normalized_content_hash, message_count, acquisition_generation, decision, decided_at_ms) "
+            "VALUES ('raw-1', ?, ?, 'revision-1', ?, 1, 1, 'applied', 1)",
             (keys[-1], native_id, b"c" * 32),
         )
     source.execute(
@@ -484,7 +513,7 @@ def test_the_retired_candidate_membership_relation_is_neither_created_nor_read()
 def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: Path) -> None:
     source = sqlite3.connect(":memory:")
     index = sqlite3.connect(":memory:")
-    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    source.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
     initialize_archive_tier(index, ArchiveTier.INDEX)
     coordinates = tuple(f"input:{number:05d}" for number in range(10_241))
     ids = publish_source_generation(
@@ -526,7 +555,12 @@ def test_receipt_pages_large_denominator_and_reduces_raw_ids_globally(tmp_path: 
         assert spool.item_count == 10_241
         assert spool.unresolved_raw_count == 1
         assert spool.confirmed_raw_count == 0
-        assert spool.pending_raw_page() == ("shared-raw",)
+        assert spool.raw_page() == ("shared-raw",)
+        # Parser census completion does not imply Index publication. The
+        # accepted generation still offers this Raw to its resident owner.
+        with spool_connection(spool.path) as pending:
+            pending.execute("UPDATE raws SET parser_complete=1 WHERE raw_id='shared-raw'")
+        assert spool.raw_page() == ("shared-raw",)
         with sqlite3.connect(spool.path) as check:
             assert check.execute("SELECT COUNT(*) FROM items").fetchone() == (10_241,)
     finally:
@@ -680,6 +714,119 @@ def test_byte_fragment_receipt_requires_the_exact_durable_baseline_chain(corrupt
             assert chain_read
             source.set_trace_callback(None)
             assert source.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 2
+    finally:
+        source.close()
+        index.close()
+
+
+@pytest.mark.parametrize("corruption", [None, "missing_parser", "stale_parser", "membership_count"])
+def test_primary_revision_receipt_requires_original_current_parser_identity(corruption: str | None) -> None:
+    source, index, _item_id = _connections()
+    source.execute("DELETE FROM raw_session_memberships WHERE raw_id='raw-1'")
+    source.execute("DELETE FROM raw_membership_census WHERE raw_id='raw-1'")
+    if corruption == "missing_parser":
+        source.execute("DELETE FROM raw_authority_parser_census WHERE raw_id='raw-1'")
+    elif corruption == "stale_parser":
+        source.execute("UPDATE raw_authority_parser_census SET parser_fingerprint='stale' WHERE raw_id='raw-1'")
+    elif corruption == "membership_count":
+        source.execute(
+            "INSERT INTO raw_membership_census(raw_id,parser_fingerprint,status,member_count,censused_at_ms,detail) "
+            "VALUES ('raw-1',?,'complete',1,1,'')",
+            (raw_authority_parser_fingerprint(),),
+        )
+    receipt = observe_source_generation_receipt(
+        source, index, source_generation_id="source-43", active_generation="index-generation-1"
+    )
+    assert receipt.complete is (corruption is None)
+    assert receipt.unresolved_raw_ids == (() if corruption is None else ("raw-1",))
+
+
+@pytest.mark.parametrize(
+    "corruption", [None, "head_generation", "original_generation", "accepted_generation", "accepted_frontier"]
+)
+def test_superseded_member_keeps_its_original_generation_when_naming_a_newer_head(corruption: str | None) -> None:
+    """Supersession binds the original event and the newer accepted Source identity separately."""
+    source, index, _item = _connections()
+    try:
+        source.execute(
+            "INSERT INTO raw_sessions(raw_id,origin,source_path,blob_hash,blob_size,acquired_at_ms,"
+            "logical_source_key,revision_kind,source_revision,acquisition_generation) "
+            "VALUES ('raw-2','codex-session','/synthetic/later.json',?,2,2,'codex:session-1','full','revision-2',2)",
+            (b"s" * 32,),
+        )
+        source.execute(
+            "INSERT INTO raw_session_memberships(raw_id,logical_source_key,provider_session_id,source_revision,"
+            "normalized_content_hash,message_count,acquisition_generation,decision,decided_at_ms) "
+            "VALUES ('raw-2','codex:session-1','session-1','revision-2',?,2,2,'applied',3)",
+            (b"d" * 32,),
+        )
+        source.execute("UPDATE raw_session_memberships SET decision='superseded_prefix' WHERE raw_id='raw-1'")
+        for raw_id, revision, generation, decision in (
+            ("raw-1", "revision-1", 1, ApplicationDecision.SUPERSEDED),
+            ("raw-2", "revision-2", 2, ApplicationDecision.SELECTED_BASELINE),
+        ):
+            record_revision_application_sync(
+                index,
+                RevisionApplicationReceipt(
+                    raw_id=raw_id,
+                    session_id="codex-session:session-1",
+                    logical_source_key="codex-session:session-1",
+                    source_revision=revision,
+                    acquisition_generation=generation,
+                    decision=decision,
+                    accepted_raw_id="raw-2",
+                    accepted_source_revision="revision-2",
+                    accepted_content_hash=b"d" * 32,
+                    accepted_frontier_kind="semantic",
+                    accepted_frontier=2,
+                ),
+                decided_at_ms=3,
+            )
+        index.execute("UPDATE sessions SET raw_id='raw-2',content_hash=?", (b"d" * 32,))
+        if corruption == "head_generation":
+            index.execute("UPDATE raw_revision_heads SET acquisition_generation=3")
+        elif corruption == "original_generation":
+            index.execute("UPDATE raw_revision_applications SET acquisition_generation=3 WHERE raw_id='raw-1'")
+        elif corruption == "accepted_generation":
+            source.execute("UPDATE raw_session_memberships SET acquisition_generation=3 WHERE raw_id='raw-2'")
+        elif corruption == "accepted_frontier":
+            source.execute("UPDATE raw_session_memberships SET message_count=3 WHERE raw_id='raw-2'")
+        receipt = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-generation-1"
+        )
+        logical = receipt.items[0].raws[0].logicals[0]
+        assert logical.accepted_raw_id == "raw-2"
+        assert receipt.complete is (corruption is None)
+        if corruption is not None:
+            assert SourceGenerationBlocker.APPLICATION_STALE in logical.blockers
+        else:
+            assert receipt.confirmed_raw_ids == ("raw-1",)
+            assert receipt.unresolved_raw_ids == ()
+    finally:
+        source.close()
+        index.close()
+
+
+@pytest.mark.parametrize("corruption", [None, "frontier", "generation"])
+def test_primary_byte_head_preserves_distinct_session_and_blob_hashes(corruption: str | None) -> None:
+    """The original byte revision proves generation/frontier, not the parsed session hash."""
+    source, index, _item = _connections()
+    try:
+        source.execute("DELETE FROM raw_session_memberships WHERE raw_id='raw-1'")
+        source.execute("DELETE FROM raw_membership_census WHERE raw_id='raw-1'")
+        index.execute("UPDATE raw_revision_heads SET accepted_frontier_kind='byte'")
+        index.execute("UPDATE raw_revision_applications SET accepted_frontier_kind='byte'")
+        if corruption == "frontier":
+            index.execute("UPDATE raw_revision_heads SET accepted_frontier=2")
+            index.execute("UPDATE raw_revision_applications SET accepted_frontier=2")
+        elif corruption == "generation":
+            index.execute("UPDATE raw_revision_heads SET acquisition_generation=2")
+        receipt = observe_source_generation_receipt(
+            source, index, source_generation_id="source-43", active_generation="index-generation-1"
+        )
+        assert receipt.complete is (corruption is None)
+        if corruption is not None:
+            assert SourceGenerationBlocker.APPLICATION_STALE in receipt.items[0].raws[0].logicals[0].blockers
     finally:
         source.close()
         index.close()

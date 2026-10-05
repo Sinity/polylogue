@@ -7,8 +7,8 @@ import itertools
 import json
 import random
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, suppress
+from collections.abc import AsyncGenerator, Callable, Collection, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import aclosing, closing, contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,7 +65,7 @@ from polylogue.storage.runtime import LineageCompleteness, LineageTruncationReas
 from polylogue.storage.search.models import SearchHit, SearchResult
 from polylogue.storage.search.query_builders import session_web_url
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, IndexStatus
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionIdentity, ArchiveSessionSummary, IndexStatus
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
@@ -652,6 +652,14 @@ def _archive_list_summaries_with_post_filters(
     sampling before the filter would shrink the sample by the excluded rows.
     """
     candidates = _post_filter_candidates(archive, query_text=query_text, query_kwargs=query_kwargs)
+    survivors = _iter_post_filtered_summaries(archive, spec, candidates, needed=None)
+    return _post_filter_window(survivors, query_kwargs=query_kwargs, limit=limit, offset=offset)
+
+
+def _post_filter_window(
+    survivors: Iterable[_T], *, query_kwargs: dict[str, object], limit: int | None, offset: int | None
+) -> list[_T]:
+    """Apply the canonical post-filter page or sample to supplied survivors."""
     # The spec's own page is authoritative unless an adapter explicitly
     # supplies a replacement. Candidate widening above removes SQL paging;
     # restore the effective page after content filtering.
@@ -663,7 +671,6 @@ def _archive_list_summaries_with_post_filters(
     effective_offset = max(effective_offset, 0)
     if effective_limit is not None:
         effective_limit = max(effective_limit, 0)
-    survivors = _iter_post_filtered_summaries(archive, spec, candidates, needed=None)
     if query_kwargs.get("sample") or query_kwargs.get("sort") == "random":
         start = 0 if query_kwargs.get("sample") else effective_offset
         if effective_limit is None:
@@ -712,16 +719,99 @@ def _archive_search_hits_for_spec(
     return cast(list[Any], archive.search_summaries(query_text, **query_kwargs))
 
 
+def _iter_archive_session_identity_candidates(
+    archive: Any, spec: SessionQuerySpec | None
+) -> Generator[ArchiveSessionIdentity, None, None]:
+    """Yield canonical scalar scope candidates or content-filter survivors."""
+    from polylogue.archive.query.runtime_filters import has_negative_message_term
+
+    if spec is None:
+        with closing(archive.iter_session_identities()) as selected:
+            yield from selected
+            return
+    query_text = _archive_text_query(spec)
+    query_kwargs = _archive_query_kwargs(spec, default_limit=None)
+
+    def candidates(kwargs: dict[str, object]) -> Generator[ArchiveSessionIdentity, None, None]:
+        if query_text is None:
+            with closing(archive.iter_session_identities(**kwargs)) as selected:
+                yield from selected
+        else:
+            with closing(
+                archive.iter_session_identities(
+                    query=query_text, actions_only=spec.retrieval_lane == "actions", **kwargs
+                )
+            ) as selected:
+                yield from selected
+
+    if not spec.exclude_text_terms:
+        yield from candidates(query_kwargs)
+        return
+    candidate_kwargs = dict(query_kwargs)
+    candidate_kwargs["limit"] = None
+    candidate_kwargs.pop("offset", None)
+    candidate_kwargs.pop("sample", None)
+    if candidate_kwargs.get("sort") == "random":
+        candidate_kwargs.pop("sort")
+
+    def messages(session_id: str) -> Generator[Message, None, None]:
+        from polylogue.operations.read_contracts import ReadPageUnavailableError
+
+        offset = 0
+        while True:
+            page = archive.read_session_page(session_id, limit=100, offset=offset)
+            yield from archive_envelope_to_session(page).messages
+            offset += len(page.messages)
+            if page.total_message_count is None:
+                raise ReadPageUnavailableError("message-only scope page omitted its physical total")
+            if offset >= page.total_message_count:
+                return
+            if not page.messages:
+                raise ReadPageUnavailableError("message-only scope page did not advance")
+
+    def survivors() -> Generator[ArchiveSessionIdentity, None, None]:
+        terms = tuple(term.lower() for term in spec.exclude_text_terms)
+        with closing(candidates(candidate_kwargs)) as selected:
+            for row in selected:
+                with closing(messages(row.session_id)) as records:
+                    if not has_negative_message_term(records, terms):
+                        yield row
+
+    yield from survivors()
+
+
+def _archive_session_identities_for_spec(archive: Any, spec: SessionQuerySpec | None) -> list[ArchiveSessionIdentity]:
+    """Resolve the explicit full-return analysis scope without unused metadata."""
+    with closing(_iter_archive_session_identity_candidates(archive, spec)) as selected:
+        if spec is None or not spec.exclude_text_terms:
+            return list(selected)
+        return _post_filter_window(
+            selected, query_kwargs=_archive_query_kwargs(spec, default_limit=None), limit=None, offset=None
+        )
+
+
+def _archive_selected_session_count_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
+    """Count the same survivor window without retaining its scalar identities."""
+    with closing(_iter_archive_session_identity_candidates(archive, spec)) as selected:
+        if not spec.exclude_text_terms:
+            return sum(1 for _ in selected)
+        limit = spec.sample if spec.sample is not None else spec.limit
+        offset = 0 if spec.sample is not None else max(spec.offset, 0)
+        if spec.sample is not None or spec.sort == "random":
+            # Random ordering changes which identities survive the requested
+            # window, never its cardinality. No sample collection is needed.
+            count = max(sum(1 for _ in selected) - offset, 0)
+            return count if limit is None else min(count, max(limit, 0))
+        end = None if limit is None else offset + max(limit, 0)
+        return sum(1 for _ in itertools.islice(selected, offset, end))
+
+
 def _archive_count_sessions_for_spec(archive: Any, spec: SessionQuerySpec) -> int:
     if spec.exclude_text_terms:
-        # Consume the same chunked iterator: counting must not hydrate the
-        # candidate set in one pass, nor hold every survivor's session object.
-        candidates = _post_filter_candidates(
-            archive,
-            query_text=_archive_text_query(spec),
-            query_kwargs=_archive_query_kwargs(spec, default_limit=1_000_000),
-        )
-        return sum(1 for _ in _iter_post_filtered_summaries(archive, spec, candidates, needed=None))
+        # A list total intentionally ignores its presentation window, while
+        # sharing the scalar survivor walk with requested-window aggregates.
+        with closing(_iter_archive_session_identity_candidates(archive, spec)) as selected:
+            return sum(1 for _ in selected)
     query_kwargs = _archive_query_kwargs(spec, default_limit=None)
     for key in ("limit", "offset", "sort", "reverse", "sample"):
         query_kwargs.pop(key, None)
@@ -4633,12 +4723,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         ``around`` names a message whose window is wanted instead of a
         coordinate naming it (polylogue-idrej). It is resolved to an offset
-        through the shared locator before the window is framed, so the window
-        -- and the continuation it mints -- are identical to asking for the
+        through the shared locator on the same pinned reader as the window.
+        The continuation it mints is identical to asking for the
         offset this call reports back in ``TranscriptWindow.offset``.
         """
 
-        from polylogue.operations.message_locator import window_offset_around
         from polylogue.operations.transcript_window import message_transcript_window, window_request
 
         if around is not None:
@@ -4646,18 +4735,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 raise ValueError("around and an explicit window coordinate name two different windows")
             if message_role or message_type is not None or material_origin:
                 raise ValueError("around cannot be combined with transcript filters")
-            archive_root = _active_archive_root(self.config)
-            offset = await run_archive_read(
-                archive_root,
-                operation="archive.message.locate",
-                arguments={"session_id": session_id, "around": around, "limit": limit},
-                work=lambda archive: window_offset_around(
-                    archive, archive.resolve_session_id(session_id), around, limit
-                ),
-                page_size=limit,
-                projection="message-location",
-                stable_order="position",
-            )
 
         return await message_transcript_window(
             self,
@@ -4672,6 +4749,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     "material_origin": tuple(material_origin),
                 },
             ),
+            around=around,
         )
 
     def iter_messages(
@@ -4681,30 +4759,18 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         message_roles: MessageRoleFilter = (),
         material_origin: tuple[MaterialOrigin, ...] = (),
         limit: int | None = None,
-    ) -> AsyncIterator[Message]:
-        async def _iter() -> AsyncIterator[Message]:
-            if not material_origin:
-                async for message in self.repository.iter_messages(
+    ) -> AsyncGenerator[Message, None]:
+        async def _iter() -> AsyncGenerator[Message, None]:
+            async with aclosing(
+                self.repository.iter_messages(
                     session_id,
                     message_roles=message_roles,
+                    material_origin=material_origin,
                     limit=limit,
-                ):
+                )
+            ) as messages:
+                async for message in messages:
                     yield message
-                return
-
-            session = await self.get_session(session_id)
-            if session is None:
-                return
-            count = 0
-            for message in session.messages:
-                if message_roles and message.role not in message_roles:
-                    continue
-                if message.material_origin not in material_origin:
-                    continue
-                if limit is not None and count >= limit:
-                    break
-                count += 1
-                yield message
 
         return _iter()
 

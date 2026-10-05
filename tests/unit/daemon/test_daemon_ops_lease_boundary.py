@@ -38,6 +38,7 @@ from typing import Any
 
 import pytest
 
+from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.write_lease import (
@@ -71,7 +72,9 @@ def test_ops_tier_reads_need_no_write_lease(tmp_path: Path) -> None:
         assert store.list_excluded() == []
         assert store.list_failed_with_retry() == []
         assert store.list_convergence_debt(limit=5) == []
-        assert store.recent_ingest_attempts(limit=5) == []
+        attempts = _archive_live_ingest_attempt_summary_info(root / "ops.db")
+        assert attempts is not None and attempts.available
+        assert attempts.recent == []
 
 
 def test_ops_tier_writes_still_require_the_write_lease(tmp_path: Path) -> None:

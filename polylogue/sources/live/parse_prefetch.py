@@ -56,6 +56,7 @@ from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw, prepare_live_retained_raws
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob, source_snapshot
+from polylogue.storage.sqlite.archive_tiers.write import ConnectionSessionSourceRead
 
 logger = get_logger(__name__)
 
@@ -1171,7 +1172,7 @@ class LiveParseStage:
                                 index_conn,
                                 session,
                                 merge_append=False,
-                                source_conn=source_conn,
+                                source_read=ConnectionSessionSourceRead(source_conn),
                                 raw_id=expected_raw_id,
                                 prepared_rows=prepared_session_rows_from_shard(result.shard_path, session_id)
                                 if result.shard_path is not None

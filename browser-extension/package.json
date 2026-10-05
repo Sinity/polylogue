@@ -1,6 +1,6 @@
 {
   "name": "polylogue-browser-capture",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Polylogue browser extension for capturing web LLM sessions",
   "type": "module",
@@ -23,5 +23,9 @@
     "playwright": "1.63.0",
     "vitest": "^3.0.0",
     "web-ext": "8.10.0"
+  },
+  "dependencies": {
+    "@streamparser/json": "0.0.26",
+    "js-sha256": "0.11.1"
   }
 }

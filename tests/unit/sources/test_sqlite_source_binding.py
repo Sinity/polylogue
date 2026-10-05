@@ -21,9 +21,15 @@ from polylogue.maintenance.source_manifest_continuity import (
     build_source_frontier,
 )
 from polylogue.sources import source_staging, sqlite_export, sqlite_snapshot
+from polylogue.sources.sqlite_export import BinaryWriteSink
 from polylogue.storage.blob_store import BlobStore
 
 pytestmark = pytest.mark.uses_real_clock("source worker settlement uses actual OS processes")
+
+
+def _write_bound_input(binding: source_staging.SourceInputBinding, destination: BinaryWriteSink) -> dict[str, Any]:
+    with sqlite_export.source_byte_page() as reader:
+        return source_staging.write_bound_input(binding, destination, reader=reader)
 
 
 def _database(path: Path, value: str) -> None:
@@ -329,7 +335,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
         else:
             with source_staging.bind_source_input(source) as binding:
                 if operation == "bytes":
-                    source_staging.write_bound_input(binding, FailingSink())
+                    _write_bound_input(binding, FailingSink())
                 elif operation == "preflight_bytes":
                     source_staging.preflight_bound_bytes(binding, check_stop=fail_callback)
                 elif operation == "copy":
@@ -384,7 +390,7 @@ def test_final_binding_failure_discards_the_private_blob_prefix(tmp_path: Path, 
             sqlite_export.write_logical_export(source, SubstitutingSink())
         else:
             with source_staging.bind_source_input(source) as binding:
-                source_staging.write_bound_input(binding, SubstitutingSink())
+                _write_bound_input(binding, SubstitutingSink())
 
     with pytest.raises(OSError):
         store.write_from_writer(write)
@@ -650,7 +656,7 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
         else:
             with source_staging.bind_source_input(source) as binding:
                 if operation == "bytes":
-                    source_staging.write_bound_input(binding, io.BytesIO())
+                    _write_bound_input(binding, io.BytesIO())
                 elif operation == "preflight_bytes":
                     source_staging.preflight_bound_bytes(binding, check_stop=lambda: None)
                 elif operation == "copy":
@@ -918,7 +924,7 @@ def test_byte_owner_keeps_accepted_parent_after_alias_retarget(
         if replace_actual:
             with pytest.raises(OSError) as failure:
                 if operation == "bytes":
-                    source_staging.write_bound_input(binding, output)
+                    _write_bound_input(binding, output)
                 else:
                     source_staging.copy_bound_input(binding, destination)
             assert failure.value.errno == errno.ESTALE
@@ -926,7 +932,7 @@ def test_byte_owner_keeps_accepted_parent_after_alias_retarget(
             assert not destination.exists()
         else:
             if operation == "bytes":
-                result = source_staging.write_bound_input(binding, output)
+                result = _write_bound_input(binding, output)
                 accepted = output.getvalue()
             else:
                 result = source_staging.copy_bound_input(binding, destination)

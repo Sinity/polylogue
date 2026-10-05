@@ -208,6 +208,8 @@ ARCHIVE_BLOCK_DISPOSITIONS: Dispositions = {
     "semantic_type": exposed("semantic_type"),
     "tool_input": exposed("tool_input", _json_object),
     "metadata": exposed("metadata", _json_object),
+    "media_type": exposed("media_type"),
+    "signature": exposed("signature"),
     "language": exposed("language"),
     "name": exposed("name"),
     "tool_result_is_error": exposed("tool_result_is_error"),
@@ -465,13 +467,17 @@ def _transfer(row: object, dispositions: Dispositions) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def archive_block_to_domain(block: ArchiveBlockRow) -> dict[str, object]:
+def archive_block_to_domain(block: ArchiveBlockRow, *, include_null_fields: bool = False) -> dict[str, object]:
     """Hydrate one compact block row into a domain content block.
 
-    ``None`` values are dropped so an absent field stays absent rather than
-    becoming an explicit null in every public block payload.
+    Compact projections omit null fields. Full Python message records retain
+    their declared nullable keys; callers select that same shape explicitly.
     """
-    return {key: value for key, value in _transfer(block, ARCHIVE_BLOCK_DISPOSITIONS).items() if value is not None}
+    return {
+        key: value
+        for key, value in _transfer(block, ARCHIVE_BLOCK_DISPOSITIONS).items()
+        if include_null_fields or value is not None
+    }
 
 
 def archive_attachment_to_domain(attachment: ArchiveAttachmentRow) -> Attachment:
@@ -485,6 +491,7 @@ def archive_message_to_domain(
     message: ArchiveMessageRow,
     *,
     origin: Origin | None = None,
+    include_null_block_fields: bool = False,
     display_text: Callable[[Iterable[ArchiveBlockRow]], str] = archive_display_text,
 ) -> Message:
     """Hydrate a compact message row (plus its blocks/attachments) into ``Message``.
@@ -499,7 +506,9 @@ def archive_message_to_domain(
         **_transfer(message, ARCHIVE_MESSAGE_DISPOSITIONS),
         origin=origin,
         text=display_text(message.blocks) or None,
-        blocks=[archive_block_to_domain(block) for block in message.blocks],
+        blocks=[
+            archive_block_to_domain(block, include_null_fields=include_null_block_fields) for block in message.blocks
+        ],
         attachments=[archive_attachment_to_domain(attachment) for attachment in message.attachments],
     )
 

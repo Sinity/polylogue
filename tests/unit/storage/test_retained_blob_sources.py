@@ -20,10 +20,11 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.operations.raw_observation_derivation import raw_observation_frame
+from polylogue.core.raw_coordinates import CapturedZipMemberCoordinate, MemberAddressingMode, captured_zip_member_raw_id
+from polylogue.sources.source_acquisition_components import zip_acquisition_fingerprint
 from polylogue.storage import backup_package as archive_backup
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.source_blob_restoration import stage_blob_from_recorded_source
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import record_raw_container_coordinate
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -89,6 +90,7 @@ def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
     bootstrap_archive_root(root)
     sources = root / "sources"
     sources.mkdir()
+    container: Path | None = None
     if case.zip_member:
         container = sources / "export.zip"
         with zipfile.ZipFile(container, "w") as archive:
@@ -133,6 +135,7 @@ def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
                FROM raw_sessions ORDER BY rowid"""
         )
         if case.zip_member:
+            assert container is not None
             record_raw_container_coordinate(
                 conn,
                 "retained",
@@ -140,6 +143,16 @@ def _seed(root: Path, case: _Case) -> tuple[str, str, str]:
                 entry_ordinal=0,
                 split_index=0,
                 addressing_mode="whole_member",
+                captured_coordinate=CapturedZipMemberCoordinate(
+                    str(container.resolve()),
+                    str(container.resolve()),
+                    "conversation.json",
+                    0,
+                    0,
+                    MemberAddressingMode.WHOLE_MEMBER,
+                    hashlib.sha256(container.read_bytes()).hexdigest(),
+                    zip_acquisition_fingerprint(Provider.CHATGPT),
+                ),
                 manage_transaction=False,
             )
     return "retained", blob_hash, source_path
@@ -160,8 +173,8 @@ def _backup_proof(root: Path, blob_hash: str) -> tuple[list[dict[str, str]], lis
 def _raw_restoration(root: Path, raw_id: str, blob_hash: str, source_path: str) -> tuple[bool, str | None]:
     store = BlobStore(root / "blob")
     with ArchiveStore.open_existing(root, read_only=True) as archive:
-        prepared, reason = RawObservationDerivation(root)._stage_blob_from_recorded_source(
-            archive, store, raw_id, blob_hash=blob_hash, source_path=source_path
+        prepared, reason = stage_blob_from_recorded_source(
+            archive.source_connection, root, store, raw_id, blob_hash=blob_hash, source_path=source_path
         )
     if prepared is not None:
         assert prepared.hash_hex == blob_hash
@@ -212,16 +225,19 @@ def test_windowless_append_uses_receipt_order_despite_inverted_clocks(tmp_path: 
     source_path = str(path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
 
-        def observe(payload: bytes, clock: int) -> str:
+        def observe(payload: bytes, clock: int, *, source_index: int = 0) -> str:
             return archive.write_raw_payload(
-                provider=Provider.CODEX, payload=payload, source_path=source_path, acquired_at_ms=clock
+                provider=Provider.CODEX,
+                payload=payload,
+                source_path=source_path,
+                acquired_at_ms=clock,
+                source_index=source_index,
             )
 
         predecessor = observe(_EARLIER, 9000)
         later = observe(_LATER, 8000)
         assert observe(_EARLIER, 1000) == predecessor
-        raw_id = observe(_RECORD, 500)
-        archive.source_connection.execute("UPDATE raw_sessions SET source_index = -1 WHERE raw_id = ?", (raw_id,))
+        raw_id = observe(_RECORD, 500, source_index=-1)
         assert observe(_LATER, 0) == later
         archive.commit()
     blob_hash = hashlib.sha256(_RECORD).hexdigest()
@@ -230,7 +246,7 @@ def test_windowless_append_uses_receipt_order_despite_inverted_clocks(tmp_path: 
     assert _raw_restoration(tmp_path, raw_id, blob_hash, source_path) == (True, None)
 
 
-def test_relocated_legacy_zip_has_one_backup_and_restoration_decision(tmp_path: Path) -> None:
+def test_coordinate_less_zip_is_not_inferred_after_root_relocation(tmp_path: Path) -> None:
     raw_id, blob_hash, source_path = _seed(tmp_path, _CASES["zip_member"])
     original = Path(source_path.rsplit(":", 1)[0])
     relocated = tmp_path / "inbox" / original.name
@@ -241,8 +257,9 @@ def test_relocated_legacy_zip_has_one_backup_and_restoration_decision(tmp_path: 
         conn.execute("DELETE FROM raw_container_coordinates WHERE raw_id = ?", (raw_id,))
         conn.execute("UPDATE raw_sessions SET source_path = ? WHERE raw_id = ?", (recorded_path, raw_id))
     proofs, unproven = _backup_proof(tmp_path, blob_hash)
-    assert [proof["kind"] for proof in proofs] == ["zip_reacquired_payload"], unproven
-    assert _raw_restoration(tmp_path, raw_id, blob_hash, recorded_path) == (True, None)
+    assert proofs == []
+    assert [row["blob_hash"] for row in unproven] == [blob_hash]
+    assert _raw_restoration(tmp_path, raw_id, blob_hash, recorded_path)[0] is False
 
 
 def test_windowless_append_without_a_receipt_cannot_infer_a_predecessor(tmp_path: Path) -> None:
@@ -277,58 +294,76 @@ def _chatgpt_conversation(name: str) -> dict[str, object]:
     }
 
 
-def test_an_absent_zip_member_blob_is_restored_and_materialized(tmp_path: Path) -> None:
-    """The production raw route restores a lost ZIP-member blob from its container.
+@pytest.mark.asyncio
+async def test_an_absent_zip_member_blob_is_restored_and_materialized(tmp_path: Path) -> None:
+    """Real retained replay restores exact ZIP bytes and settles its Index receipt."""
+    from contextlib import closing
 
-    While the container no longer admits the member the raw is a named,
-    retryable refusal and nothing is staged. Once the container holds the
-    byte-identical member again, the writer restores the blob and the next
-    pass materializes the session.
-
-    Anti-vacuity: the former route refused every container member with
-    ``container_member`` and the session never materialized.
-    """
-    from polylogue.daemon.derivation import DerivationRegistry, DerivationReport, converge
     from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+    from tests.infra.archive_templates import run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    bootstrap_archive_root(tmp_path)
     member = dumps_bytes(_chatgpt_conversation("zipped"))
     container = tmp_path / "exports" / "export.zip"
-    container.parent.mkdir()
-    source_path = f"{container}:conversations.json"
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=member, source_path=source_path, acquired_at_ms=1
+
+    def seed() -> str:
+        bootstrap_archive_root(tmp_path)
+        container.parent.mkdir()
+        with zipfile.ZipFile(container, "w") as bundle:
+            bundle.writestr("conversations.json", member)
+        coordinate = CapturedZipMemberCoordinate(
+            str(container.resolve()),
+            str(container.resolve()),
+            "conversations.json",
+            0,
+            0,
+            MemberAddressingMode.WHOLE_MEMBER,
+            hashlib.sha256(container.read_bytes()).hexdigest(),
+            zip_acquisition_fingerprint(Provider.CHATGPT),
         )
-        record_raw_container_coordinate(
-            archive.source_connection,
-            raw_id,
-            coordinate_format="zip-v2",
-            entry_ordinal=0,
-            split_index=0,
-            addressing_mode="whole_member",
-            manage_transaction=True,
-        )
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CHATGPT,
+                payload=member,
+                source_path=coordinate.declared_member,
+                canonical_source_path=coordinate.canonical_member,
+                source_index=coordinate.source_index,
+                addressing_mode=coordinate.addressing_mode.value,
+                raw_id=captured_zip_member_raw_id(coordinate, hashlib.sha256(member).hexdigest()),
+                acquired_at_ms=1,
+                captured_zip_coordinate=coordinate,
+                capture_mode=Provider.CHATGPT,
+                post_parse=True,
+            )
+
+    raw_id = await run_archive_fixture_write(tmp_path, seed)
     store = BlobStore(tmp_path / "blob")
     blob_path = store.blob_path(hashlib.sha256(member).hexdigest())
+    with closing(sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True)) as conn:
+        assert conn.execute(
+            "SELECT source_path, blob_hash, blob_size FROM raw_sessions WHERE raw_id=?", (raw_id,)
+        ).fetchone() == (f"{container.resolve()}:conversations.json", hashlib.sha256(member).digest(), len(member))
+        assert conn.execute(
+            "SELECT entry_ordinal, split_index, addressing_mode, captured_coordinate IS NOT NULL "
+            "FROM raw_container_coordinates WHERE raw_id=?",
+            (raw_id,),
+        ).fetchone() == (0, 0, "whole_member", 1)
     blob_path.unlink()
-
     with zipfile.ZipFile(container, "w") as bundle:
         bundle.writestr("notes.txt", b"no conversation member")
-    with pytest.raises(RetainedPreparationRetryableError, match=r"not restorable from its source \(\w+\)"):
-        RawObservationDerivation(tmp_path).compute(raw_observation_frame(tmp_path), raw_id)
-    assert not blob_path.exists()
-    assert not any(store.staging_root.iterdir())
 
-    with zipfile.ZipFile(container, "w") as bundle:
-        bundle.writestr("conversations.json", member)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        with pytest.raises(RetainedPreparationRetryableError, match=r"not restorable from its source \(\w+\)"):
+            await owner.replay_retained_raw_ids((raw_id,))
+        assert not blob_path.exists()
+        assert not any(store.staging_root.iterdir())
+        with zipfile.ZipFile(container, "w") as bundle:
+            bundle.writestr("conversations.json", member)
+        restoring = await owner.converge_raw_id(raw_id)
+        assert restoring.failed == 0, restoring.outcomes
+        assert blob_path.read_bytes() == member
+        receipts = await owner.replay_retained_raw_ids((raw_id,))
+        assert sum(receipt.replayed_logical_sources for receipt in receipts) == 1
 
-    def run() -> DerivationReport:
-        return converge(DerivationRegistry((RawObservationDerivation(tmp_path),)), raw_observation_frame(tmp_path))
-
-    restoring = run()
-    assert restoring.failed == 0
-    assert blob_path.read_bytes() == member
-    assert restoring.done + run().done == 1
-    with sqlite3.connect(tmp_path / "index.db") as conn:
+    with closing(sqlite3.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True)) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (1,)

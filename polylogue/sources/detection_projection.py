@@ -458,7 +458,7 @@ def iter_projected_document_records(
     encoding: str = "utf-8",
     check_stop: Callable[[], None] | None = None,
     on_root: Callable[[Literal["record", "sequence"]], None] | None = None,
-) -> Iterator[object]:
+) -> Generator[object, None, None]:
     """Project a complete document's root records without retaining its array.
 
     Yielded records are provisional until normal exhaustion validates the

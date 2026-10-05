@@ -215,6 +215,19 @@ def native_sql_children(parent: SQLCustodyOwner) -> tuple[NativeSQLCustodyOwner,
     return tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner._terminal_parent is parent)
 
 
+def native_sql_owner_for_connection(connection: sqlite3.Connection) -> NativeSQLCustodyOwner | None:
+    """Find the exact registered physical handle before any caller capture."""
+    with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+        owners = tuple(owner for owner in _LIVE_NATIVE_SQL_OWNERS.values() if owner.connection is connection)
+    if len(owners) > 1:
+        raise RuntimeError("native SQLite handle has duplicate physical owners")
+    if not owners:
+        return None
+    owner = owners[0]
+    owner._require_owner()
+    return owner
+
+
 def native_sql_parent_for_connection(connection: sqlite3.Connection) -> SQLCustodyOwner | None:
     """Resolve an exact creator-owned handle's existing terminal parent."""
     for owner in retained_native_sql_owners_on_current_thread():
@@ -492,6 +505,13 @@ class NativeSQLCustodyOwner:
             raise RuntimeError("settlement callback requires its existing live native owner")
         self._settlement_callbacks.append(callback)
 
+    def release_settled_parent_lifetimes(self, parent: SQLCustodyOwner) -> None:
+        """Release artifact dependencies while retaining the unsettled parent."""
+        self._require_owner()
+        if not self._settled or self._terminal_parent is not parent:
+            raise RuntimeError("native artifact release requires its physically settled original parent")
+        self._lifetime_dependencies.clear()
+
     def retire_terminal_parent(self, parent: SQLCustodyOwner) -> None:
         """Retire only after the actual handle and its parent's obligations settle."""
         self._require_owner()
@@ -501,6 +521,19 @@ class NativeSQLCustodyOwner:
         with _LIVE_NATIVE_SQL_OWNERS_LOCK:
             _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
         self._lifetime_dependencies.clear()
+
+    def physical_resources_settled(self) -> bool:
+        """Prove native retirement independently of Python cleanup callbacks."""
+        self._require_owner()
+        return (
+            self.connection is None
+            and self.frame is None
+            and self.leaf is None
+            and self.scratch_directory is None
+            and not self.anchored_descriptors
+            and not self._incremental_blobs
+            and self.custody is None
+        )
 
     def close(self) -> None:
         self._require_owner()
@@ -621,7 +654,7 @@ class NativeSQLCustodyOwner:
                 failures.append(error)
             else:
                 self.custody = None
-        if resources_settled and self.custody is None and not failures:
+        if self.physical_resources_settled() and not failures:
             for callback in tuple(self._settlement_callbacks):
                 try:
                     callback()
@@ -630,7 +663,7 @@ class NativeSQLCustodyOwner:
                 else:
                     self._settlement_callbacks.remove(callback)
         callbacks_settled = not self._settlement_callbacks
-        self._settled = resources_settled and callbacks_settled and self.custody is None
+        self._settled = self.physical_resources_settled() and callbacks_settled
         if self._settled and self._terminal_parent is None:
             with _LIVE_NATIVE_SQL_OWNERS_LOCK:
                 _LIVE_NATIVE_SQL_OWNERS.pop(id(self), None)
@@ -1259,6 +1292,7 @@ def initialize_source_tier_database_mode(conn: sqlite3.Connection) -> None:
 def _connect_archive_writer(
     path: str | Path,
     *,
+    profile: SQLiteConnectionProfile,
     archive_root: str | Path | None = None,
     timeout: float = DB_TIMEOUT,
     check_same_thread: bool = True,
@@ -1266,26 +1300,37 @@ def _connect_archive_writer(
     mutation_permit: KnownTierWriteAuthority | None = None,
 ) -> sqlite3.Connection:
     """Keep Source SQL authorization dynamic across admitted writer leases."""
+    if profile.role != "write":
+        raise ValueError("archive writer construction requires a write profile")
     selected = Path(path)
     root = configured_archive_root(path, archive_root)
     is_source = selected.resolve() == (root / "source.db").resolve()
     is_user = selected.resolve() == (root / "user.db").resolve()
-    selected_tier = "source" if is_source else "user" if is_user else None
+    is_embeddings = selected.resolve() == (root / "embeddings.db").resolve()
+    is_prepared_embeddings = (
+        mutation_permit is not None
+        and mutation_permit.tier == "embeddings"
+        and selected.resolve() == (root / "embeddings.db").resolve()
+    )
+    selected_tier = "source" if is_source else "user" if is_user else "embeddings" if is_prepared_embeddings else None
     if mutation_permit is not None and mutation_permit.tier != selected_tier:
         raise UnleasedWriteError("known tier permit cannot authorize another physical tier")
     connection = connect_measured(
-        f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only else path,
+        f"{selected.resolve(strict=True).as_uri()}?mode=rw" if existing_only or mutation_permit is not None else path,
         # Sibling Source attachments use mode=ro URIs even when main is an
         # ordinary Path. URI handling belongs to the entire native connection.
         uri=True,
         timeout=timeout,
         check_same_thread=check_same_thread,
-        **({"cached_statements": 0} if is_source or is_user else {}),
+        **({"cached_statements": 0} if is_source or is_user or is_embeddings else {}),
     )
-    if not (is_source or is_user):
-        return connection
     owner = NativeSQLCustodyOwner(connection)
     try:
+        if mutation_permit is None:
+            for statement in write_connection_local_pragma_statements(profile):
+                connection.execute(statement)
+        if not (is_source or is_user or is_embeddings):
+            return owner.handoff()
         creator_pid = os.getpid()
         creator_thread = threading.current_thread()
         creator_task = _native_owner_task()
@@ -1324,6 +1369,17 @@ def _connect_archive_writer(
                 } and not (action == sqlite3.SQLITE_PRAGMA and second is None)
                 custody = current_sql_custody()
                 known = None if custody is None else custody.known_tier_authority
+                completion_write = (
+                    first == "excision_embedding_completions"
+                    and action
+                    in {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE, sqlite3.SQLITE_DROP_TABLE}
+                ) or (action == sqlite3.SQLITE_ALTER_TABLE and second == "excision_embedding_completions")
+                if (
+                    is_embeddings
+                    and completion_write
+                    and (known is None or known is not mutation_permit or not is_prepared_embeddings)
+                ):
+                    return sqlite3.SQLITE_DENY
                 if (
                     writes
                     and (is_source or known is not None)
@@ -1370,6 +1426,7 @@ def open_source_tier_write_connection(
     require_write_lease(f"open_source_tier_write_connection({path})", archive_root=archive_root)
     conn = _connect_archive_writer(
         path,
+        profile=WRITE_CONNECTION_PROFILE,
         archive_root=archive_root,
         mutation_permit=mutation_permit,
         timeout=WRITE_CONNECTION_PROFILE.timeout_seconds,
@@ -1379,10 +1436,7 @@ def open_source_tier_write_connection(
     )
     try:
         statements = write_connection_local_pragma_statements(WRITE_CONNECTION_PROFILE)
-        if mutation_permit is None:
-            for statement in statements:
-                conn.execute(statement)
-        else:
+        if mutation_permit is not None:
             # Profile setup precedes immutable row/FK/trigger enforcement on
             # the permit's one registered native connection.
             mutation_permit.configure_mutation_connection(conn, (*statements, "PRAGMA recursive_triggers = ON"))
@@ -1828,13 +1882,16 @@ def open_connection(
         raise ValueError("open_connection requires a write profile")
     root = configured_archive_root(path, archive_root)
     require_write_lease(f"open_connection({path})", archive_root=root)
-    conn = _connect_archive_writer(path, archive_root=root, timeout=timeout, check_same_thread=check_same_thread)
+    conn = _connect_archive_writer(
+        path, profile=profile, archive_root=root, timeout=timeout, check_same_thread=check_same_thread
+    )
     owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
         for stmt in write_connection_pragma_statements(profile):
-            conn.execute(stmt)
+            if stmt.startswith("PRAGMA journal_mode"):
+                conn.execute(stmt)
         _attach_sibling_tiers(conn, archive_root=root)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
@@ -1860,15 +1917,19 @@ def open_daemon_connection(
     """
     root = configured_archive_root(path, archive_root)
     require_write_lease(f"open_daemon_connection({path})", archive_root=root)
-    conn = _connect_archive_writer(path, archive_root=root, timeout=timeout)
+    profile = (
+        DAEMON_WRITE_CONNECTION_PROFILE
+        if busy_timeout_ms is None
+        else replace(DAEMON_WRITE_CONNECTION_PROFILE, busy_timeout_ms=busy_timeout_ms)
+    )
+    conn = _connect_archive_writer(path, profile=profile, archive_root=root, timeout=timeout)
     owner = NativeSQLCustodyOwner(conn)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in write_connection_pragma_statements(DAEMON_WRITE_CONNECTION_PROFILE):
-            if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
-                stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
-            conn.execute(stmt)
+        for stmt in write_connection_pragma_statements(profile):
+            if stmt.startswith("PRAGMA journal_mode"):
+                conn.execute(stmt)
         _attach_sibling_tiers(conn, archive_root=root)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
@@ -2384,6 +2445,7 @@ def open_isolated_write_connection(
     require_write_lease(purpose, archive_root=archive_root)
     conn = _connect_archive_writer(
         path,
+        profile=profile,
         archive_root=archive_root,
         mutation_permit=mutation_permit,
         timeout=profile.timeout_seconds if timeout is None else timeout,
@@ -2395,7 +2457,8 @@ def open_isolated_write_connection(
         statements = write_connection_pragma_statements(profile)
         if mutation_permit is None:
             for statement in statements:
-                conn.execute(statement)
+                if statement.startswith("PRAGMA journal_mode"):
+                    conn.execute(statement)
         else:
             mutation_permit.configure_mutation_connection(
                 conn, (*statements, "PRAGMA foreign_keys = ON", "PRAGMA recursive_triggers = ON")

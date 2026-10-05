@@ -139,3 +139,20 @@ def test_a_renamed_unit_executor_is_an_actionable_diagnostic() -> None:
     assert [item.code for item in diagnostics] == ["unresolved_handler_symbol"]
     assert "query_messages_renamed_away" in diagnostics[0].message
     assert diagnostics[0].repair_command
+
+
+def test_unit_capabilities_expose_and_search_their_executable_fields() -> None:
+    from polylogue.archive.query.metadata import query_unit_field_names
+
+    for declaration in QUERY_CAPABILITY_DECLARATIONS:
+        if declaration.kind == "unit":
+            name = declaration.payload["name"]
+            assert isinstance(name, str)
+            assert declaration.payload["fields"] == list(query_unit_field_names(name))
+    for needle, unit in (("cache_read_tokens", "message"), ("author_kind", "assertion")):
+        page = capability_detail_page(search=needle)
+        rows = page["items"]
+        assert isinstance(rows, list)
+        matching = [row for row in rows if isinstance(row, dict) and row["kind"] == "unit" and row["name"] == unit]
+        assert len(matching) == 1
+        assert needle in matching[0]["fields"]

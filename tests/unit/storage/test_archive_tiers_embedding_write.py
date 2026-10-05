@@ -401,9 +401,6 @@ def test_sql_and_python_vector_addresses_agree_at_a_non_1024_dimension(tmp_path:
     # embed path was configured with.
     conn = sqlite3.connect(":memory:")
     try:
-        conn.execute(
-            "CREATE TABLE messages (message_id TEXT, session_id TEXT, role TEXT, text TEXT, content_hash BLOB)"
-        )
         relation = archive_embeddable_messages_relation(conn, alias="m", recipe=recipe_512)
     finally:
         conn.close()

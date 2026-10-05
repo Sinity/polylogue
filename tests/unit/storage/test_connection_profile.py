@@ -537,7 +537,9 @@ def test_archive_writer_factories_preserve_readonly_source_uri_attachments(tmp_p
         if factory == "cached":
             connection = _get_cached_connection(path, archive_root=tmp_path)
         elif factory == "existing-only":
-            connection = connection_profile._connect_archive_writer(path, archive_root=tmp_path, existing_only=True)
+            connection = connection_profile._connect_archive_writer(
+                path, profile=connection_profile.WRITE_CONNECTION_PROFILE, archive_root=tmp_path, existing_only=True
+            )
             connection_profile._attach_sibling_tiers(connection, archive_root=tmp_path)
         else:
             selected = (
@@ -576,7 +578,9 @@ def test_existing_archive_writer_refuses_missing_file_without_creating_it(tmp_pa
     path = tmp_path / "missing.db"
     with write_lease("test.existing-uri-refusal", archive_root=tmp_path):
         with pytest.raises(FileNotFoundError):
-            connection_profile._connect_archive_writer(path, archive_root=tmp_path, existing_only=True)
+            connection_profile._connect_archive_writer(
+                path, profile=connection_profile.WRITE_CONNECTION_PROFILE, archive_root=tmp_path, existing_only=True
+            )
     assert not path.exists()
 
 
@@ -630,4 +634,27 @@ def test_native_owner_settles_original_supported_connection_after_external_close
         assert completions == ["settled"]
     finally:
         cursor.allow_cleanup.set()
+        owner.close()
+
+
+def test_source_factory_initializes_local_profile_before_authorization_and_retains_write_refusal(
+    tmp_path: Path,
+) -> None:
+    from polylogue.storage.sqlite.write_lease import write_lease
+    from tests.infra.archive_templates import bootstrap_archive_root
+
+    with write_lease("test.source-profile-bootstrap", archive_root=tmp_path):
+        bootstrap_archive_root(tmp_path)
+    owner = connection_profile.NativeSQLCustodyOwner(
+        connection_profile.open_source_tier_write_connection(tmp_path / "source.db", archive_root=tmp_path)
+    )
+    try:
+        connection = owner.require_connection()
+        with closing(connection.execute("PRAGMA foreign_keys")) as rows:
+            assert rows.fetchone()[0] == 1
+        for statement in ("PRAGMA foreign_keys = OFF", "PRAGMA journal_mode = DELETE", "BEGIN IMMEDIATE"):
+            with pytest.raises(sqlite3.DatabaseError):
+                connection.execute(statement)
+        assert not connection.in_transaction
+    finally:
         owner.close()

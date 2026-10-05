@@ -19,6 +19,11 @@ from time import monotonic, time
 from typing import TypeVar
 from uuid import uuid4
 
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
 from polylogue.logging import WARNING, emit
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.bindings import runtime_operation_binding
@@ -70,28 +75,13 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
-from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.pickle_spool import PickleSpool
-from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     consume_blob_publication_receipt,
     publication_refused,
 )
-from polylogue.storage.ingest_governance import (
-    CensusPublication,
-    CohortMembershipRefusalError,
-    CohortPublication,
-    PreparedIngestCohort,
-    PreparedRawCensus,
-    discard_prepared_ingest_cohort,
-    prepare_ingest_cohort,
-    prepare_raw_census,
-    publish_ingest_cohort,
-    publish_raw_census,
-)
-from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.source_generation_receipts import iter_source_item_raw_receipts, source_generation_receipt_page
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.raw_admission import execute_source_item_admission
@@ -166,21 +156,6 @@ class _ExcisedRecords:
         self.members.close()
 
 
-def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-    """Parse one retained raw and apply its provider's session assembly.
-
-    The same composition the live writer uses
-    (``LiveBatchProcessor._parse_retained_raw_sessions``), so a session
-    admitted through this operation carries the same assembled title and
-    enrichment as one admitted by the watcher or a from-empty build.
-    """
-    sessions = parse_retained_raw_sessions(archive, raw_id)
-    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
-    return enrich_sessions_from_archive(
-        archive, provider, source_path, sessions, captured_zip_coordinate=archive.raw_captured_zip_coordinate(raw_id)
-    )
-
-
 class IngestStoppedError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -218,12 +193,12 @@ class SourceReceiptSpool:
     def close(self) -> None:
         unlink_spool(self.path)
 
-    def pending_raw_page(self, after: str | None = None) -> tuple[str, ...]:
+    def raw_page(self, after: str | None = None) -> tuple[str, ...]:
         with spool_connection(self.path, read_only=True) as conn:
             return tuple(
                 str(row[0])
                 for row in conn.execute(
-                    "SELECT raw_id FROM raws WHERE parser_complete=0 AND raw_id>? ORDER BY raw_id LIMIT 256",
+                    "SELECT raw_id FROM raws WHERE raw_id>? ORDER BY raw_id LIMIT 256",
                     (after or "",),
                 ).fetchall()
             )
@@ -411,13 +386,20 @@ class IngestExecution:
         self.retained_profile_parts: tuple[SessionInsightPartReceipt, ...] | None = None
         self.publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
 
-    def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
+    def record_refusal(self, logical_key: str, refusal: RetainedRawDecodeRefusalError) -> None:
         with spool_connection(self.state_path) as state:
             state.execute(
                 # A transient retry drives the generation again from the start:
                 # one refused membership is one refusal, however many drives saw it.
                 "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
-                (refusal.logical_source_key, refusal.raw_id, refusal.reason[:512]),
+                (logical_key, refusal.raw_id, refusal.kind.value),
+            )
+
+    def record_membership_refusal(self, logical_key: str, raw_id: str, reason: str) -> None:
+        with spool_connection(self.state_path) as state:
+            state.execute(
+                "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
+                (logical_key, raw_id, reason),
             )
 
     def record_changed_session(self, session_id: str, message_count: int) -> None:
@@ -431,7 +413,7 @@ class IngestExecution:
     def changed_session_recorded(self, session_id: str) -> bool:
         """Whether this execution already recorded ``session_id`` as changed (a retry re-publishing its own work)."""
         assert_population_admitted(self.state_path)
-        with closing(sqlite3.connect(self.state_path)) as state:
+        with spool_connection(self.state_path, read_only=True) as state:
             return (
                 state.execute("SELECT 1 FROM changed_sessions WHERE session_id = ?", (session_id,)).fetchone()
                 is not None
@@ -555,19 +537,24 @@ class IngestExecution:
 
         await self.runtime.write_phase("ingest.source", discard)
 
+    def require_publication_identity(self, expected: ArchiveIdentity) -> None:
+        self.check_stop()
+        location = ArchiveLocation.resolve(self.archive_root)
+        current = ArchiveIdentity.resolve_location(location)
+        if (current.authority_identity_digest, current.active_generation) != (
+            expected.authority_identity_digest,
+            expected.active_generation,
+        ):
+            raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
+
     async def archive_write(self, work: Callable[[ArchiveStore], _T]) -> _T:
         assert self.snapshot is not None
         expected = self.snapshot.identity
 
         def publish() -> _T:
             self.check_stop()
+            self.require_publication_identity(expected)
             location = ArchiveLocation.resolve(self.archive_root)
-            current = ArchiveIdentity.resolve_location(location)
-            if (current.authority_identity_digest, current.active_generation) != (
-                expected.authority_identity_digest,
-                expected.active_generation,
-            ):
-                raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
             with ArchiveStore.open_existing(self.archive_root, read_only=False) as archive:
                 if archive.index_db_path.resolve() != location.active_index_path.resolve():
                     raise IngestReprepareRequiredError("ingest writer opened another index generation")
@@ -944,149 +931,71 @@ class IngestExecution:
             raise
 
     async def materialize(self, generation_id: str) -> SourceReceiptSpool:
-        """Reuse canonical census and cohort publication, reconciling first."""
+        """Publish this original generation through the resident Raw owner."""
         initial = await self.receipt(generation_id)
+        assert self.snapshot is not None
+        expected = self.snapshot.identity
         try:
             with spool_connection(initial.path, read_only=True) as conn:
                 retired = conn.execute("SELECT 1 FROM items WHERE retired_count>0 LIMIT 1").fetchone()
             if retired is not None:
                 raise ValueError("accepted raw member was retired; it cannot be readmitted")
+
+            def refused(keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
+                for key in keys:
+                    self.record_refusal(key, refusal)
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=keys,
+                    raw_id=refusal.raw_id,
+                    reason=refusal.kind.value,
+                    outcome="refused",
+                )
+
+            def dependency_refused(refusal: RetainedRawDependencyRefusalError) -> None:
+                for key in refusal.logical_source_keys:
+                    self.record_membership_refusal(key, refusal.subject_raw_id, "required_raw_dependency_refused")
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=refusal.logical_source_keys,
+                    raw_id=refusal.subject_raw_id,
+                    reason="required_raw_dependency_refused",
+                    dependency_raw_id=refusal.dependency.raw_id,
+                    dependency_reason=refusal.dependency.kind.value,
+                    outcome="refused",
+                )
+
+            def membership_refused(refusal: CohortMembershipRefusalError) -> None:
+                self.record_membership_refusal(refusal.logical_source_key, refusal.raw_id, refusal.reason)
+                emit(
+                    "ingest.membership.refused",
+                    logical_source_keys=(refusal.logical_source_key,),
+                    raw_id=refusal.raw_id,
+                    reason=refusal.reason,
+                    outcome="refused",
+                )
+
             cursor: str | None = None
-            while raw_page := initial.pending_raw_page(cursor):
-                for raw_id in raw_page:
-                    for _attempt in range(3):
-                        observed_at_ms = int(time() * 1000)
-
-                        def prepare_census(
-                            pinned: PinnedOperationRead,
-                            *,
-                            census_raw_id: str = raw_id,
-                            census_observed_at_ms: int = observed_at_ms,
-                        ) -> PreparedRawCensus:
-                            return prepare_raw_census(
-                                pinned.archive,
-                                census_raw_id,
-                                parser_fingerprint=raw_authority_parser_fingerprint(),
-                                parse_retained_raw=parse_retained_raw_sessions,
-                                censused_at_ms=census_observed_at_ms,
-                            )
-
-                        prepared: PreparedRawCensus = await self.read(prepare_census)
-
-                        def publish_census(
-                            archive: ArchiveStore, *, census: PreparedRawCensus = prepared
-                        ) -> CensusPublication:
-                            return publish_raw_census(archive, census)
-
-                        result: CensusPublication = await self.archive_write(publish_census)
-                        if result.published:
-                            break
-                    else:
-                        raise ValueError("accepted raw census kept changing during preparation")
+            while raw_page := initial.raw_page(cursor):
+                self.check_stop()
+                publications = await self.runtime.materialize_retained_raw_ids(
+                    raw_page,
+                    on_terminal_refusal=refused,
+                    on_dependency_refusal=dependency_refused,
+                    on_membership_refusal=membership_refused,
+                    before_publication=partial(self.require_publication_identity, expected),
+                )
+                for publication in publications:
+                    for logical_key, raw_id, decision in publication.membership_refusals:
+                        self.record_membership_refusal(logical_key, raw_id, decision.value)
+                    for session_id, before_hash, after_hash, message_count in publication.session_outputs:
+                        if before_hash != after_hash:
+                            self.record_changed_session(session_id, message_count)
+                        elif not self.changed_session_recorded(session_id):
+                            self.unchanged_publications += 1
                 cursor = raw_page[-1]
         finally:
             initial.close()
-
-        observed = await self.receipt(generation_id)
-        try:
-            with spool_connection(observed.path) as pending:
-                pending.execute("CREATE TABLE pending(logical_key TEXT PRIMARY KEY) WITHOUT ROWID")
-                pending.execute(
-                    "CREATE TABLE attempts(logical_key TEXT PRIMARY KEY, count INTEGER NOT NULL) WITHOUT ROWID"
-                )
-                pending.execute("INSERT INTO pending SELECT logical_key FROM logicals WHERE complete=0")
-                while row := pending.execute("SELECT logical_key FROM pending ORDER BY logical_key LIMIT 1").fetchone():
-                    self.check_stop()
-                    key = str(row[0])
-                    pending.execute("DELETE FROM pending WHERE logical_key=?", (key,))
-                    pending.execute(
-                        "INSERT INTO attempts VALUES (?, 1) ON CONFLICT(logical_key) DO UPDATE SET count=count+1",
-                        (key,),
-                    )
-                    attempts = int(
-                        pending.execute("SELECT count FROM attempts WHERE logical_key=?", (key,)).fetchone()[0]
-                    )
-                    if attempts > 3:
-                        raise ValueError("accepted membership cohort kept changing during preparation")
-                    observed_at_ms = int(time() * 1000)
-
-                    def prepare_cohort(
-                        pinned: PinnedOperationRead,
-                        *,
-                        cohort_key: str = key,
-                        cohort_observed_at_ms: int = observed_at_ms,
-                    ) -> PreparedIngestCohort:
-                        return prepare_ingest_cohort(
-                            pinned.archive,
-                            logical_source_key=cohort_key,
-                            source_generation_id=generation_id,
-                            parser_fingerprint=raw_authority_parser_fingerprint(),
-                            parse_retained_raw=_parse_assembled_retained_raw,
-                            acquired_at_ms=cohort_observed_at_ms,
-                        )
-
-                    prepared_cohort: PreparedIngestCohort | None = None
-                    try:
-                        prepared_cohort = await self.read(prepare_cohort)
-                    except CohortMembershipRefusalError as refusal:
-                        # Refuse this key while the rest of the generation continues.
-                        emit(
-                            "ingest.membership.refused",
-                            logical_source_key=refusal.logical_source_key,
-                            raw_id=refusal.raw_id,
-                            reason=refusal.reason,
-                            outcome="refused",
-                        )
-                        self.record_refusal(refusal)
-                        continue
-                    assert prepared_cohort is not None
-                    try:
-                        self.check_stop()
-
-                        def publish_cohort(
-                            archive: ArchiveStore, *, cohort: PreparedIngestCohort = prepared_cohort
-                        ) -> tuple[CohortPublication, int | None]:
-                            before = {
-                                session_id: archive._conn.execute(
-                                    "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
-                                ).fetchone()
-                                for session_id in cohort.affected_session_ids
-                            }
-                            published = publish_ingest_cohort(archive, cohort)
-                            if not published.published or published.session_id is None:
-                                return published, None
-                            after = archive._conn.execute(
-                                "SELECT content_hash, message_count FROM sessions WHERE session_id = ?",
-                                (published.session_id,),
-                            ).fetchone()
-                            if after is None:
-                                raise RuntimeError("published ingest cohort has no session row")
-                            prior = before.get(published.session_id)
-                            changed = prior is None or prior[0] != after[0]
-                            return published, int(after[1]) if changed else None
-
-                        publication, changed_message_count = await self.archive_write(publish_cohort)
-                    finally:
-
-                        def discard_cohort(*, cohort: PreparedIngestCohort = prepared_cohort) -> None:
-                            discard_prepared_ingest_cohort(cohort)
-
-                        await self.runtime.compute_phase(discard_cohort)
-                    if publication.reprepare_required:
-                        for redo_key in (key, *publication.reprepare_logical_source_keys):
-                            pending.execute("INSERT OR IGNORE INTO pending VALUES (?)", (redo_key,))
-                    if changed_message_count is not None and publication.session_id is not None:
-                        self.record_changed_session(publication.session_id, changed_message_count)
-                    elif (
-                        publication.published
-                        and publication.session_id is not None
-                        and not self.changed_session_recorded(publication.session_id)
-                    ):
-                        self.unchanged_publications += 1
-        finally:
-            observed.close()
-        # A published classification may still be ambiguous or incomplete.
-        # Only exact source/application/head witnesses can certify it.
         return await self.receipt(generation_id)
 
     async def converge_profiles(self, receipt: SourceReceiptSpool) -> tuple[SessionInsightPartReceipt, ...]:

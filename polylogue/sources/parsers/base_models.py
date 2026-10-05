@@ -695,13 +695,12 @@ def upgrade_chat_export_user_authorship(provider: Provider, message: ParsedMessa
     """Apply the session-level user-channel guarantee to one parsed message."""
     from polylogue.core.sources import provider_to_source
 
-    if (
-        provider_to_source(provider).runtime_root is None
-        and message.role is Role.USER
-        and message.message_type is MessageType.MESSAGE
-        and message.material_origin is MaterialOrigin.UNKNOWN
+    if provider_to_source(provider).runtime_root is None and not any(
+        block.type is BlockType.DOCUMENT for block in message.blocks
     ):
-        message.material_origin = MaterialOrigin.HUMAN_AUTHORED
+        from .base_support import human_authored_override
+
+        message.material_origin = human_authored_override(message.role, message.message_type, message.material_origin)
     return message
 
 

@@ -172,10 +172,12 @@ def require_exact_mutation_selection(request: RootModeRequest, *, allow_all: boo
 
 def probe_session_ids_for_verb(env: AppEnv, request: RootModeRequest, *, limit: int) -> list[str]:
     """Resolve a bounded ID prefix for cheap zero/one/many verb guards."""
-    from polylogue.cli.session_rows import query_session_ids
+    from polylogue.cli.session_rows import query_session_selection
 
     _reject_window_selectors(request)
-    return query_session_ids(env.config, request, limit=limit)[:limit]
+    selection = query_session_selection(env.config, request, limit=limit)
+    selection.require_authoritative()
+    return selection.ids[:limit]
 
 
 def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[str]:
@@ -191,10 +193,12 @@ def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[
 
     Returns IDs in the query's natural order (most-recent first by default).
     """
-    from polylogue.cli.session_rows import query_complete_session_ids
+    from polylogue.cli.session_rows import query_complete_session_selection
 
     _reject_window_selectors(request)
-    return query_complete_session_ids(env.config, request)
+    selection = query_complete_session_selection(env.config, request)
+    selection.require_authoritative()
+    return selection.ids
 
 
 __all__ = [

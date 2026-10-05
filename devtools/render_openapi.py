@@ -488,12 +488,13 @@ def _build_openapi_document() -> dict[str, Any]:
             "/api/status": {
                 "get": {
                     "summary": "Report daemon status and archive readiness",
-                    "description": "Returns the daemon status payload and readiness state.",
+                    "description": "Returns daemon status and readiness, or no body when If-None-Match matches its ETag.",
                     "operationId": "getStatus",
                     "security": _protected_read_security(),
                     "responses": {
                         "200": {
                             "description": "Daemon status payload.",
+                            "headers": {"ETag": {"schema": {"type": "string"}}},
                             "content": {
                                 "application/json": {
                                     "schema": {
@@ -503,6 +504,10 @@ def _build_openapi_document() -> dict[str, Any]:
                                     }
                                 }
                             },
+                        },
+                        "304": {
+                            "description": "Status is unchanged; retain the previously received payload.",
+                            "headers": {"ETag": {"schema": {"type": "string"}}},
                         },
                         "401": _protected_auth_error_response("Machine bearer or web credential was not accepted."),
                         "403": _protected_auth_error_response(

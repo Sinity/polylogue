@@ -15,15 +15,18 @@ preflight" a claim about discipline rather than about the code.
 
 from __future__ import annotations
 
+import base64
 import errno
+import hashlib
 import http.client
 import json
 import os
 import socket
 import struct
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import suppress
+from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import Any
@@ -38,10 +41,11 @@ from polylogue.operations.daemon_errors import (
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_OUTCOMES,
     DAEMON_OPERATION_PROTOCOL,
-    MAX_OPERATION_RESULT_BYTES,
     AcceptedOperationReference,
     DaemonAuthority,
     DaemonOperationRequest,
+    OperationResultDocument,
+    OperationResultPage,
     daemon_operation_spec,
     validate_operation_result,
 )
@@ -143,6 +147,7 @@ class DaemonClient:
         *,
         mutation: bool = False,
         timeout_s: float | None = None,
+        prepare_body: Callable[[], dict[str, object]] | None = None,
     ) -> tuple[int, dict[str, Any] | None] | None:
         """Return the response status with its decoded JSON object, if any."""
 
@@ -153,6 +158,9 @@ class DaemonClient:
             # Connect before resolving credentials: an absent socket must cost
             # nothing, least of all a write into the archive root.
             connection.connect()
+            if prepare_body is not None:
+                body = prepare_body()
+                raw = json.dumps(body, separators=(",", ":")).encode()
             headers = {"Host": "127.0.0.1", "Content-Type": "application/json"}
             token = self.auth_token
             if token:
@@ -168,13 +176,12 @@ class DaemonClient:
                 ):
                     raise DaemonOperationProtocolError("daemon response has invalid HTTP framing")
                 declared_length = int(lengths[0])
-                if declared_length > MAX_OPERATION_RESULT_BYTES:
-                    raise DaemonOperationProtocolError("daemon response exceeds the bounded result size")
-                response_body = response.read(MAX_OPERATION_RESULT_BYTES + 1)
-                if len(response_body) != declared_length:
-                    raise DaemonOperationProtocolError("daemon response body is incomplete")
+                from polylogue.operations.read_result_transport import decode_json_response
+
                 try:
-                    decoded = json.loads(response_body.decode())
+                    decoded = decode_json_response(response, declared_length)
+                except EOFError as exc:
+                    raise DaemonOperationProtocolError("daemon response body is incomplete") from exc
                 except (UnicodeDecodeError, ValueError):
                     decoded = None
                 self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
@@ -252,19 +259,45 @@ class DaemonClient:
         # A write never gives up the way a read does: once the request is on
         # the socket, an offline retry would make the actuator outcome
         # ambiguous, so the transport reports indeterminacy instead of absence.
-        writes = spec.authority is not DaemonAuthority.READ
+        writes = spec.authority is not DaemonAuthority.READ and operation != "operation.result"
         # Reads wait for completion unless the caller supplies a deadline.
         # Explicit and mutation deadlines leave room for the server response
         # without changing a client shared by other calls.
         deadline_ms = request.deadline_ms
         if writes and deadline_ms is None:
             raise DaemonOperationProtocolError("write operation request has no execution deadline")
+
+        def bound_body() -> dict[str, object]:
+            nonlocal request
+            # Resolve canonical client expectations only after the resident socket
+            # connects. Absent-daemon routes must not load storage or version code.
+            # Lifecycle controls must remain usable to recover already accepted work.
+            if operation not in {
+                "status",
+                "operation.status",
+                "operation.await",
+                "operation.cancel",
+                "operation.result",
+            }:
+                if request.index_schema_version is None:
+                    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+
+                    request = replace(request, index_schema_version=INDEX_SCHEMA_VERSION)
+                if request.daemon_version is None:
+                    from polylogue.version import POLYLOGUE_VERSION
+
+                    request = replace(request, daemon_version=POLYLOGUE_VERSION)
+                request = DaemonOperationRequest.from_dict(request.to_dict())
+            body: dict[str, object] = request.to_dict()
+            return body
+
         raw = self._request_json_response(
             "POST",
             "/api/operation",
             request.to_dict(),
             mutation=writes,
             timeout_s=self._response_timeout_s(deadline_ms),
+            prepare_body=bound_body,
         )
         if raw is None:
             return None
@@ -423,6 +456,54 @@ class DaemonClient:
             archive_root=archive_root,
         )
 
+    def iter_operation_result(
+        self,
+        document: Mapping[str, object],
+        *,
+        archive_root: str,
+        expected_archive_identity: str | None = None,
+    ) -> Iterator[bytes]:
+        """Consume the exact complete request-owned document; exhaustion verifies delivery."""
+        identity = OperationResultDocument.model_validate(document).model_dump()
+        offset = 0
+        digest = hashlib.sha256()
+        while True:
+            envelope = self.operation(
+                "operation.result",
+                {**identity, "offset": offset},
+                archive_root=archive_root,
+                expected_archive_identity=expected_archive_identity,
+            )
+            if envelope is None or envelope.get("outcome") != "completed":
+                outcome = envelope.get("outcome") if envelope is not None else None
+                error = envelope.get("error") if envelope is not None else None
+                code = error.get("code") if isinstance(error, dict) else None
+                raise DaemonOperationProtocolError(
+                    f"operation result document is unavailable ({outcome}: {code})",
+                    outcome=outcome if isinstance(outcome, str) else None,
+                    error_code=code if isinstance(code, str) else None,
+                )
+            page = OperationResultPage.model_validate(envelope.get("result"))
+            if page.document.model_dump() != identity or page.offset != offset:
+                raise DaemonOperationProtocolError("operation result document identity or cursor changed")
+            try:
+                chunk = base64.b64decode(page.data_base64, validate=True)
+            except ValueError as exc:
+                raise DaemonOperationProtocolError("operation result document has invalid bytes") from exc
+            end = offset + len(chunk)
+            if end > identity["byte_length"] or (page.next_offset is not None and page.next_offset != end):
+                raise DaemonOperationProtocolError("operation result document has invalid framing")
+            if not chunk and page.next_offset is not None:
+                raise DaemonOperationProtocolError("operation result document did not progress")
+            digest.update(chunk)
+            if chunk:
+                yield chunk
+            offset = end
+            if page.next_offset is None:
+                if offset != identity["byte_length"] or digest.hexdigest() != identity["sha256"]:
+                    raise DaemonOperationProtocolError("operation result document is incomplete or corrupt")
+                return
+
     def await_operation(
         self,
         request_id: str,
@@ -442,6 +523,7 @@ class DaemonClient:
                 "timeout_ms": timeout_ms,
             },
             archive_root=archive_root,
+            deadline_ms=timeout_ms,
         )
 
     def operation_to_completion(

@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
 from polylogue.logging import emit
 from polylogue.sources import codex_state_projection
 from polylogue.sources.parsers import codex_state
-from polylogue.storage.materials import PreparedMaterial, admit_material, link_material
+from polylogue.storage.materials import (
+    MaterialSourceProducer,
+    PreparedMaterial,
+    _admit_material,
+    _link_material,
+    _supersede_material,
+)
 
 if TYPE_CHECKING:
     from polylogue.sources.prepared_jsonl import PreparedJsonl
@@ -34,58 +42,6 @@ def codex_material_coordinate(source_path: str, thread_id: str, kind: str, item_
     )
     referrer_ref = f"codex-session:{thread_id}"
     return source_uri, referrer_ref
-
-
-def _upsert_codex_material(
-    archive: Any,
-    *,
-    raw_id: str,
-    prepared: PreparedMaterial,
-    observed_at_ms: int,
-) -> None:
-    """Retain one generated Codex record through the shared material route."""
-    conn = archive.source_connection
-    source_uri, referrer_ref = prepared.source_uri, prepared.referrer_ref
-    previous = conn.execute(
-        "SELECT m.material_id FROM material_evidence_links AS l "
-        "JOIN material_observations AS m USING(material_id) "
-        "WHERE l.evidence_ref = ? AND l.relation = 'refers_to' "
-        "AND m.source_uri = ? AND m.acquisition_state != 'superseded' "
-        "ORDER BY m.created_at_ms DESC, m.material_id DESC LIMIT 1",
-        (referrer_ref, source_uri),
-    ).fetchone()
-    material = admit_material(
-        conn,
-        prepared=prepared,
-        observed_at_ms=observed_at_ms,
-        supersedes_material_id=str(previous[0]) if previous is not None else None,
-        commit=False,
-    )
-    if previous is not None and str(previous[0]) != material.material_id:
-        conn.execute(
-            "UPDATE material_observations SET acquisition_state = 'superseded' WHERE material_id = ?",
-            (str(previous[0]),),
-        )
-    link_material(
-        conn,
-        material.material_id,
-        raw_id,
-        relation="acquired_from",
-        authority="provider",
-        observed_at_ms=observed_at_ms,
-        source_diagnostic=f"Codex state retained export {raw_id}",
-        commit=False,
-    )
-    link_material(
-        conn,
-        material.material_id,
-        referrer_ref,
-        relation="refers_to",
-        authority="provider",
-        observed_at_ms=observed_at_ms,
-        source_diagnostic="Codex provider-generated state associated with its thread",
-        commit=False,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,14 +99,60 @@ def _encode_state_payload(payload: dict[str, object]) -> bytes:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
 
 
-def materialize_codex_state_content(
-    archive: Any,
+__all__ = [
+    "CODEX_STATE_CENSUS_DETAIL",
+    "CodexStateMaterializationReceipt",
+]
+
+
+def _upsert_codex_material_source(
+    producer: MaterialSourceProducer,
+    *,
+    raw_id: str,
+    prepared: PreparedMaterial,
+    observed_at_ms: int,
+) -> None:
+    """Retain one generated Codex record through the shared material route."""
+    source_uri, referrer_ref = prepared.source_uri, prepared.referrer_ref
+    with producer.material_previous_rows(referrer_ref, source_uri) as rows:
+        previous = rows.fetchone()
+    material = _admit_material(
+        producer,
+        prepared=prepared,
+        observed_at_ms=observed_at_ms,
+        supersedes_material_id=str(previous[0]) if previous is not None else None,
+    )
+    if previous is not None and str(previous[0]) != material.material_id:
+        _supersede_material(producer, str(previous[0]))
+    _link_material(
+        producer,
+        material.material_id,
+        raw_id,
+        relation="acquired_from",
+        authority="provider",
+        observed_at_ms=observed_at_ms,
+        source_diagnostic=f"Codex state retained export {raw_id}",
+    )
+    _link_material(
+        producer,
+        material.material_id,
+        referrer_ref,
+        relation="refers_to",
+        authority="provider",
+        observed_at_ms=observed_at_ms,
+        source_diagnostic="Codex provider-generated state associated with its thread",
+    )
+
+
+def _materialize_codex_state_content(
+    producer: MaterialSourceProducer,
     raw_id: str,
     *,
     prepared_state: PreparedJsonl,
     source_path: str,
     state_kind: str,
     acquired_at_ms: int,
+    settle_page: Callable[[], None],
     row_limit: int = codex_state.CODEX_STATE_PAGE_ROWS,
     aggregate_byte_limit: int = codex_state.CODEX_STATE_MAX_AGGREGATE_BYTES,
 ) -> CodexStateMaterializationReceipt | None:
@@ -168,19 +170,20 @@ def materialize_codex_state_content(
     if prepared_state.codex_state_kind != state_kind:
         raise ValueError("prepared state material kind changed")
     for _thread_id, _item_id, part_kind, byte_size, prepared in prepared_state.iter_codex_state_material():
+        check_compute_cancelled()
         if part_kind == "invalid":
             rows_available += 1
             continue
         if part_kind == "record" and materialized and materialized % row_limit == 0:
-            archive.commit()
+            settle_page()
             window_bytes = 0
         if window_bytes + byte_size > aggregate_byte_limit:
-            archive.commit()
+            settle_page()
             window_bytes = 0
         if prepared is None:
             raise ValueError("prepared state material is missing its sealed carrier")
-        _upsert_codex_material(
-            archive,
+        _upsert_codex_material_source(
+            producer,
             raw_id=raw_id,
             prepared=prepared,
             observed_at_ms=acquired_at_ms,
@@ -224,8 +227,12 @@ def materialize_codex_state_content(
     return receipt
 
 
-def record_codex_state_snapshot_terminal(
-    archive: Any,
+def _codex_state_terminal_detail(receipt: CodexStateMaterializationReceipt | None) -> str:
+    return f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}" if receipt is not None else CODEX_STATE_CENSUS_DETAIL
+
+
+def prepare_codex_state_source_terminal(
+    seal: PreparedIndexMutation,
     raw_id: str,
     *,
     prepared_state: PreparedJsonl,
@@ -233,61 +240,65 @@ def record_codex_state_snapshot_terminal(
     source_path: str,
     acquired_at_ms: int,
     censused_at_ms: int,
-    blob_hash: str | None = None,
-) -> None:
-    """Finalize one admitted Codex state export as terminal non-session evidence.
+    source_read: PreparedSessionSourceRead,
+) -> CodexStateMaterializationReceipt | None:
+    """Prepare only canonical Source material and terminal evidence.
 
-    A state export has no byte frontier and never yields a session, so the
-    cursor-authority gate can only account for it through a terminal
-    source-tier receipt: the ``non_session`` membership census plus a
-    finalized parse state. Live ingest and retained-raw replay both end here
-    so a raw admitted by either route satisfies the same gate.
-
-    A ``thread_state`` export also recomputes the index-tier thread-state
-    projection, which is why both routes pass through one function.
+    The parent has published the artifact's Blob pages and owns this same
+    original read window/Source phase. The sealed thread-state snapshot stays
+    on its existing Index projection owner; Source-only evidence does not
+    acquire an Index capability through this terminal receipt.
     """
     from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        _PreparedSourceProducer,
+        _raw_parse_success_state,
+        prepare_raw_state_update,
+        replace_raw_membership_census,
+    )
 
-    receipt: CodexStateMaterializationReceipt | None = None
+    check_compute_cancelled()
+    if state_kind not in codex_state.IN_SCOPE_KINDS or prepared_state.codex_state_kind != state_kind:
+        raise ValueError("prepared Codex state kind differs from its terminal evidence")
+    prepared_state.verify_files(full=False)
+    if state_kind == codex_state_projection.THREAD_STATE_KIND:
+        receipt_at_ms, receipt_order = source_read.raw_revision_observation_order(raw_id)
+        prepared_state.prepare_thread_projection(
+            seal,
+            source_read=source_read,
+            raw_id=raw_id,
+            blob_hash=source_read.raw_revision_descriptor(raw_id)[1],
+            observed_at_ms=receipt_at_ms,
+            observation_order=receipt_order,
+            source_path=source_path,
+        )
+    receipt = None
     if state_kind in {"goals", "memories"}:
-        receipt = materialize_codex_state_content(
-            archive,
+        receipt = _materialize_codex_state_content(
+            _PreparedSourceProducer(seal),
             raw_id,
             prepared_state=prepared_state,
             source_path=source_path,
             state_kind=state_kind,
             acquired_at_ms=acquired_at_ms,
+            settle_page=check_compute_cancelled,
         )
-    if state_kind == codex_state_projection.THREAD_STATE_KIND:
-        snapshot = prepared_state.codex_state_snapshot
-        if snapshot is None or prepared_state.codex_state_kind != state_kind:
-            raise ValueError("prepared thread state snapshot is absent")
-        prepared_state.verify_files(full=False)
-        codex_state_projection.apply_prepared_state_snapshot(
-            archive,
-            raw_id,
-            snapshot=snapshot,
-            blob_hash=blob_hash or archive.raw_revision_descriptor(raw_id)[1],
-            observed_at_ms=acquired_at_ms,
-            source_path=source_path,
-        )
-    archive.replace_raw_membership_census(
+    replace_raw_membership_census(
+        seal,
         raw_id,
         [],
         parser_fingerprint=raw_authority_parser_fingerprint(),
         censused_at_ms=censused_at_ms,
-        detail=(
-            f"{CODEX_STATE_CENSUS_DETAIL}; {receipt.as_detail()}" if receipt is not None else CODEX_STATE_CENSUS_DETAIL
-        ),
+        detail=_codex_state_terminal_detail(receipt),
         retire_full_revision_governance=True,
         revision_authority=None,
     )
-    archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
+    prepare_raw_state_update(seal, raw_id, state=_raw_parse_success_state(Provider.CODEX))
+    check_compute_cancelled()
+    return receipt
 
 
-__all__ = [
-    "CODEX_STATE_CENSUS_DETAIL",
-    "CodexStateMaterializationReceipt",
-    "materialize_codex_state_content",
-    "record_codex_state_snapshot_terminal",
-]
+if TYPE_CHECKING:
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation

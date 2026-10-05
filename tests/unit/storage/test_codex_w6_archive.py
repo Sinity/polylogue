@@ -14,7 +14,6 @@ import pytest
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import ArchiveAggMetricSpec
 from polylogue.storage.sqlite.queries.sessions_reads import get_session, get_sessions_batch
@@ -88,29 +87,45 @@ def test_action_pairs_follow_paired_result_updates_and_deletes(tmp_path: Path) -
         )
 
 
-def test_work_event_payload_cannot_override_validated_identity(tmp_path: Path) -> None:
-    with ArchiveStore(tmp_path) as archive:
-        session_id = _seed_session(archive)
-        result = archive.append_work_event(
-            session_id=session_id,
-            event_type="tool_run",
-            event_id="  event-1  ",
-            summary="declared summary",
-            payload={"event_id": "", "summary": "payload override", "tool_name": "Bash"},
-        )
-        assert result["event_id"] == "event-1"
+async def test_work_event_payload_cannot_override_validated_identity(tmp_path: Path) -> None:
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    def seed() -> str:
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return _seed_session(archive)
+
+    session_id = await run_archive_fixture_write(tmp_path, seed)
+
+    def acquire() -> dict[str, object]:
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return archive.admit_work_event(
+                session_id=session_id,
+                event_type="tool_run",
+                event_id="  event-1  ",
+                summary="declared summary",
+                payload={"event_id": "", "summary": "payload override", "tool_name": "Bash"},
+            )
+
+    admitted = await run_archive_fixture_write(tmp_path, acquire)
+    assert admitted["event_id"] == "event-1"
+    raw_id = admitted["raw_id"]
+    assert isinstance(raw_id, str)
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        receipts = await owner.ingest_retained_raw_ids((raw_id,))
+        assert raw_id in {selected for receipt in receipts for selected in receipt.writer_changed_raw_ids}
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
         stored = archive._conn.execute(
             "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'tool_run'",
             (session_id,),
         ).fetchone()
+        assert stored is not None
         payload = json.loads(stored[0])
         assert (payload["event_id"], payload["summary"]) == ("event-1", "declared summary")
-        with closing(sqlite3.connect(archive.source_db_path)) as source:
-            raw_id = source.execute(
-                "SELECT raw_id FROM raw_sessions WHERE raw_id LIKE 'agent-work-event:%'"
-            ).fetchone()[0]
-        replayed = parse_retained_raw_sessions(archive, raw_id)
-        assert replayed[0].session_events[0].payload["event_id"] == "event-1"
+    with closing(sqlite3.connect(tmp_path / "source.db")) as source:
+        retained = source.execute("SELECT raw_id FROM raw_sessions WHERE raw_id LIKE 'agent-work-event:%'").fetchone()
+        assert retained is not None and retained[0] == raw_id
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), {"nested": [float("nan")]}])

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, aclosing, asynccontextmanager
 from typing import TYPE_CHECKING
 
 import aiosqlite
@@ -57,6 +57,30 @@ def _hydrate_message_text_from_blocks(message: MessageRecord) -> None:
         message.text = "\n".join(parts)
 
 
+@asynccontextmanager
+async def _message_snapshot(conn: aiosqlite.Connection) -> AsyncIterator[None]:
+    owns_snapshot = not conn.in_transaction
+    if owns_snapshot:
+        async with conn.execute("BEGIN DEFERRED"):
+            pass
+    try:
+        yield
+    finally:
+        if owns_snapshot:
+            async with conn.execute("ROLLBACK"):
+                pass
+
+
+async def _hydrate_message_rows(conn: aiosqlite.Connection, messages: list[MessageRecord]) -> None:
+    ids: list[str] = [message.message_id for message in messages]
+    blocks = await attachments_q.get_blocks(conn, ids)
+    attachments = await attachments_q.get_message_attachments(conn, ids)
+    for message in messages:
+        message.blocks = blocks.get(message.message_id, [])
+        message.attachments = attachments.get(message.message_id, [])
+        _hydrate_message_text_from_blocks(message)
+
+
 class SQLiteQueryStoreArchiveMixin:
     if TYPE_CHECKING:
         _connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]]
@@ -75,7 +99,7 @@ class SQLiteQueryStoreArchiveMixin:
         async with self._connection_factory() as conn:
             return await session_links_q.list_session_links_for_session(conn, session_id, limit=limit)
 
-    async def list_session_links_to_session(self, session_id: str, *, limit: int) -> list[dict[str, object]]:
+    async def list_session_links_to_session(self, session_id: str, *, limit: int | None) -> list[dict[str, object]]:
         async with self._connection_factory() as conn:
             return await session_links_q.list_session_links_to_session(conn, session_id, limit=limit)
 
@@ -162,34 +186,16 @@ class SQLiteQueryStoreArchiveMixin:
             return await sessions_q.search_action_session_hits(conn, query, limit, origins)
 
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
-        async with self._connection_factory() as conn:
+        async with self._connection_factory() as conn, _message_snapshot(conn):
             messages = await messages_q.get_messages(conn, session_id)
-        if not messages:
-            return []
-        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
-        # In-place attachment avoids constructing a second pydantic instance
-        # per message in the hot hydration path (#1314). The MessageRecord
-        # instances were just constructed by _row_to_message and aren't shared.
-        for message in messages:
-            message.blocks = blocks_by_message.get(message.message_id, [])
-            _hydrate_message_text_from_blocks(message)
-        return messages
+            await _hydrate_message_rows(conn, messages)
+            return messages
 
     async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[MessageRecord]:
-        async with self._connection_factory() as conn:
-            owns_snapshot = not conn.in_transaction
-            if owns_snapshot:
-                await conn.execute("BEGIN DEFERRED")
-            try:
-                messages = await messages_q.get_effective_context(conn, session_id, at_position)
-                blocks_by_message = await attachments_q.get_blocks(conn, [message.message_id for message in messages])
-                for message in messages:
-                    message.blocks = blocks_by_message.get(message.message_id, [])
-                    _hydrate_message_text_from_blocks(message)
-                return messages
-            finally:
-                if owns_snapshot:
-                    await conn.execute("ROLLBACK")
+        async with self._connection_factory() as conn, _message_snapshot(conn):
+            messages = await messages_q.get_effective_context(conn, session_id, at_position)
+            await _hydrate_message_rows(conn, messages)
+            return messages
 
     async def get_messages_paginated(
         self,
@@ -200,7 +206,7 @@ class SQLiteQueryStoreArchiveMixin:
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[MessageRecord], int, LineageCompleteness]:
-        async with self._connection_factory() as conn:
+        async with self._connection_factory() as conn, _message_snapshot(conn):
             messages, total, completeness = await messages_q.get_messages_paginated(
                 conn,
                 session_id,
@@ -209,13 +215,8 @@ class SQLiteQueryStoreArchiveMixin:
                 limit=limit,
                 offset=offset,
             )
-        if not messages:
-            return [], total, completeness
-        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
-        for message in messages:
-            message.blocks = blocks_by_message.get(message.message_id, [])
-            _hydrate_message_text_from_blocks(message)
-        return messages, total, completeness
+            await _hydrate_message_rows(conn, messages)
+            return messages, total, completeness
 
     async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
         async with self._connection_factory() as conn:
@@ -230,7 +231,7 @@ class SQLiteQueryStoreArchiveMixin:
         material_origin: MaterialOriginFilter | None = None,
         edge_limit: int = 8,
     ) -> tuple[list[MessageRecord], list[MessageRecord], int]:
-        async with self._connection_factory() as conn:
+        async with self._connection_factory() as conn, _message_snapshot(conn):
             first, last, total = await messages_q.get_message_edge_windows(
                 conn,
                 session_id,
@@ -239,14 +240,9 @@ class SQLiteQueryStoreArchiveMixin:
                 material_origin=material_origin,
                 edge_limit=edge_limit,
             )
-        messages = [*first, *last]
-        if not messages:
+            messages = [*first, *last]
+            await _hydrate_message_rows(conn, messages)
             return first, last, total
-        blocks_by_message = await self.get_blocks([message.message_id for message in messages])
-        for message in messages:
-            message.blocks = blocks_by_message.get(message.message_id, [])
-            _hydrate_message_text_from_blocks(message)
-        return first, last, total
 
     async def get_messages_batch(
         self,
@@ -258,7 +254,7 @@ class SQLiteQueryStoreArchiveMixin:
     ) -> dict[str, list[MessageRecord]]:
         if not session_ids:
             return {}
-        async with self._connection_factory() as conn:
+        async with self._connection_factory() as conn, _message_snapshot(conn):
             result, all_messages = await messages_q.get_messages_batch(
                 conn,
                 session_ids,
@@ -266,13 +262,8 @@ class SQLiteQueryStoreArchiveMixin:
                 sort_key_until=sort_key_until,
                 message_role=message_role,
             )
-        if not all_messages:
+            await _hydrate_message_rows(conn, all_messages)
             return result
-        blocks_by_message = await self.get_blocks([message.message_id for message in all_messages])
-        for message in all_messages:
-            message.blocks = blocks_by_message.get(message.message_id, [])
-            _hydrate_message_text_from_blocks(message)
-        return result
 
     async def get_blocks(self, message_ids: list[str]) -> dict[str, list[BlockRecord]]:
         async with self._connection_factory() as conn:
@@ -372,17 +363,41 @@ class SQLiteQueryStoreArchiveMixin:
         self,
         session_id: str,
         *,
+        chunk_size: int = 100,
         message_roles: MessageRoleFilter = (),
+        material_origin: MaterialOriginFilter | None = None,
         limit: int | None = None,
-    ) -> AsyncIterator[MessageRecord]:
-        async with self._connection_factory() as conn:
-            async for record in messages_q.iter_messages(
-                conn,
-                session_id,
-                message_roles=message_roles,
-                limit=limit,
-            ):
-                yield record
+    ) -> AsyncGenerator[MessageRecord, None]:
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
+        # Hydrate one bounded page before yielding, using the same held
+        # connection as the message stream rather than one query per row.
+        async with (
+            self._connection_factory() as conn,
+            _message_snapshot(conn),
+            aclosing(
+                messages_q.iter_messages(
+                    conn,
+                    session_id,
+                    chunk_size=chunk_size,
+                    message_roles=message_roles,
+                    material_origin=material_origin,
+                    limit=limit,
+                )
+            ) as records,
+        ):
+            batch: list[MessageRecord] = []
+            async for record in records:
+                batch.append(record)
+                if len(batch) == chunk_size:
+                    await _hydrate_message_rows(conn, batch)
+                    for row in batch:
+                        yield row
+                    batch.clear()
+            if batch:
+                await _hydrate_message_rows(conn, batch)
+                for row in batch:
+                    yield row
 
     async def get_session_stats(self, session_id: str) -> dict[str, int]:
         async with self._connection_factory() as conn:

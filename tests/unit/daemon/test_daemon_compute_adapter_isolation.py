@@ -18,6 +18,8 @@ down".
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import polylogue.core.compute as execution
@@ -82,3 +84,59 @@ def test_close_names_a_worker_that_outlives_the_join_deadline() -> None:
     finally:
         release.set()
     assert adapter.close(join_timeout_s=5.0) == ()
+
+
+@pytest.mark.uses_real_clock("retains an actual shared archive-read worker through a refused reset/replacement")
+async def test_shared_owner_cannot_be_replaced_before_its_worker_physically_settles(tmp_path: Path) -> None:
+    import asyncio
+    import threading
+
+    from polylogue.archive.query.execution_control import (
+        QueryAdmissionController,
+        QueryExecutionContext,
+        execute_archive_read,
+    )
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+
+    await run_archive_fixture_write(tmp_path, lambda: bootstrap_archive_root(tmp_path))
+    first = execution.compute_adapter()
+    release = threading.Event()
+    started = threading.Event()
+    second = execution.BoundedComputeAdapter(max_workers=1)
+    controller = QueryAdmissionController()
+
+    def held(archive: ArchiveStore) -> int:
+        started.set()
+        assert release.wait(5)
+        return int(archive.index_connection.execute("SELECT 1").fetchone()[0])
+
+    pending = asyncio.create_task(
+        execute_archive_read(
+            tmp_path,
+            held,
+            ctx=QueryExecutionContext.create(query_text="retained-read", timeout_s=None),
+            controller=controller,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 2)
+    try:
+        execution.publish_compute_adapter(first)
+        assert execution.reset_compute_adapter(join_timeout_s=0)
+        assert execution.compute_adapter() is first
+        with pytest.raises(RuntimeError):
+            execution.publish_compute_adapter(second)
+        assert execution.compute_adapter() is first
+        assert not pending.done()
+        assert controller.in_flight_weight == 1
+        release.set()
+        assert await pending == 1
+        assert controller.in_flight_weight == 0
+        assert execution.reset_compute_adapter(join_timeout_s=5) == ()
+        execution.publish_compute_adapter(second)
+        assert execution.compute_adapter() is second
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        assert execution.reset_compute_adapter(join_timeout_s=5) == ()
+        assert second.close(join_timeout_s=5) == ()

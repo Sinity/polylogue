@@ -32,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.connection_profile import (
+    WRITE_CONNECTION_PROFILE,
     NativeSQLCustodyOwner,
     _close_failed_native_construction,
     _connect_archive_writer,
@@ -719,7 +720,7 @@ def initialize_archive_database(
             )
         path.parent.mkdir(parents=True, exist_ok=True)
         conn = (
-            _connect_archive_writer(path, archive_root=path.parent)
+            _connect_archive_writer(path, profile=WRITE_CONNECTION_PROFILE, archive_root=path.parent)
             if tier is ArchiveTier.SOURCE
             else connect_measured(path)
         )
@@ -734,7 +735,9 @@ def initialize_archive_database(
         if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
             raise RuntimeError(f"durable tier is not a safe existing file; refusing runtime initialization: {path}")
         conn = (
-            _connect_archive_writer(path, archive_root=path.parent, existing_only=True)
+            _connect_archive_writer(
+                path, profile=WRITE_CONNECTION_PROFILE, archive_root=path.parent, existing_only=True
+            )
             if tier is ArchiveTier.SOURCE
             else connect_measured(f"{path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
         )
@@ -1008,7 +1011,21 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                             remedy="the next numbered migration must have a declared train",
                         )
                     backup_manifest = None
-                    if claim.requires_backup:
+                    pristine_source_step = False
+                    if tier is ArchiveTier.SOURCE and current == 2 and claim.target_version == 3:
+                        from polylogue.storage.sqlite.migration_runner import (
+                            MigrationError,
+                            _require_pristine_source_attachment_baseline,
+                        )
+
+                        with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:
+                            try:
+                                _require_pristine_source_attachment_baseline(probe, tier)
+                            except MigrationError:
+                                pass
+                            else:
+                                pristine_source_step = True
+                    if claim.requires_backup and not pristine_source_step:
                         from polylogue.storage.backup_package import create_pre_migration_backup
 
                         backup_manifest = create_pre_migration_backup(
@@ -1024,6 +1041,7 @@ def _initialize_active_archive_root(root: Path, *, population_stage: _Population
                         backup_manifest=backup_manifest,
                         daemon_stopped_evidence_ref="proof:bootstrap-before-runtime-open",
                         single_writer_evidence_ref="proof:bootstrap-owned-archive",
+                        allow_pristine_source_baseline=pristine_source_step,
                         release_archive_ownership=lambda: None,
                     )
                     with contextlib.closing(open_readonly_connection(path, validate_schema=False)) as probe:

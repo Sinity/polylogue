@@ -13,6 +13,7 @@ from polylogue.core.evidence_families import (
     USAGE_LANE_EXACT_TOKENS_FAMILY,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.usage import (
@@ -25,7 +26,7 @@ from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path, tier: ArchiveTier = ArchiveTier.INDEX) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, tier)

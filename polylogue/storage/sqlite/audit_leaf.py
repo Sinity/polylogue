@@ -11,7 +11,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.connection_profile import (
@@ -62,24 +61,16 @@ class VerifiedAuditLeaf:
         *,
         filename: str = "audit.db",
         lock_writer: bool = False,
-        identity_access: Literal["ordinary", "lock-preserving"] = "ordinary",
     ) -> None:
         self._archive_root = archive_root
         self._filename = filename
         self._lock_writer = lock_writer
-        if identity_access == "lock-preserving":
-            path_flag = getattr(os, "O_PATH", None)
-            if path_flag is None:
-                raise AuditLeafError(
-                    "lock-preserving identity custody requires the pending portable custody capability"
-                )
-            if lock_writer:
-                raise AuditLeafError("metadata identity custody cannot own a writer flock")
-            self._identity_open_flag = path_flag
-        elif identity_access == "ordinary":
-            self._identity_open_flag = os.O_RDONLY
-        else:
-            raise ValueError(f"unknown identity access: {identity_access}")
+        path_flag = getattr(os, "O_PATH", None)
+        if path_flag is None:
+            raise AuditLeafError("lock-preserving identity custody requires the pending portable custody capability")
+        # Closing an ordinary descriptor for any SQLite inode releases every
+        # POSIX lock this process holds on it, including other native readers.
+        self._identity_open_flag = path_flag
         self._directory_fd: int | None = None
         self._leaf_fd: int | None = None
         self._directory_identity: _AuditLeafIdentity | None = None
@@ -112,6 +103,7 @@ class VerifiedAuditLeaf:
                 self._acquire_writer_lock()
             self._anchored_path = self._resolve_portable_child_path()
             self._assert_sidecar_namespace()
+            self._assert_directory_namespace()
         except BaseException as exc:
             self._close_after_failed_enter(exc)
             if isinstance(exc, AuditLeafError):
@@ -151,6 +143,7 @@ class VerifiedAuditLeaf:
             raise RuntimeError("audit leaf descriptor is closed")
         try:
             current = self._validate(self._open_leaf_metadata())
+            self._assert_directory_namespace()
             anchored = self._stat_path(self.anchored_path)
             anchored_directory = self._stat_path(self.anchored_path.parent)
             self._assert_sidecar_namespace()
@@ -162,6 +155,14 @@ class VerifiedAuditLeaf:
             or _AuditLeafIdentity(anchored_directory.st_dev, anchored_directory.st_ino) != self._directory_identity
         ):
             raise AuditLeafError(f"audit tier leaf changed during SQLite open: {self._archive_root / self._filename}")
+
+    def _assert_directory_namespace(self) -> None:
+        if self._directory_identity is None:
+            raise RuntimeError("audit leaf descriptor is closed")
+        metadata = os.stat(self._archive_root, follow_symlinks=False)
+        self._validate_directory(metadata)
+        if _AuditLeafIdentity(metadata.st_dev, metadata.st_ino) != self._directory_identity:
+            raise AuditLeafError(f"audit tier directory changed during SQLite access: {self._archive_root}")
 
     def identity_metadata(self) -> os.stat_result:
         """Read metadata from the lifetime-pinned selected main inode."""
@@ -220,10 +221,12 @@ class VerifiedAuditLeaf:
             raise BaseExceptionGroup("Audit leaf construction and cleanup failed", [primary, cleanup]) from primary
 
     def _acquire_writer_lock(self) -> None:
-        if self._leaf_fd is None:
+        if self._directory_fd is None:
             raise RuntimeError("audit leaf descriptor is closed")
         try:
-            fcntl.flock(self._leaf_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # The existing anchored directory owns the writer flock. It is
+            # never a SQLite inode, so closing it cannot drop native SQL locks.
+            fcntl.flock(self._directory_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
             raise AuditLeafError(
                 f"audit tier already has an active writer: {self._archive_root / self._filename}"
@@ -319,7 +322,7 @@ class VerifiedAuditLeaf:
                 self._identity_open_flag | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=self._directory_fd,
             )
-            persistent = self._identity_open_flag == getattr(os, "O_PATH", None) and filename not in self._sidecar_fds
+            persistent = filename not in self._sidecar_fds
             if persistent:
                 # Attach before validation so every constructor/namespace
                 # failure leaves the actual descriptor with its existing leaf.
@@ -346,7 +349,7 @@ class VerifiedAuditLeaf:
         """Create and pin SQLite's WAL namespace before exposing a writer.
 
         Opening ``audit.db`` alone does not create WAL/SHM.  Force that setup
-        while the verified main-leaf lock is held, then retain descriptors for
+        while the verified directory lock is held, then retain descriptors for
         both files so a later pathname replacement is detectable before an
         application transaction is authorized.
         """
@@ -488,6 +491,8 @@ class VerifiedAuditLeaf:
         return _AuditLeafIdentity(metadata.st_dev, metadata.st_ino)
 
     def _validate_directory(self, metadata: os.stat_result) -> None:
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise AuditLeafError(f"audit tier directory must be a directory without a symlink: {self._archive_root}")
         if metadata.st_uid != os.geteuid():
             raise AuditLeafError(
                 f"audit tier directory must be owned by the current effective user: {self._archive_root}"

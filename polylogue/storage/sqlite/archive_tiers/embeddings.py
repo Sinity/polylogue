@@ -7,15 +7,9 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import EMBEDDING
 EMBEDDINGS_SCHEMA_VERSION = 1
 EMBEDDING_DIMENSION = 1024
 
-# v6: refs bind the current canonical message semantic hash as well as the
-# content-addressed provider request. Metadata carries the complete recipe and
-# output contract, so a legacy row with incomplete identity cannot authorize
-# reuse.
-#
-# embeddings.db is a rebuildable derived tier (no migration chain): a schema
-# mismatch blue-green-replaces the tier from source
-# (`polylogue ops reset --index, then restart polylogued`), so this is an in-place DDL
-# edit, not an additive migration.
+# Purchased vectors are not replayable from Source. This is the fresh-v1
+# declaration, not an instruction to replace an existing paid tier. Completion
+# facts certify a paid transaction and never authorize a durable mutation.
 #
 # polylogue-a7xr.27: each CREATE TABLE in this module renders from a TableColumnSpec
 # in archive_tiers_specs.py, matching the index tier. `message_embeddings` is
@@ -63,6 +57,10 @@ ON embedding_derivation_state(attempt_state, recipe_hash, session_id);
 
 CREATE TABLE IF NOT EXISTS embedding_failures (
     {EMBEDDINGS_TABLE_SPECS["embedding_failures"].ddl_body}
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS excision_embedding_completions (
+    {EMBEDDINGS_TABLE_SPECS["excision_embedding_completions"].ddl_body}
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_embedding_failures_active

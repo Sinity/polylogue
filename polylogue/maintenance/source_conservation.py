@@ -41,7 +41,7 @@ from polylogue.archive.revision_authority import (
     raw_receipt_order_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.raw_coordinates import zip_member_coordinate_candidates
+from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -423,6 +423,8 @@ def _source_presence(
     archive_root: Path,
     source_path: str,
     inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]],
+    *,
+    captured_coordinate: str | None = None,
 ) -> bool | None:
     """Present, proven absent, or unavailable source evidence for this audit.
 
@@ -430,6 +432,10 @@ def _source_presence(
     cannot prove loss. Inventories are scoped to one audit and bound to the
     opened container's identity, never reused after a replacement or rewrite.
     """
+    if captured_coordinate is not None:
+        coordinate = read_captured_zip_coordinate_receipt(captured_coordinate)
+        names = _member_inventory(Path(coordinate.canonical_container), inventories)
+        return coordinate.member_name in names if isinstance(names, frozenset) else names
     direct = Path(source_path)
     if not direct.is_absolute():
         direct = archive_root / direct
@@ -441,15 +447,6 @@ def _source_presence(
         return None
     else:
         return stat.S_ISREG(info.st_mode)
-    # Both existing acquisition spellings allow the delimiter inside a
-    # container or member name. Select only a readable actual ZIP boundary.
-    for separator in ("!", ":"):
-        for container, member in zip_member_coordinate_candidates(str(direct), separator=separator):
-            names = _member_inventory(container, inventories)
-            if names is None:
-                return None
-            if isinstance(names, frozenset):
-                return member in names
     return False
 
 
@@ -640,18 +637,30 @@ def audit_source_conservation(
 
     typed_rows = conn.execute(
         f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
-        f"blob_hash, {term_case} AS term FROM heads"
+        f"blob_hash, {term_case} AS term, "
+        "(SELECT captured_coordinate FROM raw_container_coordinates AS coordinate "
+        "WHERE coordinate.raw_id = heads.raw_id) AS captured_coordinate FROM heads"
     ).fetchall()
 
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
     inventories: dict[Path, tuple[tuple[int, int, int, int, int], frozenset[str] | bool]] = {}
-    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, blob_hash, term in typed_rows:
+    for (
+        raw_id,
+        origin,
+        source_path,
+        artifact_kind,
+        bytes_retained,
+        blocker_reason,
+        blob_hash,
+        term,
+        coordinate,
+    ) in typed_rows:
         # A work event is authored by the archive itself; its retained raw is
         # the source, so there is no acquired file to probe.
         if probe_filesystem and not is_work_event_raw_id(str(raw_id)):
-            present = _source_presence(archive_root, str(source_path), inventories)
+            present = _source_presence(archive_root, str(source_path), inventories, captured_coordinate=coordinate)
             if present is None:
                 term = _TERM_SOURCE_UNAVAILABLE
             elif not present:

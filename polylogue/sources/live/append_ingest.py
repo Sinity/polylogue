@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from builtins import BaseExceptionGroup
+from collections.abc import Callable
 from datetime import UTC, datetime
-from io import BytesIO
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_stream
+from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact_path
 from polylogue.archive.revision_authority import (
     RawRevisionAuthority,
     RawRevisionEnvelope,
@@ -18,25 +20,25 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.compute import DaemonOperationCancelled
 from polylogue.core.compute_cancel import check_compute_cancelled
-from polylogue.core.degraded import degraded_reason
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.core.storage_faults import (
     ARCHIVE_SIDE_FAULTS,
     StorageFaultKind,
     raise_if_storage_fault,
     storage_fault_kind,
 )
-from polylogue.logging import ERROR, emit, get_logger
-from polylogue.sources.artifact_observations import record_session_artifact_observation
+from polylogue.logging import get_logger
 from polylogue.sources.live.archive_open import _open_archive_for_live_write, _source_tier_acquisition_required
 from polylogue.sources.live.batch_support import _AppendPlan, _AppendResult
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionArm
+from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_profile_identity
 
 logger = get_logger(__name__)
 
@@ -201,309 +203,170 @@ def _append_storage_fault(exc: BaseException) -> bool:
     return kind is not None and (kinds is None or kind in kinds)
 
 
-def ingest_append_plans(owner: _AppendIngestOwner, plans: list[_AppendPlan]) -> _AppendResult:
-    """Persist and parse one bounded group of append plans."""
+def ingest_append_plans(
+    owner: _AppendIngestOwner,
+    plans: list[_AppendPlan],
+    *,
+    converge_raw: Callable[[Path, str, _AppendPlan], None],
+) -> _AppendResult:
+    """Acquire exact append raws, then ask the canonical owner to prepare them off-gate."""
     if not plans:
         return _AppendResult(succeeded=[], failed=[], worker_count=0)
     archive_root = Path(getattr(owner._polylogue, "archive_root", owner._cursor._db_path.parent))
-    return _ingest_append_plans_archive(owner, plans, archive_root)
-
-
-def _ingest_append_plans_archive(
-    owner: _AppendIngestOwner,
-    plans: list[_AppendPlan],
-    archive_root: Path,
-) -> _AppendResult:
     timings: dict[str, float] = {}
-    source_db = archive_root / "source.db"
-    source_only = _source_tier_acquisition_required()
-    archive_missing = not source_db.exists()
-    if not source_only:
-        archive_missing = archive_missing or not resolve_active_index_path(archive_root).exists()
-    if archive_missing:
-        t0 = time.perf_counter()
-        initialize_active_archive_root(archive_root)
-        _add_timing(timings, "append.archive_init", t0)
-
-    t0 = time.perf_counter()
-    from polylogue.sources.decoders import _iter_json_stream
-    from polylogue.sources.dispatch import (
-        STREAM_RECORD_PROVIDERS,
-        parse_payload,
-        parse_stream_payload,
-        require_positive_conversational_evidence,
-    )
-    from polylogue.sources.revision_backfill import (
-        enrich_sessions_from_archive,
-        parse_retained_raw_sessions,
-    )
-
-    _add_timing(timings, "append.imports", t0)
-
-    t0 = time.perf_counter()
     succeeded: list[_AppendPlan] = []
     failed: list[_AppendPlan] = []
     deferred: list[_AppendPlan] = []
     session_ids_by_path: dict[Path, str] = {}
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
-    try:
-        t0 = time.perf_counter()
-        with _open_archive_for_live_write(archive_root) as archive:
-            _add_timing(timings, "append.archive_open", t0)
-            for plan in plans:
-                check_compute_cancelled()
-                provider: Provider | None = None
-                raw_id: str | None = None
-                try:
-                    provider = Provider.from_string(plan.source_name)
-                    degraded = degraded_reason()
-                    if degraded is not None and degraded.derived_only:
-                        if plan.native_id_hint is None:
-                            raise ValueError("source-only append has no durable session identity")
-                        t0 = time.perf_counter()
-                        raw_id = _write_append_raw_payload(
-                            archive,
-                            provider=provider,
-                            plan=plan,
-                            acquired_at_ms=acquired_at_ms,
-                        )
-                        _add_timing(timings, "append.source_raw_write", t0)
-                        _logical_source_key, authority = _bind_append_revision(
-                            archive,
-                            raw_id,
-                            logical_source_key=f"{origin_from_provider(provider).value}:{plan.native_id_hint}",
-                            plan=plan,
-                        )
-                        if authority is RawRevisionAuthority.QUARANTINED:
-                            deferred.append(plan)
-                        else:
-                            succeeded.append(plan)
-                        continue
-                    json_stream_started = time.perf_counter()
-                    classification = None
-                    classification_error = None
-                    try:
-                        with BytesIO(plan.payload) as handle:
-                            proof = classify_artifact_stream(
-                                handle,
-                                provider=provider,
-                                source_path=str(plan.path),
-                                wire_format="jsonl",
-                                check_stop=check_compute_cancelled,
-                            )
-                        if proof.proved_non_session:
-                            classification = proof.classification
-                    except DaemonOperationCancelled:
-                        raise
-                    except Exception as exc:
-                        # Preserve the pre-parse raw capture for malformed input;
-                        # syntax failure is never evidence of a source-only artifact.
-                        classification_error = exc
-                    _add_timing(timings, "append.json_stream", json_stream_started)
-                    if classification is not None:
-                        artifact_result = archive.admit_raw_artifact_payload(
-                            provider=provider,
-                            payload=plan.payload,
-                            source_path=str(plan.path),
-                            canonical_source_path=plan.canonical_source_path,
-                            source_index=-1,
-                            acquired_at_ms=acquired_at_ms,
-                            classification=classification,
-                        )
-                        if artifact_result.arm is not RawAdmissionArm.ARTIFACT:
-                            raise RuntimeError(f"unexpected append artifact admission arm: {artifact_result.arm!r}")
-                        if classification.kind is ArtifactKind.HOOK_EVENT_CARRIER:
-                            _logical_source_key, authority = _bind_hook_carrier_append_revision(
-                                archive,
-                                artifact_result.raw_id,
-                                provider=provider,
-                                plan=plan,
-                            )
-                            if authority is RawRevisionAuthority.QUARANTINED:
-                                deferred.append(plan)
-                                continue
-                        succeeded.append(plan)
-                        continue
-                    t0 = time.perf_counter()
-                    raw_id = _write_append_raw_payload(
-                        archive,
-                        provider=provider,
-                        plan=plan,
-                        acquired_at_ms=acquired_at_ms,
-                    )
-                    _add_timing(timings, "append.source_raw_write", t0)
-                    if classification_error is not None:
-                        raise classification_error
-                    t0 = time.perf_counter()
-                    # polylogue-u19l: prefer the resolved provider session
-                    # identity over the bare filename stem. For Codex this is
-                    # the ONLY thing that made the synthetic session_meta
-                    # header (formerly spliced into plan.payload) necessary
-                    # in the first place -- the parser falls back to
-                    # ``fallback_id`` exactly when its own record stream
-                    # carries no session_meta of its own, which is always
-                    # true for an append delta.
-                    if provider in STREAM_RECORD_PROVIDERS:
-                        parsed_sessions = parse_stream_payload(
-                            provider,
-                            _iter_json_stream(BytesIO(plan.payload), plan.path.name, fail_on_decode_error=True),
-                            plan.native_id_hint or plan.path.stem,
-                            source_path=str(plan.path),
-                        )
-                    else:
-                        parsed_sessions = parse_payload(
-                            provider,
-                            list(_iter_json_stream(BytesIO(plan.payload), plan.path.name, fail_on_decode_error=True)),
-                            plan.native_id_hint or plan.path.stem,
-                            source_path=str(plan.path),
-                        )
-                    sessions = require_positive_conversational_evidence(
-                        parsed_sessions,
-                        provider=provider,
-                        source_path=str(plan.path),
-                    )
-                    _add_timing(timings, "append.provider_parse", t0)
-                    if not sessions:
-                        archive.mark_raw_parse_failed(
-                            raw_id,
-                            provider=provider,
-                            error=ValueError(
-                                "parsed raw payload produced no sessions with positive conversational evidence"
-                            ),
-                        )
-                        failed.append(plan)
-                        continue
-                    record_session_artifact_observation(
-                        archive,
-                        raw_id=raw_id,
-                        provider=provider,
-                        source_path=str(plan.path),
-                        source_index=plan.source_index,
-                        observed_at_ms=acquired_at_ms,
-                        manage_transaction=True,
-                    )
-                    if len(sessions) != 1 or plan.cursor_fingerprint is None:
-                        archive.mark_raw_parse_failed(
-                            raw_id,
-                            provider=provider,
-                            error=ValueError("append payload did not prove one session and cursor identity"),
-                        )
-                        failed.append(plan)
-                        continue
-                    session = sessions[0]
-                    logical_source_key, authority = _bind_append_revision(
-                        archive,
-                        raw_id,
-                        logical_source_key=f"{origin_from_provider(provider).value}:{session.provider_session_id}",
-                        plan=plan,
-                    )
-                    if authority is RawRevisionAuthority.QUARANTINED:
-                        deferred.append(plan)
-                        continue
-                    # The append parent above is a durable byte-contiguous
-                    # witness.  Once the prior full snapshot has been
-                    # classified, its baseline and every accepted append are
-                    # already represented in source-tier metadata.  Rebuild
-                    # the replay plan from that metadata instead of reopening
-                    # every retained historical full snapshot on each small
-                    # append.  The classifier remains the conservative
-                    # recovery path for a legacy/crash-interrupted cohort
-                    # whose accepted metadata has not yet been established.
-                    replay_plan = archive.raw_revision_replay_plan(logical_source_key)
-                    if raw_id not in replay_plan.accepted_raw_ids:
-                        replay_plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
-                    if raw_id not in replay_plan.accepted_raw_ids:
-                        # A non-empty plan can still represent an older
-                        # accepted chain while a newly observed full snapshot
-                        # remains ambiguous.  Never acknowledge this append
-                        # or advance its cursor until its own raw evidence is
-                        # part of the accepted chain.
-                        deferred.append(plan)
-                        continue
-                    parsed_by_raw_id: dict[str, Any] = {}
-                    for replay_raw_id in replay_plan.accepted_raw_ids:
-                        replay_provider, _hash, replay_path, _kind, _size = archive.raw_revision_descriptor(
-                            replay_raw_id
-                        )
-                        replay_sessions = enrich_sessions_from_archive(
-                            archive,
-                            replay_provider,
-                            replay_path,
-                            parse_retained_raw_sessions(archive, replay_raw_id),
-                            captured_zip_coordinate=archive.raw_captured_zip_coordinate(replay_raw_id),
-                        )
-                        if len(replay_sessions) != 1:
-                            raise RuntimeError(f"raw revision {replay_raw_id} did not replay to exactly one session")
-                        parsed_by_raw_id[replay_raw_id] = replay_sessions[0]
-                    t0 = time.perf_counter()
-                    session_id, _applied_raw_ids = archive.apply_raw_revision_replay(
-                        replay_plan,
-                        parsed_by_raw_id,
-                        acquired_at_ms=acquired_at_ms,
-                        stage_timings_s=timings,
-                        stage_timing_prefix="append",
-                        # polylogue-de2a: this is the live watcher's hot
-                        # per-append path -- called again for every tiny
-                        # append a still-open session receives. Re-indexing
-                        # (not re-parsing) every already-applied historical
-                        # position on every call is what made the writer
-                        # gate's hold time grow with the session's total
-                        # accumulated append count instead of the size of
-                        # just this append (see apply_raw_revision_replay's
-                        # skip_already_applied docstring for the full
-                        # evidence chain).
-                        skip_already_applied=True,
-                    )
-                    _add_timing(timings, "append.raw_and_index_write", t0)
+    source_only = _source_tier_acquisition_required()
+
+    def acquire(plan: _AppendPlan, provider: Provider) -> tuple[str, RawRevisionAuthority, str | None]:
+        if plan.native_id_hint is None:
+            path_artifact = classify_artifact_path(str(plan.path), provider=provider)
+            if path_artifact is None or path_artifact.kind is not ArtifactKind.HOOK_EVENT_CARRIER:
+                raise ValueError("append plan lacks its declared session identity")
+        source_db = archive_root / "source.db"
+        archive_missing = not source_db.exists()
+        if not source_only:
+            archive_missing = archive_missing or not resolve_active_index_path(archive_root).exists()
+        if archive_missing:
+            initialize_active_archive_root(archive_root)
+        with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
+            raw_id = _write_append_raw_payload(archive, provider=provider, plan=plan, acquired_at_ms=acquired_at_ms)
+            source = archive.source_connection
+            assert source is not None
+            profile_key = read_raw_profile_identity(source, raw_id)
+            if plan.native_id_hint is None:
+                authority = _bind_hook_carrier_append_revision(archive, raw_id, provider=provider, plan=plan)[1]
+            else:
+                authority = _bind_append_revision(
+                    archive,
+                    raw_id,
+                    logical_source_key=f"{origin_from_provider(provider).value}:{plan.native_id_hint}",
+                    plan=plan,
+                )[1]
+            return raw_id, authority, profile_key
+
+    def terminal_receipt(plan: _AppendPlan, raw_id: str, profile_key: str | None) -> tuple[bool, str | None]:
+        """Acknowledge only the committed terminal proof of this raw's selected route."""
+        with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
+            source = archive.source_connection
+            assert source is not None
+            row = source.execute(
+                "SELECT r.logical_source_key, r.revision_authority, r.predecessor_raw_id, r.baseline_raw_id, "
+                "r.acquisition_generation, r.source_revision, r.append_start_offset, r.append_end_offset, "
+                "r.native_id, r.blob_hash, r.canonical_source_path, r.parse_error "
+                "FROM raw_sessions r "
+                "WHERE r.raw_id=?",
+                (raw_id,),
+            ).fetchone()
+            if row is None or source.in_transaction:
+                return False, None
+            if read_raw_profile_identity(source, raw_id) != profile_key:
+                return False, None
+            parent = archive.raw_append_revision_parent(str(row[0]), plan.start_offset, plan.cursor_fingerprint)
+            if (
+                row[1] != RawRevisionAuthority.BYTE_PROVEN.value
+                or parent != (row[2], row[3], row[4])
+                or row[5] != append_source_revision(plan.cursor_fingerprint, plan.payload_hash)
+                or row[6] != plan.start_offset
+                or row[7] != plan.last_complete_newline
+                or row[8] != plan.acquisition_native_id_hint
+                or row[9] != bytes.fromhex(plan.payload_hash)
+                or row[10] != (plan.canonical_source_path or str(plan.path.resolve()))
+                or row[11] is not None
+            ):
+                return False, None
+            if source_only:
+                return True, None
+            artifact = source.execute(
+                "SELECT 1 FROM raw_artifacts a JOIN raw_authority_parser_census c ON c.raw_id=a.raw_id "
+                "WHERE a.raw_id=? AND a.parse_as_session=0 AND c.parser_fingerprint=? AND c.status='complete'",
+                (raw_id, raw_authority_parser_fingerprint()),
+            ).fetchone()
+            if artifact is not None:
+                return True, None
+            index = archive.index_connection
+            if index is None:
+                return False, None
+            application = index.execute(
+                "SELECT a.session_id FROM raw_revision_applications a "
+                "JOIN raw_revision_heads h ON h.logical_source_key=a.logical_source_key AND h.session_id=a.session_id "
+                "JOIN sessions s ON s.session_id=h.session_id AND s.raw_id=h.accepted_raw_id "
+                "AND s.content_hash=h.accepted_content_hash "
+                "WHERE a.raw_id=? AND a.decision='applied_append' AND a.source_revision=? "
+                "AND a.acquisition_generation=? AND a.accepted_raw_id=? AND a.accepted_source_revision=? "
+                "AND a.accepted_frontier_kind='byte' AND a.accepted_frontier=? "
+                "AND h.accepted_raw_id=a.accepted_raw_id AND h.accepted_source_revision=a.accepted_source_revision "
+                "AND h.accepted_content_hash=a.accepted_content_hash AND h.accepted_frontier_kind=a.accepted_frontier_kind "
+                "AND h.accepted_frontier=a.accepted_frontier AND h.acquisition_generation=a.acquisition_generation",
+                (raw_id, row[5], row[4], raw_id, row[5], plan.last_complete_newline),
+            )
+            try:
+                first = application.fetchone()
+                return (False, None) if first is None or application.fetchone() is not None else (True, str(first[0]))
+            finally:
+                application.close()
+
+    for plan in plans:
+        check_compute_cancelled()
+        provider = Provider.from_string(plan.source_name)
+        raw_id: str | None = None
+        try:
+            t0 = time.perf_counter()
+            raw_id, authority, profile_key = admit_stage_write(
+                "watcher.live_ingest.append.acquire", partial(acquire, plan, provider)
+            )
+            _add_timing(timings, "append.source_raw_write", t0)
+            if authority is RawRevisionAuthority.QUARANTINED:
+                deferred.append(plan)
+                continue
+            if not source_only:
+                t0 = time.perf_counter()
+                converge_raw(archive_root, raw_id, plan)
+                _add_timing(timings, "append.canonical_raw", t0)
+            check_compute_cancelled()
+            terminal, session_id = admit_stage_write(
+                "watcher.live_ingest.append.receipt", partial(terminal_receipt, plan, raw_id, profile_key)
+            )
+            if terminal:
+                succeeded.append(plan)
+                if session_id is not None:
                     session_ids_by_path[plan.path] = session_id
-                    succeeded.append(plan)
-                except DaemonOperationCancelled:
-                    raise
-                except Exception as exc:
-                    if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
-                        # Contention is infrastructure state, not a poison
-                        # payload. Let the watcher requeue without advancing
-                        # the failure ledger toward exclusion.
-                        if provider is not None and raw_id is not None:
-                            reset_transient_raw_parse_state(archive, raw_id, provider=provider)
-                        raise
-                    if _append_storage_fault(exc):
-                        # A full disk, I/O error or corrupt page is not this
-                        # append's defect. The index write may already have
-                        # recorded a failure state on the raw; leave it
-                        # pending, as for contention. If the same storage
-                        # refuses that too, the original fault is still the
-                        # one reported.
-                        if provider is not None and raw_id is not None:
-                            try:
-                                reset_transient_raw_parse_state(archive, raw_id, provider=provider)
-                            except Exception as reset_exc:
-                                emit(
-                                    "live.ingest.raw_state_reset_failed",
-                                    level=ERROR,
-                                    outcome="error",
-                                    reason="storage_fault",
-                                    raw_id=raw_id,
-                                    error_type=type(reset_exc).__name__,
-                                    error_detail=str(reset_exc),
-                                )
-                        raise_if_storage_fault(exc, kinds=_append_fault_kinds(exc))
-                    if provider is not None and raw_id is not None:
-                        archive.mark_raw_parse_failed(
-                            raw_id,
-                            provider=provider,
-                            error=exc,
-                        )
-                    logger.warning("live.watcher: archive append ingest failed for %s", plan.path, exc_info=True)
-                    failed.append(plan)
-    except DaemonOperationCancelled:
-        raise
-    except Exception as exc:
-        if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
+            else:
+                deferred.append(plan)
+        except DaemonOperationCancelled:
             raise
-        raise_if_storage_fault(exc, kinds=_append_fault_kinds(exc))
-        logger.warning("live.watcher: archive append ingest failed: %s", exc)
-        return _AppendResult(succeeded=[], failed=plans, worker_count=0, stage_timings_s=timings)
+        except Exception as exc:
+            transient = isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc)
+
+            def record_failure(
+                raw_id: str | None = raw_id,
+                provider: Provider = provider,
+                transient: bool = transient,
+                error: Exception = exc,
+            ) -> None:
+                if raw_id is None:
+                    return
+                with _open_archive_for_live_write(archive_root, cold_build=True) as archive:
+                    if transient or _append_storage_fault(error):
+                        reset_transient_raw_parse_state(archive, raw_id, provider=provider)
+                    else:
+                        archive.mark_raw_parse_failed(raw_id, provider=provider, error=error)
+
+            if raw_id is not None:
+                try:
+                    admit_stage_write("watcher.live_ingest.append.failure", record_failure)
+                except BaseException as cleanup:
+                    raise BaseExceptionGroup(
+                        "append publication and failure settlement failed", [exc, cleanup]
+                    ) from exc
+            if transient:
+                raise
+            raise_if_storage_fault(exc, kinds=_append_fault_kinds(exc))
+            logger.warning("live.watcher: archive append ingest failed for %s", plan.path, exc_info=True)
+            failed.append(plan)
     return _AppendResult(
         succeeded=succeeded,
         failed=failed,

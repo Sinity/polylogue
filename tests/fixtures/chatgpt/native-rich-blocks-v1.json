@@ -1,0 +1,146 @@
+{
+  "id": "native-rich-chatgpt",
+  "title": "Synthetic canonical blocks",
+  "current_node": "files",
+  "mapping": {
+    "user": {
+      "id": "user",
+      "parent": null,
+      "children": [
+        "call"
+      ],
+      "message": {
+        "id": "user",
+        "author": {
+          "role": "user"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "compute 6 * 7"
+          ]
+        },
+        "metadata": {},
+        "create_time": 1,
+        "status": "finished_successfully"
+      }
+    },
+    "call": {
+      "id": "call",
+      "parent": "user",
+      "children": [
+        "result"
+      ],
+      "message": {
+        "id": "call",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "code",
+          "text": "6 * 7"
+        },
+        "metadata": {},
+        "create_time": 2,
+        "status": "finished_successfully",
+        "recipient": "python"
+      }
+    },
+    "result": {
+      "id": "result",
+      "parent": "call",
+      "children": [
+        "reasoning"
+      ],
+      "message": {
+        "id": "result",
+        "author": {
+          "role": "tool"
+        },
+        "content": {
+          "content_type": "execution_output",
+          "text": "42"
+        },
+        "metadata": {},
+        "create_time": 3,
+        "status": "finished_successfully"
+      }
+    },
+    "reasoning": {
+      "id": "reasoning",
+      "parent": "result",
+      "children": [
+        "search"
+      ],
+      "message": {
+        "id": "reasoning",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "thoughts",
+          "thoughts": [
+            {
+              "summary": "Weighing options",
+              "content": "First I considered X, then Y."
+            }
+          ]
+        },
+        "metadata": {},
+        "create_time": 4,
+        "status": "finished_successfully"
+      }
+    },
+    "search": {
+      "id": "search",
+      "parent": "reasoning",
+      "children": [
+        "files"
+      ],
+      "message": {
+        "id": "search",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "{\"search_query\": \"synthetic\"}"
+          ]
+        },
+        "metadata": {},
+        "create_time": 5,
+        "status": "finished_successfully",
+        "recipient": "web"
+      }
+    },
+    "files": {
+      "id": "files",
+      "parent": "search",
+      "children": [],
+      "message": {
+        "id": "files",
+        "author": {
+          "role": "assistant"
+        },
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Files sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,",
+            {
+              "content_type": "audio_asset_pointer",
+              "asset_pointer": "file-service://file-AUDIO"
+            },
+            {
+              "content_type": "audio_transcription",
+              "asset_pointer": "file-service://file-TRANSCRIPTION"
+            }
+          ]
+        },
+        "metadata": {},
+        "create_time": 6,
+        "status": "finished_successfully"
+      }
+    }
+  }
+}

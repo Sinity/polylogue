@@ -883,12 +883,6 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
-            # Skipped paths belong to this page too; they must not stand in
-            # for the next page in the lookahead slice.
-            page = set(paths) | {Path(cast(Any, item.payload)) for item in skipped}
-            # The current page is warmed by its own ingest. What overlaps its
-            # publication is the next page, sampled off the admission path.
-            self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -1081,18 +1075,6 @@ class FileIntakeAdapter(IntakeAdapter):
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
-
-    def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
-        """Offer the next page's files for read-ahead parsing.
-
-        Nothing is read here. The next full ingest keeps only cursorless
-        files, the ones certain to be ingested in full, and the parse stage
-        samples and prepares them in workers it can reap, so a slow or
-        unavailable lookahead file never delays the page being admitted.
-        """
-        offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
-        if callable(offer) and paths:
-            offer(tuple(paths), source_name=self.source.name)
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
@@ -1572,10 +1554,9 @@ class RawMaterializationDiscovery:
             # log a whale-schedule warning every 30 s on an empty root.
             return ()
         from polylogue.operations.raw_observation_derivation import (
-            make_raw_observation_derivation,
             raw_observation_frame,
         )
-        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN
+        from polylogue.storage.derived.raw import RAW_OBSERVATION_DOMAIN, RawObservationInspection
 
         frame = raw_observation_frame(self._archive_root)
         binding = _RawDiscoveryBinding(
@@ -1597,7 +1578,7 @@ class RawMaterializationDiscovery:
             self._last_sweep_finished_at = None
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
-        adapter = make_raw_observation_derivation(self._archive_root)
+        adapter = RawObservationInspection(self._archive_root)
         # Queued project dependents join the rotation only while a scan is
         # pending, so arrivals and the sweep otherwise keep alternating.
         rotation: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (

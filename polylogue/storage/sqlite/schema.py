@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
@@ -39,6 +40,9 @@ from polylogue.storage.sqlite.schema_manifest import (
     schema_manifest_diff_is_message_fts_only,
 )
 
+if TYPE_CHECKING:
+    from polylogue.storage.index_generation import IndexGeneration
+
 
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
     """Reject archive layouts that cannot be written safely.
@@ -58,8 +62,19 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
         assert_schema_manifest(conn, ArchiveTier.INDEX)
 
 
-def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: str | None = None) -> None:
+def assert_readable_archive_layout(
+    conn: sqlite3.Connection,
+    *,
+    generation_id: str | None = None,
+    owned_inactive_generation: IndexGeneration | None = None,
+) -> None:
     """Read-only mode counterpart of :func:`assert_supported_archive_layout`."""
+    destination = None
+    if owned_inactive_generation is not None:
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
+
+        destination = IndexMutationDestination.owned_inactive(owned_inactive_generation)
+        destination.validate()
     snapshot = capture_schema_snapshot(conn)
     # Version is the primary admission contract: when it is stale, report the
     # lifecycle action for rebuilding or upgrading before inspecting identity.
@@ -105,6 +120,17 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 canonical,
                 SchemaManifest.from_connection(conn, ArchiveTier.INDEX),
             )
+            if destination is not None:
+                from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
+
+                # Only this original owned build may omit its declared reader
+                # indexes. Tables, other indexes, definitions and identity still
+                # obey the same canonical schema contract as an active reader.
+                diff["missing"] = [
+                    (kind, name)
+                    for kind, name in diff["missing"]
+                    if kind != "index" or name not in DEFERRED_SECONDARY_INDEX_NAMES
+                ]
             if any(diff.values()) and not schema_manifest_diff_is_message_fts_only(diff):
                 raise RuntimeError(
                     f"{ArchiveTier.INDEX.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)}"
@@ -119,6 +145,8 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             # ``sqlite3.Error`` nor ``RuntimeError``, so it still propagates
             # unchanged through both handlers below.
             assert_derived_schema_identity(conn, "index")
+            if destination is not None:
+                destination.validate()
         except sqlite3.Error as exc:
             # The manifest could not be read at all. That is a failure of this
             # read, not evidence about the schema on disk, and prescribing a

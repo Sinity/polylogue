@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 import ijson
 
+from polylogue.core.enums import Origin
 from polylogue.core.hashing import hash_text
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.sql_settlement import current_native_sql_lifetimes
@@ -291,7 +292,6 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["message_variant_index"] = value.message_variant_index
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
     payload["precomputed_blob"] = value.precomputed_blob
-    payload["prepared_carrier_key"] = value.prepared_carrier_key
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
@@ -308,8 +308,9 @@ def _attachment_from_json(encoded: str) -> ParsedAttachment:
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
     attachment = _attachment_from_json(encoded)
-    if attachment.prepared_carrier_key is not None:
-        return attachment
+    # Acquisition lookup belongs to this physical carrier row. A cohort
+    # copy captures its own claim at this row; former spool paths are not
+    # publication locators for the new artifact.
     return attachment.model_copy(update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)})
 
 
@@ -619,11 +620,13 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         *,
         writer: sqlite3.Connection | None = None,
         count: int = 0,
+        store: SqliteMessageStore | None = None,
     ) -> None:
         self.path = path
         self.session_ordinal = session_ordinal
         self._writer = writer
         self._count = count
+        self._store = store
 
     def __len__(self) -> int:
         return self._count
@@ -814,9 +817,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
     def normalize_active_path(self) -> SqliteMessageSink:
         """Lower leaf and path values as ``normalize_active_branch`` does, without a message list."""
         if self._writer is None:
-            # Publication artifacts are immutable. The worker has already
-            # normalized them before sealing.
-            return self
+            raise ValueError("active-path normalization requires the original mutable scratch operand")
         if not self._count:
             return self
         leaves = self._writer.execute(
@@ -904,6 +905,39 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise
         else:
             self._writer.execute(f"RELEASE {name}")
+
+    def normalized_messages(self, events: Sequence[ParsedSessionEvent], *, origin: Origin) -> SqliteMessageSink:
+        """Borrow this artifact's separately retained canonical writer operand."""
+        if self._writer is None:
+            with _prepared_reader(self.path) as connection:
+                row = connection.execute(
+                    "SELECT normalized_ordinal FROM prepared_message_normalization WHERE original_ordinal=?",
+                    (self.session_ordinal,),
+                ).fetchone()
+            if row is None:
+                raise ValueError("sealed parser messages lack their canonical normalized operand")
+            return SqliteMessageSink(self.path, int(row[0]), count=self._count)
+        row = self._writer.execute(
+            "SELECT normalized_ordinal FROM prepared_message_normalization WHERE original_ordinal=?",
+            (self.session_ordinal,),
+        ).fetchone()
+        if row is not None:
+            return SqliteMessageSink(self.path, int(row[0]), writer=self._writer, count=self._count, store=self._store)
+        if self._store is None or self._store.conn is not self._writer:
+            raise ValueError("message normalization requires its original scratch store")
+        from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+        normalized = self._store.new_sink()
+        normalized.extend(self)
+        derive_tool_outcomes(normalized.normalize_active_path(), events, origin=origin)
+        self._writer.executemany(
+            "INSERT INTO prepared_message_normalization VALUES (?,?)",
+            (
+                (self.session_ordinal, normalized.session_ordinal),
+                (normalized.session_ordinal, normalized.session_ordinal),
+            ),
+        )
+        return normalized
 
 
 class SqliteProviderMessageIds(Set[str | None]):
@@ -1438,6 +1472,9 @@ class SqliteMessageStore:
             self.conn.execute(
                 "CREATE TABLE prepared_attachment (session_ordinal INTEGER NOT NULL, attachment_ordinal INTEGER NOT NULL, attachment_json TEXT NOT NULL, PRIMARY KEY (session_ordinal, attachment_ordinal)) WITHOUT ROWID"
             )
+            self.conn.execute(
+                "CREATE TABLE prepared_message_normalization (original_ordinal INTEGER PRIMARY KEY, normalized_ordinal INTEGER NOT NULL)"
+            )
             self._next_session_ordinal = 0
             self._next_event_ordinal = 0
             self._next_attachment_ordinal = 0
@@ -1448,7 +1485,7 @@ class SqliteMessageStore:
             raise
 
     def new_sink(self) -> SqliteMessageSink:
-        sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn)
+        sink = SqliteMessageSink(self.path, self._next_session_ordinal, writer=self.conn, store=self)
         self._next_session_ordinal += 1
         return sink
 
@@ -1564,8 +1601,9 @@ class ClaudeAttachmentScratch:
 class ChatGPTNodeMapping(Mapping[str, object]):
     """Keep node bytes, insertion order, and duplicate-key resolution in scratch."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, *, progress: Callable[[], None] | None = None) -> None:
         self.conn = conn
+        self._progress = progress
         conn.execute(
             "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, "
             "node_json TEXT NOT NULL, child_ordinal INTEGER, parent_key TEXT)"
@@ -1615,6 +1653,8 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         self.conn.execute("UPDATE chatgpt_node SET child_ordinal = ? WHERE node_key = ?", (ordinal, key))
 
     def shallow_node(self, key: str) -> object:
+        if self._progress is not None:
+            self._progress()
         row = self.conn.execute("SELECT node_json FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if row is None:
             raise KeyError(key)
@@ -1700,6 +1740,8 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
     def __iter__(self) -> Iterator[str]:
         for (key,) in self.conn.execute("SELECT node_key FROM chatgpt_node ORDER BY ordinal"):
+            if self._progress is not None:
+                self._progress()
             yield key
 
     def __len__(self) -> int:
@@ -1826,6 +1868,8 @@ class ScratchSessionSpill:
 
     def __init__(self, store: SqliteMessageStore) -> None:
         self.store = store
+        self._record_origins: _ScratchStringMap | None = None
+        self._attachment_origins: _ScratchStringMap | None = None
 
     def entries(self) -> _ScratchChatGPTEntries:
         return _ScratchChatGPTEntries(self.store.conn)
@@ -1847,6 +1891,31 @@ class ScratchSessionSpill:
 
     def connection(self) -> sqlite3.Connection:
         return self.store.conn
+
+    def set_record_origin(self, position: int, original_key: str) -> None:
+        """Retain private raw occurrence evidence, never a provider identity."""
+        if self._record_origins is None:
+            self._record_origins = _ScratchStringMap(self.store.conn)
+        self._record_origins[str(position)] = json.dumps(original_key, ensure_ascii=True)
+
+    def set_attachment_record_origin(self, ordinal: int, raw_position: int) -> None:
+        """Keep capture asset custody separate from message identity lowering."""
+        if self._attachment_origins is None:
+            self._attachment_origins = _ScratchStringMap(self.store.conn)
+        self._attachment_origins[str(ordinal)] = str(raw_position)
+
+    def attachment_record_origin(self, ordinal: int) -> int:
+        if self._attachment_origins is None:
+            raise KeyError(ordinal)
+        return int(self._attachment_origins[str(ordinal)])
+
+    def record_origin(self, position: int) -> str:
+        if self._record_origins is None:
+            raise KeyError(position)
+        value = json.loads(self._record_origins[str(position)])
+        if not isinstance(value, str):
+            raise ValueError("stored native raw occurrence is invalid")
+        return value
 
 
 class _ScratchStringSet(MutableSet[str]):
@@ -2059,11 +2128,20 @@ class _ScratchStringMap(MutableMapping[str, str]):
 
 
 def read_chatgpt_mapping_object(
-    handle: BinaryIO, conn: sqlite3.Connection
+    handle: BinaryIO,
+    conn: sqlite3.Connection,
+    *,
+    require_source_header: bool = True,
+    progress: Callable[[], None] | None = None,
 ) -> tuple[dict[str, object], ChatGPTNodeMapping] | None:
-    """Consume a complete native object while writing each mapping node immediately."""
+    """Extract mapping nodes without collecting the session in memory.
+
+    Source detection requires its native header witness. A receiver with an
+    authenticated declared provider instead delegates header/identity validity
+    to the ordinary canonical parser over the extracted original mapping.
+    """
     events = iter(ijson.parse(handle))
-    mapping = ChatGPTNodeMapping(conn)
+    mapping = ChatGPTNodeMapping(conn, progress=progress)
     if next(events, None) != ("", "start_map", None):
         return None
     envelope: dict[str, object] = {}
@@ -2099,6 +2177,8 @@ def read_chatgpt_mapping_object(
                 node = normalize_ijson_stdlib_numbers(_json_subtree(events, node_start[1], node_start[2]))
                 has_children = False
             mapping.put(node_key, node, ordinal)
+            if progress is not None:
+                progress()
             if has_children:
                 mapping.mark_children(node_key, ordinal)
             ordinal += 1  # noqa: SIM113  (nested value events are not node ordinals)
@@ -2107,10 +2187,13 @@ def read_chatgpt_mapping_object(
     if (
         mapping_count != 1
         or not mapping
-        or not isinstance(envelope.get("current_node"), str)
-        or not isinstance(envelope.get("create_time"), (int, float))
-        or not isinstance(envelope.get("conversation_id"), str)
-        and not isinstance(envelope.get("id"), str)
+        or require_source_header
+        and (
+            not isinstance(envelope.get("current_node"), str)
+            or not isinstance(envelope.get("create_time"), (int, float))
+            or not isinstance(envelope.get("conversation_id"), str)
+            and not isinstance(envelope.get("id"), str)
+        )
     ):
         return None
     envelope["mapping"] = mapping

@@ -59,9 +59,9 @@ async def list_session_links_to_session(
     conn: aiosqlite.Connection,
     session_id: str,
     *,
-    limit: int,
+    limit: int | None,
 ) -> list[dict[str, object]]:
-    """Bounded stable reverse lookup for canonical topology BFS."""
+    """Stable reverse lookup for canonical topology BFS, optionally bounded."""
 
     cursor = await conn.execute(
         f"""
@@ -69,9 +69,10 @@ async def list_session_links_to_session(
           FROM session_links
          WHERE resolved_dst_session_id = ?
          ORDER BY src_session_id, dst_origin, dst_native_id, link_type
-         LIMIT ?
-        """,
-        (session_id, limit),
+
+        """
+        + (" LIMIT ?" if limit is not None else ""),
+        (session_id, limit) if limit is not None else (session_id,),
     )
     return [dict(row) for row in await cursor.fetchall()]
 

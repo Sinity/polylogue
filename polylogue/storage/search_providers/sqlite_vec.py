@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import threading
 from collections.abc import Callable
+from contextlib import closing
+from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
+from polylogue.core.compute import compute_adapter
+from polylogue.core.errors import EmbeddingRetrievalNotReadyError
 from polylogue.paths import embeddings_db_path
 from polylogue.storage.embeddings.identity import EmbeddingRecipe
 from polylogue.storage.search_providers.sqlite_vec_embeddings import SqliteVecEmbeddingMixin
 from polylogue.storage.search_providers.sqlite_vec_queries import SqliteVecQueryMixin
 from polylogue.storage.search_providers.sqlite_vec_runtime import (
     SqliteVecRuntimeMixin,
+    _assert_vec0_dimension,
     _vector_snapshot_binding,
     require_vector_seed_session,
 )
@@ -24,6 +29,8 @@ from polylogue.storage.search_providers.sqlite_vec_support import (
     SqliteVecError,
     _serialize_f32,
 )
+
+_SimilarityT = TypeVar("_SimilarityT")
 
 
 class SqliteVecProvider(
@@ -86,36 +93,50 @@ class SqliteVecProvider(
             model=self.model, dimensions=self.dimension, input_type="query"
         )
 
-    async def read_session_similarity(
+    async def read_similarity(
         self,
-        session_id: str,
         *,
         index_path: Path,
-        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        text: str | None = None,
+        seed_session_id: str | None = None,
         limit: int = 10,
-    ) -> dict[str, object]:
-        """Count and rank retained vectors in one operation-owned snapshot.
-
-        The caller selects the same backend generation used to hydrate hits.
-        Owned handles are acquired, queried and closed in one worker. Supplied
-        handles and their projection stay on the creating thread.
-        """
+    ) -> _SimilarityT:
+        """Rank and hydrate a session page in one selected read snapshot."""
+        if (text is None) == (seed_session_id is None):
+            raise ValueError("similarity read requires exactly one seed")
         if self._snapshot_connection is not None:
             if threading.get_ident() != self._snapshot_thread_id:
                 raise SqliteVecError("operation vector snapshot must be read on its creating thread")
-            return self._read_session_similarity(session_id, index_path=index_path, project=project, limit=limit)
-        return await asyncio.to_thread(
-            self._read_session_similarity, session_id, index_path=index_path, project=project, limit=limit
+            return self._read_similarity(
+                index_path=index_path, project=project, text=text, seed_session_id=seed_session_id, limit=limit
+            )
+        return (
+            await compute_adapter()
+            .submit(
+                partial(
+                    self._read_similarity,
+                    index_path=index_path,
+                    project=project,
+                    text=text,
+                    seed_session_id=seed_session_id,
+                    limit=limit,
+                ),
+                admission_class="interactive-read",
+                estimated_bytes=len((text if text is not None else seed_session_id or "").encode("utf-8")),
+            )
+            .wait()
         )
 
-    def _read_session_similarity(
+    def _read_similarity(
         self,
-        session_id: str,
         *,
         index_path: Path,
-        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], dict[str, object]],
+        project: Callable[[sqlite3.Connection, int, list[tuple[str, float]]], _SimilarityT],
+        text: str | None,
+        seed_session_id: str | None,
         limit: int,
-    ) -> dict[str, object]:
+    ) -> _SimilarityT:
         with self._lifecycle_admission():
             connection = self._get_read_connection(index_path=index_path)
             try:
@@ -130,9 +151,35 @@ class SqliteVecProvider(
                         query_recipe=self._query_recipe,
                     )
                 )
-                require_vector_seed_session(connection, session_id)
-                count = reader.count_session_embeddings(session_id)
-                hits = reader.query_by_session(session_id, limit=limit) if count else []
+                count = 0
+                with closing(connection.cursor()) as cursor:
+                    if seed_session_id is not None:
+                        require_vector_seed_session(connection, seed_session_id)
+                        count = reader.count_session_embeddings(seed_session_id)
+                    hits: list[tuple[str, float]] = []
+                    parameters: tuple[object, ...]
+                    if limit > 0 and (seed_session_id is None or count):
+                        if seed_session_id is not None:
+                            _assert_vec0_dimension(connection, self.dimension)
+                            self._require_seed(connection, seed_session_id)
+                            parameters = (seed_session_id, seed_session_id, seed_session_id, limit)
+                        else:
+                            assert text is not None
+                            if not self.voyage_key:
+                                raise EmbeddingRetrievalNotReadyError(
+                                    "text retrieval requires embedding acquisition credentials",
+                                    readiness_status="disabled",
+                                )
+                            query_vector = self._query_vector(connection, text)
+                            if query_vector is None:
+                                return project(connection, count, [])
+                            parameters = (query_vector, limit)
+                        cursor.execute(
+                            self._distance_sql(session_grain=True, session_seed=seed_session_id is not None)
+                            + " LIMIT ?",
+                            parameters,
+                        )
+                        hits = [(str(row["message_id"]), float(row["distance"])) for row in cursor]
                 return project(connection, count, hits)
             finally:
                 self._release_connection(connection)

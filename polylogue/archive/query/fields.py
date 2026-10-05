@@ -938,8 +938,23 @@ def _descriptor_storage_names(descriptor: QueryFieldDescriptor) -> tuple[str, ..
     return descriptor.storage_names or ((descriptor.sql_param,) if descriptor.sql_param else ())
 
 
+def _descriptor_dsl_names(descriptor: QueryFieldDescriptor) -> set[str]:
+    from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY
+
+    attributes = {descriptor.spec_attr, descriptor.plan_attr}
+    return {
+        token
+        for token, info in EXPRESSION_FIELD_REGISTRY.items()
+        if attributes.intersection(info["spec_field"].split("/"))
+    }
+
+
 def query_boundary_names(boundary: Literal["mcp", "spec", "storage", "api", "dsl"]) -> frozenset[str]:
     """Return names accepted at one explicit public/lowering boundary."""
+    if boundary == "dsl":
+        from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY, boolean_query_fields
+
+        return frozenset(EXPRESSION_FIELD_REGISTRY) | frozenset(boolean_query_fields())
     names: set[str] = set()
     for descriptor in QUERY_FIELD_DESCRIPTORS:
         if boundary == "mcp":
@@ -950,15 +965,13 @@ def query_boundary_names(boundary: Literal["mcp", "spec", "storage", "api", "dsl
             names.update(_descriptor_storage_names(descriptor))
         elif boundary == "api":
             names.update(descriptor.api_names)
-        else:
-            names.add(descriptor.name)
     return frozenset(names)
 
 
 def query_boundary_alternatives(
     name: str, boundary: Literal["mcp", "spec", "storage", "api", "dsl"]
 ) -> tuple[str, ...]:
-    """Return declared spellings for *name*, excluding the current layer."""
+    """Return equivalent spellings accepted at the requested boundary."""
     matches = [
         descriptor
         for descriptor in QUERY_FIELD_DESCRIPTORS
@@ -969,6 +982,7 @@ def query_boundary_alternatives(
             *_descriptor_storage_names(descriptor),
             *descriptor.api_names,
             descriptor.name,
+            *_descriptor_dsl_names(descriptor),
         }
     ]
     names: set[str] = set()
@@ -980,9 +994,11 @@ def query_boundary_alternatives(
                 *_descriptor_storage_names(descriptor),
                 *descriptor.api_names,
                 descriptor.name,
+                *_descriptor_dsl_names(descriptor),
             }
         )
-    names.difference_update(query_boundary_names(boundary))
+    names.intersection_update(query_boundary_names(boundary))
+    names.discard(name)
     return tuple(sorted(names))
 
 

@@ -218,7 +218,7 @@ paths:
   /api/status:
     get:
       summary: Report daemon status and archive readiness
-      description: Returns the daemon status payload and readiness state.
+      description: Returns daemon status and readiness, or no body when If-None-Match matches its ETag.
       operationId: getStatus
       security:
       - machineBearer: []
@@ -226,12 +226,22 @@ paths:
       responses:
         '200':
           description: Daemon status payload.
+          headers:
+            ETag:
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 type: object
                 description: DaemonStatusPayload; fields vary with enabled daemon components.
                 additionalProperties: true
+        '304':
+          description: Status is unchanged; retain the previously received payload.
+          headers:
+            ETag:
+              schema:
+                type: string
         '401':
           description: Machine bearer or web credential was not accepted.
           headers:
@@ -3960,6 +3970,13 @@ components:
         \ top-level so it is not\n  confused with per-hit reader actions in ``hit.match.actions``.\n- ``diagnostics``: optional\
         \ zero-result explanation when the query\n  produced no hits but filters were applied."
       properties:
+        snapshot_epoch:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Snapshot Epoch
         hits:
           items:
             $ref: '#/components/schemas/SessionSearchHitPayload'
@@ -4064,6 +4081,12 @@ components:
           items:
             type: string
           title: Executed Lanes
+          type: array
+        completed_lanes:
+          default: []
+          items:
+            type: string
+          title: Completed Lanes
           type: array
         unavailable_lanes:
           default: []
@@ -4281,6 +4304,13 @@ components:
 
         All read surfaces (daemon HTTP, MCP, CLI JSON output) adapt this shape.'
       properties:
+        snapshot_epoch:
+          anyOf:
+          - minLength: 1
+            type: string
+          - type: 'null'
+          default: null
+          title: Snapshot Epoch
         items:
           items:
             $ref: '#/components/schemas/SessionListEnvelope'
@@ -4408,6 +4438,12 @@ components:
           title: Exit Code
         result_state:
           $ref: '#/components/schemas/ActionResultState'
+        outcome_unknown_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Outcome Unknown Reason
         followup_class:
           anyOf:
           - type: string

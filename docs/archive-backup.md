@@ -1,6 +1,6 @@
 # Archive Backup and Restore Boundaries
 
-The fresh-start reset moves the previous Polylogue state aside intact solely as salvage evidence and creates an empty archive with all six tiers at `user_version=1`. The reset does not restore, migrate, import, carry forward, or read back the previous archive. External source files explicitly declared for intake may be ingested into the new archive. The backup and runtime qualification procedures below describe ordinary backup/restore work for archives intentionally retained for operation; they are not steps in the fresh-start reset.
+The fresh-start reset moves previous Polylogue core state aside intact and constructs fresh Source, User, Audit, Index and Ops tiers through the current constructor. It does not import previous core tiers or their physical authority receipts. External source files explicitly declared for intake may be ingested into the new archive. Explicitly selected purchased Embeddings may be preserved from a compatible sealed backup; matching content/model outputs must not be regenerated. The preparation witness restores only the selected `embeddings.db` bytes into an otherwise absent scratch root, then runs the ordinary owned constructor and embedding lifecycle startup. Startup creates destination-owned generation metadata; old occurrence references do not supply fresh occurrence bindings. This is separate from the complete-core verified restore operation below, which still refuses partial durable packages.
 
 Polylogue stores one archive root as a split SQLite file set plus a
 content-addressed blob store. Backups must preserve the tiers by durability
@@ -132,8 +132,10 @@ Use the installed runtime's explicit verified restore operation for supported
 current-format backups. It applies declared durable evolution on the new
 owned destination; a raw file copy does not grant startup authority. Unknown
 versions or noncanonical schema shapes receive a typed refusal while the
-original package remains intact. Pre-reset archives remain salvage evidence
-and are never migration or restoration inputs.
+original package remains intact. Previous core tiers and their authority receipts
+remain salvage evidence. The explicitly selected purchased Embeddings exception
+uses ordinary fresh-root startup as described above; it does not import a core
+archive or grant copied durable receipts startup authority.
 
 Verify the completed destination through production status and query routes.
 Report field-query readiness and FTS availability separately: a restored
@@ -145,7 +147,7 @@ explicit gaps in the restore result.
 
 For ordinary archive replacement or removal, preserve a full-evidence copy outside the path that will be recreated. Include all six tiers and every referenced blob. Record the copy's location, the selected runtime commit and executable version, and a manifest of the preserved files outside Git. Keep the original `user.db`; an export of selected rows is supplementary evidence, not a replacement.
 
-For the fresh-start reset, move the entire previous Polylogue state aside intact solely as salvage evidence. Do not qualify it for application reads or use it for rollback or readback.
+For the fresh-start reset, preserve the previous Polylogue state intact outside the new archive. Its core tiers remain salvage evidence and are not rollback or readback inputs. Independently preserve the explicitly selected embedding backup, verify its current schema and exact content/model reuse through the preparation witness, and keep the original backup unchanged.
 
 A copied archive is custody evidence, not active authority for its new inodes.
 Create and verify a complete backup package, use the explicit restore operation

@@ -24,6 +24,7 @@ from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
+from polylogue.cli.session_rows import SessionSelection
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.enums import Origin
@@ -31,6 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
 from polylogue.surfaces.projection_spec import ProjectionSpec, QueryProjectionSpec, RenderFormat, projection_from_views
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.cli_selection import selection_for_ids, selection_for_rows
 
 
 def _dialogue_operation_result(session: object) -> tuple[dict[str, object], object]:
@@ -1266,7 +1268,7 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
         for session_id in ("session-1", "session-2")
     ]
 
-    with patch("polylogue.cli.session_rows.query_session_rows", return_value=rows):
+    with patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows(rows)):
         with pytest.raises(click.UsageError, match="Narrow the query to one session"):
             wrapped(child, **_continue_verb_kwargs())
 
@@ -1297,7 +1299,7 @@ def test_continue_verb_json_on_a_terminal_refuses_instead_of_prompting() -> None
         raise AssertionError("the chooser ran for machine output")
 
     with (
-        patch("polylogue.cli.session_rows.query_session_rows", return_value=rows),
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows(rows)),
         patch.object(select_module, "interactive_selection_available", lambda _env: True),
         patch.object(select_module, "choose_select_row", _explode),
         pytest.raises(AmbiguousSelectionError),
@@ -1398,15 +1400,17 @@ def test_resolve_target_session_id_uses_query_terms(
     )
     captured: list[tuple[object, int]] = []
 
-    def fake_query_session_rows(config: object, selected: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
+    def fake_query_session_selection(config: object, selected: RootModeRequest, *, limit: int) -> SessionSelection:
         captured.append((selected.query_params()["query"], limit))
-        return [
-            SelectSessionRow(
-                session_id="codex-session:resolve-query-target", origin="codex-session", title="t", date=None
-            )
-        ]
+        return selection_for_rows(
+            [
+                SelectSessionRow(
+                    session_id="codex-session:resolve-query-target", origin="codex-session", title="t", date=None
+                )
+            ]
+        )
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", fake_query_session_rows)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", fake_query_session_selection)
 
     assert query_verbs._resolve_target_session_id(request) == "codex-session:resolve-query-target"
     # A filter is probed past one row so several matches are refused, not
@@ -1925,11 +1929,11 @@ def test_resolve_target_session_id_resolves_latest(monkeypatch: pytest.MonkeyPat
 
     captured_limits: list[object] = []
 
-    def fake_query_session_ids(config: object, req: object, *, limit: int, **_kwargs: object) -> list[str]:
+    def fake_query_session_selection(config: object, req: object, *, limit: int, **_kwargs: object) -> SessionSelection:
         captured_limits.append(limit)
-        return ["claude-code:latest-conv-id"]
+        return selection_for_ids(["claude-code:latest-conv-id"])
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", fake_query_session_ids)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", fake_query_session_selection)
 
     result = query_verbs._resolve_target_session_id(request)
 
@@ -2067,14 +2071,14 @@ def test_multi_session_resolution_separates_a_query_miss_from_no_seed() -> None:
     env = cast(AppEnv, child.obj)
 
     # 1. The selection query ran and matched nothing: a refusal, not a seed.
-    with patch("polylogue.cli.session_rows.query_session_ids", return_value=[]):
+    with patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids([])):
         with pytest.raises(EmptyCardinalityError):
             query_verbs._resolve_query_action_session_ids(env, request, limit=5)
 
     # 2. Ordinary multi-match still resolves; several matches are normal here.
     with patch(
-        "polylogue.cli.session_rows.query_session_ids",
-        return_value=["codex-session:a", "codex-session:b"],
+        "polylogue.cli.session_rows.query_session_selection",
+        return_value=selection_for_ids(["codex-session:a", "codex-session:b"]),
     ):
         assert query_verbs._resolve_query_action_session_ids(env, request, limit=5) == [
             "codex-session:a",

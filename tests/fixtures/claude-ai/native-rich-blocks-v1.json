@@ -1,0 +1,96 @@
+{
+  "uuid": "native-rich-blocks",
+  "name": "Synthetic canonical blocks",
+  "chat_messages": [
+    {
+      "uuid": "assistant-1",
+      "sender": "assistant",
+      "created_at": "2026-01-01T00:00:01Z",
+      "content": [
+        {
+          "type": "text",
+          "text": "Let me search."
+        },
+        {
+          "type": "thinking",
+          "thinking": "considering options",
+          "signature": "synthetic-signature"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu-1",
+          "name": "web_search",
+          "input": {
+            "query": "synthetic"
+          }
+        }
+      ]
+    },
+    {
+      "uuid": "result-1",
+      "sender": "human",
+      "created_at": "2026-01-01T00:00:02Z",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu-1",
+          "is_error": true,
+          "content": [
+            {
+              "type": "text",
+              "text": "first line"
+            },
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U="
+              }
+            },
+            {
+              "type": "text",
+              "text": "second line"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "uuid": "result-2",
+      "sender": "human",
+      "created_at": "2026-01-01T00:00:03Z",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu-2",
+          "content": [
+            {
+              "type": "image",
+              "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aW1hZ2U="
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "uuid": "assistant-2",
+      "sender": "assistant",
+      "created_at": "2026-01-01T00:00:04Z",
+      "content": [
+        {
+          "type": "text",
+          "text": "Complete."
+        },
+        {
+          "type": "token_budget",
+          "remaining": 5
+        }
+      ]
+    }
+  ]
+}

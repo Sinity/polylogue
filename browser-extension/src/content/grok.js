@@ -1,43 +1,26 @@
 (function () {
-  if (window.__polylogueGrokCaptureInstalled) return;
-  window.__polylogueGrokCaptureInstalled = true;
+  if (window.__polylogueGrokCaptureInstalled === 2) return;
+  window.__polylogueGrokCaptureInstalled = 2;
 
-  // Native-only adapter (polylogue Grok native-capture upgrade, 2026-07-31).
-  //
-  // grok.js used to be the only provider adapter with no MAIN-world bridge:
-  // it scraped whatever turn nodes happened to be mounted in the DOM and
-  // hardcoded `native_attempts: []`. Every other provider's DOM path has
-  // proven lossy by roughly two orders of magnitude once a conversation
-  // scrolls past the virtualized viewport (measured live: one ChatGPT
-  // conversation held 5 DOM nodes against 996 API messages). grok.com's own
-  // `/rest/app-chat/conversations/<id>` + `.../responses` REST surface
-  // (verified live 2026-07-31 via CDP against an authenticated session) is
-  // strictly superior for every field DOM scraping could ever observe, so
-  // there is no DOM fallback here at all -- a native-capture failure fails
-  // loud (diagnostics attached) rather than silently degrading to an
-  // under-observed capture that looks the same as a complete one.
-  const nativeAdapterName = "grok-native-v1";
   const nativeCaptureMessage = "polylogue.grok.nativeCapture";
   const nativeFetchRequestMessage = "polylogue.grok.nativeFetchRequest";
   const nativeFetchResponseMessage = "polylogue.grok.nativeFetchResponse";
-  const nativeFetchTimeoutMs = 8000;
   const assetFetchRequestMessage = "polylogue.grok.assetFetchRequest";
   const assetFetchResponseMessage = "polylogue.grok.assetFetchResponse";
-  const assetFetchTimeoutMs = 10000;
-  const assetMaxBytesPerFile = 25 * 1024 * 1024;
-  const assetMaxBytesTotal = 75 * 1024 * 1024;
-  const assetTotalTimeBudgetMs = 10000;
-  const assetConsecutiveFailureLimit = 3;
 
-  const nativeCaptures = [];
+  let nativeCapture = null;
+  let nativeHeaderPromise = Promise.resolve();
   const nativeFetchResponses = new Map();
   const assetResponses = new Map();
   const nativeAttemptDiagnostics = [];
+  let nativeAttemptsDropped = 0;
 
   function rememberNativeAttempt(diagnostic) {
     nativeAttemptDiagnostics.push({ attempted_at: new Date().toISOString(), ...diagnostic });
     if (nativeAttemptDiagnostics.length > 8) {
-      nativeAttemptDiagnostics.splice(0, nativeAttemptDiagnostics.length - 8);
+      const dropped = nativeAttemptDiagnostics.length - 8;
+      nativeAttemptDiagnostics.splice(0, dropped);
+      nativeAttemptsDropped += dropped;
     }
   }
 
@@ -52,17 +35,21 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
-    const data = event.data || {};
+    const data = window.polylogueAssetStream.readPageMessage(event);
+    if (!data) return;
     if (data.type === nativeCaptureMessage && data.capture) {
-      nativeCaptures.push(data.capture);
-      if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
+      const capture = data.capture;
+      if (capture.ok && capture.bodyRef) nativeHeaderPromise = window.polylogueAssetStream.nativeHeaders("grok", capture).then(({ cache: { headers, capture: selected } }) => {
+        if (String(headers.conversationId || headers.id || "") !== conversationIdFromUrl()) return;
+        if (window.polylogueCapture.cacheCaptureIsNewer(nativeCapture, selected)) nativeCapture = selected;
+      }).catch(() => undefined);
       return;
     }
     if (data.type === nativeFetchResponseMessage && data.requestId) {
       const pending = nativeFetchResponses.get(data.requestId);
       if (!pending) return;
       nativeFetchResponses.delete(data.requestId);
-      pending.resolve({ capture: data.capture || null, error: data.error || null });
+      pending.resolve({ capture: data.capture || null, error: data.error || null, requestId: data.requestId });
       return;
     }
     if (data.type === assetFetchResponseMessage && data.requestId) {
@@ -73,339 +60,68 @@
     }
   });
 
-  async function requestNativeCaptureFromPage(conversationId) {
+  async function requestNativeCaptureFromPage(conversationId, signal) {
     const requestId = `polylogue-grok-native-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const responsePromise = new Promise((resolve) => {
-      const timeout = window.setTimeout(() => {
-        nativeFetchResponses.delete(requestId);
-        resolve({ capture: null, error: "timeout" });
-      }, nativeFetchTimeoutMs);
-      nativeFetchResponses.set(requestId, {
-        resolve(value) {
-          window.clearTimeout(timeout);
-          resolve(value);
-        },
-      });
-    });
-    window.postMessage({ type: nativeFetchRequestMessage, requestId, conversationId }, window.location.origin);
-    return responsePromise;
+    const responsePromise = new Promise((resolve) => nativeFetchResponses.set(requestId, { resolve }));
+    const onAbort = () => window.polylogueAssetStream.pageMessage({ type: "polylogue.grok.cancelRequest", requestId }, chrome.runtime.id);
+    signal.addEventListener("abort", onAbort, { once: true });
+    window.polylogueAssetStream.pageMessage({ type: nativeFetchRequestMessage, requestId, conversationId }, chrome.runtime.id);
+    if (signal.aborted) onAbort();
+    return responsePromise.finally(() => signal.removeEventListener("abort", onAbort));
   }
 
-  function parseNativeCapture(capture, expectedConversationId) {
-    if (!capture || !capture.ok || typeof capture.body !== "string") return null;
-    let payload;
-    try {
-      payload = JSON.parse(capture.body);
-    } catch {
-      return null;
-    }
-    if (!payload || typeof payload !== "object" || !Array.isArray(payload.responses)) return null;
-    const payloadConversationId = payload.conversationId;
-    if (expectedConversationId && payloadConversationId && String(payloadConversationId) !== expectedConversationId) {
-      return null;
-    }
-    return payload;
-  }
-
-  function latestNativePayload(expectedConversationId) {
-    for (let index = nativeCaptures.length - 1; index >= 0; index -= 1) {
-      const payload = parseNativeCapture(nativeCaptures[index], expectedConversationId);
-      if (payload) return payload;
-    }
-    return null;
-  }
-
-  async function fetchNativePayloadOnDemand(requestedConversationId) {
-    const conversationId = requestedConversationId || conversationIdFromUrl();
-    if (!conversationId || !/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) {
-      rememberNativeAttempt({ stage: "conversation_id_resolution", accepted: false, reason: "no_conversation_id_in_url" });
-      return null;
-    }
-    const pageResult = await requestNativeCaptureFromPage(conversationId);
-    const payload = parseNativeCapture(pageResult && pageResult.capture, conversationId);
-    rememberNativeAttempt({
-      stage: "page_bridge_fetch",
-      ok: pageResult?.capture?.ok ?? null,
-      status: pageResult?.capture?.status ?? null,
-      response_count: Array.isArray(payload?.responses) ? payload.responses.length : null,
-      accepted: Boolean(payload),
-      error: pageResult?.error || pageResult?.capture?.error || null,
-    });
-    if (payload) return payload;
-    return latestNativePayload(conversationId);
-  }
-
-  function roleFromSender(sender) {
-    const normalized = String(sender || "").toLowerCase();
-    if (normalized === "human") return "user";
-    if (normalized === "assistant") return "assistant";
-    return "unknown";
-  }
-
-  function timestampFromValue(value) {
-    if (typeof value === "string" && value) return value;
-    if (typeof value === "number" && Number.isFinite(value)) {
-      return new Date(value < 10_000_000_000 ? value * 1000 : value).toISOString();
-    }
-    return null;
-  }
-
-  // Structured evidence a Grok response node carries beyond its `message`
-  // prose: reasoning steps, web/X/RAG/connector search evidence, and raw
-  // tool responses. Each recognized shape becomes a typed
-  // BrowserCaptureBlock; anything with content this function does not
-  // recognize is still emitted (never dropped) as a tool_result block
-  // flagged `metadata.unrecognized_shape = true` so a payload shape change
-  // shows up as a visible diagnostic instead of a silently-shrunken capture.
-  function stepBlocks(response) {
-    const steps = Array.isArray(response.steps) ? response.steps : [];
-    return steps.flatMap((step, index) => {
-      const text = Array.isArray(step?.text) ? step.text.filter((line) => typeof line === "string" && line).join("\n") : "";
-      const blocks = [];
-      if (text) {
-        blocks.push({ type: "thinking", text, metadata: { step_index: index, tags: Array.isArray(step?.tags) ? step.tags : [] } });
-      }
-      for (const usage of Array.isArray(step?.toolUsageResults) ? step.toolUsageResults : []) {
-        blocks.push(toolUsageBlock(usage, response.responseId, index));
-      }
-      for (const card of Array.isArray(step?.toolUsageCards) ? step.toolUsageCards : []) {
-        blocks.push(toolUsageBlock(card, response.responseId, index, "tool_usage_card"));
-      }
-      return blocks;
-    });
-  }
-
-  function toolUsageBlock(usage, ownId, stepIndex, sourceLabel = "tool_usage_result") {
-    const toolName =
-      (usage && typeof usage === "object" && (usage.toolName || usage.tool_name || usage.name || usage.type)) || null;
-    if (toolName && typeof toolName === "string") {
-      return {
-        type: "tool_result",
-        tool_id: ownId,
-        tool_name: toolName,
-        text: typeof usage.text === "string" ? usage.text : null,
-        metadata: { step_index: stepIndex, source: sourceLabel, raw: usage },
-      };
-    }
-    return {
-      type: "tool_result",
-      tool_id: ownId,
-      text: JSON.stringify(usage),
-      metadata: { step_index: stepIndex, source: sourceLabel, unrecognized_shape: true },
-    };
-  }
-
-  const RESULT_LIST_FIELDS = [
-    ["webSearchResults", "web_search"],
-    ["citedWebSearchResults", "web_search"],
-    ["xposts", "x_search"],
-    ["citedXposts", "x_search"],
-    ["ragResults", "rag_search"],
-    ["citedRagResults", "rag_search"],
-    ["searchProductResults", "product_search"],
-    ["connectorSearchResults", "connector_search"],
-    ["citedConnectorSearchResults", "connector_search"],
-    ["collectionSearchResults", "collection_search"],
-    ["citedCollectionSearchResults", "collection_search"],
-  ];
-
-  function resultListBlocks(response) {
-    const blocks = [];
-    for (const [field, toolName] of RESULT_LIST_FIELDS) {
-      const value = response[field];
-      if (!Array.isArray(value) || !value.length) continue;
-      blocks.push({
-        type: "tool_result",
-        tool_id: response.responseId,
-        tool_name: toolName,
-        metadata: { field, count: value.length, results: value },
-      });
-    }
-    if (response.query) {
-      blocks.unshift({
-        type: "tool_use",
-        tool_id: response.responseId,
-        tool_name: "web_search",
-        tool_input: { query: response.query, query_type: response.queryType || null },
-      });
-    }
-    return blocks;
-  }
-
-  function toolResponseBlocks(response) {
-    const toolResponses = Array.isArray(response.toolResponses) ? response.toolResponses : [];
-    return toolResponses.map((entry, index) => {
-      const name = entry && typeof entry === "object" && (entry.toolName || entry.tool_name || entry.name);
-      if (typeof name === "string" && name) {
-        return {
-          type: "tool_use",
-          tool_id: `${response.responseId}:tool_response:${index}`,
-          tool_name: name,
-          tool_input: entry.input || entry.tool_input || null,
-          metadata: { source: "toolResponses", index },
-        };
-      }
-      return {
-        type: "tool_result",
-        tool_id: `${response.responseId}:tool_response:${index}`,
-        text: JSON.stringify(entry),
-        metadata: { source: "toolResponses", index, unrecognized_shape: true },
-      };
-    });
-  }
-
-  function nativeTurnBlocks(response) {
-    return [...stepBlocks(response), ...resultListBlocks(response), ...toolResponseBlocks(response)];
-  }
-
-  // Attachments carry no bytes in `/responses` -- only identifying metadata
-  // plus a `fileUri`/`key` resolvable through assets.grok.com (see
-  // grok_bridge.js). fileAttachmentsMetadata and fileAttachmentAssetMetadata
-  // both key by the same id (verified live 2026-07-31); merge them so a
-  // single attachment descriptor carries both the display metadata and the
-  // acquirable content key.
-  function attachmentDescriptorsForResponse(response) {
-    const descriptors = [];
-    const seen = new Set();
-    const assetById = new Map(
-      (Array.isArray(response.fileAttachmentAssetMetadata) ? response.fileAttachmentAssetMetadata : [])
-        .filter((asset) => asset && typeof asset.assetId === "string")
-        .map((asset) => [asset.assetId, asset]),
-    );
-    for (const meta of Array.isArray(response.fileAttachmentsMetadata) ? response.fileAttachmentsMetadata : []) {
-      if (!meta || typeof meta.fileMetadataId !== "string" || !meta.fileMetadataId) continue;
-      if (seen.has(meta.fileMetadataId)) continue;
-      seen.add(meta.fileMetadataId);
-      const asset = assetById.get(meta.fileMetadataId) || null;
-      descriptors.push({
-        provider_attachment_id: meta.fileMetadataId,
-        message_provider_id: response.responseId,
-        name: meta.fileName || asset?.name || null,
-        mime_type: meta.fileMimeType || asset?.mimeType || null,
-        size_bytes: typeof asset?.sizeBytes === "number" ? asset.sizeBytes : null,
-        asset_key: meta.fileUri || asset?.key || null,
-        provider_meta: { capture_source: "grok_app_chat_api", file_source: meta.fileSource || asset?.fileSource || null },
-      });
-    }
-    for (const url of Array.isArray(response.generatedImageUrls) ? response.generatedImageUrls : []) {
-      if (typeof url !== "string" || !url) continue;
-      const id = `generated:${window.polylogueCapture.fnv1a(url)}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      descriptors.push({
-        provider_attachment_id: id,
-        message_provider_id: response.responseId,
-        name: null,
-        mime_type: null,
-        size_bytes: null,
-        url: /^https?:\/\//i.test(url) ? url : null,
-        provider_meta: { capture_source: "grok_generated_image" },
-      });
-    }
-    for (const url of Array.isArray(response.imageEditUris) ? response.imageEditUris : []) {
-      if (typeof url !== "string" || !url) continue;
-      const id = `image_edit:${window.polylogueCapture.fnv1a(url)}`;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      descriptors.push({
-        provider_attachment_id: id,
-        message_provider_id: response.responseId,
-        name: null,
-        mime_type: null,
-        size_bytes: null,
-        url: /^https?:\/\//i.test(url) ? url : null,
-        provider_meta: { capture_source: "grok_image_edit" },
-      });
-    }
-    // imageAttachments' element shape has not been observed live with
-    // content (empty in every fixture captured so far). Record it rather
-    // than silently guessing a shape for it.
-    if (Array.isArray(response.imageAttachments) && response.imageAttachments.length) {
-      rememberNativeAttempt({
-        stage: "attachment_shape",
-        accepted: false,
-        reason: "imageAttachments_shape_unverified",
-        sample: response.imageAttachments.slice(0, 2),
-      });
-    }
-    return descriptors;
-  }
-
-  function requestAssetFromPage(request) {
+  function requestAssetFromPage(request, signal, acquisition) {
     const requestId = `polylogue-grok-asset-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const responsePromise = new Promise((resolve) => {
-      const timeout = window.setTimeout(() => {
-        assetResponses.delete(requestId);
-        resolve({ status: "request_failed", detail: "response_timeout" });
-      }, assetFetchTimeoutMs);
-      assetResponses.set(requestId, {
-        resolve(value) {
-          window.clearTimeout(timeout);
-          resolve(value);
-        },
-      });
-    });
-    window.postMessage({ type: assetFetchRequestMessage, requestId, request }, window.location.origin);
-    return responsePromise;
+    return window.polylogueAssetStream.request({ provider: "grok", requestId, signal, purpose: { acquisition }, start: () => {
+      const responsePromise = new Promise((resolve) => assetResponses.set(requestId, { resolve }));
+      const onAbort = () => window.polylogueAssetStream.pageMessage({ type: "polylogue.grok.cancelRequest", requestId }, chrome.runtime.id);
+      signal.addEventListener("abort", onAbort, { once: true });
+      window.polylogueAssetStream.pageMessage({ type: assetFetchRequestMessage, requestId, request }, chrome.runtime.id);
+      if (signal.aborted) onAbort();
+      return responsePromise.finally(() => signal.removeEventListener("abort", onAbort));
+    } });
   }
 
-  async function acquireAssets(descriptors) {
+  async function acquireAssets(descriptors, signal, message) {
     const outcome = {
       attempted: descriptors.length,
       acquired: 0,
       failed: [],
       status_counts: {},
-      skipped_over_budget: 0,
-      skipped_time_budget: 0,
-      skipped_circuit_breaker: 0,
     };
     const attachments = [];
-    let totalBytes = 0;
-    let consecutiveFailures = 0;
-    const startedAt = Date.now();
     for (const descriptor of descriptors) {
-      const resolvable = descriptor.asset_key || descriptor.url;
+      signal.throwIfAborted();
+      const resolvable = descriptor.url;
       if (!resolvable) {
+        outcome.failed.push({ provider_attachment_id: descriptor.provider_attachment_id, status: "no_resolvable_source" });
+        outcome.status_counts.no_resolvable_source = (outcome.status_counts.no_resolvable_source || 0) + 1;
         attachments.push({ ...descriptor, provider_meta: { ...descriptor.provider_meta, byte_acquisition: "no_resolvable_source" } });
         continue;
       }
-      if (totalBytes >= assetMaxBytesTotal) {
-        outcome.skipped_over_budget += 1;
-        attachments.push(descriptor);
-        continue;
+      const request = { key: descriptor.url, name: descriptor.name };
+      let result;
+      try { result = await requestAssetFromPage(request, signal, { raw_id: message.capture_ref, native_id: message.nativeId, record_key: message.recordKey, attachment_id: descriptor.provider_attachment_id, attachment_ordinal: message.attachmentOrdinal }); }
+      catch (error) {
+        signal.throwIfAborted();
+        result = { status: error.outcome === "rate_limited" ? "rate_limited" : "request_failed", detail: typeof error.code === "string" ? error.code : (error.message || "request_failed") };
       }
-      if (Date.now() - startedAt >= assetTotalTimeBudgetMs) {
-        outcome.skipped_time_budget += 1;
-        attachments.push(descriptor);
-        continue;
-      }
-      if (consecutiveFailures >= assetConsecutiveFailureLimit) {
-        outcome.skipped_circuit_breaker += 1;
-        attachments.push(descriptor);
-        continue;
-      }
-      const request = descriptor.asset_key
-        ? { key: descriptor.asset_key, name: descriptor.name, maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes) }
-        : { key: descriptor.url, name: descriptor.name, maxBytes: Math.min(assetMaxBytesPerFile, assetMaxBytesTotal - totalBytes) };
-      const result = await requestAssetFromPage(request);
-      const status = typeof result.status === "string" ? result.status : "request_failed";
+      signal.throwIfAborted();
+      const status = result.http_status === 429 ? "rate_limited" : typeof result.status === "string" ? result.status : "request_failed";
       const contentSha256 = result.asset && result.asset.sha256;
       const acquiredIsValid =
-        status === "acquired" && result.asset && result.asset.base64 && typeof contentSha256 === "string" && /^[0-9a-f]{64}$/.test(contentSha256);
+        status === "acquired" && result.asset && result.asset.staged_asset && typeof contentSha256 === "string" && /^[0-9a-f]{64}$/.test(contentSha256);
       outcome.status_counts[status] = (outcome.status_counts[status] || 0) + 1;
       if (acquiredIsValid) {
-        totalBytes += result.asset.size_bytes || 0;
-        consecutiveFailures = 0;
         outcome.acquired += 1;
         attachments.push({
           ...descriptor,
           mime_type: result.asset.mime_type || descriptor.mime_type,
           size_bytes: result.asset.size_bytes || descriptor.size_bytes,
-          inline_base64: result.asset.base64,
+          staged_asset: result.asset.staged_asset,
           provider_meta: { ...descriptor.provider_meta, content_sha256: contentSha256, byte_acquisition: "acquired" },
         });
       } else {
-        consecutiveFailures += 1;
         outcome.failed.push({ provider_attachment_id: descriptor.provider_attachment_id, status, detail: result.detail || null });
         attachments.push({ ...descriptor, provider_meta: { ...descriptor.provider_meta, byte_acquisition: status, byte_acquisition_detail: result.detail || null } });
       }
@@ -413,116 +129,79 @@
     return { attachments, outcome };
   }
 
-  function collectNativeTurns(payload) {
-    const responses = Array.isArray(payload.responses) ? payload.responses : [];
-    const turns = [];
-    for (const response of responses) {
-      if (!response || typeof response !== "object" || typeof response.responseId !== "string") {
-        rememberNativeAttempt({ stage: "turn_shape", accepted: false, reason: "response_missing_id" });
-        continue;
-      }
-      const text = typeof response.message === "string" ? response.message : "";
-      const blocks = nativeTurnBlocks(response);
-      if (!text && !blocks.length) continue;
-      turns.push({
-        provider_turn_id: response.responseId,
-        role: roleFromSender(response.sender),
-        text: text || null,
-        timestamp: timestampFromValue(response.createTime),
-        parent_turn_id: response.parentResponseId || null,
-        blocks,
-        provider_meta: {
-          capture_source: "grok_app_chat_api",
-          model: response.model || null,
-          partial: response.partial === true,
-          manual: response.manual === true,
-          shared: response.shared === true,
-          stream_error_count: Array.isArray(response.streamErrors) ? response.streamErrors.length : 0,
-          stream_errors: Array.isArray(response.streamErrors) && response.streamErrors.length ? response.streamErrors : null,
-        },
-      });
+  async function performCapture(reason = null, requestedConversationId = null, deferReceiver = false, signal) {
+    let throttle;
+    try { throttle = await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "grok" }); }
+    catch { return { ok: false, error: "provider_throttle_authority_unavailable" }; }
+    if (throttle?.ok !== true) return { ok: false, error: throttle?.outcome || "provider_throttle_authority_unavailable", outcome: throttle?.outcome, retry_after_seconds: throttle?.retry_after_seconds ?? null };
+    const nativeId = requestedConversationId || conversationIdFromUrl();
+    if (!nativeId) return { ok: false, error: "native_capture_unavailable" };
+    nativeCapture = await window.polylogueAssetStream.restoreNative("grok", nativeId, signal);
+    const response = await requestNativeCaptureFromPage(nativeId, signal);
+    signal.throwIfAborted();
+    const acquired = response?.capture;
+    if (acquired?.status === 429 || response?.error === "rate_limited") {
+      await chrome.runtime.sendMessage({ type: "polylogue.providerRateLimited", provider: "grok", retry_after: acquired?.retryAfter || null, request_id: response.requestId, provider_response: { status: acquired?.status, url: acquired?.url } });
+      return { ok: false, error: "rate_limited", outcome: "rate_limited" };
     }
-    turns.sort((left, right) => {
-      const leftTime = left.timestamp ? Date.parse(left.timestamp) : 0;
-      const rightTime = right.timestamp ? Date.parse(right.timestamp) : 0;
-      return leftTime - rightTime;
-    });
-    return turns;
-  }
-
-  function modelFromNativePayload(payload) {
-    for (const response of Array.isArray(payload.responses) ? payload.responses : []) {
-      if (typeof response?.model === "string" && response.model) return response.model;
-    }
-    return null;
-  }
-
-  async function buildNativeEnvelope(payload, generationDiagnostics) {
-    const turns = collectNativeTurns(payload);
-    if (!turns.length) return null;
-    const descriptors = (Array.isArray(payload.responses) ? payload.responses : []).flatMap((response) =>
-      attachmentDescriptorsForResponse(response),
-    );
-    const assetAcquisition = descriptors.length ? await acquireAssets(descriptors) : { attachments: [], outcome: null };
-    const inflightCount = Array.isArray(payload.inflightResponses) ? payload.inflightResponses.length : 0;
-    return window.polylogueCapture.buildEnvelope({
-      provider: "grok",
-      adapterName: nativeAdapterName,
-      turns,
-      providerSessionId: String(payload.conversationId),
-      sessionKind: payload.temporary === true ? "temporary" : null,
-      title: typeof payload.title === "string" && payload.title ? payload.title : null,
-      createdAt: timestampFromValue(payload.createTime),
-      updatedAt: timestampFromValue(payload.modifyTime),
-      model: modelFromNativePayload(payload),
-      providerMeta: {
-        capture_source: "grok_app_chat_api",
-        response_count: turns.length,
-        inflight_response_count: inflightCount,
-        conversation_temporary: payload.temporary === true,
-        session_kind: payload.temporary === true ? "temporary" : null,
-        asset_acquisition: assetAcquisition.outcome,
-        native_attempts: generationDiagnostics.slice(-8),
-      },
-      rawProviderPayload: payload,
-      attachments: assetAcquisition.attachments,
-    });
-  }
-
-  async function capture(reason = null, requestedConversationId = null, deferReceiver = false) {
-    const nativePayload = await fetchNativePayloadOnDemand(requestedConversationId);
-    if (!nativePayload) {
-      return {
-        ok: false,
-        error: "native_capture_unavailable",
-        native_attempts: nativeAttemptDiagnostics.slice(-8),
-      };
-    }
-    const envelope = await buildNativeEnvelope(nativePayload, nativeAttemptDiagnostics);
-    if (!envelope) {
-      return {
-        ok: false,
-        error: "no_turns",
-        native_attempts: nativeAttemptDiagnostics.slice(-8),
-      };
-    }
+    await window.polylogueAssetStream.settleNativeHeaders(nativeHeaderPromise, signal);
+    signal.throwIfAborted();
+    const cached = nativeCapture?.ok && nativeCapture.bodyRef && String(nativeCapture.url || "").includes(`/conversations/${nativeId}`) ? nativeCapture : null;
+    const source = acquired?.ok && acquired.bodyRef ? acquired : cached;
+    rememberNativeAttempt({ stage: "page_bridge_fetch", ok: acquired?.ok ?? null, status: acquired?.status ?? null,
+      accepted: Boolean(source), error: response?.error || acquired?.error || null });
+    if (!source) return { ok: false, error: "native_capture_unavailable", native_attempts: nativeAttemptDiagnostics.slice(), native_attempts_dropped: nativeAttemptsDropped };
+    const envelope = await window.polylogueAssetStream.nativeEnvelope({ provider: "grok", capture: source, nativeId, signal,
+      attribution: { acquisition: source.acquisition || {} } });
     if (deferReceiver) return { ok: true, envelope, deferred: true };
-    const captureResult = await window.polylogueCapture.sendCapture(envelope, reason);
-    if (!captureResult?.ok) {
-      return {
-        ok: false,
-        envelope,
-        captureResult,
-        error: captureResult?.error || "capture_rejected",
-        timelineRecorded: true,
-      };
-    }
+    const captureResult = await window.polylogueCapture.sendCapture(envelope, reason, signal);
+    if (!captureResult?.ok) return { ok: false, envelope, captureResult, error: captureResult?.error || "capture_rejected", timelineRecorded: true };
     const archiveState = await window.polylogueCapture.refreshArchiveState("grok", envelope.session.provider_session_id);
     return { ok: true, envelope, captureResult, archiveState };
   }
 
+  const recordOperations = new Set();
+  function acquireRecord(message) {
+    const controller = new AbortController();
+    const operation = { controller, captureRef: message.capture_ref, promise: null };
+    operation.promise = acquireAssets(message.attachments || [], controller.signal, message)
+      .then((acquisition) => ({ ok: true, acquisition }))
+      .catch((error) => ({ ok: false, error: controller.signal.aborted ? "capture_cancelled" : String(error.message || error) }))
+      .finally(() => recordOperations.delete(operation));
+    recordOperations.add(operation);
+    return operation.promise;
+  }
+  async function cancelRecord(captureRef) {
+    const owned = [...recordOperations].filter((operation) => operation.captureRef === captureRef);
+    for (const operation of owned) operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    await Promise.allSettled(owned.map((operation) => operation.promise));
+    return { ok: true, outcome: "cancelled" };
+  }
+
+  const captureOperations = new Set();
+  function capture(reason = null, requestedConversationId = null, deferReceiver = false) {
+    const controller = new AbortController();
+    const operation = { controller, promise: null };
+    operation.promise = performCapture(reason, requestedConversationId, deferReceiver, controller.signal).catch((error) => {
+      if (controller.signal.aborted) return { ok: false, error: "capture_cancelled", outcome: "cancelled" };
+      throw error;
+    }).finally(() => captureOperations.delete(operation));
+    captureOperations.add(operation);
+    return operation.promise;
+  }
+  async function cancelCapture() {
+    const owned = [...captureOperations];
+    for (const operation of owned) operation.controller.abort(new globalThis.DOMException("capture_cancelled", "AbortError"));
+    await Promise.allSettled(owned.map((operation) => operation.promise));
+    return { ok: true, outcome: "cancelled", drained: owned.length };
+  }
+  window.addEventListener("pagehide", () => { void cancelCapture(); });
+  window.polylogueCapture.cancelCapture = cancelCapture;
   window.polylogueCapture.capturePage = capture;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message.type === "polylogue.acquireRecordAssets") { acquireRecord(message).then(sendResponse); return true; }
+    if (message.type === "polylogue.cancelRecordAssets") { cancelRecord(message.capture_ref).then(sendResponse); return true; }
+    if (message.type === "polylogue.cancelCapture") { cancelCapture().then(sendResponse); return true; }
     if (message.type !== "polylogue.capturePage") return false;
     capture(message.reason || null, message.providerSessionId || null, message.deferReceiver === true)
       .then(sendResponse)

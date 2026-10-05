@@ -329,7 +329,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
-| `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
 | `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
 | `live_watcher_parse_stage_stall_report_seconds` | `watcher.parse_stage_stall_report_seconds` | Seconds without forward progress before a watcher preparation reports `live.parse_prefetch.preparation_stalled`. Not a deadline: the warm keeps waiting. Unset/`<=0` uses the 60s default. |

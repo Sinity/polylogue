@@ -519,10 +519,22 @@ class DaemonWriteCoordinator:
         if not self._executions and not self._has_unsettled_sql():
             self._idle.set()
         self._publish_telemetry()
-        if len(errors) == 1:
-            raise errors[0]
         if errors:
-            raise BaseExceptionGroup("Original writer cleanup failed", errors)
+            failure = errors[0] if len(errors) == 1 else BaseExceptionGroup("Original writer cleanup failed", errors)
+            cancellation = next((error for error in errors if isinstance(error, asyncio.CancelledError)), None)
+            if cancellation is not None:
+                other_failures = [error for error in errors if error is not cancellation]
+                if not other_failures:
+                    raise cancellation
+                cause = (
+                    other_failures[0]
+                    if len(other_failures) == 1
+                    else BaseExceptionGroup("Original writer cleanup failed", other_failures)
+                )
+                raise cancellation from cause
+            if self._has_unsettled_sql():
+                raise DaemonWriterSettlementError("original SQL cleanup remains unsettled") from failure
+            raise failure
 
     def _sql_settlement_state(self) -> str:
         if any(worker.settling for worker in self._retained_workers()) or (
@@ -1149,6 +1161,12 @@ class DaemonWriteThreadBridge:
         self._coordinator = coordinator
         self._loop = loop
         self._timeout = timeout
+
+    @property
+    def coordinator(self) -> DaemonWriteCoordinator:
+        """Borrow the exact coordinator whose delegations this bridge grants."""
+        self._coordinator._require_process()
+        return self._coordinator
 
     def run_admitted_async(
         self,

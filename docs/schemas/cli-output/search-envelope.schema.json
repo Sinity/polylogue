@@ -1126,6 +1126,14 @@
       ],
       "default": null
     },
+    "completed_lanes": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Completed Lanes",
+      "type": "array"
+    },
     "diagnostics": {
       "anyOf": [
         {
@@ -1288,6 +1296,19 @@
         }
       ],
       "default": null
+    },
+    "snapshot_epoch": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Snapshot Epoch"
     },
     "sort": {
       "anyOf": [

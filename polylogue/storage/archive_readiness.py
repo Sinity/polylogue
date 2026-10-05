@@ -21,7 +21,6 @@ from polylogue.archive.revision_authority import (
     parser_census_identity_measurement,
 )
 from polylogue.core.payload_coercion import row_int as _row_int
-from polylogue.core.sqlite_introspection import column_exists as _column_exists
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.core.sqlite_introspection import view_exists
 from polylogue.logging import get_logger
@@ -370,7 +369,6 @@ def raw_materialization_ready(readiness: Mapping[str, Any] | object | None) -> b
 def _pinned_parser_census_projection(
     conn: sqlite3.Connection,
     *,
-    raw_columns: frozenset[str],
     source_schema: str,
     index_conn: sqlite3.Connection,
 ) -> dict[str, object]:
@@ -382,7 +380,7 @@ def _pinned_parser_census_projection(
         "raw_membership_census",
         "raw_session_memberships",
     )
-    if any(not _table_columns(index_conn, source_schema, table) for table in required):
+    if any(not _table_exists(index_conn, table, schema=source_schema) for table in required):
         return {
             "available": False,
             "complete_count": 0,
@@ -393,10 +391,9 @@ def _pinned_parser_census_projection(
             "incomplete_origin_summary": [],
         }
 
-    blob_size_expression = "COALESCE(r.blob_size, 0)" if "blob_size" in raw_columns else "0"
     rows = conn.execute(
         f"""
-        SELECT r.raw_id, r.origin, {blob_size_expression}, p.raw_id, p.parser_fingerprint,
+        SELECT r.raw_id, r.origin, COALESCE(r.blob_size, 0), p.raw_id, p.parser_fingerprint,
                p.status, p.logical_keys_json, r.logical_source_key, r.revision_kind,
                EXISTS(SELECT 1 FROM {source_schema}.raw_artifacts a WHERE a.raw_id = r.raw_id AND a.parse_as_session = 0),
                EXISTS(
@@ -521,7 +518,7 @@ def _pinned_authority_frontier_projection(
     answer to "is the accepted frontier authorized?" is the unresolved-blocker
     set, which every pass publishes and tombstones.
     """
-    if not _table_columns(index_conn, source_schema, "raw_authority_blockers"):
+    if not _table_exists(index_conn, "raw_authority_blockers", schema=source_schema):
         return {
             "raw_authority_frontier_remediation_refs": [],
             "raw_authority_blocker_count": 0,
@@ -609,16 +606,14 @@ def _raw_materialization_readiness_from_pinned_index(
     if source_schema not in {"source", "source_tier"}:
         raise ValueError(f"unsupported raw materialization source schema: {source_schema!r}")
     aliases = {str(row[1]) for row in index_conn.execute("PRAGMA database_list").fetchall()}
-    if source_schema not in aliases or not _table_columns(index_conn, source_schema, "raw_sessions"):
+    if source_schema not in aliases or not _table_exists(index_conn, "raw_sessions", schema=source_schema):
         return {"available": False, "error": "source.db or index.db missing"}
-    if not _table_columns(index_conn, "main", "sessions"):
+    if not _table_exists(index_conn, "sessions", schema="main"):
         return {"available": False, "error": "source.db or index.db missing"}
     conn = index_conn
-    raw_columns = _table_columns(index_conn, source_schema, "raw_sessions")
-    session_columns = _table_columns(index_conn, "main", "sessions")
+
     parser_census = _pinned_parser_census_projection(
         conn,
-        raw_columns=raw_columns,
         source_schema=source_schema,
         index_conn=index_conn,
     )
@@ -680,7 +675,7 @@ def _raw_materialization_readiness_from_pinned_index(
     if classify_gaps:
         gap_rows = conn.execute(
             f"""WITH raw_rows AS (
-                SELECT {_raw_gap_select_columns(raw_columns)},
+                SELECT {_raw_gap_select_columns()},
                        EXISTS (SELECT 1 FROM main.sessions s WHERE s.raw_id = r.raw_id) AS is_materialized
                 FROM {source_schema}.raw_sessions r WHERE COALESCE(r.validation_status, '') != 'skipped'
             ) SELECT * FROM raw_rows WHERE NOT is_materialized"""
@@ -689,15 +684,13 @@ def _raw_materialization_readiness_from_pinned_index(
             conn,
             archive_root,
             gap_rows,
-            raw_columns=raw_columns,
-            session_columns=session_columns,
-            has_revision_applications=bool(_table_columns(index_conn, "main", "raw_revision_applications")),
-            has_membership_census=bool(_table_columns(index_conn, source_schema, "raw_membership_census")),
-            has_session_memberships=bool(_table_columns(index_conn, source_schema, "raw_session_memberships")),
+            has_revision_applications=bool(_table_exists(index_conn, "raw_revision_applications", schema="main")),
+            has_membership_census=bool(_table_exists(index_conn, "raw_membership_census", schema=source_schema)),
+            has_session_memberships=bool(_table_exists(index_conn, "raw_session_memberships", schema=source_schema)),
             source_schema=source_schema,
         )
     adoption_deferred_count = 0
-    if _table_columns(index_conn, "main", "raw_revision_applications"):
+    if _table_exists(index_conn, "raw_revision_applications", schema="main"):
         adoption_deferred_count = int(
             conn.execute(
                 f"""
@@ -797,8 +790,7 @@ def raw_materialization_readiness_snapshot(
         with closing(open_readonly_connection(index_db, tier=ArchiveTier.INDEX)) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, source_db, alias="source")
-            raw_columns = _table_columns(conn, "source", "raw_sessions")
-            session_columns = _table_columns(conn, "main", "sessions")
+
             row = conn.execute(
                 """
                 WITH raw_rows AS (
@@ -867,7 +859,7 @@ def raw_materialization_readiness_snapshot(
             classified_counts: Counter[str] = Counter()
             parse_failed_origins: set[str] = set()
             if classify_gaps:
-                raw_select_columns = _raw_gap_select_columns(raw_columns)
+                raw_select_columns = _raw_gap_select_columns()
                 gap_rows = conn.execute(
                     f"""
                     WITH raw_rows AS (
@@ -890,14 +882,12 @@ def raw_materialization_readiness_snapshot(
                     conn,
                     active_archive,
                     gap_rows,
-                    raw_columns=raw_columns,
-                    session_columns=session_columns,
-                    has_revision_applications=bool(_table_columns(conn, "main", "raw_revision_applications")),
-                    has_membership_census=bool(_table_columns(conn, "source", "raw_membership_census")),
-                    has_session_memberships=bool(_table_columns(conn, "source", "raw_session_memberships")),
+                    has_revision_applications=bool(_table_exists(conn, "raw_revision_applications", schema="main")),
+                    has_membership_census=bool(_table_exists(conn, "raw_membership_census", schema="source")),
+                    has_session_memberships=bool(_table_exists(conn, "raw_session_memberships", schema="source")),
                 )
             adoption_deferred_count = 0
-            if _table_columns(conn, "main", "raw_revision_applications"):
+            if _table_exists(conn, "raw_revision_applications", schema="main"):
                 adoption_deferred_count = int(
                     conn.execute(
                         """
@@ -925,7 +915,6 @@ def raw_materialization_readiness_snapshot(
             parser_census_origin_summary: list[dict[str, object]] = []
             parser_summary = _pinned_parser_census_projection(
                 conn,
-                raw_columns=raw_columns,
                 source_schema="source",
                 index_conn=conn,
             )
@@ -937,7 +926,7 @@ def raw_materialization_readiness_snapshot(
             parser_census_non_complete_receipt_count = int(cast(int, parser_summary["non_complete_receipt_count"]))
             parser_census_origin_summary = cast(list[dict[str, object]], parser_summary["incomplete_origin_summary"])
             authority_blocker_count = 0
-            if _table_columns(conn, "source", "raw_authority_blockers"):
+            if _table_exists(conn, "raw_authority_blockers", schema="source"):
                 authority_blocker_count = int(
                     conn.execute(
                         "SELECT COUNT(*) FROM source.raw_authority_blockers WHERE resolved_at_ms IS NULL"
@@ -1066,7 +1055,9 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
         ) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, source_db, alias="source")
-            if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
+            if not _table_exists(conn, "sessions", schema="main") or not _table_exists(
+                conn, "raw_sessions", schema="source"
+            ):
                 return {
                     "available": False,
                     "reason": "sessions or raw_sessions table missing",
@@ -1101,8 +1092,7 @@ def _missing_source_raw_session_count(
     *,
     source_schema: str = "source",
 ) -> int:
-    session_columns = _table_columns(conn, "main", "sessions")
-    if "raw_id" not in session_columns:
+    if not _table_exists(conn, "sessions"):
         return 0
     return _readiness_scalar_int(
         conn,
@@ -1123,28 +1113,22 @@ def _missing_source_raw_session_samples(
     limit: int = 10,
     source_schema: str = "source",
 ) -> list[dict[str, object]]:
-    session_columns = _table_columns(conn, "main", "sessions")
-    if not {"session_id", "raw_id"} <= session_columns:
+    if not _table_exists(conn, "sessions"):
         return []
-    origin_expr = "s.origin" if "origin" in session_columns else "NULL"
-    native_id_expr = "s.native_id" if "native_id" in session_columns else "NULL"
-    message_count_expr = "s.message_count" if "message_count" in session_columns else "NULL"
-    updated_at_expr = "s.updated_at_ms" if "updated_at_ms" in session_columns else "NULL"
-    order_expr = "s.updated_at_ms DESC, s.session_id" if "updated_at_ms" in session_columns else "s.session_id"
     rows = conn.execute(
         f"""
         SELECT s.session_id,
-               {origin_expr} AS origin,
-               {native_id_expr} AS native_id,
+               s.origin AS origin,
+               s.native_id AS native_id,
                s.raw_id,
-               {message_count_expr} AS message_count,
-               {updated_at_expr} AS updated_at_ms
+               s.message_count AS message_count,
+               s.updated_at_ms AS updated_at_ms
         FROM sessions AS s
         WHERE s.raw_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM {source_schema}.raw_sessions AS r WHERE r.raw_id = s.raw_id
           )
-        ORDER BY {order_expr}
+        ORDER BY s.updated_at_ms DESC, s.session_id
         LIMIT ?
         """,
         (limit,),
@@ -1170,22 +1154,7 @@ def _readiness_scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     return int(row[0] or 0) if row is not None else 0
 
 
-def _table_columns(conn: sqlite3.Connection, schema: str, table: str) -> frozenset[str]:
-    try:
-        # ``sessions.session_id`` and other identity columns are generated.
-        # table_info omits generated/hidden columns, which made exact lost-raw
-        # counts pair with empty samples on the canonical archive schema.
-        rows = conn.execute(f"PRAGMA {schema}.table_xinfo({table})").fetchall()
-    except sqlite3.Error as exc:
-        logger.warning("archive readiness table-columns probe failed for %s.%s: %s", schema, table, exc, exc_info=True)
-        return frozenset()
-    return frozenset(str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows)
-
-
-def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
-    def column(name: str) -> str:
-        return f"r.{name}" if name in raw_columns else f"NULL AS {name}"
-
+def _raw_gap_select_columns() -> str:
     names = (
         "raw_id",
         "origin",
@@ -1198,7 +1167,7 @@ def _raw_gap_select_columns(raw_columns: frozenset[str]) -> str:
         "parse_error",
         "parsed_at_ms",
     )
-    return ",\n                        ".join(column(name) for name in names)
+    return ",\n                        ".join(f"r.{name}" for name in names)
 
 
 #: A raw row whose logical session is present under an alias, but whose own
@@ -1212,14 +1181,12 @@ RAW_ALIAS_BLOB_MISSING_CATEGORY = "materialized-alias-blob-missing"
 _RAW_GAP_OWED_CATEGORIES = frozenset({"parse-failed", RAW_ALIAS_BLOB_MISSING_CATEGORY})
 
 
-def _raw_gap_blob_present(archive_root: Path, row: sqlite3.Row, *, raw_columns: frozenset[str]) -> bool:
+def _raw_gap_blob_present(archive_root: Path, row: sqlite3.Row) -> bool:
     """Report whether this row's own content-addressed blob exists on disk.
 
     An unreadable or absent hash is reported as "not present": an unmeasured
     blob is never allowed to stand in for a proven one.
     """
-    if "blob_hash" not in raw_columns:
-        return False
     blob_hash = row["blob_hash"]
     if blob_hash is None:
         return False
@@ -1234,8 +1201,6 @@ def _classify_raw_gap_rows(
     archive_root: Path,
     rows: list[sqlite3.Row],
     *,
-    raw_columns: frozenset[str],
-    session_columns: frozenset[str],
     has_revision_applications: bool,
     has_membership_census: bool,
     has_session_memberships: bool,
@@ -1250,8 +1215,6 @@ def _classify_raw_gap_rows(
             conn,
             archive_root,
             row,
-            raw_columns=raw_columns,
-            session_columns=session_columns,
             has_revision_applications=has_revision_applications,
             has_membership_census=has_membership_census,
             has_session_memberships=has_session_memberships,
@@ -1269,8 +1232,6 @@ def _raw_gap_category(
     archive_root: Path,
     row: sqlite3.Row,
     *,
-    raw_columns: frozenset[str],
-    session_columns: frozenset[str],
     has_revision_applications: bool,
     has_membership_census: bool,
     has_session_memberships: bool,
@@ -1280,23 +1241,21 @@ def _raw_gap_category(
     if can_reconcile_alias and _raw_gap_materialized_by_alias(
         conn,
         row,
-        session_columns=session_columns,
         source_schema=source_schema,
     ):
         # The alias proves a same-identity session is indexed; it does not
         # prove this artifact's bytes survive. Without its own blob the row is
         # a distinct, unrecoverable snapshot and stays reported as owed work.
-        if _raw_gap_blob_present(archive_root, row, raw_columns=raw_columns):
+        if _raw_gap_blob_present(archive_root, row):
             return "materialized-alias"
         return RAW_ALIAS_BLOB_MISSING_CATEGORY
     if can_reconcile_alias and _raw_gap_matches_missing_index_raw_link(
         conn,
         row,
-        session_columns=session_columns,
         source_schema=source_schema,
     ):
         return "lost-source-evidence-alias"
-    if _raw_gap_parsed_non_session_artifact(archive_root, row, raw_columns=raw_columns):
+    if _raw_gap_parsed_non_session_artifact(archive_root, row):
         return "parsed-non-session-artifact"
     if row["parse_error"]:
         return "parse-failed"
@@ -1387,11 +1346,8 @@ def _raw_gap_materialized_by_alias(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    session_columns: frozenset[str],
     source_schema: str = "source",
 ) -> bool:
-    if not {"origin", "native_id"} <= session_columns:
-        return False
     origin = str(row["origin"] or "")
     if not origin:
         return False
@@ -1427,11 +1383,8 @@ def _raw_gap_matches_missing_index_raw_link(
     conn: sqlite3.Connection,
     row: sqlite3.Row,
     *,
-    session_columns: frozenset[str],
     source_schema: str = "source",
 ) -> bool:
-    if not {"origin", "native_id", "raw_id"} <= session_columns:
-        return False
     origin = str(row["origin"] or "")
     if not origin:
         return False
@@ -1469,11 +1422,7 @@ def _raw_gap_matches_missing_index_raw_link(
 def _raw_gap_parsed_non_session_artifact(
     archive_root: Path,
     row: sqlite3.Row,
-    *,
-    raw_columns: frozenset[str],
 ) -> bool:
-    if "blob_hash" not in raw_columns:
-        return False
     if row["parse_error"] or row["parsed_at_ms"] is None:
         return False
     return (
@@ -1544,12 +1493,12 @@ def _archive_readiness_counts(
     session_count = _fast_count(conn, "SELECT COUNT(*) FROM sessions") if sessions_table_present else 0
     raw_link_count = (
         _fast_count(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")
-        if _column_exists(conn, "sessions", "raw_id")
+        if _table_exists(conn, "sessions")
         else 0
     )
     missing_raw_session_count = 0
     missing_raw_session_samples: list[dict[str, Any]] = []
-    if source_check_available and source_conn is not None and _column_exists(conn, "sessions", "raw_id"):
+    if source_check_available and source_conn is not None and _table_exists(conn, "sessions"):
         raw_ids = {
             str(row[0])
             for row in source_conn.execute("SELECT raw_id FROM raw_sessions").fetchall()

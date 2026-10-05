@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.core.errors import SchemaRefusalError
+from polylogue.core.raw_failure_evidence import (
+    CohortMembershipRefusalError,
+    RetainedRawDecodeRefusalError,
+    RetainedRawDependencyRefusalError,
+)
 from polylogue.operations.audit import AuditRepository, MachineRequestRecoveredError
 from polylogue.operations.daemon_protocol import (
     AcceptedOperationReference,
@@ -31,12 +36,15 @@ from polylogue.operations.operation_context import (
     observe_embedding_mutation_authority,
     open_operation_read,
 )
+from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBusyError
 from polylogue.version import POLYLOGUE_VERSION
 
 _T = TypeVar("_T")
 
 if TYPE_CHECKING:
+    from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.operations.audit import CanonicalAuditLiteral
     from polylogue.operations.insight_acceptance import AcceptedInsightPart, SessionInsightPartReceipt
 
 
@@ -51,9 +59,37 @@ class OperationRuntime(Protocol):
         self, request: DaemonOperationRequest, *, snapshot: PinnedOperationRead | OperationControlRead
     ) -> None: ...
 
+    async def materialize_retained_raw_ids(
+        self,
+        raw_ids: tuple[str, ...],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None],
+        on_dependency_refusal: Callable[[RetainedRawDependencyRefusalError], None],
+        on_membership_refusal: Callable[[CohortMembershipRefusalError], None],
+        before_publication: Callable[[], None],
+    ) -> tuple[PreparedRevisionReplayResult, ...]: ...
+
     async def compute_phase(self, work: Callable[[], _T]) -> _T: ...
 
     async def write_phase(self, name: str, work: Callable[[], _T]) -> _T: ...
+
+    async def recover_interrupted_operations(self) -> None: ...
+
+    def prepared_compute_adapter(self) -> BoundedComputeAdapter: ...
+
+    async def prepared_phase(
+        self, name: str, work: Callable[[], _T], *, estimated_bytes: int, exclusive_bytes: bool = False
+    ) -> _T: ...
+
+    def result_document_identity(self, request: DaemonOperationRequest) -> dict[str, object]: ...
+
+    def retain_result_document(
+        self,
+        request: DaemonOperationRequest,
+        context: OperationContext,
+        summary: Mapping[str, object],
+        literal: CanonicalAuditLiteral,
+    ) -> None: ...
 
     def require_session_maintenance(self) -> None: ...
 
@@ -211,6 +247,8 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
         request = validate_execution_request(request, context)
         spec = daemon_operation_spec(request.operation)
         assert spec is not None
+        if request.operation == "mutation.session.excision":
+            raise PermissionError("staged_execution_required")
         if request.operation.startswith("operation."):
             assert context.runtime is not None
             control_snapshot = observe_control_authority(context.archive_root)

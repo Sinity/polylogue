@@ -209,7 +209,7 @@ def test_excision_removes_hook_evidence_and_its_blobs(tmp_path: Path) -> None:
     ``source.db`` with its blob still rooting GC.
 
     Anti-vacuity: deleting the hook loop from
-    ``_apply_single_session_excision`` leaves the ``raw_hook_events`` row, its
+    the canonical Excision producer leaves the ``raw_hook_events`` row, its
     carrier, its ``hook_payload`` blob ref and the unmarked hash behind --
     every assertion below goes red, and the re-ingest refusal at the bottom
     stops refusing.

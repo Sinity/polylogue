@@ -22,7 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
 # changes advance the relevant tier through a numbered migration.
 ARCHIVE_FORMAT_FLOOR_VERSION = 1
 ARCHIVE_BASELINE_VERSION_BY_TIER: Mapping[ArchiveTier, int] = dict.fromkeys(ArchiveTier, 1)
-SOURCE_TIER_VERSION = 4
+SOURCE_TIER_VERSION = 6
 USER_TIER_VERSION = 1
 AUDIT_TIER_VERSION = 1
 
@@ -49,8 +49,10 @@ def _source_runtime_ddl() -> str:
             directory.joinpath(name).read_text(encoding="utf-8")
             for name in (
                 "002_raw_artifact_failure_identity.sql",
-                "003_captured_profile_identity.sql",
-                "004_raw_byte_revision_dependents.sql",
+                "003_attachment_coordinate_identity.sql",
+                "004_captured_profile_identity.sql",
+                "005_raw_byte_revision_dependents.sql",
+                "006_raw_frontier_dependency_journal.sql",
             )
         )
     )

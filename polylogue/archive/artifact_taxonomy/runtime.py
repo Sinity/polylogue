@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import BinaryIO, Literal, cast
+from typing import IO, BinaryIO, Literal, cast
 
 from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, ArtifactKind
 from polylogue.archive.artifact_taxonomy.support import (
@@ -354,9 +354,12 @@ def _extracted_transcript_corpus_classification(
     plus the absence of any provider record envelope, never a filename, a
     directory segment or a producer-specific report schema.
     """
-    if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
+    if isinstance(payload, dict):
+        dict_items = iter((payload,))
+    elif isinstance(payload, Sequence) and not isinstance(payload, str | bytes | bytearray):
+        dict_items = (document for item in payload if (document := json_document(item)))
+    else:
         return None
-    dict_items = (document for item in payload if (document := json_document(item)))
     if not looks_like_extracted_transcript_corpus(dict_items):
         return None
     return ArtifactClassification(
@@ -480,11 +483,12 @@ def _record_candidacy_from_evidence(
     *,
     provider: Provider,
     source_path: str | Path | None,
+    retained_session_recovery: bool = False,
 ) -> ArtifactClassification | None:
     if not evidence.document_count or (evidence.extracted and not evidence.provider_envelope):
         return None
     explicit = strong_path_classification(source_path, provider=provider)
-    if explicit is not None:
+    if explicit is not None and not retained_session_recovery:
         if not explicit.parse_as_session:
             return None
         if provider is Provider.CLAUDE_CODE and evidence.all_checkpoints:
@@ -496,6 +500,8 @@ def _record_candidacy_from_evidence(
         positive_record = evidence.all_atof
     else:
         positive_record = evidence.record_count * 2 >= evidence.document_count
+    if retained_session_recovery:
+        positive_record = evidence.record_count > 0 and evidence.provider_envelope
     if not positive_record and not (evidence.any_session or specific_document):
         return None
     return ArtifactClassification(
@@ -518,12 +524,13 @@ class ArtifactStreamClassification:
 
 
 def classify_artifact_stream(
-    handle: BinaryIO,
+    handle: IO[bytes],
     *,
     provider: Provider,
     source_path: str | Path | None = None,
     wire_format: Literal["json", "jsonl"],
     check_stop: Callable[[], None] | None = None,
+    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
     """Classify complete caller-owned input, privately replaying non-seekable streams."""
     from polylogue.archive.raw_payload.streams import rewindable_byte_stream
@@ -535,6 +542,7 @@ def classify_artifact_stream(
             source_path=source_path,
             wire_format=wire_format,
             check_stop=check_stop,
+            retained_session_recovery=retained_session_recovery,
         )
 
 
@@ -545,6 +553,7 @@ def _classify_seekable_artifact_stream(
     source_path: str | Path | None,
     wire_format: Literal["json", "jsonl"],
     check_stop: Callable[[], None] | None,
+    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
     """Fold the whole accepted input; the canonical parser owns session validation.
 
@@ -579,7 +588,7 @@ def _classify_seekable_artifact_stream(
         nonlocal sequence
         sequence = wire_format == "jsonl" or kind == "sequence"
 
-    def measure(records: Iterator[object]) -> ArtifactStreamClassification:
+    def measure(records: Generator[object, None, None]) -> ArtifactStreamClassification:
         with closing(records):
             try:
                 first = next(records)
@@ -594,6 +603,7 @@ def _classify_seekable_artifact_stream(
                 sequence=sequence,
                 empty_jsonl=wire_format == "jsonl",
                 check_stop=checkpoint,
+                retained_session_recovery=retained_session_recovery,
             )
 
     # A physical JSONL file can contain one complete document/array. Preserve
@@ -639,7 +649,12 @@ def _classify_artifact_records(
     sequence: bool,
     empty_jsonl: bool,
     check_stop: Callable[[], None] | None,
+    retained_session_recovery: bool = False,
 ) -> ArtifactStreamClassification:
+    retained_path = strong_path_classification(source_path, provider=provider)
+    retained_session_recovery = (
+        retained_session_recovery and retained_path is not None and not retained_path.parse_as_session
+    )
     evidence = _RecordArtifactEvidence()
     count = 0
     all_metadata = True
@@ -668,7 +683,7 @@ def _classify_artifact_records(
             provider, ArtifactKind.UNKNOWN, False, False, 0, "no complete JSONL artifact records"
         )
         return result(classification, False)
-    if not sequence and first_classification is not None:
+    if not sequence and first_classification is not None and not retained_session_recovery:
         classification = replace(first_classification, schema_eligible=False)
         return result(
             classification,
@@ -678,7 +693,7 @@ def _classify_artifact_records(
             ),
         )
     explicit = strong_path_classification(source_path, provider=provider)
-    if explicit is not None and not explicit.parse_as_session:
+    if explicit is not None and not explicit.parse_as_session and not retained_session_recovery:
         return result(explicit, True)
     if evidence.extracted and not evidence.provider_envelope:
         classification = ArtifactClassification(
@@ -701,7 +716,7 @@ def _classify_artifact_records(
             "Claude Code file-history-snapshot-only stream",
         )
         return result(classification, True)
-    if explicit is not None:
+    if explicit is not None and not retained_session_recovery:
         return result(replace(explicit, schema_eligible=False), False)
     if evidence.document_count and evidence.all_hooks:
         classification = ArtifactClassification(
@@ -728,9 +743,12 @@ def _classify_artifact_records(
         specific_document,
         provider=provider,
         source_path=source_path,
+        retained_session_recovery=retained_session_recovery,
     )
     if candidacy is not None:
         return result(candidacy, False)
+    if explicit is not None and not explicit.parse_as_session:
+        return result(explicit, True)
     if all_metadata:
         classification = ArtifactClassification(
             provider,
@@ -1010,6 +1028,16 @@ def _classify_dict(
             reason="Beads interaction-history artifact, not a session record",
         )
 
+    if looks_like_hook_event(payload):
+        return ArtifactClassification(
+            provider=provider,
+            kind=ArtifactKind.HOOK_EVENT,
+            parse_as_session=False,
+            schema_eligible=False,
+            default_priority=100,
+            reason="hook event record",
+        )
+
     if provider is Provider.GROK:
         from polylogue.sources.parsers.grok import looks_like_native_bundle
 
@@ -1061,16 +1089,6 @@ def _classify_dict(
             schema_eligible=True,
             default_priority=110,
             reason="Hermes NeMo Relay ATIF trajectory export (schema_version/session_id/steps)",
-        )
-
-    if looks_like_hook_event(payload):
-        return ArtifactClassification(
-            provider=provider,
-            kind=ArtifactKind.HOOK_EVENT,
-            parse_as_session=False,
-            schema_eligible=False,
-            default_priority=100,
-            reason="hook event record",
         )
 
     if looks_like_session_document(payload):

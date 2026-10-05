@@ -123,6 +123,8 @@ class BlockRecord(BaseModel):
     tool_id: str | None = None
     tool_input: str | None = None
     metadata: str | None = None
+    media_type: str | None = None
+    language: str | None = None
     name: str | None = None
     semantic_type: SemanticBlockType | None = None
     # Legacy structural fields retained for compatibility. The canonical
@@ -188,6 +190,7 @@ class MessageRecord(BaseModel):
     position: int = 0
     is_active_leaf: bool = False
     blocks: list[BlockRecord] = Field(default_factory=list)
+    attachments: list[AttachmentRecord] = Field(default_factory=list)
     source_name: str = ""
     word_count: int = 0
     has_tool_use: int = 0

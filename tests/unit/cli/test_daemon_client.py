@@ -897,3 +897,113 @@ def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() ->
     payload = {"params": {"sort": "bogus"}}
     assert read_is_archive_scan("read.chronicle", payload) is False
     assert requires_vector_snapshot("read.chronicle", payload) is False
+
+
+@pytest.mark.parametrize(
+    ("operation", "payload", "bound"),
+    [
+        ("cli.query", {}, True),
+        ("mutation.session.delete.preview", {"session_ids": ["sample"]}, True),
+        ("mutation.session.delete.cancel", {"preview_ref": "preview"}, True),
+        ("mutation.session.delete.execute", {"authorization_ref": "authorization"}, True),
+        ("status", {}, False),
+        ("operation.status", {"request_id": "original"}, False),
+        ("operation.cancel", {"request_id": "original"}, False),
+    ],
+)
+def test_connected_operation_binds_versions_without_a_discovery_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+    _short_uds_runtime_dir: Path,
+    operation: str,
+    payload: dict[str, object],
+    bound: bool,
+) -> None:
+    from polylogue.daemon_client import (
+        DaemonClient,
+        DaemonMutationIndeterminateError,
+        DaemonOperationProtocolError,
+        _UnixHTTPConnection,
+    )
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    requests: list[dict[str, object]] = []
+    original = _UnixHTTPConnection.request
+
+    def record(self: _UnixHTTPConnection, method: str, path: str, **kwargs: object) -> None:
+        requests.append(json.loads(cast(bytes, kwargs["body"])))
+        original(self, method, path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_UnixHTTPConnection, "request", record)
+    socket_path = _short_uds_runtime_dir / "versions.sock"
+    # The peer deliberately provides no operation receipt. Observe the actual
+    # request bytes without claiming its transport stub accepted any effect.
+    with _raw_unix_http_responder(socket_path, status=200, payload={}):
+        with pytest.raises((DaemonMutationIndeterminateError, DaemonOperationProtocolError)):
+            DaemonClient(socket_path).operation(operation, payload, request_id="original")
+    assert len(requests) == 1
+    assert requests[0]["request_id"] == "original"
+    assert requests[0]["index_schema_version"] == (INDEX_SCHEMA_VERSION if bound else None)
+    assert requests[0]["daemon_version"] == (POLYLOGUE_VERSION if bound else None)
+
+
+def test_explicit_operation_version_preconditions_are_preserved(
+    monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient, DaemonOperationProtocolError, _UnixHTTPConnection
+
+    requests: list[dict[str, object]] = []
+    original = _UnixHTTPConnection.request
+
+    def record(self: _UnixHTTPConnection, method: str, path: str, **kwargs: object) -> None:
+        requests.append(json.loads(cast(bytes, kwargs["body"])))
+        original(self, method, path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_UnixHTTPConnection, "request", record)
+    socket_path = _short_uds_runtime_dir / "explicit.sock"
+    with _raw_unix_http_responder(socket_path, status=200, payload={}):
+        with pytest.raises(DaemonOperationProtocolError):
+            DaemonClient(socket_path).operation(
+                "cli.query", {}, index_schema_version=999, daemon_version="selected-build"
+            )
+    assert len(requests) == 1
+    assert requests[0]["index_schema_version"] == 999
+    assert requests[0]["daemon_version"] == "selected-build"
+
+
+def test_absent_daemon_operation_does_not_load_version_or_storage(_short_uds_runtime_dir: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; from polylogue.daemon_client import DaemonClient; "
+            "assert DaemonClient(Path(sys.argv[1])).operation('cli.query', {}) is None; "
+            "assert 'polylogue.storage' not in sys.modules; assert 'polylogue.version' not in sys.modules",
+            str(_short_uds_runtime_dir / "absent.sock"),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("timeout_ms", [1, 2000, 30000])
+def test_receipt_wait_binds_the_exchange_to_its_actual_wait_budget(
+    timeout_ms: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    captured: list[tuple[object, object, object]] = []
+
+    def request(_method: str, _path: str, body: dict[str, object], **kwargs: object) -> None:
+        payload = body["payload"]
+        assert isinstance(payload, dict)
+        captured.append((payload["timeout_ms"], body["deadline_ms"], kwargs["timeout_s"]))
+        return None
+
+    monkeypatch.setattr(client, "_request_json_response", request)
+    assert client.await_operation("original-request", archive_root=str(tmp_path), timeout_ms=timeout_ms) is None
+    assert captured == [(timeout_ms, timeout_ms, timeout_ms / 1000 + 1.0)]
+    assert client.timeout_s == 0.1

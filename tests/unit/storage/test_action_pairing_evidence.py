@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync, refresh_action_pairs
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -185,3 +186,136 @@ def test_complete_reingest_resolves_ambiguity_at_the_ordinary_write_boundary(tmp
         assert write_index_session(archive, complete) == session_id
         rows = archive._conn.execute("SELECT output_text, result_state FROM actions ORDER BY tool_command").fetchall()
         assert [tuple(row) for row in rows] == [("r0", "outcome_error"), ("r1", "outcome_success")]
+
+
+@pytest.mark.parametrize("reason", ["not_reported", "distrusted"])
+def test_action_read_routes_preserve_paired_unknown_reason(tmp_path: Path, reason: str) -> None:
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock
+    from polylogue.surfaces.payloads import ActionQueryRowPayload
+
+    session = action_stream("unknown-reason", [("u", "use", "same", None), ("r", "result", "same", False)])
+    session.source_name = Provider.CLAUDE_CODE
+    session.messages[1].blocks[0] = ParsedContentBlock(
+        type=BlockType.TOOL_RESULT, tool_id="same", text="r", outcome_unknown_reason=reason
+    )
+    source = parse_unit_source_expression("actions where tool:Bash")
+    assert source is not None
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, session)
+        routes = (
+            archive.query_actions(source.predicate, limit=1),
+            archive.query_session_actions([session_id], limit=1, text_prefix_chars=1),
+            archive.query_session_action_occurrences([session_id], limit=1),
+        )
+        for rows in routes:
+            assert len(rows) == 1
+            row = rows[0]
+            assert row.result_state == "outcome_unknown"
+            assert row.tool_result_block_id is not None
+            assert row.outcome_unknown_reason == reason
+            payload = ActionQueryRowPayload.from_row(row)
+            assert payload.outcome_unknown_reason == reason
+            assert payload.model_dump(mode="json")["outcome_unknown_reason"] == reason
+        episode = archive.list_tool_episode_insights()[0]
+        assert episode.tool_result_block_id is not None
+        assert episode.result_state == "outcome_unknown"
+        assert episode.outcome_unknown_reason == reason
+        assert episode.caveat == "outcome unknown: paired structural result has no trusted verdict"
+
+
+def test_action_unknown_association_and_missing_result_remain_distinct(tmp_path: Path) -> None:
+    session = action_stream(
+        "unknown-association",
+        [
+            ("u0", "use", "same", None),
+            ("u1", "use", "same", None),
+            ("r", "result", "same", False),
+            ("missing", "use", "other", None),
+        ],
+    )
+    source = parse_unit_source_expression("actions where tool:Bash")
+    assert source is not None
+    with ArchiveStore(tmp_path / "archive") as archive:
+        write_index_session(archive, session)
+        rows = archive.query_actions(source.predicate)
+        assert {row.tool_command: row.outcome_unknown_reason for row in rows} == {
+            "u0": "ambiguous_tool_id_reuse",
+            "u1": "ambiguous_tool_id_reuse",
+            "missing": None,
+        }
+        episodes = archive.list_tool_episode_insights()
+        assert sorted(episode.caveat for episode in episodes) == [
+            "outcome unknown: ambiguous result association",
+            "outcome unknown: ambiguous result association",
+            "outcome unknown: no paired structural result",
+        ]
+
+
+@pytest.mark.parametrize("tool_id", ["", "paired"])
+def test_append_reconciliation_does_not_pair_empty_tool_ids(tmp_path: Path, tool_id: str) -> None:
+    from polylogue.storage.sqlite.archive_tiers.write import _reconcile_tool_use_outcomes
+
+    session = action_stream("empty-id", [("u", "use", tool_id, None), ("r", "result", tool_id, False)])
+    source = parse_unit_source_expression("actions where tool:Bash")
+    assert source is not None
+    with ArchiveStore(tmp_path / "archive") as archive:
+        session_id = write_index_session(archive, session)
+        _reconcile_tool_use_outcomes(archive._conn, session_id)
+        use = archive._conn.execute(
+            "SELECT tool_outcome FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (session_id,)
+        ).fetchone()
+        assert use[0] == ("no_result" if tool_id == "" else "ok")
+        action = archive.query_actions(source.predicate)[0]
+        assert action.result_state == ("no_result" if tool_id == "" else "outcome_success")
+        assert (action.tool_result_block_id is None) == (tool_id == "")
+
+
+def test_episode_context_preserves_composed_message_boundaries_and_result_anchor(tmp_path: Path) -> None:
+    from polylogue.analysis.tool_episodes import ToolEpisodeQuery
+    from polylogue.archive.message.roles import Role
+    from polylogue.archive.session.branch_type import BranchType
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    def prose(native_id: str, role: Role, texts: list[str]) -> ParsedMessage:
+        return ParsedMessage(
+            provider_message_id=native_id,
+            role=role,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text) for text in texts],
+        )
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="context-parent",
+        messages=[prose("p0", Role.USER, ["first\nsecond", "third"]), prose("p1", Role.ASSISTANT, ["parent reply"])],
+    )
+    child = action_stream("context-child", [("use", "use", "tool", None), ("result", "result", "tool", False)])
+    child.parent_session_provider_id = "context-parent"
+    child.branch_type = BranchType.FORK
+    child.messages = [
+        prose("c0", Role.USER, ["first\nsecond", "third"]),
+        prose("c1", Role.ASSISTANT, ["parent reply"]),
+        child.messages[0],
+        prose("during", Role.ASSISTANT, ["while the tool ran"]),
+        child.messages[1],
+        prose("after", Role.USER, ["x" * 2000, "next\nline"]),
+        prose("last", Role.ASSISTANT, ["last"]),
+    ]
+    with ArchiveStore(tmp_path / "archive") as archive:
+        parent_id = write_index_session(archive, parent)
+        child_id = write_index_session(archive, child)
+        assert (
+            archive._conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 5
+        )
+        edge = archive._conn.execute(
+            "SELECT inheritance, resolved_dst_session_id FROM session_links WHERE src_session_id = ?", (child_id,)
+        ).fetchone()
+        assert tuple(edge) == ("prefix-sharing", parent_id)
+        episode = archive.list_tool_episode_insights(ToolEpisodeQuery(session_id=child_id))[0]
+        assert episode.context_before == ("user: first\nsecond\nthird", "assistant: parent reply")
+        assert episode.context_after == ("user: " + "x" * 2000 + "\nnext\nline", "assistant: last")
+        assert episode.next_action == "x" * 2000 + "\nnext\nline"
+        assert episode.result_output == "result"
+        assert episode.result_state == "outcome_success"
+        assert not archive._conn.in_transaction

@@ -24,7 +24,6 @@ from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archiv
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from tests.infra.convergence_harness import converge_session_profiles
 
 ReceiptVerdict = Literal["equivalent", "conflict", "unresolved"]
@@ -155,9 +154,8 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
             parse_workers=1,
         )
     )
-    backfill = backfill_historical_revision_evidence(archive_root, ingest_workers=1)
 
-    with sqlite3.connect(archive_root / "index.db") as connection:
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as connection:
         session_ids = tuple(
             str(row[0]) for row in connection.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
@@ -206,19 +204,19 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
     route_counts = (
         ("ingest_sessions", int(ingest.counts["sessions"])),
         ("ingest_messages", int(ingest.counts["messages"])),
-        ("backfill_scanned", int(backfill.scanned)),
-        ("backfill_classified_full", int(backfill.classified_full)),
-        ("backfill_replayed_logical_sources", int(backfill.replayed_logical_sources)),
-        ("backfill_quarantined", int(backfill.quarantined)),
+        ("membership_rows", len(rows)),
+        ("membership_applied", sum(row["decision"] == "applied" for row in rows)),
+        ("membership_equivalent", sum(row["decision"] == "superseded_equivalent" for row in rows)),
+        ("membership_quarantined", sum(row["decision"] == "quarantined" for row in rows)),
     )
     return ClaudeVintageReclassificationReceipt(
-        schema_version=1,
+        schema_version=2,
         fixture_member_id="claude-vintage-live-proof",
         live_export_recovered=False,
         confidence_gap=CONFIDENCE_GAP,
         production_route=(
             "ingest_one_shot_archive",
-            "backfill_historical_revision_evidence",
+            "RawObservationConvergenceOwner prepared census and publication",
             "common FTS derivation + SessionProfileConvergenceOwner",
         ),
         parser_branch=(

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from functools import cache
@@ -18,9 +18,10 @@ from threading import RLock
 
 from polylogue.core.evidence import Measured, Unavailable
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
-from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.tier_access import capture_sqlite_read
 
@@ -35,7 +36,11 @@ class _Certificate:
 _lock = RLock()
 _certificates: dict[Path, _Certificate] = {}
 _pid = os.getpid()
-_TRIGGER_PATTERN = re.compile(r"CREATE TRIGGER IF NOT EXISTS (raw_existence_\w+)\s.*?END;", re.S)
+_TRIGGER_PATTERN = re.compile(
+    r"CREATE TRIGGER IF NOT EXISTS (?P<create>raw_(?:existence|frontier_cursor)_\w+)\s.*?END;"
+    r"|DROP TRIGGER IF EXISTS (?P<drop>raw_(?:existence|frontier_cursor)_\w+)\s*;",
+    re.S,
+)
 
 
 def _reset_after_fork() -> None:
@@ -55,10 +60,16 @@ def _normalized_sql(sql: str) -> str:
 
 
 def _expected_triggers(ddl: str) -> dict[str, str]:
-    return {match.group(1): _normalized_sql(match.group(0)) for match in _TRIGGER_PATTERN.finditer(ddl)}
+    triggers: dict[str, str] = {}
+    for match in _TRIGGER_PATTERN.finditer(ddl):
+        if name := match.group("drop"):
+            triggers.pop(name, None)
+        else:
+            triggers[match.group("create")] = _normalized_sql(match.group(0))
+    return triggers
 
 
-_SOURCE_TRIGGERS = _expected_triggers(SOURCE_DDL)
+_SOURCE_TRIGGERS = _expected_triggers(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
 _INDEX_TRIGGERS = _expected_triggers(INDEX_DDL)
 
 
@@ -309,10 +320,19 @@ def consumed_watermarks(archive_root: Path) -> tuple[int, int] | None:
 
 
 def _journal_tiers(root: Path) -> tuple[tuple[Path, int], tuple[Path, int]] | None:
+    from polylogue.storage.frontier_inspection import read_frontier_inspection_mark
+
     marks = consumed_watermarks(root)
-    if marks is None:
+    if marks is None or not (root / "ops.db").is_file():
         return None
-    return (root / "source.db", marks[0]), (resolve_active_index_path(root), marks[1])
+    with closing(open_readonly_connection(root / "ops.db")) as conn:
+        mark = read_frontier_inspection_mark(conn)
+    if mark is None or mark.state != "healthy":
+        return None
+    return (root / "source.db", min(marks[0], mark.source_watermark)), (
+        resolve_active_index_path(root),
+        min(marks[1], mark.index_watermark),
+    )
 
 
 def has_consumed_journal_rows(archive_root: Path) -> bool:
@@ -336,36 +356,8 @@ def has_consumed_journal_rows(archive_root: Path) -> bool:
     return False
 
 
-def prune_consumed_journal_rows(archive_root: Path) -> int:
-    """Delete the journal rows this process's healthy certificate has consumed.
+def prune_consumed_journal_rows(archive_root: Path, *, input_demand: Callable[[int], None]) -> int:
+    """Publish the canonical prepared prune under the supplied original creator."""
+    from polylogue.storage.frontier_inspection import prune_prepared_frontier_journals
 
-    The prune trigger advances each tier's ``retained_floor``, so another
-    process whose certificate still needed a deleted row re-proves from
-    scratch instead of trusting a truncated journal.
-    """
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
-
-    root = archive_root.resolve()
-    tiers = _journal_tiers(root)
-    if tiers is None:
-        return 0
-    pruned = 0
-    for tier_path, watermark in tiers:
-        if not tier_path.is_file():
-            continue
-        conn = open_daemon_connection(tier_path, archive_root=root, validate_schema=False)
-        try:
-            if not conn.execute(
-                "SELECT 1 FROM main.sqlite_schema WHERE type = 'table' AND name = 'raw_existence_changes'"
-            ).fetchone():
-                continue
-            conn.execute("BEGIN IMMEDIATE")
-            pruned += conn.execute("DELETE FROM main.raw_existence_changes WHERE sequence <= ?", (watermark,)).rowcount
-            conn.execute("COMMIT")
-        except BaseException:
-            if conn.in_transaction:
-                conn.execute("ROLLBACK")
-            raise
-        finally:
-            conn.close()
-    return pruned
+    return prune_prepared_frontier_journals(archive_root.resolve(), input_demand=input_demand)

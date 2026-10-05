@@ -51,6 +51,10 @@ def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> Non
         authority="provider",
         confidence=0.8,
         observed_at_ms=101,
+        source_diagnostic="linked detail " * 2000 + "exact linked terminus",
+    )
+    assert list_material_links(conn, observation.material_id)[0].source_diagnostic == (
+        "linked detail " * 2000 + "exact linked terminus"
     )
     row = conn.execute("SELECT acquisition_state, custody, byte_size, blob_hash FROM material_observations").fetchone()
     assert row[:3] == ("malformed", "retained", len(b"not a session export"))
@@ -62,7 +66,8 @@ def test_material_retains_bytes_and_links_without_session(tmp_path: Path) -> Non
     assert list_materials(conn, evidence_ref="work-attempt:attempt-1")[0].material_id == observation.material_id
 
 
-def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("diagnostic", ["HTTP 410 Gone", "detail " * 3000 + "exact terminal detail"])
+def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path: Path, diagnostic: str) -> None:
     conn = _source_db(tmp_path)
     observation = apply_material_preparation(
         conn,
@@ -71,7 +76,7 @@ def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path
             source_uri="https://expired.example/file",
             referrer_ref="agent:worker-1",
             state="expired",
-            diagnostic="HTTP 410 Gone",
+            diagnostic=diagnostic,
             retryable=True,
         ),
         observed_at_ms=200,
@@ -79,7 +84,7 @@ def test_failed_claim_is_queryable_and_synthetic_raw_bytes_are_rejected(tmp_path
     assert observation.blob_hash is None
     assert conn.execute("SELECT acquisition_state, diagnostic, retryable FROM material_observations").fetchone() == (
         "expired",
-        "HTTP 410 Gone",
+        diagnostic,
         1,
     )
     with pytest.raises(ValueError, match="synthetic"):

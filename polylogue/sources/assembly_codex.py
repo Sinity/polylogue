@@ -95,7 +95,7 @@ def _parse_codex_history(sessions_root: Path) -> dict[str, str]:
 
 def _parse_history_file(history_path: Path) -> dict[str, str]:
     try:
-        return parse_codex_history_bytes(history_path.read_bytes())
+        return dict(parse_codex_history_bytes(history_path.read_bytes()))
     except OSError as exc:
         logger.debug("Failed to read Codex history.jsonl: %s", exc)
         return {}

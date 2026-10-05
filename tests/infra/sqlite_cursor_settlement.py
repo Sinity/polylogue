@@ -3,8 +3,10 @@
 import sqlite3
 import threading
 from builtins import BaseExceptionGroup
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
@@ -59,20 +61,36 @@ class ControlledConnection(_MeasuredConnection):
         super().close()
 
 
+def sqlite_factory_targets_database(database: str | Path, paths: Iterable[str | Path]) -> bool:
+    """Select the actual anchored writable fixture handle without reopening it."""
+    token = str(database)
+    if token == ":memory:":
+        return False
+    if token.startswith("file:"):
+        uri = urlsplit(token)
+        if parse_qs(uri.query).get("mode") != ["rw"]:
+            return False
+        selected = Path(unquote(uri.path))
+    else:
+        selected = Path(database)
+    # stat/samefile never opens/closes the SQLite inode, preserving native
+    # POSIX locks. This selector grants no writer permission or close proof.
+    return any(selected.samefile(Path(path)) for path in paths)
+
+
 def control_archive_connections(monkeypatch: pytest.MonkeyPatch, *paths: str | Path) -> None:
     """Control actual writable factory bindings, before Native registration."""
     from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.archive_tiers import archive
 
     destinations = {destination for path in paths for destination in (Path(path), Path(path).resolve())}
-    targets = {token for path in destinations for token in (str(path), f"file:{path}?mode=rw")}
     for module in (archive, connection_profile):
         original = module.connect_measured
 
         def controlled(
             database: str | Path, *args: Any, _original: Any = original, **kwargs: Any
         ) -> sqlite3.Connection:
-            if str(database) in targets:
+            if sqlite_factory_targets_database(database, destinations):
                 return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
             return cast(sqlite3.Connection, _original(database, *args, **kwargs))
 
@@ -197,3 +215,18 @@ def native_settlement_connections(monkeypatch: pytest.MonkeyPatch) -> None:
         return cast(sqlite3.Connection, original(*args, **kwargs))
 
     monkeypatch.setattr(sqlite3, "connect", connect)
+
+
+def settlement_owner_summary(owners: Any) -> tuple[tuple[object, ...], ...]:
+    """Fixed physical-owner metadata for discriminating failed census controls."""
+    return tuple(
+        (
+            type(owner).__name__,
+            type(getattr(owner, "_terminal_parent", None)).__name__,
+            bool(getattr(owner, "_settled", False)),
+            getattr(owner, "connection", None) is not None,
+            bool(getattr(owner, "close_required", False)),
+            tuple(type(dependency).__name__ for dependency in getattr(owner, "_lifetime_dependencies", ())),
+        )
+        for owner in owners
+    )

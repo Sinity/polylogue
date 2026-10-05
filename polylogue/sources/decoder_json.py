@@ -2,23 +2,30 @@
 
 from __future__ import annotations
 
-import io
+import codecs
 import json
 import re
-from collections.abc import Callable, Generator, Iterable, Iterator
+import sys
+import tempfile
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
-from typing import IO, Protocol, TypeAlias, TypeGuard, TypeVar, cast
+from typing import IO, Protocol, TypeAlias, TypeGuard, TypeVar, cast, overload
 
 import ijson
 
+from polylogue.core.compute import DaemonOperationCancelled
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
-from polylogue.core.json import JSONDecodeError, decode_provider_utf8
+from polylogue.core.json import JSONDecodeError, decode_provider_utf8, normalize_json_decimal
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
 from polylogue.sources import value_bounds
+from polylogue.sources.pickle_spool import PickleSpool
 
 logger = get_logger(__name__)
 
@@ -47,6 +54,86 @@ def normalize_ijson_stdlib_numbers(value: object) -> object:
             value_bounds.require_storable_string(key, kind="object key")
             value[key] = normalize_ijson_stdlib_numbers(item)
     return value
+
+
+class DecodedRecordSequence(Sequence[JsonValue]):
+    """Creator-local, repeatable decoded records with disk-backed ordinal lookup.
+
+    Only values produced by the decoder enter this private tape. It carries
+    no acquisition evidence and must close before its preparation returns.
+    """
+
+    def __init__(self, records: Iterable[JsonValue]) -> None:
+        self._spool: PickleSpool[JsonValue] = PickleSpool(indexed=True)
+        self._closed = False
+        try:
+            iterator = iter(records)
+            try:
+                for value in iterator:
+                    check_compute_cancelled()
+                    normalized = normalize_json_decimal(value)
+                    if not _is_json_value(normalized):
+                        raise ValueError("decoded record does not satisfy the JsonValue contract")
+                    self._spool.append(normalized)
+                    del normalized, value
+            finally:
+                primary = sys.exception()
+                close = getattr(iterator, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except BaseException as cleanup:
+                        if primary is not None:
+                            raise BaseExceptionGroup(
+                                "decoded input and iterator close failed", [primary, cleanup]
+                            ) from None
+                        raise
+        except BaseException as primary:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup(
+                    "decoded record retention and physical close failed", [primary, cleanup]
+                ) from None
+            raise
+
+    def __len__(self) -> int:
+        self._require_open()
+        return len(self._spool)
+
+    def _require_open(self) -> None:
+        if self._closed:
+            raise RuntimeError("decoded record sequence is closed")
+
+    @overload
+    def __getitem__(self, ordinal: int) -> JsonValue: ...
+
+    @overload
+    def __getitem__(self, ordinal: slice) -> list[JsonValue]: ...
+
+    def __getitem__(self, ordinal: int | slice) -> JsonValue | list[JsonValue]:
+        self._require_open()
+        check_compute_cancelled()
+        if isinstance(ordinal, slice):
+            return [self[index] for index in range(*ordinal.indices(len(self)))]
+        if ordinal < 0:
+            ordinal += len(self)
+        if not 0 <= ordinal < len(self):
+            raise IndexError(ordinal)
+        return next(self._spool.iter_from(ordinal))
+
+    def __iter__(self) -> Iterator[JsonValue]:
+        self._require_open()
+        for value in self._spool:
+            self._require_open()
+            check_compute_cancelled()
+            yield value
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._spool.close()
+        self._closed = True
 
 
 class LoggerLike(Protocol):
@@ -192,7 +279,7 @@ def _yield_jsonl_pending(
 
 def _iter_jsonl_stream(
     logger_obj: LoggerLike,
-    handle: JsonReadable,
+    handle: JsonReadable | Iterable[bytes],
     path_name: str,
     *,
     fail_on_decode_error: bool = False,
@@ -265,18 +352,155 @@ def _iter_jsonl_stream(
         logger_obj.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
 
 
-def _stdlib_prefixed_items(handle: JsonReadable, prefix: str) -> list[JsonValue] | None:
-    """The ``prefix`` items of the whole document as ``json.load`` reads it, or ``None``."""
+class _StdlibJsonRecordReader:
+    """Borrow a JSON file and decode one selected value with stdlib semantics."""
+
+    def __init__(self, handle: JsonReadable) -> None:
+        self._handle = handle
+        first = handle.read(4)
+        self._text_decoder = codecs.getincrementaldecoder(json.detect_encoding(first))(errors="surrogatepass")
+        self._buffer = self._text_decoder.decode(first)
+        self._eof = False
+        self._decoder = json.JSONDecoder()
+
+    def _fill(self) -> bool:
+        if self._eof:
+            return False
+        check_compute_cancelled()
+        chunk = self._handle.read(64 * 1024)
+        self._eof = not chunk
+        self._buffer += self._text_decoder.decode(chunk, final=self._eof)
+        return bool(chunk)
+
+    def peek(self) -> str:
+        while True:
+            self._buffer = self._buffer.lstrip(" \t\r\n")
+            if self._buffer or self._eof:
+                return self._buffer[:1]
+            self._fill()
+
+    def expect(self, token: str) -> None:
+        if self.peek() != token:
+            raise json.JSONDecodeError(f"expected {token}", self._buffer, 0)
+        self._buffer = self._buffer[1:]
+
+    def value(self) -> JsonValue:
+        self.peek()
+        while True:
+            check_compute_cancelled()
+            try:
+                value, end = self._decoder.raw_decode(self._buffer)
+            except json.JSONDecodeError:
+                if self._eof:
+                    raise
+                self._fill()
+                continue
+            if end == len(self._buffer) and not self._eof:
+                self._fill()
+                continue
+            if end < len(self._buffer) and self._buffer[end] not in " \t\r\n,:]}":
+                raise json.JSONDecodeError("invalid value boundary", self._buffer, end)
+            self._buffer = self._buffer[end:]
+            if not _is_json_value(value):
+                raise json.JSONDecodeError("decoded value does not satisfy the JsonValue contract", self._buffer, 0)
+            return value
+
+    def array(self) -> Iterator[JsonValue]:
+        self.expect("[")
+        if self.peek() == "]":
+            self.expect("]")
+            return
+        while True:
+            yield self.value()
+            if self.peek() == "]":
+                self.expect("]")
+                return
+            self.expect(",")
+
+    def discard(self) -> None:
+        """Validate unused structure without assembling its arrays or objects."""
+        token = self.peek()
+        if token == "[":
+            self.expect("[")
+            if self.peek() == "]":
+                self.expect("]")
+                return
+            while True:
+                self.discard()
+                if self.peek() == "]":
+                    self.expect("]")
+                    return
+                self.expect(",")
+        if token == "{":
+            self.expect("{")
+            if self.peek() == "}":
+                self.expect("}")
+                return
+            while True:
+                if self.peek() != '"' or not isinstance(self.value(), str):
+                    raise json.JSONDecodeError("object key must be a string", self._buffer, 0)
+                self.expect(":")
+                self.discard()
+                if self.peek() == "}":
+                    self.expect("}")
+                    return
+                self.expect(",")
+        self.value()
+
+    def finish(self) -> None:
+        if self.peek():
+            raise json.JSONDecodeError("extra data", self._buffer, 0)
+
+
+def _stdlib_prefixed_items(handle: JsonReadable, prefix: str) -> PickleSpool[JsonValue] | None:
+    """Retain selected records with the original stdlib decoder's value law."""
     handle.seek(0)
+    selected: PickleSpool[JsonValue] | None = None
     try:
-        data = json.load(handle)
-    except (ValueError, UnicodeDecodeError):
+        reader = _StdlibJsonRecordReader(handle)
+        if reader.peek() == "[":
+            if prefix == "item":
+                selected = PickleSpool()
+                for value in reader.array():
+                    selected.append(value)
+            else:
+                reader.discard()
+        elif reader.peek() == "{":
+            reader.expect("{")
+            if reader.peek() != "}":
+                while True:
+                    if reader.peek() != '"':
+                        raise json.JSONDecodeError("object key must be a string", reader._buffer, 0)
+                    key = reader.value()
+                    reader.expect(":")
+                    if prefix == "sessions.item" and key == "sessions":
+                        if selected is not None:
+                            selected.close()
+                            selected = None
+                        if reader.peek() == "[":
+                            selected = PickleSpool()
+                            for value in reader.array():
+                                selected.append(value)
+                        else:
+                            reader.discard()
+                    else:
+                        reader.discard()
+                    if reader.peek() == "}":
+                        break
+                    reader.expect(",")
+            reader.expect("}")
+        else:
+            reader.discard()
+        reader.finish()
+        return selected
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        if selected is not None:
+            selected.close()
         return None
-    if prefix == "sessions.item" and isinstance(data, dict):
-        data = data.get("sessions")
-    if prefix in {"item", "sessions.item"} and isinstance(data, list) and _is_json_value(data):
-        return cast(list[JsonValue], data)
-    return None
+    except BaseException:
+        if selected is not None:
+            selected.close()
+        raise
 
 
 def _stream_prefixed_items(
@@ -287,68 +511,74 @@ def _stream_prefixed_items(
     prefix: str,
     *,
     strategy_name: str,
-) -> tuple[bool, list[JsonValue]]:
-    found_any = False
-    records: list[JsonValue] = []
+) -> tuple[bool, PickleSpool[JsonValue] | None]:
+    records: PickleSpool[JsonValue] = PickleSpool()
+    transferred = False
     try:
-        for item in ijson_module.items(handle, prefix):
-            found_any = True
-            records.append(item)
-        return (found_any, records)
-    except ijson_module.common.JSONError as exc:
-        if found_any:
-            # Mid-stream corruption: the array/object was valid for the first
-            # ``len(records)`` items then broke. Returning the partial set here
-            # silently truncates the session set, so surface a typed error
-            # instead. A JSONError with zero items found is a normal
-            # "wrong prefix, try the next strategy" signal and is swallowed.
-            recovered = _stdlib_prefixed_items(handle, prefix)
-            if recovered is not None:
-                # ijson refused bytes the decoder's own ``json.load`` fallback
-                # accepts (directly encoded surrogates, NaN): the document is
-                # whole, so it is read that way instead of reported partial.
-                return (True, recovered)
-            offset = _json_error_offset(exc)
-            logger_obj.warning(
-                "Partial JSON stream decode of %s (strategy %s): corruption after %d record(s)%s",
-                path_name,
-                strategy_name,
-                len(records),
-                f" at byte offset {offset}" if offset is not None else "",
-            )
-            raise PartialJsonStreamError(
-                path_name,
-                recovered=len(records),
-                offset=offset,
-                cause=exc,
-            ) from exc
-        return (found_any, records)
-    except Exception as exc:
-        if found_any:
-            recovered = _stdlib_prefixed_items(handle, prefix)
-            if recovered is not None:
-                return (True, recovered)
-            # Same failure, and therefore the same handling as the JSONError
-            # branch above: records were already recovered, so returning the
-            # partial set silently truncates the session set. Only the
-            # exception type differs (an OS read fault, a decoder assertion, a
-            # backend-specific error), and the type does not change what was
-            # lost.
-            logger_obj.warning(
-                "Partial JSON stream decode of %s (strategy %s): %s after %d record(s)",
-                path_name,
-                strategy_name,
-                type(exc).__name__,
-                len(records),
-            )
-            raise PartialJsonStreamError(
-                path_name,
-                recovered=len(records),
-                offset=_json_error_offset(exc),
-                cause=exc,
-            ) from exc
-        logger_obj.debug("Strategy %s failed for %s: %s", strategy_name, path_name, exc)
-        return (found_any, records)
+
+        def candidates() -> Generator[JsonValue, None, None]:
+            yield from ijson_module.items(handle, prefix)
+
+        decode_failure: Exception | None = None
+        with closing(candidates()) as items:
+            while True:
+                check_compute_cancelled()
+                try:
+                    item = next(items)
+                except StopIteration:
+                    break
+                except DaemonOperationCancelled:
+                    raise
+                except (ijson_module.common.JSONError, UnicodeError, ValueError) as failure:
+                    decode_failure = failure
+                    break
+                records.append(item)
+                del item
+        if decode_failure is not None:
+            if len(records):
+                recovered = _stdlib_prefixed_items(handle, prefix)
+                if recovered is not None:
+                    transferred = True
+                    try:
+                        records.close()
+                    except BaseException as recovery_failure:
+                        try:
+                            recovered.close()
+                        except BaseException as cleanup:
+                            raise BaseExceptionGroup(
+                                "record recovery and spool close failed", [recovery_failure, cleanup]
+                            ) from None
+                        raise
+                    return True, recovered
+                logger_obj.warning(
+                    "Partial JSON stream decode of %s (strategy %s): %s after %d record(s)",
+                    path_name,
+                    strategy_name,
+                    type(decode_failure).__name__,
+                    len(records),
+                )
+                raise PartialJsonStreamError(
+                    path_name,
+                    recovered=len(records),
+                    offset=_json_error_offset(decode_failure),
+                    cause=decode_failure,
+                ) from decode_failure
+            if not isinstance(decode_failure, ijson_module.common.JSONError):
+                logger_obj.debug("Strategy %s failed for %s: %s", strategy_name, path_name, decode_failure)
+            return False, None
+        if not len(records):
+            return False, None
+        transferred = True
+        return True, records
+    finally:
+        if not transferred:
+            primary = sys.exception()
+            try:
+                records.close()
+            except BaseException as cleanup:
+                if primary is not None:
+                    raise BaseExceptionGroup("record decoding and spool close failed", [primary, cleanup]) from None
+                raise
 
 
 def _json_error_offset(exc: BaseException) -> int | None:
@@ -367,7 +597,7 @@ def _json_error_offset(exc: BaseException) -> int | None:
 def iter_json_stream_with(
     logger_obj: LoggerLike,
     ijson_module: IjsonModuleLike,
-    handle: JsonReadable,
+    handle: JsonReadable | Iterable[bytes],
     path_name: str,
     unpack_lists: bool = True,
     fail_on_decode_error: bool = False,
@@ -384,12 +614,32 @@ def iter_json_stream_with(
         )
         return
 
-    # The ijson multi-strategy parse below rewinds via ``handle.seek(0)``. A
-    # ZIP-entry stream (zipfile.ZipExtFile) is not seekable, so materialize it
-    # into a seekable buffer once before the seeking strategies run.
+    if not callable(getattr(handle, "read", None)):
+        raise TypeError("JSON document strategies require a readable byte stream")
+    # JSONL callers may supply physical lines; document strategies require IO.
+    handle = cast(JsonReadable, handle)
+
+    # Rewinding strategies borrow one disk-backed copy for a nonseekable
+    # original. Chunking bounds transport memory, not valid input size.
     seekable = getattr(handle, "seekable", None)
     if callable(seekable) and not seekable():
-        handle = io.BytesIO(handle.read())
+        with tempfile.TemporaryFile(prefix="polylogue-json-input-") as spool:
+            while True:
+                check_compute_cancelled()
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                spool.write(chunk)
+            spool.seek(0)
+            yield from iter_json_stream_with(
+                logger_obj,
+                ijson_module,
+                spool,
+                path_name,
+                unpack_lists,
+                fail_on_decode_error=fail_on_decode_error,
+            )
+        return
 
     if unpack_lists:
         found_any, records = _stream_prefixed_items(
@@ -401,7 +651,9 @@ def iter_json_stream_with(
             strategy_name="1 (ijson items)",
         )
         if found_any:
-            yield from records
+            assert records is not None
+            with closing(records):
+                yield from records
             return
 
         handle.seek(0)
@@ -414,12 +666,16 @@ def iter_json_stream_with(
             strategy_name="2 (ijson sessions.item)",
         )
         if found_any:
-            yield from records
+            assert records is not None
+            with closing(records):
+                yield from records
             return
 
         handle.seek(0)
 
-    data = json.load(handle)
+    reader = _StdlibJsonRecordReader(handle)
+    data = reader.value()
+    reader.finish()
     if not _is_json_value(data):
         raise ValueError(f"decoded payload from {path_name} does not satisfy the JsonValue contract")
     if isinstance(data, dict):

@@ -584,6 +584,7 @@ async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
         tmp_path,
         write_bridge=cast(Any, object()),
         execution_kernel=cast(Any, object()),
+        raw_observation_owner=cast(Any, object()),
         owner_loop=asyncio.get_running_loop(),
         session_maintenance=cast(Any, object()),
     )
@@ -814,13 +815,15 @@ def test_a_refusal_seen_by_two_drives_is_one_refusal(tmp_path: Path) -> None:
     retried drive reports the same refused membership twice."""
     from typing import cast
 
-    from polylogue.storage.ingest_governance import CohortMembershipRefusalError
+    from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind, RetainedRawDecodeRefusalError
 
     execution = IngestExecution.__new__(IngestExecution)
     execution._setup(cast(Any, None), tmp_path, cast(Any, None))
-    refusal = CohortMembershipRefusalError("key", "raw-1", "ambiguous")
-    execution.record_refusal(refusal)
-    execution.record_refusal(refusal)
+    refusal = RetainedRawDecodeRefusalError(
+        "raw-1", RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT, "neutral corrupt input"
+    )
+    execution.record_refusal("key", refusal)
+    execution.record_refusal("key", refusal)
     with sqlite3.connect(execution.state_path) as state:
         assert state.execute("SELECT COUNT(*) FROM refusals").fetchone() == (1,)
     execution.state_path.unlink(missing_ok=True)
@@ -914,13 +917,145 @@ async def test_a_watcher_only_daemon_redrives_accepted_ingests(tmp_path: Path, m
     source.unlink()
 
     writer = _StandaloneWriteRuntime(archive_root)
-    runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge)
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    kernel = BoundedComputeAdapter(max_workers=1, queue_units=1, queue_bytes=0)
+    runtime, _profiles = compose_ingest_owner(archive_root, writer.bridge, compute_adapter=kernel)
     try:
         await asyncio.to_thread(runtime.start_accepted_ingest_redrive)
         redrive = runtime._redrive
         assert redrive is not None
         await asyncio.wrap_future(redrive)
     finally:
-        await asyncio.to_thread(writer.close, before_drain=runtime.shutdown, after_drain=lambda: None)
+        await asyncio.to_thread(writer.close, before_drain=runtime.shutdown, after_drain=kernel.shutdown)
 
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+
+async def test_materialize_publishes_parser_complete_raw_and_reports_original_writer_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Accepted census alone leaves the original generation's Index work pending."""
+    archive_root, source = await _archive(tmp_path)
+    original = IngestExecution.materialize
+    reached: list[str] = []
+
+    async def materialize(self: IngestExecution, generation_id: str):
+        receipt = await self.receipt(generation_id)
+        try:
+            raw_ids = receipt.raw_page()
+        finally:
+            receipt.close()
+        assert len(raw_ids) == 1
+        owner = self.runtime.raw_observation_owner
+        await owner.converge_raw_id(raw_ids[0])
+
+        def original_state(pinned):
+            source_conn = pinned.archive.source_connection
+            index_conn = pinned.archive.index_connection
+            assert source_conn is not None and index_conn is not None
+            census = source_conn.execute(
+                "SELECT COUNT(*) FROM raw_authority_parser_census WHERE raw_id=?", raw_ids
+            ).fetchone()[0]
+            return census, index_conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+        assert await self.read(original_state) == (1, 0)
+        reached.append(raw_ids[0])
+        return await original(self, generation_id)
+
+    monkeypatch.setattr(IngestExecution, "materialize", materialize)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            result = await archive.parse_file(source, source_name="neutral-original-counts")
+        finally:
+            await harness.close()
+            await archive.close()
+    assert len(reached) == 1
+    assert result.counts["sessions"] == result.changed_counts["sessions"] == 1
+    assert result.counts["messages"] == result.changed_counts["messages"] == 2
+    assert len(result.processed_ids) == 1
+    operation_id, _record = _only_request(archive_root)
+    audit = AuditRepository.for_archive_root(archive_root)
+    with audit.settled_machine_read():
+        history = audit.historical_machine_receipt(operation_id)
+    assert history.summary.parse_projection_known
+    assert history.summary.changed_session_count == 1
+    assert history.summary.changed_message_count == history.summary.processed_message_count == 2
+
+
+@pytest.mark.asyncio
+async def test_materialize_keeps_valid_subject_after_original_decode_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive_root, source = await _archive(tmp_path)
+    (source.parent / "refused.json").write_bytes(b"not json")
+    original = IngestExecution.materialize
+    reached: list[tuple[int, int]] = []
+    failures: list[BaseException] = []
+
+    async def materialize(self: IngestExecution, generation_id: str):
+        receipt = await self.receipt(generation_id)
+        try:
+            raw_ids = receipt.raw_page()
+        finally:
+            receipt.close()
+        assert len(raw_ids) == 2
+        try:
+            result = await original(self, generation_id)
+        except BaseException as failure:
+            failures.append(failure)
+            raise
+        reached.append((len(raw_ids), len(result.session_page())))
+        return result
+
+    monkeypatch.setattr(IngestExecution, "materialize", materialize)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            try:
+                result = await archive.parse_file(source.parent, source_name="neutral-mixed")
+            except Exception as failure:
+                for original_failure in failures:
+                    failure.add_note(f"original materialize failure: {original_failure!r}")
+                raise
+        finally:
+            await harness.close()
+            await archive.close()
+    assert reached == [(2, 1)]
+    assert result.changed_counts["sessions"] == 1
+    assert result.changed_counts["messages"] == 2
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+
+@pytest.mark.asyncio
+async def test_materialize_uses_original_non_json_carrier_and_writer_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.sources import revision_backfill
+
+    archive_root, source = await _archive(tmp_path)
+    captured = source.with_suffix(".capture")
+    source.rename(captured)
+    original = revision_backfill.prepare_retained_non_json_artifact
+    reached: list[str] = []
+
+    def prepare(reader, raw_id, *, directory):
+        descriptor = reader.raw_revision_descriptor(raw_id)
+        assert Path(descriptor[2]).suffix == ".capture"
+        artifact = original(reader, raw_id, directory=directory)
+        reached.append(raw_id)
+        return artifact
+
+    monkeypatch.setattr(revision_backfill, "prepare_retained_non_json_artifact", prepare)
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with _serving(archive_root) as (harness, _server):
+        try:
+            result = await archive.parse_file(captured, source_name="neutral-original-carrier")
+        finally:
+            await harness.close()
+            await archive.close()
+    assert reached
+    assert result.changed_counts["sessions"] == 1
+    assert result.changed_counts["messages"] == 2
     assert _session_titles(archive_root) == ["Retained Redrive"]

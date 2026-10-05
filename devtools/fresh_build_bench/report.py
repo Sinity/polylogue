@@ -65,18 +65,51 @@ def _percentile(values: list[float], fraction: float) -> float:
 # event log
 
 
-def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
+def _iter_events(path: Path, *, coverage: Counter[str] | None = None) -> Iterator[dict[str, Any]]:
     # A daemon that dies before configuring logging leaves no event file.
     if not path.exists():
         return
     with path.open(encoding="utf-8") as stream:
         for line in stream:
+            if coverage is not None:
+                coverage["lines"] += 1
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
+                if coverage is not None:
+                    coverage["malformed_json"] += 1
                 continue
-            if isinstance(event, dict):
-                yield event
+            if not isinstance(event, dict):
+                if coverage is not None:
+                    coverage["non_object"] += 1
+                continue
+            try:
+                _ts(event["ts"])
+                if not isinstance(event.get("event"), str):
+                    raise ValueError("missing event name")
+            except (KeyError, TypeError, ValueError):
+                if coverage is not None:
+                    coverage["invalid_event"] += 1
+                continue
+            if coverage is not None:
+                coverage["valid_events"] += 1
+            yield event
+
+
+def _event_coverage(path: Path, counts: Counter[str]) -> dict[str, Any]:
+    return {
+        "file_present": path.exists(),
+        **{key: counts[key] for key in ("lines", "valid_events", "malformed_json", "non_object", "invalid_event")},
+        "complete": path.exists() and not any(counts[key] for key in ("malformed_json", "non_object", "invalid_event")),
+    }
+
+
+def _events_lossless(events: dict[str, Any], delivery: dict[str, int] | None) -> bool:
+    return (
+        bool(events.get("coverage", {}).get("complete"))
+        and delivery is not None
+        and all(type(delivery.get(key)) is int and delivery[key] == 0 for key in ("dropped", "failures", "undrained"))
+    )
 
 
 def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str, Any]:
@@ -88,6 +121,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
     aggregates and per-chunk timings are retained, never the events: a long
     build logs millions of writer events.
     """
+    coverage: Counter[str] = Counter()
     start = origin_unix
     if start is None:
         first: float | None = None
@@ -99,7 +133,9 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
                 break
         start = start if start is not None else first
     if start is None:
-        return {"event_count": 0}
+        for _event in _iter_events(path, coverage=coverage):
+            pass
+        return {"event_count": 0, "coverage": _event_coverage(path, coverage)}
     origin = start
 
     def rel(event: dict[str, Any]) -> float:
@@ -121,7 +157,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
     preparation_done: float | None = None
     event_count = 0
     last = 0.0
-    for event in _iter_events(path):
+    for event in _iter_events(path, coverage=coverage):
         event_count += 1
         last = rel(event)
         promoted = milestones.get("promoted_s")
@@ -180,7 +216,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
         if event.get("level") in {"warning", "error"}:
             problems[f"{name}:{event.get('reason')}"] += 1
     if event_count == 0:
-        return {"event_count": 0}
+        return {"event_count": 0, "coverage": _event_coverage(path, coverage)}
     if preparation_done is not None:
         milestones["preparation_done_s"] = preparation_done
     # Intake ends at the last chunk before promotion. Chunks after it are the
@@ -196,6 +232,7 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
     chunk_seconds = [chunk[3] for chunk in chunks]
     return {
         "event_count": event_count,
+        "coverage": _event_coverage(path, coverage),
         "milestones_s": milestones,
         "writer": {
             "busy_s_to_promotion": round(busy_build, 3),
@@ -233,6 +270,8 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
         return {"batches": 0}
     stages: defaultdict[str, float] = defaultdict(float)
     totals: defaultdict[str, float] = defaultdict(float)
+    measured: Counter[str] = Counter()
+    missing: Counter[str] = Counter()
     count = 0
     with closing(sqlite3.connect(f"file:{ops_path}?mode=ro", uri=True)) as conn:
         # A daemon that exited during bootstrap may leave ops.db without its
@@ -255,7 +294,12 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
                 "convergence_time_s",
                 "total_time_s",
             ):
-                totals[key] += data.get(key) or 0
+                value = data.get(key)
+                if value is None:
+                    missing[key] += 1
+                else:
+                    totals[key] += value
+                    measured[key] += 1
             for stage, seconds in (data.get("stage_timings_s") or {}).items():
                 stages[stage] += float(seconds)
     buckets: defaultdict[str, float] = defaultdict(float)
@@ -267,7 +311,13 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
         buckets[_bucket(stage)] += seconds
     return {
         "batches": count,
-        "totals": {key: round(value, 3) for key, value in totals.items()},
+        "totals": {
+            key: None if missing[key] else round(totals[key], 3) for key in sorted(measured.keys() | missing.keys())
+        },
+        "metric_coverage": {
+            key: {"observed": measured[key], "missing": missing[key]}
+            for key in sorted(measured.keys() | missing.keys())
+        },
         "stage_seconds": [[key, round(value, 3)] for key, value in sorted(stages.items(), key=lambda item: -item[1])],
         "stage_buckets_seconds": [
             [key, round(value, 3)] for key, value in sorted(buckets.items(), key=lambda item: -item[1])
@@ -598,7 +648,8 @@ def evaluate_budgets(limits: dict[str, float], observed: dict[str, float | None]
 def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
     """One row per observable change: (t, cursors complete, raw rows, open
     debt, promoted, ready domains, open debt by stage, debt in backoff by
-    stage)."""
+    stage, last useful progress, last retry activity, next debt retry, next
+    cursor retry). The initial observation is a baseline, not measured movement."""
     rows: list[tuple[Any, ...]] = []
     for observation in observations:
         row = (
@@ -610,6 +661,10 @@ def _progress_timeline(observations: list[Any]) -> list[tuple[Any, ...]]:
             sorted(domain for domain, ready in observation.readiness.items() if ready),
             dict(sorted(observation.debt_by_stage.items())),
             dict(sorted(observation.debt_waiting_by_stage.items())),
+            observation.useful_progress_at_s,
+            observation.activity_at_s,
+            observation.debt_next_retry_at,
+            observation.cursor_next_retry_at,
         )
         if not rows or rows[-1][1:] != row[1:]:
             rows.append(row)
@@ -906,8 +961,7 @@ def build_receipt(
         "wall_clock_steady": abs(clock_step_s) <= _MAX_CLOCK_STEP_S,
         # Receipt sections are reductions of the event log; a dropped or
         # undelivered event makes them understate.
-        "events_lossless": delivery is not None
-        and not (delivery.get("dropped") or delivery.get("failures") or delivery.get("undrained")),
+        "events_lossless": _events_lossless(events, delivery),
         # A nonempty corpus (total_bytes > 0) that qualifies with zero
         # sessions/messages materialized did no conversational work: an
         # accepted-but-empty export (e.g. a ChatGPT "[]" file) can settle its
@@ -956,6 +1010,7 @@ def build_receipt(
             "shutdown": round(shutdown_s, 3),
         },
         "stages": batches,
+        "event_log": events["coverage"],
         "writer": events.get("writer"),
         "chunks": events.get("chunks"),
         "intake_pages_by_class": events.get("intake_pages_by_class"),
@@ -984,6 +1039,14 @@ def build_receipt(
                 "memberships_pending",
                 "open_debt",
                 "debt_by_stage",
+                "debt_waiting_by_stage",
+                "debt_attempts",
+                "cursor_failures",
+                "cursor_retry_waiting",
+                "debt_next_retry_at",
+                "cursor_next_retry_at",
+                "useful_progress_at_s",
+                "activity_at_s",
                 "readiness",
             )
         },
@@ -1042,6 +1105,22 @@ def render(receipt: dict[str, Any]) -> str:
         f"corpus {receipt['corpus']['kind']} {receipt['corpus']['digest'][:12]}"
         f" files={_fmt(receipt['corpus']['file_count'])} bytes={receipt['corpus']['total_bytes'] / 2**20:,.1f} MiB",
     ]
+    coverage = receipt.get("event_log") or {}
+    lines.append(
+        "event coverage  "
+        + "  ".join(
+            f"{key}={str(coverage.get(key)) if isinstance(coverage.get(key), bool) else _fmt(coverage.get(key))}"
+            for key in (
+                "file_present",
+                "lines",
+                "valid_events",
+                "malformed_json",
+                "non_object",
+                "invalid_event",
+                "complete",
+            )
+        )
+    )
     timing = receipt["timing_s"]
     lines.append("timing  " + "  ".join(f"{key}={_fmt(value)}" for key, value in timing.items() if key != "shutdown"))
     lines.append("throughput  " + "  ".join(f"{k}={_fmt(v)}" for k, v in receipt["throughput"].items()))
@@ -1252,12 +1331,14 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
             if key in tree:
                 tree[key] = None
     receipt["stages"] = analyse_batches(work / "archive" / "ops.db")
+    receipt["event_log"] = events["coverage"]
     for key in ("writer", "chunks", "intake_pages_by_class", "by_source", "warnings_and_errors"):
         receipt[key] = events.get(key)
     # Truncated or edited evidence re-reduces to different timings under the
     # original qualification; the run then no longer qualifies.
     sealed = receipt.get("evidence_sha256")
     receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
+    receipt["checks"]["events_lossless"] = _events_lossless(events, _log_delivery(work / "stacks.json"))
     receipt["timing_s"].update(
         {
             "promotion": milestones.get("promoted_s"),

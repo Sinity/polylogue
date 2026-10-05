@@ -26,6 +26,7 @@ from polylogue.operations.action_contracts import (
     action_affordance_payloads,
 )
 from tests.infra.app_env import make_app_env
+from tests.infra.cli_selection import selection_for_rows
 
 SCHEMAS_DIR = Path("docs/schemas/cli-output")
 
@@ -372,7 +373,7 @@ def test_read_contract_guard_allows_first_for_multi_match(workspace_env: dict[st
 
     runner = CliRunner()
     with (
-        patch("polylogue.cli.session_rows.query_session_rows", return_value=rows),
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_rows(rows)),
         patch("polylogue.cli.query_verbs.run_read_view") as run_read_view,
     ):
         result = runner.invoke(cli, ["find", "needle", "then", "read", "--first"])

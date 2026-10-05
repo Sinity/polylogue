@@ -161,6 +161,7 @@ class QueryExecutionContext:
     query_ref: str
     workload_class: WorkloadClass = "interactive"
     admission_weight: int = 1
+    request_bytes: int = 0
     deadline_monotonic: float | None = None
     sqlite_vm_step_budget: int | None = None
     owner_ref: str | None = None
@@ -196,13 +197,15 @@ class QueryExecutionContext:
         sqlite_vm_step_budget: int | None = None,
         owner_ref: str | None = None,
     ) -> QueryExecutionContext:
-        query_ref = hashlib.sha256((query_text or "").encode("utf-8")).hexdigest()[:16]
+        request = (query_text or "").encode("utf-8")
+        query_ref = hashlib.sha256(request).hexdigest()[:16]
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         return cls(
             call_id=uuid.uuid4().hex,
             query_ref=f"expr:{query_ref}",
             workload_class=workload_class,
             admission_weight=max(1, admission_weight),
+            request_bytes=len(request),
             deadline_monotonic=deadline,
             sqlite_vm_step_budget=sqlite_vm_step_budget,
             owner_ref=owner_ref,
@@ -547,10 +550,18 @@ class InterruptibleSQLiteRead:
             ctx.record_sqlite_progress(progress_opcodes)
             return 1 if ctx.should_abort() else 0
 
+        def check_cancelled() -> None:
+            if ctx.should_abort():
+                raise _abort_error(ctx)
+
         with self._store_lock:
             self._store = store
         try:
-            store.set_read_progress_guard(guard, n_opcodes=progress_opcodes)
+            store.set_read_progress_guard(
+                guard,
+                n_opcodes=progress_opcodes,
+                check_cancelled=check_cancelled,
+            )
             if ctx.should_abort():
                 raise _abort_error(ctx)
             try:
@@ -575,6 +586,10 @@ class InterruptibleSQLiteRead:
             store.clear_read_progress_guard()
             ctx.mark_cleanup_complete()
 
+    def _check_cancelled(self) -> None:
+        if self._ctx.should_abort():
+            raise _abort_error(self._ctx)
+
     @contextmanager
     def open_context(self, archive_root: Path, *, read_timeout: float = 5.0) -> Iterator[ArchiveStore]:
         """Yield the controlled store to synchronous read-surface adapters."""
@@ -586,7 +601,11 @@ class InterruptibleSQLiteRead:
             with self._store_lock:
                 self._store = store
             try:
-                store.set_read_progress_guard(lambda: 1 if ctx.should_abort() else 0, n_opcodes=PROGRESS_GUARD_OPCODES)
+                store.set_read_progress_guard(
+                    lambda: 1 if ctx.should_abort() else 0,
+                    n_opcodes=PROGRESS_GUARD_OPCODES,
+                    check_cancelled=lambda: self._check_cancelled(),
+                )
                 if ctx.should_abort():
                     raise _abort_error(ctx)
                 store.begin_read_snapshot()
@@ -689,21 +708,23 @@ async def execute_archive_read(
     ctx: QueryExecutionContext,
     controller: QueryAdmissionController | None = None,
     read_timeout: float = 5.0,
+    index_path: Path | None = None,
 ) -> T:
     """Run one archive read off the event loop under admission control.
 
     Caller cancellation (``asyncio.CancelledError``, which is how MCP client
     disconnects surface) sets the shared cancellation state, interrupts the
-    exact connection, and waits for the worker to release its resources
-    before re-raising — the loop is never left with an orphaned reader.
+    exact connection, and gives the worker a bounded disconnect drain wait.
+    A worker still settling after that wait retains admission and has its
+    eventual exception observed; caller cancellation never releases its lease.
     """
     admission = controller or default_admission_controller()
     reader = InterruptibleSQLiteRead(ctx)
 
     def _admitted_run() -> T:
-        return reader.run(archive_root, work, read_timeout=read_timeout)
+        return reader.run(archive_root, work, read_timeout=read_timeout, index_path=index_path)
 
-    from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter
+    from polylogue.core.compute import CancellationHandle, DaemonOperationCancelled, compute_adapter
 
     async def _admitted_submission() -> T:
         # Acquire on the event loop so queued admission never consumes a
@@ -721,28 +742,62 @@ async def execute_archive_read(
                 admission._release(ctx, weight)
 
         submitted = False
+        cancellation = CancellationHandle()
+        remove_cancel_listener = ctx.add_cancel_listener(cancellation.cancel)
+        loop = asyncio.get_running_loop()
+        deadline = ctx.seconds_until_deadline()
+        deadline_timer = loop.call_later(deadline, cancellation.cancel) if deadline is not None else None
 
-        def _mark_submitted() -> None:
-            nonlocal submitted
-            submitted = True
+        def completed(_future: object) -> None:
+            # The physical compute future completes after native SQL settles,
+            # including a failed close. Never release on asyncio cancellation.
+            remove_cancel_listener()
+            _release()
+            if deadline_timer is not None:
+                with suppress(RuntimeError):
+                    loop.call_soon_threadsafe(deadline_timer.cancel)
 
         try:
-            return await default_archive_read_async_adapter().run(
-                _admitted_run,
-                on_submitted=_mark_submitted,
-                on_completed=_release,
+            physical = (
+                compute_adapter()
+                .submit(
+                    _admitted_run,
+                    admission_class="bulk-candidate" if ctx.workload_class == "scan" else "interactive-read",
+                    estimated_bytes=ctx.request_bytes,
+                    cancellation=cancellation,
+                )
+                .future
             )
+            submitted = True
+            physical.add_done_callback(completed)
+            try:
+                return await asyncio.shield(asyncio.wrap_future(physical, loop=loop))
+            except DaemonOperationCancelled:
+                if ctx.cancelled or ctx.deadline_exceeded():
+                    raise _abort_error(ctx) from None
+                raise
         except BaseException:
-            # No executor operation owns the lease when submission was
-            # rejected or cancellation arrived before this coroutine ran.
-            # After submission, _owned_run is the sole release owner.
             if not submitted:
+                remove_cancel_listener()
+                if deadline_timer is not None:
+                    deadline_timer.cancel()
                 _release()
             raise
 
     worker = asyncio.create_task(_admitted_submission())
+
+    def consume_worker_exception(completed: asyncio.Task[T]) -> None:
+        # A disconnected caller may stop waiting before the physical owner
+        # settles. Observe its eventual exception without cancelling that owner.
+        if not completed.cancelled():
+            completed.exception()
+
+    worker.add_done_callback(consume_worker_exception)
     try:
-        result = await asyncio.shield(worker)
+        # Unlike shield(), wait does not install a late-exception logger when
+        # the caller is cancelled. The worker retains its own admission lease.
+        await asyncio.wait({worker})
+        result = worker.result()
     except asyncio.CancelledError:
         ctx.cancel()
         reader.interrupt()
@@ -754,7 +809,10 @@ async def execute_archive_read(
             # Timeout ends the caller's drain wait, never the lease-owning
             # runner: the underlying executor operation may still be cleaning
             # up and must retain admission until it returns.
-            await asyncio.wait_for(asyncio.shield(worker), timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+            done, _ = await asyncio.wait({worker}, timeout=DISCONNECT_DRAIN_TIMEOUT_S)
+            if not done:
+                raise TimeoutError
+            worker.result()
         except (QueryCancelledError, QueryTimeoutError, QueryWorkBudgetExceededError, asyncio.CancelledError):
             pass
         except TimeoutError:

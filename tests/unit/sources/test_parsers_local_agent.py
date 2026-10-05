@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
 
 import pytest
 
@@ -19,7 +18,7 @@ from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
+from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES
 from polylogue.sources.live.batch_support import _detect_provider_from_path, _parse_path_as_session_artifact
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers import antigravity, hermes_state, local_agent
@@ -1449,14 +1448,15 @@ def test_antigravity_brain_artifact_metadata_parses_sibling_markdown(tmp_path: P
     )
 
 
-def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
+@pytest.mark.asyncio
+async def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_json(tmp_path: Path) -> None:
     metadata_path = tmp_path / "brain" / "work-session" / "plan.metadata.json"
     metadata_path.parent.mkdir(parents=True)
     metadata_payload: JSONDocument = {
         "artifactType": "ARTIFACT_TYPE_OTHER",
         # Keep this as a valid brain metadata document while forcing the
-        # ``_ingest_full_paths_sync`` large-file branch. The sidecar must be
-        # excluded before its bytes are copied or parsed as a session.
+        # acquisition branch. Retained classification keeps the sidecar
+        # bytes as evidence without admitting them as a session.
         "summary": "Plan " + ("x" * _STREAMING_FULL_INGEST_BYTES),
         "updatedAt": "2026-08-04T08:00:00Z",
     }
@@ -1496,23 +1496,58 @@ def test_antigravity_metadata_sidecar_is_rejected_without_blocking_conversation_
 
     assert metadata_path.stat().st_size > _STREAMING_FULL_INGEST_BYTES
     assert conversation_path.stat().st_size < _STREAMING_FULL_INGEST_BYTES
-    index_db = tmp_path / "index.db"
-    processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="antigravity", root=tmp_path),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
+    from polylogue import Polylogue
+    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+    from polylogue.sources.live.watcher import LiveWatcher
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    admission = processor._ingest_full_paths_sync(
-        [metadata_path, conversation_path],
-        source_name="antigravity",
-    )
-
-    assert admission.succeeded == [metadata_path, conversation_path]
-    assert admission.failed == []
-    assert str(metadata_path) not in processor._cursor.list_excluded()
-    assert str(conversation_path) not in processor._cursor.list_excluded()
+    root = tmp_path / "archive"
+    root.mkdir()
+    async with prepared_live_convergence_owner(root) as owner:
+        coordinator = owner._write_coordinator
+        await coordinator.run_sync("fixture.antigravity.bootstrap", lambda: bootstrap_archive_root(root))
+        cursor = await coordinator.run_sync(
+            "fixture.antigravity.cursor", lambda: CursorStore(root / "index.db", ops_db_path=root / "ops.db")
+        )
+        archive = Polylogue(archive_root=root)
+        watcher = LiveWatcher(
+            archive,
+            [WatchSource(name="antigravity", root=tmp_path)],
+            cursor=cursor,
+            write_coordinator=coordinator,
+            sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=owner._compute_adapter),
+            append_runner=owner.ingest_append_plans,
+            convergence_runner=owner.run_convergence_sync,
+            retained_runner=owner.ingest_retained_raw_ids,
+        )
+        try:
+            metrics = await watcher._ingest_files([metadata_path, conversation_path])
+            assert metrics.failed_file_count == 0
+            assert metrics.ingested_session_count == 1
+            with ArchiveStore.open_existing(root, read_only=True) as stored:
+                raws = stored.source_connection.execute(
+                    "SELECT source_path,canonical_source_path,blob_hash FROM raw_sessions"
+                ).fetchall()
+                assert {(row[0], row[1], row[2]) for row in raws} == {
+                    (str(path), str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest())
+                    for path in (metadata_path, conversation_path)
+                }
+                [sidecar] = stored.source_connection.execute(
+                    "SELECT artifact_kind,parse_as_session,schema_eligible,decode_error FROM raw_artifacts "
+                    "WHERE source_path=?",
+                    (str(metadata_path),),
+                ).fetchall()
+                assert tuple(sidecar) == (ArtifactKind.AGENT_SIDECAR_META.value, 0, 0, None)
+                assert stored._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+                retained = stored.read_session("antigravity-session:cascade-json")
+                assert [block.text for message in retained.messages for block in message.blocks] == ["hello", "hi"]
+            assert str(metadata_path) not in cursor.list_excluded()
+            assert str(conversation_path) not in cursor.list_excluded()
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 def test_antigravity_language_server_markdown_export_parses_turns() -> None:

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  CAPTURE_FRESHNESS_MAX_ENTRIES,
   chatGptCaptureNeedsFollowUp,
   claimDueFreshness,
   completeFreshnessClaim,
@@ -11,7 +10,6 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../src/capture/freshness.js";
-import { MAX_PROVIDER_COOLDOWN_MS } from "../src/capture/provider_cooldown.js";
 
 function hint(queue, nativeId, nowMs = 1000, patch = {}) {
   return scheduleFreshnessHint(queue, {
@@ -113,6 +111,46 @@ describe("capture freshness queue", () => {
     });
   });
 
+  it("keeps newer hints leased until the original capture settles", () => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const updated = hint(first.queue, "conversation-1", 1500, {
+      delayMs: 0,
+      generationObservations: [{ observation_id: "new-completion", state: "completed" }],
+    });
+    expect(updated.entries[first.claim.key]).toMatchObject({
+      generation: 2, lease_owner: "one", lease_expires_at_ms: 6000,
+    });
+    expect(claimDueFreshness(updated, { nowMs: 2000, owner: "two", leaseMs: 5000 }).claim).toBeNull();
+    const settled = completeFreshnessClaim(updated, first.claim, { nowMs: 2000, needsFollowUp: false });
+    const next = claimDueFreshness(settled, { nowMs: 2000, owner: "two", leaseMs: 5000 });
+    expect(next.claim).toMatchObject({ generation: 2, generation_observations: [{ observation_id: "new-completion" }] });
+    expect(completeFreshnessClaim(next.queue, next.claim, { nowMs: 2500, needsFollowUp: false }).entries).toEqual({});
+  });
+
+  it.each(["one", "two"])("fences a late expired completion from the reclaimed %s lease", (owner) => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const next = claimDueFreshness(first.queue, { nowMs: 6001, owner, leaseMs: 5000 });
+    expect(next.claim.generation).toBe(first.claim.generation);
+    expect(next.claim.lease_expires_at_ms).not.toBe(first.claim.lease_expires_at_ms);
+    for (const result of [{ needsFollowUp: false }, { needsFollowUp: true }, { error: "network_error" }]) {
+      expect(completeFreshnessClaim(next.queue, first.claim, { nowMs: 6500, ...result })).toEqual(next.queue);
+    }
+    expect(completeFreshnessClaim(next.queue, next.claim, { nowMs: 6500, needsFollowUp: false }).entries).toEqual({});
+  });
+
+  it("retains typed retry and provider cooldown when newer evidence arrives during failure", () => {
+    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    const first = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const updated = hint(first.queue, "conversation-1", 1500, { delayMs: 0, providerUpdatedAt: "2026-07-16T00:01:00Z" });
+    const cooled = extendProviderCooldown(updated, { provider: "chatgpt", untilMs: 61000, nowMs: 2000 });
+    const settled = completeFreshnessClaim(cooled, first.claim, { nowMs: 2000, needsFollowUp: false, error: "rate_limited", retryDelayMs: 7000 });
+    expect(settled.entries[first.claim.key]).toMatchObject({ generation: 2, lease_owner: null, next_attempt_at_ms: 9000, attempt_count: 1, last_error: "rate_limited" });
+    expect(claimDueFreshness(settled, { nowMs: 60999, owner: "two", leaseMs: 5000 }).claim).toBeNull();
+    expect(claimDueFreshness(settled, { nowMs: 61000, owner: "two", leaseMs: 5000 }).claim.provider_updated_at).toBe("2026-07-16T00:01:00Z");
+  });
+
   it("holds every conversation for a provider until its throttle deadline", () => {
     let queue = hint(null, "conversation-1", 1000, { delayMs: 0 });
     queue = hint(queue, "conversation-2", 1000, { delayMs: 0 });
@@ -124,31 +162,15 @@ describe("capture freshness queue", () => {
       .toBe("conversation-1");
   });
 
-  // Anti-vacuity: delete the clamp in extendProviderCooldown (restore the plain
-  // `Math.max(current, Number(untilMs) || 0)`) and this test goes red -- the
-  // stored deadline becomes the forged ~10-year value and provider_cooldown_clamps
-  // stays 0. It is the storage-boundary backstop for a page-forged 429: the
-  // cooldown is monotonic and persisted, so an unbounded deadline reaching here
-  // is permanent until extension storage is cleared.
-  it("clamps a provider cooldown deadline to the maximum honoured window", () => {
-    const tenYearsMs = 315_360_000 * 1000;
-    const queue = extendProviderCooldown(null, {
-      provider: "chatgpt",
-      untilMs: 1_000 + tenYearsMs,
-      nowMs: 1_000,
-    });
-
-    expect(queue.provider_cooldowns.chatgpt).toBe(1_000 + MAX_PROVIDER_COOLDOWN_MS);
-    expect(queue.provider_cooldown_clamps).toBe(1);
-    expect(queue.last_cooldown_clamp).toMatchObject({
-      provider: "chatgpt",
-      requested_until_ms: 1_000 + tenYearsMs,
-      applied_until_ms: 1_000 + MAX_PROVIDER_COOLDOWN_MS,
-    });
-    // An honest deadline is untouched and unreported.
-    const honest = extendProviderCooldown(null, { provider: "chatgpt", untilMs: 61_000, nowMs: 1_000 });
-    expect(honest.provider_cooldowns.chatgpt).toBe(61_000);
-    expect(honest.provider_cooldown_clamps).toBe(0);
+  it("preserves a forty-eight hour provider deadline and rejects physically unrepresentable timestamps", () => {
+    const deadline = 1000 + 48 * 60 * 60 * 1000;
+    const queue = extendProviderCooldown(null, { provider: "chatgpt", untilMs: deadline, nowMs: 1000 });
+    expect(queue.provider_cooldowns.chatgpt).toBe(deadline);
+    expect(() => extendProviderCooldown(queue, { provider: "chatgpt", untilMs: 1e307, nowMs: 1000 })).toThrow("provider_retry_after_unrepresentable");
+    expect(queue.provider_cooldowns.chatgpt).toBe(deadline);
+    const due = hint(queue, "later-conversation", 1000);
+    expect(claimDueFreshness(due, { nowMs: deadline - 1, owner: "one", leaseMs: 5000 }).claim).toBeNull();
+    expect(claimDueFreshness(due, { nowMs: deadline, owner: "one", leaseMs: 5000 }).claim).not.toBeNull();
   });
 
   it("removes terminal captures and adaptively reschedules running replies", () => {
@@ -170,30 +192,25 @@ describe("capture freshness queue", () => {
     expect(complete.entries[claim.key]).toBeUndefined();
   });
 
-  it("models terminal assistant heads and conservative non-terminal states", () => {
-    const envelope = (role, status) => ({
-      raw_provider_payload: {
-        current_node: "head",
-        mapping: { head: { message: { author: { role }, status } } },
-      },
-    });
-    expect(chatGptCaptureNeedsFollowUp(envelope("assistant", "finished_successfully"))).toBe(false);
-    expect(chatGptCaptureNeedsFollowUp(envelope("assistant", "in_progress"))).toBe(true);
-    expect(chatGptCaptureNeedsFollowUp(envelope("user", "finished_successfully"))).toBe(true);
+  it("keeps freshness pending until canonical receiver preparation reports a terminal head", () => {
+    expect(chatGptCaptureNeedsFollowUp({ capture_summary: { needsFollowUp: false } })).toBe(false);
+    expect(chatGptCaptureNeedsFollowUp({ capture_summary: { needsFollowUp: true } })).toBe(true);
     expect(chatGptCaptureNeedsFollowUp({})).toBe(true);
   });
 
-  it("uses typed backoff and bounds the durable hint set", () => {
+  it("uses typed backoff and preserves every durable hint past the former count limit", () => {
     expect(failureRetryDelayMs(0, "rate_limited")).toBe(15 * 60_000);
     expect(failureRetryDelayMs(0, "auth_challenge")).toBe(60 * 60_000);
     expect(failureRetryDelayMs(2, "network_error")).toBe(60_000);
     expect(failureRetryDelayMs(0, "rate_limited", 7)).toBe(7000);
 
     let queue = normalizeFreshnessQueue(null);
-    for (let index = 0; index < CAPTURE_FRESHNESS_MAX_ENTRIES + 2; index += 1) {
+    for (let index = 0; index < 502; index += 1) {
       queue = hint(queue, `conversation-${index}`, 1000 + index);
     }
-    expect(Object.keys(queue.entries)).toHaveLength(CAPTURE_FRESHNESS_MAX_ENTRIES);
-    expect(queue.dropped_count).toBe(2);
+    expect(Object.keys(queue.entries)).toHaveLength(502);
+    expect(queue.dropped_count).toBe(0);
+    expect(queue.entries["chatgpt:conversation-0"]).toBeDefined();
+    expect(queue.entries["chatgpt:conversation-501"]).toBeDefined();
   });
 });

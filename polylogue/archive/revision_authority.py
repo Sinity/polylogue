@@ -8,7 +8,10 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
-from typing import BinaryIO, Literal
+from typing import TYPE_CHECKING, BinaryIO, Literal
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
 
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.sources import origin_from_provider
@@ -94,7 +97,7 @@ def decided_unresolved_membership_sql(table_alias: str = "r") -> str:
     """
 
 
-#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
+#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.admit_work_event``).
 #: A work event is its own logical source: its raw id is its logical key, so it
 #: never joins the byte-revision cohort of the transcript it annotates.
 WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
@@ -192,6 +195,7 @@ class ParserCensusIdentityMeasurement:
     observed_valid: bool
     identities_match: bool
     observed_count: int
+    owner: NativeSQLCustodyOwner
 
     def iter_keys(self, *, observed: bool) -> Generator[str, None, None]:
         with closing(
@@ -229,36 +233,118 @@ class ParserCensusIdentityMeasurement:
             byte_governed_fragment=byte_governed_fragment,
         )
 
-    def keys_json(self, *, sqlite_encoding: bool) -> str:
-        if sqlite_encoding:
-            return str(
-                self.connection.execute(
-                    "SELECT json_group_array(logical_key) FROM ("
-                    "SELECT logical_key FROM census_identity WHERE kind=0 ORDER BY logical_key)"
-                ).fetchone()[0]
-                or "[]"
-            )
-        # Preserve the receipt writer's existing stdlib JSON spelling for
-        # inherited/disposition identities without a cohort-sized Python list.
-        import io
+    def _stdlib_keys_json_chunks(self, check_stop: Callable[[], None]) -> Generator[bytes, None, None]:
+        """Encode each exact key through its original readonly TEXT handle."""
+        import codecs
         import json
 
-        with io.StringIO() as encoded:
-            encoded.write("[")
-            first = True
+        check_stop()
+        yield b"["
+        first = True
+        with closing(
+            self.connection.execute("SELECT rowid, occurrences FROM census_identity WHERE kind=0 ORDER BY logical_key")
+        ) as rows:
+            for rowid, occurrences in rows:
+                check_stop()
+                for _ in range(occurrences):
+                    check_stop()
+                    if not first:
+                        yield b", "
+                    yield b'"'
+                    with self.owner.readonly_blob("census_identity", "logical_key", rowid) as blob:
+                        decoder = codecs.getincrementaldecoder("utf-8")()
+                        remaining = len(blob)
+                        while remaining:
+                            check_stop()
+                            chunk = blob.read(min(4096, remaining))
+                            if not chunk:
+                                raise ValueError("parser census key ended before its retained byte length")
+                            remaining -= len(chunk)
+                            text = decoder.decode(chunk, final=remaining == 0)
+                            # The stdlib string encoder preserves its exact
+                            # ASCII/control/non-BMP spelling. Incremental UTF8
+                            # decoding never splits a Unicode code point.
+                            yield json.dumps(text)[1:-1].encode("ascii")
+                    yield b'"'
+                    first = False
+        check_stop()
+        yield b"]"
+
+    @contextmanager
+    def keys_json_stream(
+        self, *, sqlite_encoding: bool, check_stop: Callable[[], None] | None = None
+    ) -> Iterator[tuple[int, Generator[bytes, None, None]]]:
+        """Lend exact receipt bytes while their original measurement owner is live.
+
+        SQLite's aggregate remains native and may allocate its complete value;
+        it is never fetched into Python. The stdlib route repeats its existing
+        occurrence spelling, measuring and delivering on this same snapshot.
+        """
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        def check() -> None:
+            check_compute_cancelled()
+            if check_stop is not None:
+                check_stop()
+
+        if self.owner.require_connection() is not self.connection:
+            raise RuntimeError("parser census stream differs from its original native owner")
+        check()
+        if not sqlite_encoding:
+            with closing(self._stdlib_keys_json_chunks(check)) as measured:
+                byte_length = sum(len(chunk) for chunk in measured)
+            with closing(self._stdlib_keys_json_chunks(check)) as chunks:
+                yield byte_length, chunks
+            return
+
+        # This is the original SQLite JSON aggregate, including ordered
+        # distinct keys and its exact Unicode/control-character spelling.
+        # Keep the scalar on the same private measurement connection.
+        stopped: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal stopped
+            try:
+                check()
+            except BaseException as error:
+                stopped = error
+                return 1
+            return 0
+
+        self.connection.set_progress_handler(progress, 1000)
+        try:
+            with closing(self.connection.execute("DELETE FROM census_encoded_keys")):
+                pass
             with closing(
                 self.connection.execute(
-                    "SELECT logical_key, occurrences FROM census_identity WHERE kind=0 ORDER BY logical_key"
+                    "INSERT INTO census_encoded_keys(id,value) SELECT 1,json_group_array(logical_key) FROM ("
+                    "SELECT logical_key FROM census_identity WHERE kind=0 ORDER BY logical_key)"
                 )
-            ) as rows:
-                for key, occurrences in rows:
-                    for _ in range(occurrences):
-                        if not first:
-                            encoded.write(", ")
-                        encoded.write(json.dumps(key))
-                        first = False
-            encoded.write("]")
-            return encoded.getvalue()
+            ):
+                pass
+        except sqlite3.OperationalError as interrupted:
+            if stopped is not None:
+                raise stopped from interrupted
+            raise
+        finally:
+            self.connection.set_progress_handler(None, 0)
+        check()
+        with self.owner.readonly_blob("census_encoded_keys", "value", 1) as blob:
+            byte_length = len(blob)
+
+            def read_chunks() -> Generator[bytes, None, None]:
+                remaining = byte_length
+                while remaining:
+                    check()
+                    chunk = blob.read(min(65536, remaining))
+                    if not chunk:
+                        raise ValueError("parser census JSON ended before its measured byte length")
+                    remaining -= len(chunk)
+                    yield chunk
+                check()
+
+            with closing(read_chunks()) as chunks:
+                yield byte_length, chunks
 
 
 @contextmanager
@@ -277,20 +363,28 @@ def parser_census_identity_measurement(
     Inputs come from the caller's admitted Source snapshot. The scratch owner
     never reopens that snapshot; its regular indexed table lives on disk.
     """
-    from polylogue.storage.sqlite.connection_profile import scratch_connection_context
+    from polylogue.storage.sqlite.connection_profile import (
+        retained_native_sql_owners_on_current_thread,
+        scratch_connection_context,
+    )
 
     if observed_logical_keys is not None and inherit_durable_keys:
         raise ValueError("parser census cannot combine observed and inherited durable keys")
     with scratch_connection_context(prefix="polylogue-parser-census-", filename="identities.sqlite") as scratch:
-        scratch.execute("PRAGMA cache_size=-2048")
-        scratch.execute("PRAGMA journal_mode=DELETE")
-        scratch.execute("PRAGMA temp_store=FILE")
-        scratch.execute("BEGIN")
+        owners = tuple(owner for owner in retained_native_sql_owners_on_current_thread() if owner.connection is scratch)
+        if len(owners) != 1:
+            raise RuntimeError("parser census measurement requires its single original native owner")
+        owner = owners[0]
+        scratch.execute("PRAGMA cache_size=-2048").close()
+        scratch.execute("PRAGMA journal_mode=DELETE").close()
+        scratch.execute("PRAGMA temp_store=FILE").close()
+        scratch.execute("BEGIN").close()
         scratch.execute(
             "CREATE TABLE census_identity(kind INTEGER NOT NULL, logical_key TEXT NOT NULL, source_key TEXT, "
             "occurrences INTEGER NOT NULL DEFAULT 1, "
-            "PRIMARY KEY(kind, logical_key)) WITHOUT ROWID"
-        )
+            "PRIMARY KEY(kind, logical_key))"
+        ).close()
+        scratch.execute("CREATE TABLE census_encoded_keys(id INTEGER PRIMARY KEY, value TEXT NOT NULL)").close()
         durable_valid = True
         for value in membership_logical_keys:
             if check_stop is not None:
@@ -305,7 +399,7 @@ def parser_census_identity_measurement(
             scratch.execute(
                 "INSERT OR IGNORE INTO census_identity(kind, logical_key, source_key) VALUES (1, ?, ?)",
                 (key, str(value)),
-            )
+            ).close()
         if raw_logical_key is not None and str(revision_kind) != RawRevisionKind.UNKNOWN.value:
             typed_key = str(raw_logical_key)
             if not typed_key.startswith("pending-raw:"):
@@ -314,12 +408,14 @@ def parser_census_identity_measurement(
                 except ValueError:
                     durable_valid = False
                 else:
-                    scratch.execute("INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,))
+                    scratch.execute(
+                        "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (1, ?)", (key,)
+                    ).close()
         observed_valid = observed_logical_keys is not None or inherit_durable_keys
         if inherit_durable_keys and durable_valid:
             scratch.execute(
                 "INSERT INTO census_identity(kind, logical_key) SELECT 0, logical_key FROM census_identity WHERE kind=1"
-            )
+            ).close()
         elif observed_logical_keys is not None:
             observed = iter(observed_logical_keys)
             try:
@@ -334,28 +430,35 @@ def parser_census_identity_measurement(
                         observed_valid = False
                         break
                     key = canonical_authority_logical_key(value)
-                    inserted = scratch.execute(
-                        "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,)
-                    )
-                    if observed_are_receipt and not inserted.rowcount:
-                        observed_valid = False
+                    with closing(
                         scratch.execute(
-                            "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
-                            (key,),
-                        ).close()
-                    inserted.close()
+                            "INSERT OR IGNORE INTO census_identity(kind, logical_key) VALUES (0, ?)", (key,)
+                        )
+                    ) as inserted:
+                        if observed_are_receipt and not inserted.rowcount:
+                            observed_valid = False
+                            scratch.execute(
+                                "UPDATE census_identity SET occurrences=occurrences+1 WHERE kind=0 AND logical_key=?",
+                                (key,),
+                            ).close()
             finally:
                 close_observed = getattr(observed, "close", None)
                 if callable(close_observed):
                     close_observed()
-        observed_count = int(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0").fetchone()[0])
-        differs = scratch.execute(
-            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
-            "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
-            "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
-            "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
-        ).fetchone()
-        yield ParserCensusIdentityMeasurement(scratch, durable_valid, observed_valid, differs is None, observed_count)
+        with closing(scratch.execute("SELECT COUNT(*) FROM census_identity WHERE kind=0")) as counted:
+            observed_count = int(counted.fetchone()[0])
+        with closing(
+            scratch.execute(
+                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND NOT EXISTS ("
+                "SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND durable.logical_key=observed.logical_key) "
+                "UNION ALL SELECT 1 FROM census_identity AS durable WHERE durable.kind=1 AND NOT EXISTS ("
+                "SELECT 1 FROM census_identity AS observed WHERE observed.kind=0 AND observed.logical_key=durable.logical_key) LIMIT 1"
+            )
+        ) as compared:
+            differs = compared.fetchone()
+        yield ParserCensusIdentityMeasurement(
+            scratch, durable_valid, observed_valid, differs is None, observed_count, owner
+        )
 
 
 #: ``raw_membership_census.detail`` marker written when a full-only,

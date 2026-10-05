@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.models import Message
@@ -36,7 +37,7 @@ from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 if TYPE_CHECKING:
     from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.core.types import SessionId
-    from polylogue.storage.sqlite.queries.messages import MessageTypeName
+    from polylogue.storage.sqlite.queries.messages import MaterialOriginFilter, MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
@@ -130,16 +131,15 @@ class RepositoryArchiveSessionMixin:
             return None
         resolved_session_id = str(conv_record.session_id)
 
-        msg_records, att_records, session_event_records = await asyncio.gather(
+        msg_records, session_event_records = await asyncio.gather(
             self.queries.get_messages(resolved_session_id),
-            self.queries.get_attachments(resolved_session_id),
             self.queries.get_session_events(resolved_session_id),
         )
         tags_by_id = await self._fetch_tags_by_session([resolved_session_id])
         return session_from_records(
             conv_record,
             msg_records,
-            att_records,
+            [attachment for message in msg_records for attachment in message.attachments],
             session_event_records,
             tags=tags_by_id.get(resolved_session_id, ()),
             blob_store=self._read_blob_store,
@@ -247,7 +247,9 @@ class RepositoryArchiveSessionMixin:
             limit=limit,
             offset=offset,
         )
-        messages = [message_from_record(r, attachments=[], origin=origin) for r in records]
+        messages = [
+            message_from_record(r, r.attachments, origin=origin, blob_store=self._read_blob_store) for r in records
+        ]
         return messages, total, completeness
 
     async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[Message]:
@@ -260,7 +262,10 @@ class RepositoryArchiveSessionMixin:
         conv_record = await self.queries.get_session(session_id)
         origin = conv_record.origin if conv_record else None
         records = await self.queries.get_effective_context(session_id, at_position)
-        return [message_from_record(record, attachments=[], origin=origin) for record in records]
+        return [
+            message_from_record(record, record.attachments, origin=origin, blob_store=self._read_blob_store)
+            for record in records
+        ]
 
     async def get_lineage_completeness(self, session_id: str) -> LineageCompleteness:
         """Report whether ``session_id``'s composed transcript is the full
@@ -324,9 +329,8 @@ class RepositoryArchiveSessionMixin:
             return []
 
         async with self._backend.read_pool(size=2):
-            msgs_by_id, atts_by_id, session_events_by_id = await asyncio.gather(
+            msgs_by_id, session_events_by_id = await asyncio.gather(
                 self.queries.get_messages_batch(present_ids),
-                self.queries.get_attachments_batch(present_ids),
                 self.queries.get_session_events_batch(present_ids),
             )
         tags_by_id = await self._fetch_tags_by_session(present_ids)
@@ -334,7 +338,7 @@ class RepositoryArchiveSessionMixin:
             session_from_records(
                 by_id[session_id],
                 msgs_by_id.get(session_id, []),
-                atts_by_id.get(session_id, []),
+                [attachment for message in msgs_by_id.get(session_id, []) for attachment in message.attachments],
                 session_events_by_id.get(session_id, []),
                 tags=tags_by_id.get(session_id, ()),
                 blob_store=self._read_blob_store,
@@ -398,16 +402,21 @@ class RepositoryArchiveSessionMixin:
         session_id: str,
         *,
         message_roles: MessageRoleFilter = (),
+        material_origin: MaterialOriginFilter | None = None,
         limit: int | None = None,
-    ) -> AsyncIterator[Message]:
+    ) -> AsyncGenerator[Message, None]:
         conv_record = await self.queries.get_session(session_id)
         origin = conv_record.origin if conv_record else None
-        async for record in self.queries.iter_messages(
-            session_id,
-            message_roles=message_roles,
-            limit=limit,
-        ):
-            yield message_from_record(record, attachments=[], origin=origin)
+        async with aclosing(
+            self.queries.iter_messages(
+                session_id,
+                message_roles=message_roles,
+                material_origin=material_origin,
+                limit=limit,
+            )
+        ) as records:
+            async for record in records:
+                yield message_from_record(record, record.attachments, origin=origin, blob_store=self._read_blob_store)
 
     async def aggregate_facet_families(
         self,

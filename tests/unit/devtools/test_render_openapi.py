@@ -187,3 +187,12 @@ def test_openapi_declares_generated_client_page_contracts() -> None:
             "qualification": "page",
         },
     }
+
+
+def test_status_declares_bodyless_conditional_response() -> None:
+    status = _build_openapi_document()["paths"]["/api/status"]["get"]
+    responses = status["responses"]
+    assert "If-None-Match" in status["description"]
+    assert responses["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    assert responses["304"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    assert "content" not in responses["304"]

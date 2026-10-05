@@ -62,6 +62,7 @@ def read_message_windows(
     continuation: str | None,
     daemon_disabled: bool,
     around: str | None = None,
+    selection_epoch: str | None = None,
 ) -> Iterator[_MessageWindow]:
     """Yield the declared ``session.read`` message windows one request needs.
 
@@ -96,13 +97,27 @@ def read_message_windows(
             else window_ceiling
         )
         if token is not None:
-            request = lower_session_read(session_id, kind="messages", continuation=token)
+            resumed_limit: int | None = None
+            if remaining is not None:
+                from polylogue.operations.session_contracts import SessionRead
+                from polylogue.operations.transcript_window import frame_request
+
+                # Only recover the bound window size. The selected executor
+                # still validates the token against its live archive snapshot.
+                try:
+                    _, frame = frame_request(SessionRead(ref=session_id, continuation=token))
+                except _continuation_refusal_types() as exc:
+                    raise OperationFailedError(exc.code, str(exc)) from exc
+                resumed_limit = min(window_limit, frame.page_size)
+            request = lower_session_read(session_id, kind="messages", limit=resumed_limit, continuation=token)
         elif anchor is not None:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
         else:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, offset=offset + delivered)
         try:
-            payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
+            payload, served_by = dispatch_read(
+                config, request, daemon_disabled=daemon_disabled, selection_epoch=selection_epoch
+            )
         except OperationFailedError as exc:
             # A wide initial page can be valid as rows yet exceed the bounded
             # operation envelope. Retry that same coordinate with a smaller
@@ -148,20 +163,18 @@ def read_message_windows(
 #: The declared refusals that mean "this continuation does not name this
 #: window".  Named from the exception classes that own them so the CLI cannot
 #: drift from the token every other surface reports (polylogue-ijbwq).
-def _continuation_refusal_codes() -> frozenset[str]:
+def _continuation_refusal_types() -> tuple[type[Any], ...]:
     from polylogue.archive.query.transaction import (
         QueryContinuationExpiredError,
         QueryContinuationInvalidError,
         QueryContinuationStaleError,
     )
 
-    return frozenset(
-        {
-            QueryContinuationStaleError.code,
-            QueryContinuationInvalidError.code,
-            QueryContinuationExpiredError.code,
-        }
-    )
+    return (QueryContinuationExpiredError, QueryContinuationInvalidError, QueryContinuationStaleError)
+
+
+def _continuation_refusal_codes() -> frozenset[str]:
+    return frozenset(error.code for error in _continuation_refusal_types())
 
 
 def message_read_failure(env: AppEnv, exc: OperationKernelError, *, session_id: str) -> None:
@@ -230,6 +243,7 @@ def run_messages(
             continuation=continuation,
             daemon_disabled=daemon_disabled,
             around=around,
+            selection_epoch=request.selection_epoch,
         ):
             if executor_identity is not None and window.served_by.identity != executor_identity:
                 raise OperationFailedError(

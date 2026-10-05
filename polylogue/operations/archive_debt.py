@@ -17,7 +17,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.errors import SchemaSkew
-from polylogue.core.raw_coordinates import zip_member_coordinate
+from polylogue.core.raw_coordinates import read_captured_zip_coordinate_receipt
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
@@ -253,6 +253,7 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                     r.raw_id,
                     r.native_id,
                     r.source_path,
+                    coordinate.captured_coordinate,
                     r.blob_hash,
                     r.blob_size,
                     r.parsed_at_ms,
@@ -261,6 +262,7 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
                     r.validation_error,
                     {quarantine_expr} AS revision_quarantined
                 FROM raw_sessions AS r
+                LEFT JOIN raw_container_coordinates AS coordinate ON coordinate.raw_id = r.raw_id
                 LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
                 LEFT JOIN index_tier.sessions AS s_by_native
                   ON r.native_id IS NOT NULL
@@ -579,7 +581,7 @@ def _embedded_source_path_session_ids(row: sqlite3.Row) -> tuple[str, ...]:
     if str(row["origin"] or "") != "claude-code-session":
         return ()
     source_path = str(row["source_path"] or "")
-    if not source_path or not _source_artifact_exists(source_path):
+    if not source_path or not _source_artifact_exists(source_path, row["captured_coordinate"]):
         return ()
     path = Path(source_path)
     session_ids: list[str] = []
@@ -650,7 +652,7 @@ def _raw_materialization_debt_row(
     max_blob_size = max(_int_value(row["blob_size"]) or 0 for row in rows)
     max_blob_size_text = _format_bytes(max_blob_size)
     validation_counts = _count_values(row["validation_status"] for row in rows)
-    source_available = any(_source_artifact_exists(str(row["source_path"])) for row in rows)
+    source_available = any(_source_artifact_exists(str(row["source_path"]), row["captured_coordinate"]) for row in rows)
     severity: ArchiveDebtSeverity
     status: ArchiveDebtStatus = "actionable" if source_available else "blocked"
     stage: str
@@ -877,12 +879,11 @@ def _raw_blob_path(archive_root: Path, row: sqlite3.Row) -> Path:
     return archive_root / "blob" / hex_hash[:2] / hex_hash[2:]
 
 
-def _source_artifact_exists(source_path: str) -> bool:
-    if not source_path:
-        return False
-    # A member coordinate exists only while its real ZIP container does; a
-    # colon in a loose file's name, or a non-ZIP prefix, names no container.
-    return os.path.exists(source_path) or zip_member_coordinate(source_path) is not None
+def _source_artifact_exists(source_path: str, captured_coordinate: str | None = None) -> bool:
+    if captured_coordinate is not None:
+        coordinate = read_captured_zip_coordinate_receipt(captured_coordinate)
+        return os.path.exists(coordinate.canonical_container)
+    return bool(source_path) and os.path.exists(source_path)
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:

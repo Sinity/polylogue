@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, BinaryIO
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, Protocol, cast
 from uuid import uuid4
 
 from polylogue.core.prepared_file import PreparedFileSeal
@@ -116,11 +116,6 @@ class BlobPublicationInspection:
     reserved_at_ms: int
     blob_present: bool
     liveness: BlobLiveness
-
-    @property
-    def referenced(self) -> bool:
-        """Presentation adapter for receipt listings, never a clear authorization."""
-        return self.liveness.state is LivenessState.LIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,7 +439,7 @@ class ArchiveBlobPublisher(BlobStore):
 
                     if is_blob_hash_excised(connection, bytes.fromhex(claim.receipt.blob_hash)):
                         return prepared.hash_hex, prepared.size_bytes
-                    self.validate_published_claim(connection, claim, source_path="")
+                    self.validate_published_claim(ConnectionBlobPublicationRead(connection), claim, source_path="")
                 return prepared.hash_hex, prepared.size_bytes
             try:
                 self._validate_claim_path(claim.prepared_path)
@@ -454,27 +449,20 @@ class ArchiveBlobPublisher(BlobStore):
         return self._queue(prepared, claim)
 
     def validate_published_claim(
-        self, connection: sqlite3.Connection, claim: PreparedBlobPublicationClaim, *, source_path: str
+        self, source: BlobPublicationSourceRead, claim: PreparedBlobPublicationClaim, *, source_path: str
     ) -> tuple[str, int]:
         """Verify the exact reservation and final bytes inside the owning Source transaction."""
-        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, is_blob_hash_excised
+        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
-        with connection_cursor(connection, "PRAGMA database_list") as cursor:
-            database_path = next((str(row[2]) for row in cursor if row[1] == "main"), "")
-        if not database_path or Path(database_path).resolve() != self.source_db_path.resolve():
+        if source.publication_source_path() != self.source_db_path.resolve():
             raise ValueError("publication belongs to another Source database")
         if claim.publisher is not self or claim.receipt.publisher_id != self.publisher_id:
             raise ValueError("publication belongs to another captured publisher")
         receipt = claim.receipt
         blob_hash = bytes.fromhex(receipt.blob_hash)
-        if is_blob_hash_excised(connection, blob_hash):
+        if source.publication_blob_is_excised(blob_hash):
             raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
-        with connection_cursor(
-            connection,
-            "SELECT blob_hash, size_bytes, publisher_id FROM blob_publication_reservations WHERE publication_id = ?",
-            (receipt.publication_id,),
-        ) as cursor:
-            row = cursor.fetchone()
+        row = source.publication_reservation(receipt.publication_id)
         if row is None or tuple(row) != (blob_hash, receipt.size_bytes, receipt.publisher_id):
             raise ArchiveStorageFaultError(
                 StorageFaultKind.EVICTED, FileNotFoundError("publication reservation is absent or changed")
@@ -1334,3 +1322,104 @@ __all__ = [
     "reconcile_blob_publication_reservations",
     "reconcile_blob_publication_reservations_under_exclusion",
 ]
+
+
+class BlobPublicationSourceRead(Protocol):
+    """Actual Source inputs used by the existing published-claim proof."""
+
+    def publication_source_path(self) -> Path: ...
+
+    def publication_blob_is_excised(self, blob_hash: bytes) -> bool: ...
+
+    def publication_reservation(self, publication_id: str) -> tuple[bytes, int, str] | None: ...
+
+
+class RetainedAttachmentSourceRead(BlobPublicationSourceRead, Protocol):
+    """Current original Raw and durable acquisition reference proof."""
+
+    def retained_attachment_reference(
+        self, raw_id: str, raw_blob_hash: bytes, coordinate: str, blob_hash: bytes, size_bytes: int
+    ) -> None: ...
+
+
+_RETAINED_ATTACHMENT_REFERENCE_SQL = (
+    "SELECT 1 FROM raw_sessions r JOIN blob_refs b ON b.ref_id=r.raw_id "
+    "WHERE r.raw_id=? AND r.blob_hash=? AND b.ref_type='attachment' "
+    "AND coalesce(b.source_path,'')=? AND b.blob_hash=? AND b.size_bytes=? LIMIT 1"
+)
+
+
+def _require_retained_attachment_reference(row: object) -> None:
+    if row is None:
+        raise ValueError("retained attachment has no exact original Raw acquisition reference")
+
+
+_PUBLICATION_RESERVATION_SQL = (
+    "SELECT blob_hash,size_bytes,publisher_id FROM blob_publication_reservations WHERE publication_id=?"
+)
+
+
+def _publication_reservation_from_row(row: sqlite3.Row | tuple[object, ...] | None) -> tuple[bytes, int, str] | None:
+    if row is None:
+        return None
+    return cast(tuple[bytes, int, str], tuple(row))
+
+
+class ConnectionBlobPublicationRead:
+    """Borrow the ordinary actual Source owner and settle every proof cursor."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+
+    def publication_source_path(self) -> Path:
+        with connection_cursor(self._connection, "PRAGMA database_list") as rows:
+            database_path = next((str(row[2]) for row in rows if row[1] == "main"), "")
+        if not database_path:
+            raise ValueError("publication requires an actual Source database")
+        return Path(database_path).resolve()
+
+    def publication_blob_is_excised(self, blob_hash: bytes) -> bool:
+        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+        return is_blob_hash_excised(self._connection, blob_hash)
+
+    def publication_reservation(self, publication_id: str) -> tuple[bytes, int, str] | None:
+        with connection_cursor(self._connection, _PUBLICATION_RESERVATION_SQL, (publication_id,)) as rows:
+            return _publication_reservation_from_row(rows.fetchone())
+
+    def retained_attachment_reference(
+        self, raw_id: str, raw_blob_hash: bytes, coordinate: str, blob_hash: bytes, size_bytes: int
+    ) -> None:
+        with connection_cursor(
+            self._connection,
+            _RETAINED_ATTACHMENT_REFERENCE_SQL,
+            (raw_id, raw_blob_hash, coordinate, blob_hash, size_bytes),
+        ) as rows:
+            _require_retained_attachment_reference(rows.fetchone())
+
+
+def blob_publication_receipt_delete(
+    publication_id: str | None,
+    blob_hash: bytes,
+    *,
+    literal: Callable[[object], tuple[str, tuple[object, ...]]],
+) -> tuple[str, tuple[object, ...]] | None:
+    """Build the same exact receipt-consumption predicate for either host."""
+    if publication_id is None:
+        return None
+    publication_expression, publication_parameters = literal(publication_id)
+    blob_expression, blob_parameters = literal(blob_hash)
+    return (
+        "DELETE FROM blob_publication_reservations "
+        f"WHERE publication_id = {publication_expression} AND blob_hash = {blob_expression}",
+        (*publication_parameters, *blob_parameters),
+    )
+
+
+def _publication_receipt_operand(value: object) -> tuple[str, tuple[object, ...]]:
+    return "?", (value,)
+
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.connection_profile import NativeSQLCustodyOwner
+    from polylogue.storage.sqlite.reference_seal import KnownTierMutationPermit, PreparedIndexMutation

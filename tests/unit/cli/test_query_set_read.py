@@ -9,6 +9,7 @@ from typing import cast
 from unittest.mock import patch
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from polylogue.archive.models import Session
@@ -19,28 +20,59 @@ from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_views.base import ReadViewMessageOptions
 from polylogue.cli.read_views.query_set import run_query_set_read_view
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.shared.types import AppEnv
 from polylogue.surfaces.projection_spec import projection_from_views
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.cli_selection import selection_for_ids, selection_for_rows
 
 
 def _stub_env(sessions: list[Session]) -> AppEnv:
-    """Build an AppEnv-like stub whose list_sessions_for_spec returns the list."""
-
-    async def _list_for_spec(spec, **_):  # type: ignore[no-untyped-def]
-        return list(sessions)
-
-    polylogue = SimpleNamespace(list_sessions_for_spec=_list_for_spec)
-    return cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+    return cast(AppEnv, SimpleNamespace(config=SimpleNamespace(fixture_sessions=sessions, captured={})))
 
 
 def _capturing_env(sessions: list[Session], captured: dict[str, object]) -> AppEnv:
-    async def _list_for_spec(spec, **_):  # type: ignore[no-untyped-def]
-        captured["spec"] = spec
-        return list(sessions)
+    return cast(AppEnv, SimpleNamespace(config=SimpleNamespace(fixture_sessions=sessions, captured=captured)))
 
-    polylogue = SimpleNamespace(list_sessions_for_spec=_list_for_spec)
-    return cast(AppEnv, SimpleNamespace(polylogue=polylogue))
+
+@pytest.fixture(autouse=True)
+def _resident_bulk_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Formatting fixtures use the declared resident selection/page vocabulary."""
+    from polylogue.cli import read_dispatch
+    from polylogue.cli.read_dispatch import ServedBy
+    from polylogue.cli.session_rows import query_session_selection
+    from polylogue.surfaces.outcome import decide_outcome
+
+    original_select = query_session_selection
+    original_read = read_dispatch.dispatch_read
+
+    def select(config, request, **kwargs):  # type: ignore[no-untyped-def]
+        if not hasattr(config, "fixture_sessions"):
+            return original_select(config, request, **kwargs)
+        config.captured["spec"] = request.query_spec()
+        selected = config.fixture_sessions[kwargs.get("offset", 0) :]
+        if kwargs.get("limit") is not None:
+            selected = selected[: kwargs["limit"]]
+        return selection_for_ids([session.id for session in selected])
+
+    def read(config, operation, **kwargs):  # type: ignore[no-untyped-def]
+        if not hasattr(config, "fixture_sessions") or operation.operation != "session.read":
+            return original_read(config, operation, **kwargs)
+        session = next(session for session in config.fixture_sessions if session.id == operation.payload["ref"])
+        return {
+            "session": session.model_dump(mode="json"),
+            "session_id": session.id,
+            "selection_epoch": "fixture-selected-frame",
+            "outcome": decide_outcome(matched=len(session.messages)).to_dict(),
+            "offset": 0,
+            "total": len(session.messages),
+            "next_offset": None,
+            "continuation": None,
+            "complete": True,
+        }, ServedBy("fixture", None)
+
+    monkeypatch.setattr(query_set_read, "query_session_selection", select)
+    monkeypatch.setattr(read_dispatch, "dispatch_read", read)
 
 
 def _request(**param_overrides: object) -> RootModeRequest:
@@ -89,7 +121,10 @@ def test_dialogue_query_set_selects_rows_then_uses_declared_view_operation() -> 
     env = cast(AppEnv, SimpleNamespace(config=object()))
     with (
         patch(
-            "polylogue.cli.session_rows.query_session_rows", return_value=[SimpleNamespace(session_id="session-1")]
+            "polylogue.cli.session_rows.query_session_selection",
+            return_value=selection_for_rows(
+                [SelectSessionRow(session_id="session-1", origin="codex-session", title="one", date=None)]
+            ),
         ) as select,
         patch("polylogue.cli.read_views.standard._read_dialogue_session", return_value=session) as read,
         patch("polylogue.cli.query_set_read.run_query_set_read", side_effect=AssertionError("local read")),
@@ -122,7 +157,12 @@ def test_dialogue_query_set_applies_projection_spec_to_operation_result() -> Non
 
     env = cast(AppEnv, SimpleNamespace(config=object()))
     with (
-        patch("polylogue.cli.session_rows.query_session_rows", return_value=[SimpleNamespace(session_id="session-1")]),
+        patch(
+            "polylogue.cli.session_rows.query_session_selection",
+            return_value=selection_for_rows(
+                [SelectSessionRow(session_id="session-1", origin="codex-session", title="one", date=None)]
+            ),
+        ),
         patch("polylogue.cli.read_views.standard._read_dialogue_session", return_value=session) as read,
     ):
         runner = CliRunner()
@@ -151,8 +191,8 @@ def test_dialogue_query_set_without_limit_reads_every_selected_session() -> None
     env = cast(AppEnv, SimpleNamespace(config=object()))
     with (
         patch(
-            "polylogue.cli.session_rows.query_complete_session_ids",
-            return_value=["session-a", "session-b"],
+            "polylogue.cli.session_rows.query_complete_session_selection",
+            return_value=selection_for_ids(["session-a", "session-b"]),
         ) as select,
         patch(
             "polylogue.cli.read_views.standard._read_dialogue_session",
@@ -814,6 +854,7 @@ def test_per_session_view_still_dispatches_once_per_session() -> None:
         calls.append(invocation)
 
     with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids(["a", "b"])),
         patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
         patch("polylogue.cli.read_views.base.deliver_content"),
     ):
@@ -843,6 +884,7 @@ def test_query_set_read_forwards_the_full_message_option() -> None:
         calls.append(invocation)
 
     with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids(["a", "b"])),
         patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
         patch("polylogue.cli.read_views.base.deliver_content"),
     ):
@@ -870,6 +912,7 @@ def test_query_set_read_without_full_keeps_the_bounded_window() -> None:
         calls.append(invocation)
 
     with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids(["a", "b"])),
         patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_capture),
         patch("polylogue.cli.read_views.base.deliver_content"),
     ):
@@ -907,6 +950,7 @@ def test_query_set_ndjson_read_keeps_per_line_framing() -> None:
         click.echo(json.dumps({"session_id": invocation.session_id, "message_id": "m1"}))
 
     with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids(["a", "b"])),
         patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_emit),
         patch("polylogue.cli.read_views.base.deliver_content", side_effect=_deliver),
     ):
@@ -938,6 +982,7 @@ def test_query_set_json_read_still_emits_one_array() -> None:
         click.echo(json.dumps({"session_id": invocation.session_id}))
 
     with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection_for_ids(["a", "b"])),
         patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=_emit),
         patch("polylogue.cli.read_views.base.deliver_content", side_effect=_deliver),
     ):
@@ -953,3 +998,173 @@ def test_query_set_json_read_still_emits_one_array() -> None:
 
     payload = json.loads(cast(str, delivered["content"]))
     assert [item["session_id"] for item in payload] == ["a", "b"]
+
+
+@pytest.mark.parametrize("view", ["dialogue", "messages"])
+@pytest.mark.parametrize("matched", [0, 1])
+def test_query_set_delivery_preserves_the_selection_gap(
+    view: str, matched: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from polylogue.cli.session_rows import SessionSelection
+    from polylogue.surfaces.outcome import decide_outcome
+
+    rows = selection_for_ids(["selected"] if matched else []).rows
+    outcome = decide_outcome(matched=matched, degraded=("projection_incomplete",))
+    selection = SessionSelection(rows, outcome, "daemon", "original-selected-frame")
+    delivered: list[str] = []
+    env = cast(AppEnv, SimpleNamespace(config=object()))
+
+    def emit(*_args: object, **_kwargs: object) -> None:
+        click.echo(json.dumps({"session_id": "selected"}))
+
+    with (
+        patch("polylogue.cli.session_rows.query_session_selection", return_value=selection),
+        patch("polylogue.cli.read_views.standard._read_dialogue_session", return_value=make_conv(id="selected")),
+        patch("polylogue.cli.read_view_handlers.run_read_view", side_effect=emit),
+        patch(
+            "polylogue.cli.read_views.base.deliver_content",
+            side_effect=lambda _env, content, **_kw: delivered.append(content),
+        ),
+    ):
+        with pytest.raises(SystemExit) as caught:
+            run_query_set_read_view(
+                env,
+                _request(limit=1),
+                view=view,
+                output_format="json",
+                fields=None,
+                destination="stdout",
+                out_path=None,
+            )
+    assert caught.value.code == 1
+    assert len(delivered) == 1
+    assert len(json.loads(delivered[0])) == matched
+    assert json.loads(capsys.readouterr().err)["outcome"] == outcome.to_dict()
+
+
+@pytest.mark.parametrize("matched", [0, 1])
+def test_bulk_display_preserves_degraded_selection_after_output(matched: int, monkeypatch: pytest.MonkeyPatch) -> None:
+    from dataclasses import replace
+
+    from polylogue.surfaces.outcome import decide_outcome
+
+    sessions = _two_sessions()[:matched]
+    verdict = decide_outcome(
+        matched=matched, degraded=("selected_source_gap",), detail={"missing_inputs": ["synthetic-source"]}
+    )
+    selection = replace(selection_for_ids([session.id for session in sessions]), outcome=verdict)
+    monkeypatch.setattr(query_set_read, "query_session_selection", lambda *_a, **_k: selection)
+    runner = CliRunner()
+    with runner.isolation() as (out, err, _):
+        result = query_set_read.run_query_set_read(_stub_env(sessions), _request(), output_format="json", fields=None)
+        with pytest.raises(SystemExit) as refused:
+            result.finish()
+        assert refused.value.code == 1
+        assert len(json.loads(out.getvalue())) == matched
+        assert json.loads(err.getvalue())["outcome"] == verdict.to_dict()
+
+
+@pytest.mark.parametrize("failure", ["stale", "cancelled"])
+def test_bulk_late_hydration_failure_emits_no_partial_document(monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    from polylogue.cli.operation_kernel import OperationCancelledError, OperationFailedError
+    from polylogue.surfaces.outcome import decide_outcome
+
+    sessions = _two_sessions()
+    reached = []
+
+    def read(_env, _request, session_id, epoch):  # type: ignore[no-untyped-def]
+        reached.append((session_id, epoch))
+        if session_id == "b":
+            if failure == "cancelled":
+                raise OperationCancelledError("session.read", "cancelled after the first selected session")
+            raise OperationFailedError("query_continuation_stale", "changed selected view")
+        return sessions[0], decide_outcome(matched=1)
+
+    monkeypatch.setattr(query_set_read, "_read_selected_session", read)
+    runner = CliRunner()
+    with runner.isolation() as (out, _err, _):
+        with pytest.raises((OperationFailedError, OperationCancelledError)) as refused:
+            query_set_read.run_query_set_read(_stub_env(sessions), _request(), output_format="json", fields=None)
+        assert isinstance(refused.value, (OperationFailedError, OperationCancelledError))
+        assert refused.value.code == ("operation_cancelled" if failure == "cancelled" else "query_continuation_stale")
+        assert out.getvalue() == b""
+    assert reached == [("a", "fixture-selected-frame"), ("b", "fixture-selected-frame")]
+
+
+def test_bulk_export_respects_selection_limit_and_offset() -> None:
+    sessions = _two_sessions()
+    output = _capture_run(_stub_env(sessions), _request(limit=1, offset=1), "jsonl", None)
+    assert json.loads(output)["id"] == "b"
+
+
+def test_registered_read_receives_the_original_selected_epoch(monkeypatch: pytest.MonkeyPatch) -> None:
+    selected = selection_for_ids(["a"])
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", lambda *_a, **_k: selected)
+    seen = []
+
+    def read(_env, request, invocation):  # type: ignore[no-untyped-def]
+        seen.append((invocation.session_id, request.selection_epoch))
+        click.echo("[]")
+
+    monkeypatch.setattr("polylogue.cli.read_view_handlers.run_read_view", read)
+    runner = CliRunner()
+    with runner.isolation():
+        run_query_set_read_view(
+            _stub_env([]),
+            _request(),
+            view="messages",
+            output_format="json",
+            fields=None,
+            destination="stdout",
+            out_path=None,
+        )
+    assert seen == [("a", selected.snapshot_epoch)]
+
+
+def test_read_dispatch_preserves_the_selected_epoch_as_a_declared_operand(monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.cli import operation_kernel
+    from polylogue.cli.read_dispatch import dispatch_read
+    from polylogue.config import Config
+
+    seen = []
+
+    def dispatch(_config, request, **_kwargs):  # type: ignore[no-untyped-def]
+        seen.append(request)
+        return SimpleNamespace(value={}, authority={"server_identity": "daemon"}, envelope=None)
+
+    monkeypatch.setattr(operation_kernel, "dispatch", dispatch)
+    original = operation_kernel.OperationRequest("session.read", {"ref": "a", "kind": "messages"})
+    dispatch_read(cast("Config", object()), original, selection_epoch="original-view")
+    assert seen[0].payload == {"ref": "a", "kind": "messages", "selection_epoch": "original-view"}
+    assert original.payload == {"ref": "a", "kind": "messages"}
+    dispatch_read(cast("Config", object()), original)
+    assert seen[1].payload == original.payload
+
+
+@pytest.mark.parametrize("view", ["summary", "dialogue", "messages"])
+def test_unbound_empty_selection_refuses_before_delivery(view: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.cli.operation_kernel import OperationEnvelopeError
+    from polylogue.cli.session_rows import SessionSelection
+
+    selection = SessionSelection((), None, "unknown", None)
+    monkeypatch.setattr(query_set_read, "query_session_selection", lambda *_a, **_k: selection)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_selection", lambda *_a, **_k: selection)
+    delivered = []
+    monkeypatch.setattr("polylogue.cli.read_views.base.deliver_content", lambda *_a, **_k: delivered.append(True))
+    runner = CliRunner()
+    with runner.isolation() as (out, err, _):
+        with pytest.raises(OperationEnvelopeError):
+            run_query_set_read_view(
+                _stub_env([]),
+                _request(limit=1),
+                view=view,
+                output_format="json",
+                fields=None,
+                destination="stdout",
+                out_path=None,
+            )
+        assert out.getvalue() == b""
+        assert err.getvalue() == b""
+    assert delivered == []
+    with pytest.raises(OperationEnvelopeError):
+        selection.finish()

@@ -400,8 +400,14 @@ def test_file_stage_pass_preserves_uninspected_session_debt(tmp_path: Path) -> N
     path = tmp_path / "session.jsonl"
     for stage in ("lineage_prefix_recompose", "hook_paste_enrichment", "independent_stage"):
         cursor.record_convergence_debt(stage=stage, subject_type="session_id", subject_id="child", error="owed")
-    lineage = make_lineage_prefix_recompose_stage(tmp_path / "index.db")
-    states, _ = DaemonConverger([lineage]).converge_batch([path])
+    from polylogue.core.compute import BoundedComputeAdapter
+
+    compute = BoundedComputeAdapter(max_workers=1)
+    try:
+        lineage = make_lineage_prefix_recompose_stage(tmp_path / "index.db", compute_adapter=compute)
+        states, _ = DaemonConverger([lineage]).converge_batch([path])
+    finally:
+        compute.shutdown(wait=True)
     record_convergence_outcomes(
         cursor,
         ((path, convergence_debt_from_states([path], states)),),

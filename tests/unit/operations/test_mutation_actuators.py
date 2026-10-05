@@ -214,17 +214,9 @@ class TestSessionExcisionActuator:
         assert plan.context["source_marker_inputs_accepted"] == 0
         assert plan.context["marker_input_digests"] == [marker.payload_sha256]
 
-        executor = OperationExecutor(archive_root=archive_root)
-        authorization = executor.authorize(
-            actuator,
-            plan,
-            actor="user:test",
-            role="write",
-            capability="archive.excise_session",
-            confirmation_strength="confirm_flag",
-        )
-        receipt = executor.execute(actuator, plan, authorization, args)
-        domain_receipt = cast("dict[str, object]", receipt.domain_receipt)
+        from tests.infra.excision_execution import execute_excision
+
+        domain_receipt = execute_excision(archive_root, session_id, reason="r", actor="user:test")
         counts = cast("dict[str, int]", domain_receipt["counts"])
         assert counts["source_marker_inputs_pending"] == 1
         assert domain_receipt["marker_input_digests"] == [marker.payload_sha256]
@@ -1265,7 +1257,7 @@ def _seed_raw_authority_blocker(
     real ``raw_sessions`` row a non-frontier resolution needs to replan it.
 
     ``frontier`` seeds a ``frontier_obligation``-kind blocker: the current
-    frontier plan shape ``_reconcile_frontier_obligations`` writes. Without
+    frontier plan shape the prepared inspector writes. Without
     it the row is a ``stale_plan`` -- a durable snapshot predating that shape,
     which the resolver re-derives from live evidence instead of trusting.
     """
@@ -1622,175 +1614,157 @@ class TestBlackboardPostActuator:
 
 class TestBlockerResolveActuator:
     def test_prepare_finds_a_real_unresolved_blocker(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-prepare",
-            plan_id="raw-replay:prepare-plan",
-            observed_pass_id="raw-authority-frontier-pass:prepare",
+        root = tmp_path / "archive"
+
+        def check(args):
+            plan = BlockerResolveActuator().prepare(args)
+            assert plan.target_refs == ("raw-authority-blocker:blocker-prepare",)
+            assert plan.context["kind"] == "stale_plan"
+            with sqlite3.connect(root / "source.db") as conn:
+                assert (
+                    conn.execute(
+                        "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-prepare",)
+                    ).fetchone()[0]
+                    is None
+                )
+
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-prepare",
+                "plan_id": "raw-replay:prepare-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:prepare",
+            },
+            lambda phase: phase("blocker-prepare", "ack", check),
         )
-
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-prepare", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.target_refs == ("raw-authority-blocker:blocker-prepare",)
-        assert plan.context["kind"] == "stale_plan"
-        # PREPARE performed zero mutation.
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            resolved = conn.execute(
-                "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-prepare",)
-            ).fetchone()[0]
-        assert resolved is None
 
     def test_prepare_on_unknown_blocker_yields_empty_plan(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
+        def check(args):
+            plan = BlockerResolveActuator().prepare(args)
+            assert plan.target_refs == ()
+            assert plan.context["found"] is False
 
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="does-not-exist", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.target_refs == ()
-        assert plan.context["found"] is False
+        _run_prepared_blocker_case(tmp_path / "archive", None, lambda phase: phase("does-not-exist", "ack", check))
 
     def test_execute_resolves_and_reopens_replanning(self, tmp_path: Path) -> None:
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-execute",
-            plan_id="raw-replay:execute-plan",
-            observed_pass_id="raw-authority-frontier-pass:execute",
-        )
+        root = tmp_path / "archive"
 
-        actuator = BlockerResolveActuator()
-        executor = OperationExecutor()
-        args = BlockerResolveArgs(
-            archive_root=archive_root, blocker_id="blocker-execute", resolution="current path is authoritative"
-        )
-        plan = executor.prepare(actuator, args)
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
-        )
-        receipt = executor.execute(actuator, plan, authorization, args)
+        def check(args):
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            receipt = executor.execute(actuator, plan, authorization, args)
+            assert receipt.status == "applied"
 
-        assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "source.db") as conn:
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-execute",
+                "plan_id": "raw-replay:execute-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:execute",
+            },
+            lambda phase: phase("blocker-execute", "current path is authoritative", check),
+        )
+        with sqlite3.connect(root / "source.db") as conn:
             row = conn.execute(
-                "SELECT resolved_at_ms, resolution FROM raw_authority_blockers WHERE blocker_id = ?",
-                ("blocker-execute",),
+                "SELECT resolved_at_ms,resolution FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-execute",)
             ).fetchone()
-        assert row[0] is not None
-        assert "current path is authoritative" in str(row[1])
+        assert row[0] is not None and "current path is authoritative" in str(row[1])
 
     def test_role_only_authorize_refuses(self, tmp_path: Path) -> None:
-        """Contrast with the reversible-class actuators: reset-class needs confirm_flag."""
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-ac4-contrast",
-            plan_id="raw-replay:ac4-contrast-plan",
-            observed_pass_id="raw-authority-frontier-pass:ac4-contrast",
-        )
+        """The reset-class actuator still requires confirm_flag authorization."""
 
-        actuator = BlockerResolveActuator()
-        executor = OperationExecutor()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-ac4-contrast", resolution="ack")
-        plan = executor.prepare(actuator, args)
-        with pytest.raises(ConfirmationRequiredError):
-            executor.authorize(
-                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
-            )
+        def check(args):
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = executor.prepare(actuator, args)
+            with pytest.raises(ConfirmationRequiredError):
+                executor.authorize(
+                    actuator, plan, actor="test", role="write", capability="test", confirmation_strength="role_only"
+                )
+
+        _run_prepared_blocker_case(
+            tmp_path / "archive",
+            {
+                "blocker_id": "blocker-ac4-contrast",
+                "plan_id": "raw-replay:ac4-contrast-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:ac4-contrast",
+            },
+            lambda phase: phase("blocker-ac4-contrast", "ack", check),
+        )
 
     def test_concurrent_resolution_between_prepare_and_execute_raises_plan_stale(self, tmp_path: Path) -> None:
-        """TOCTOU: another actor resolving the same blocker between PREPARE and
-        EXECUTE must be caught by the executor's fresh-PREPARE revalidation,
-        not silently double-applied."""
-        from polylogue.storage.raw_authority import resolve_raw_authority_blocker
-
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-stale",
-            plan_id="raw-replay:stale-plan",
-            observed_pass_id="raw-authority-frontier-pass:stale",
-        )
-
+        """A real intervening acknowledgement invalidates the original prepared plan."""
         actuator = BlockerResolveActuator()
         executor = OperationExecutor()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-stale", resolution="ack")
-        plan = executor.prepare(actuator, args)
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+
+        def prepare(args):
+            plan = executor.prepare(actuator, args)
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            return plan, authorization
+
+        def exercise(phase):
+            plan, authorization = phase("blocker-stale", "ack", prepare)
+
+            def acknowledge(args):
+                intervening, token = prepare(args)
+                assert executor.execute(actuator, intervening, token, args).status == "applied"
+
+            phase("blocker-stale", "resolved elsewhere first", acknowledge)
+
+            def stale(args):
+                with pytest.raises(PlanStaleError):
+                    executor.execute(actuator, plan, authorization, args)
+
+            phase("blocker-stale", "ack", stale)
+
+        _run_prepared_blocker_case(
+            tmp_path / "archive",
+            {
+                "blocker_id": "blocker-stale",
+                "plan_id": "raw-replay:stale-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:stale",
+            },
+            exercise,
         )
-
-        # A concurrent actor resolves the same blocker out-of-band.
-        resolve_raw_authority_blocker(archive_root, "blocker-stale", resolution="resolved elsewhere first")
-
-        with pytest.raises(PlanStaleError):
-            executor.execute(actuator, plan, authorization, args)
 
     def test_frontier_obligation_resolves_with_no_extra_operator_authority(self, tmp_path: Path) -> None:
-        """Every frontier blocker resolves through the one declared mutation.
+        """The original frontier obligation needs no second judgment or assertion contract."""
+        root = tmp_path / "archive"
 
-        polylogue-6kur deleted the ``frontier_judgment`` kind along with the
-        conflicting-authority state that was its only producer: an operator
-        judgment used to promote a blocked plan into an "executable successor"
-        that nothing executed. ``kind`` now only describes how the resolver
-        reads the stored snapshot, and no kind grants an extra effect.
+        def check(args):
+            actuator = BlockerResolveActuator()
+            executor = OperationExecutor()
+            plan = actuator.prepare(args)
+            assert plan.context["kind"] == "frontier_obligation"
+            authorization = executor.authorize(
+                actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
+            )
+            assert executor.execute(actuator, plan, authorization, args).status == "applied"
 
-        Anti-vacuity: restoring a second resolution contract (an accepted
-        assertion id plus a typed disposition, demanded for one blocker class)
-        makes the ``frontier_obligation`` assertion or the execute below red
-        for blockers that land in that class.
-        """
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir()
-        with ArchiveStore(archive_root):
-            pass
-        _seed_raw_authority_blocker(
-            archive_root,
-            blocker_id="blocker-obligation",
-            plan_id="raw-replay:obligation-plan",
-            observed_pass_id="raw-authority-frontier-pass:obligation",
-            frontier=True,
-            reason="missing bytes require reacquisition",
+        _run_prepared_blocker_case(
+            root,
+            {
+                "blocker_id": "blocker-obligation",
+                "plan_id": "raw-replay:obligation-plan",
+                "observed_pass_id": "raw-authority-frontier-pass:obligation",
+                "frontier": True,
+                "reason": "missing bytes require reacquisition",
+            },
+            lambda phase: phase("blocker-obligation", "ack", check),
         )
-
-        actuator = BlockerResolveActuator()
-        args = BlockerResolveArgs(archive_root=archive_root, blocker_id="blocker-obligation", resolution="ack")
-        plan = actuator.prepare(args)
-
-        assert plan.context["kind"] == "frontier_obligation"
-
-        # And it resolves without an assertion id, exactly like
-        # resolve_raw_authority_blocker allows for non-judgment frontier
-        # obligations.
-        executor = OperationExecutor()
-        authorization = executor.authorize(
-            actuator, plan, actor="test", role="write", capability="test", confirmation_strength="confirm_flag"
-        )
-        receipt = executor.execute(actuator, plan, authorization, args)
-        assert receipt.status == "applied"
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            resolved = conn.execute(
-                "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?", ("blocker-obligation",)
-            ).fetchone()[0]
-        assert resolved is not None
+        with sqlite3.connect(root / "source.db") as conn:
+            assert (
+                conn.execute(
+                    "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id=?", ("blocker-obligation",)
+                ).fetchone()[0]
+                is not None
+            )
 
 
 class TestListUnresolvedRawAuthorityBlockersPagination:
@@ -2760,27 +2734,19 @@ def test_seam_keeps_a_recreated_tier_and_clears_sidecars_of_a_vanished_one(tmp_p
 
 
 @pytest.mark.parametrize("user_reference", ["none", "deleted_target_assertion", "surviving_evidence"])
-def test_audited_excision_recovery_keeps_exact_removal_authority(tmp_path: Path, user_reference: str) -> None:
-    from polylogue.operations.audit import AuditRepository
-    from polylogue.operations.mutation_transaction import ReplayHandles, resolve_interrupted_operation
+def test_audited_excision_recovery_keeps_exact_removal_authority(
+    tmp_path: Path, user_reference: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations.mutation_transaction import RecoveryDeferredError
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from polylogue.storage.sqlite.reference_seal import ReferenceSealError, _PreparedExcisionEmbeddingsChild
     from polylogue.storage.sqlite.write_lease import permitted_session_removals, write_lease
+    from tests.infra.excision_embeddings import seed_excision_session
+    from tests.infra.excision_execution import execute_excision, recover_excision
 
-    session_id = _seed_archive_session(tmp_path, native_id="recorded-excision-recovery")
-    args = SessionExcisionArgs(tmp_path, session_id, "recorded reason", "user:recorded", False)
-    binding = runtime_operation_binding(SessionExcisionActuator())
-    principal = MutationPrincipal("user:recorded", frozenset({"archive.excise_session"}), "api", "write")
-    executor = OperationExecutor.for_archive_root(tmp_path)
-    preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=tmp_path)
-    authorization = executor.authorize_bound(binding, preview, principal)
-    started = executor.begin_bound(binding, preview, authorization, args)
-    assert started.operation_id is not None
-    audit = AuditRepository.for_archive_root(tmp_path)
-    operations = audit.nonterminal_operations_overlapping(started.plan.target_refs)
-    operation = next(item for item in operations if item.operation_id == started.operation_id)
+    session_id = seed_excision_session(tmp_path, native_id="recorded-excision-recovery", with_embedding=True)
     if user_reference != "none":
-        from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
-
-        survivor = _seed_archive_session(tmp_path, native_id="recovery-survivor")
+        survivor = seed_excision_session(tmp_path, native_id="recovery-survivor")
         with sqlite3.connect(tmp_path / "user.db") as user:
             upsert_assertion(
                 user,
@@ -2793,30 +2759,100 @@ def test_audited_excision_recovery_keeps_exact_removal_authority(tmp_path: Path,
                 evidence_refs=(f"session:{session_id}",),
                 now_ms=1,
             )
-    handles = ReplayHandles(tmp_path)
-    try:
-        # Exercise the actual recorded custom recovery wrapper. The fixture
-        # selects its begun operation explicitly; it does not fake process death.
-        resolution = resolve_interrupted_operation(audit, handles, operation)
-        refused = user_reference == "surviving_evidence"
-        assert resolution.outcome == ("replay-failed" if refused else "complete")
-        if refused:
-            assert "ReferenceSealError" in resolution.detail
-        else:
-            assert resolution.receipt is not None and resolution.receipt.affected_count == 1
-        assert audit.operation_plan(started.operation_id).plan_hash == started.plan.plan_hash
-        with write_lease("test.recovery-terminal-permission", archive_root=tmp_path):
-            assert permitted_session_removals(archive_root=tmp_path) == frozenset()
-    finally:
-        handles.close()
+
+    class RecoveryBoundaryError(Exception):
+        pass
+
+    interruption = RecoveryBoundaryError("actual Source commit before paid commit")
+    original_apply = _PreparedExcisionEmbeddingsChild.apply
+    reached = False
+
+    def stop_before_paid(child: _PreparedExcisionEmbeddingsChild) -> None:
+        nonlocal reached
+        if not reached:
+            reached = True
+            with sqlite3.connect(tmp_path / "source.db") as source:
+                assert source.execute(
+                    "SELECT count(*) FROM raw_sessions WHERE source_path='/fake/recorded-excision-recovery.jsonl'"
+                ).fetchone() == (0,)
+            raise interruption
+        original_apply(child)
+
+    monkeypatch.setattr(_PreparedExcisionEmbeddingsChild, "apply", stop_before_paid)
+    refused = user_reference == "surviving_evidence"
+    if refused:
+        with pytest.raises(ReferenceSealError):
+            execute_excision(tmp_path, session_id, reason="recorded reason", actor="user:recorded")
+        assert not reached
+    else:
+        with pytest.raises(RecoveryBoundaryError) as caught:
+            execute_excision(tmp_path, session_id, reason="recorded reason", actor="user:recorded")
+        assert caught.value is interruption
+        assert reached
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        original_attempts = audit.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall()
+        assert len(original_attempts) == 1
+        assert audit.execute("SELECT status FROM operation_runs").fetchall() == [("interrupted",)]
+    if refused:
+        with pytest.raises(RecoveryDeferredError):
+            recover_excision(tmp_path)
+    else:
+        recover_excision(tmp_path)
+        recover_excision(tmp_path)
+    with sqlite3.connect(tmp_path / "audit.db") as audit:
+        assert audit.execute("SELECT operation_id,attempt_id FROM operation_attempts").fetchall() == original_attempts
+        assert audit.execute("SELECT status FROM operation_runs").fetchall() == [
+            ("interrupted" if refused else "completed",)
+        ]
+    with write_lease("test.recovery-terminal-permission", archive_root=tmp_path):
+        assert permitted_session_removals(archive_root=tmp_path) == frozenset()
     with sqlite3.connect(tmp_path / "index.db") as index:
-        exists = index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-    assert (exists is not None) is (user_reference == "surviving_evidence")
+        exists = index.execute("SELECT 1 FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    assert (exists is not None) is refused
     with sqlite3.connect(tmp_path / "user.db") as user:
         assertion = user.execute(
-            "SELECT evidence_refs_json FROM assertions WHERE assertion_id = ?", ("recovery-protection",)
+            "SELECT evidence_refs_json FROM assertions WHERE assertion_id='recovery-protection'"
         ).fetchone()
-    if user_reference == "surviving_evidence":
+    if refused:
         assert assertion is not None and json.loads(assertion[0]) == [f"session:{session_id}"]
     else:
         assert assertion is None
+    with sqlite3.connect(tmp_path / "embeddings.db") as paid:
+        assert paid.execute("SELECT count(*) FROM message_embeddings_meta").fetchone() == (int(refused),)
+        assert paid.execute("SELECT count(*) FROM excision_embedding_completions").fetchone() == (int(not refused),)
+
+
+def _run_prepared_blocker_case(archive_root, seed, work):
+    """Run the original actuator law on a real supplied preparation/writer owner."""
+    import asyncio
+
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.frontier_inspection import prepared_frontier_blocker_acknowledgement
+    from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run():
+        def initialize():
+            bootstrap_archive_root(archive_root)
+            if seed is not None:
+                _seed_raw_authority_blocker(archive_root, **seed)
+
+        await run_archive_fixture_write(archive_root, initialize)
+        async with prepared_live_convergence_owner(archive_root) as owner:
+
+            def exercise():
+                def phase(blocker_id, resolution, assertion):
+                    with prepared_frontier_blocker_acknowledgement(
+                        archive_root,
+                        blocker_id,
+                        resolution=resolution,
+                        input_demand=owner._compute_adapter.amend_current_input_demand,
+                    ) as prepared:
+                        args = BlockerResolveArgs(archive_root, blocker_id, resolution, prepared)
+                        return admit_stage_write("fixture.blocker.actuator", lambda: assertion(args))
+
+                return work(phase)
+
+            return await owner.run_convergence_sync("fixture.blocker.law", exercise)
+
+    return asyncio.run(run())

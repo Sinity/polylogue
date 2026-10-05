@@ -4,8 +4,10 @@ The daemon has one SQLite publication owner, but reads and pure preparation are
 allowed to run concurrently.  This module is the one process-local seam for
 that work.
 
-Admission is finite in work units and estimated bytes, and every unit carries
-an admission class.  A class never takes the units or worker slots another
+Admission is finite in work units and byte concurrency charge, and every unit
+carries an admission class. Fixed-input work declares its actual input bytes;
+dependency-discovering preparation explicitly reserves exclusive byte admission
+and amends its accounted input bytes before hydration.  A class never takes the units or worker slots another
 class has reserved, so interactive reads keep headroom while bulk work runs and
 background work keeps a slot while interactive load saturates the rest.  A
 cancelled read interrupts its SQLite connection, leaves its queue before it can
@@ -14,14 +16,16 @@ start, and returns its reservation exactly once.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import threading
 from builtins import BaseExceptionGroup
 from collections import deque
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from time import monotonic
 from typing import Generic, Literal, TypeVar, cast
 
@@ -143,7 +147,13 @@ class ClassAdmissionSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class AdmissionSnapshot:
-    """Safe operational counters for status and benchmark attribution."""
+    """Operational concurrency charge and original input bytes accounted so far.
+
+    ``active_input_bytes`` and ``queued_input_bytes`` are monotone input
+    measurements while their reservations live, not forecasts of final input
+    or parsed memory. An exclusive unit can begin before discovering any
+    input, already holding its full ``used_bytes`` concurrency charge.
+    """
 
     capacity_units: int
     used_units: int
@@ -156,6 +166,9 @@ class AdmissionSnapshot:
     capacity_slots: int = 0
     classes: tuple[ClassAdmissionSnapshot, ...] = ()
     retained_sql_settlements: tuple[RetainedSQLSettlement, ...] = ()
+    active_input_bytes: int = 0
+    queued_input_bytes: int = 0
+    exclusive_byte_units: int = 0
 
     @property
     def queued(self) -> int:
@@ -187,6 +200,9 @@ class AdmissionSnapshot:
             "queued_units": self.queued_units,
             "queued_bytes": self.queued_bytes,
             "active_units": self.active_units,
+            "active_input_bytes": self.active_input_bytes,
+            "queued_input_bytes": self.queued_input_bytes,
+            "exclusive_byte_units": self.exclusive_byte_units,
             "rejected": self.rejected,
             "capacity_slots": self.capacity_slots,
             "background_max_wait_s": self.background_max_wait_s,
@@ -276,6 +292,33 @@ class SubmittedOperation(Generic[T]):
     future: Future[T]
     cancellation: CancellationHandle
     _task: _Task | None = None
+
+    async def wait(self) -> T:
+        """Await the physical result, retaining cancellation through SQL settlement."""
+        wrapped = asyncio.wrap_future(self.future)
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(wrapped)
+            except asyncio.CancelledError as failure:
+                if wrapped.cancelled():
+                    raise cancelled or failure from None
+                if cancelled is None:
+                    cancelled = failure
+                self.cancellation.cancel()
+                self.retry_sql_settlement()
+                continue
+            except BaseException as failure:
+                if cancelled is not None:
+                    if isinstance(failure, DaemonOperationCancelled):
+                        raise cancelled from failure
+                    raise BaseExceptionGroup(
+                        "read cancellation and physical settlement failed", [cancelled, failure]
+                    ) from None
+                raise
+            if cancelled is not None:
+                raise cancelled
+            return result
 
     def retry_sql_settlement(self) -> None:
         """Request cleanup on this operation's physical creator worker."""
@@ -370,12 +413,12 @@ def capture_compute_bridge() -> Callable[[], contextlib.AbstractContextManager[N
             raise
         finally:
             try:
-                failure = adapter._settle_native_sql(task, preserved_native_owners=preserved)
-                if failure is not None:
+                cleanup_failure = adapter._settle_native_sql(task, preserved_native_owners=preserved)
+                if cleanup_failure is not None:
                     if primary is not None:
-                        primary.add_note(f"bridge native cleanup failed: {failure!r}")
+                        primary.add_note(f"bridge native cleanup failed: {cleanup_failure!r}")
                     else:
-                        raise failure
+                        raise cleanup_failure
             finally:
                 for name, value in prior.items():
                     if value is None:
@@ -391,8 +434,11 @@ class _Task:
     __slots__ = (
         "admission_class",
         "bytes",
+        "input_demand_bytes",
+        "exclusive_bytes",
         "cancellation",
         "context",
+        "creator_thread",
         "function",
         "future",
         "queue_delay_s",
@@ -414,15 +460,20 @@ class _Task:
         admission_class: str,
         units: int,
         estimated_bytes: int,
+        input_demand_bytes: int,
+        exclusive_bytes: bool,
         slots: int,
     ) -> None:
         self.function = function
         self.context = context
+        self.creator_thread: threading.Thread | None = None
         self.future = future
         self.cancellation = cancellation
         self.admission_class = admission_class
         self.units = units
         self.bytes = estimated_bytes
+        self.input_demand_bytes = input_demand_bytes
+        self.exclusive_bytes = exclusive_bytes
         self.slots = slots
         self.queued_at = monotonic()
         self.queue_delay_s = 0.0
@@ -475,6 +526,9 @@ class BoundedComputeAdapter:
         self._used_bytes = 0
         self._active_units = 0
         self._active_bytes = 0
+        self._active_input_bytes = 0
+        self._used_input_bytes = 0
+        self._exclusive_byte_units = 0
         self._active_slots = 0
         self._rejected = 0
         self._shutdown = False
@@ -574,13 +628,17 @@ class BoundedComputeAdapter:
             if other != group
         )
 
-    def _acquire_locked(self, state: _ClassState, units: int, estimated_bytes: int) -> None:
+    def _acquire_locked(
+        self, state: _ClassState, units: int, estimated_bytes: int, *, input_demand_bytes: int, exclusive_bytes: bool
+    ) -> None:
         group_used_units = self._group_used_units(state.admission_class)
         other_reserved_units = self._unmet_other_unit_reserves(state.admission_class)
         if (
             self._used_units + units > self.capacity_units - other_reserved_units
             or self._used_bytes + estimated_bytes > self.capacity_bytes
             or group_used_units + units > state.ceiling_units
+            or (exclusive_bytes and (self._used_input_bytes > 0 or self._exclusive_byte_units > 0))
+            or (input_demand_bytes > 0 and self._exclusive_byte_units > 0)
         ):
             state.rejected += 1
             self._rejected += 1
@@ -591,8 +649,41 @@ class BoundedComputeAdapter:
             )
         self._used_units += units
         self._used_bytes += estimated_bytes
+        self._exclusive_byte_units += int(exclusive_bytes)
+        self._used_input_bytes += input_demand_bytes
         state.used_units += units
         state.admitted += 1
+
+    def require_current_creator(self) -> None:
+        """Require this reservation's actual creator for SQL-backed preparation."""
+        task: _Task | None = getattr(_CURRENT_COMPUTE, "task", None)
+        if (
+            getattr(_CURRENT_COMPUTE, "adapter", None) is not self
+            or task is None
+            or task.state != "running"
+            or task.creator_thread is not threading.current_thread()
+        ):
+            raise RuntimeError("preparation requires its admitted compute creator")
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        check_compute_cancelled()
+
+    def amend_current_input_demand(self, additional_bytes: int) -> None:
+        """Record original inputs before hydration inside exclusive byte admission.
+
+        The canonical input owner deduplicates its exact pinned coordinates.
+        This changes measured demand, never the already-held concurrency charge.
+        """
+        if type(additional_bytes) is not int or additional_bytes < 0:
+            raise ValueError("input demand amendment requires a nonnegative byte length")
+        self.require_current_creator()
+        task: _Task = _CURRENT_COMPUTE.task
+        if not task.exclusive_bytes:
+            raise RuntimeError("dependency-discovering preparation requires exclusive byte admission")
+        with self._lock:
+            task.input_demand_bytes += additional_bytes
+            self._active_input_bytes += additional_bytes
+            self._used_input_bytes += additional_bytes
 
     def submit(
         self,
@@ -601,6 +692,7 @@ class BoundedComputeAdapter:
         admission_class: AdmissionClass = "interactive-read",
         units: int = 1,
         estimated_bytes: int = 0,
+        exclusive_bytes: bool = False,
         cancellation: CancellationHandle | None = None,
     ) -> SubmittedOperation[T]:
         if admission_class not in self._classes:
@@ -611,11 +703,12 @@ class BoundedComputeAdapter:
                 admission_class=admission_class,
                 evidence={"units": units, "estimated_bytes": estimated_bytes},
             )
+        input_demand_bytes = estimated_bytes
         # A unit larger than the whole byte envelope reserves all of it, and
         # so runs with no other byte-holding work, instead of being refused:
         # the envelope bounds concurrency, not the size of an input the daemon
         # must eventually process.
-        estimated_bytes = min(estimated_bytes, self.capacity_bytes)
+        estimated_bytes = self.capacity_bytes if exclusive_bytes else min(estimated_bytes, self.capacity_bytes)
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
         if getattr(_CURRENT_COMPUTE, "adapter", None) is self:
@@ -626,6 +719,8 @@ class BoundedComputeAdapter:
             # the subunit settles before its synchronous completion.
             parent = _CURRENT_COMPUTE.cancellation
             parent_task = _CURRENT_COMPUTE.task
+            if exclusive_bytes and not parent_task.exclusive_bytes:
+                raise RuntimeError("nested preparation cannot acquire exclusive bytes inside ordinary admission")
 
             def run_nested() -> None:
                 preserved = capture_native_sql_owners()
@@ -665,6 +760,8 @@ class BoundedComputeAdapter:
             admission_class=admission_class,
             units=units,
             estimated_bytes=estimated_bytes,
+            input_demand_bytes=input_demand_bytes,
+            exclusive_bytes=exclusive_bytes,
             slots=min(units, self.max_workers),
         )
 
@@ -685,7 +782,9 @@ class BoundedComputeAdapter:
                         "requested_slots": min(units, self.max_workers),
                     },
                 )
-            self._acquire_locked(state, units, estimated_bytes)
+            self._acquire_locked(
+                state, units, estimated_bytes, input_demand_bytes=input_demand_bytes, exclusive_bytes=exclusive_bytes
+            )
             self._queues[admission_class].append(task)
             runnable = self._drain_locked()
 
@@ -705,7 +804,8 @@ class BoundedComputeAdapter:
         admission_class: AdmissionClass = "incremental-background",
         estimated_bytes: Callable[[InputT], int] = lambda _item: 0,
         discard_unconsumed: Callable[[T], None] | None = None,
-    ) -> Iterator[T]:
+        exclusive_bytes: bool = False,
+    ) -> Generator[T, None, None]:
         """Run pure units in input order through this adapter's admission.
 
         The window owns only its submitted operations, never the shared pool.
@@ -735,9 +835,10 @@ class BoundedComputeAdapter:
                         item = waiting_item[0]
                     try:
                         operation = self.submit(
-                            lambda item=item: function(item),
+                            partial(function, item),
                             admission_class=admission_class,
                             estimated_bytes=estimated_bytes(item),
+                            exclusive_bytes=exclusive_bytes,
                         )
                     except DaemonBackpressureError:
                         if not pending:
@@ -759,14 +860,15 @@ class BoundedComputeAdapter:
             cleanup_failures: list[BaseException] = []
             for operation in pending:
                 try:
-                    result = operation.future.result()
+                    unconsumed_result = operation.future.result()
                 except BaseException:
                     continue
-                if discard_unconsumed is not None:
-                    try:
-                        discard_unconsumed(result)
-                    except BaseException as exc:
-                        cleanup_failures.append(exc)
+                else:
+                    if discard_unconsumed is not None:
+                        try:
+                            discard_unconsumed(unconsumed_result)
+                        except BaseException as exc:
+                            cleanup_failures.append(exc)
             if cleanup_failures:
                 raise BaseExceptionGroup("compute result cleanup failed", cleanup_failures)
 
@@ -817,6 +919,7 @@ class BoundedComputeAdapter:
             task.queue_delay_s = monotonic() - task.queued_at
             self._active_units += task.units
             self._active_bytes += task.bytes
+            self._active_input_bytes += task.input_demand_bytes
             self._active_slots += task.slots
             state.active_units += task.units
             state.active_slots += task.slots
@@ -850,6 +953,7 @@ class BoundedComputeAdapter:
             return
 
         def run() -> None:
+            task.creator_thread = threading.current_thread()
             task.sql_observed_generation = task.sql_retry.generation()
             token = _CURRENT_CANCELLATION.set(task.cancellation)
             _CURRENT_COMPUTE.adapter = self
@@ -875,6 +979,7 @@ class BoundedComputeAdapter:
                 del _CURRENT_COMPUTE.cancellation
                 del _CURRENT_COMPUTE.task
                 _CURRENT_CANCELLATION.reset(token)
+                task.creator_thread = None
                 self._release(task, active=True)
             if failure is not None:
                 task.future.set_exception(failure)
@@ -961,10 +1066,13 @@ class BoundedComputeAdapter:
                 state.completed += 1
             self._used_units -= task.units
             self._used_bytes -= task.bytes
+            self._exclusive_byte_units -= int(task.exclusive_bytes)
+            self._used_input_bytes -= task.input_demand_bytes
             state.used_units -= task.units
             if active:
                 self._active_units -= task.units
                 self._active_bytes -= task.bytes
+                self._active_input_bytes -= task.input_demand_bytes
                 self._active_slots -= task.slots
                 state.active_units -= task.units
                 state.active_slots -= task.slots
@@ -1026,6 +1134,9 @@ class BoundedComputeAdapter:
                 capacity_slots=self.max_workers,
                 classes=classes,
                 retained_sql_settlements=tuple(entry.evidence for entry in self._sql_settlements.values()),
+                active_input_bytes=self._active_input_bytes,
+                queued_input_bytes=sum(task.input_demand_bytes for queue in self._queues.values() for task in queue),
+                exclusive_byte_units=self._exclusive_byte_units,
             )
 
     def shutdown(self, *, wait: bool = False, cancel_futures: bool = True) -> None:
@@ -1072,12 +1183,19 @@ def publish_compute_adapter(adapter: BoundedComputeAdapter) -> None:
     """Declare the already-owned adapter as this process's shared capacity."""
     global _SHARED_COMPUTE_ADAPTER
     with _SHARED_COMPUTE_LOCK:
+        if _SHARED_COMPUTE_ADAPTER is not None and _SHARED_COMPUTE_ADAPTER is not adapter:
+            raise RuntimeError("reset and physically settle the current compute owner before replacement")
         _SHARED_COMPUTE_ADAPTER = adapter
 
 
 def compute_adapter() -> BoundedComputeAdapter:
     """Return the shared compute capacity, creating the fallback exactly once."""
     global _SHARED_COMPUTE_ADAPTER
+    current = getattr(_CURRENT_COMPUTE, "adapter", None)
+    if current is not None:
+        if not isinstance(current, BoundedComputeAdapter):
+            raise TypeError("current compute owner is not a bounded adapter")
+        return current
     with _SHARED_COMPUTE_LOCK:
         if _SHARED_COMPUTE_ADAPTER is None:
             _SHARED_COMPUTE_ADAPTER = BoundedComputeAdapter(
@@ -1089,17 +1207,27 @@ def compute_adapter() -> BoundedComputeAdapter:
 
 
 def reset_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
-    """Drop the shared adapter so a new process scope can publish its own.
+    """Retire the shared owner only after its physical workers settle.
 
-    Returns the worker threads still alive after *join_timeout_s*.
+    Surviving workers remain owned by the published adapter; another reset
+    can retry settlement. Returns their names after *join_timeout_s*.
     """
     global _SHARED_COMPUTE_ADAPTER
     with _SHARED_COMPUTE_LOCK:
         adapter = _SHARED_COMPUTE_ADAPTER
-        _SHARED_COMPUTE_ADAPTER = None
-    if not isinstance(adapter, BoundedComputeAdapter):
+    if adapter is None:
         return ()
-    return adapter.close(join_timeout_s=join_timeout_s)
+    if not isinstance(adapter, BoundedComputeAdapter):
+        with _SHARED_COMPUTE_LOCK:
+            if _SHARED_COMPUTE_ADAPTER is adapter:
+                _SHARED_COMPUTE_ADAPTER = None
+        return ()
+    surviving = adapter.close(join_timeout_s=join_timeout_s)
+    if not surviving:
+        with _SHARED_COMPUTE_LOCK:
+            if _SHARED_COMPUTE_ADAPTER is adapter:
+                _SHARED_COMPUTE_ADAPTER = None
+    return surviving
 
 
 __all__ = [

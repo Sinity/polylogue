@@ -87,20 +87,12 @@ def message_from_record(
 ) -> Message:
     """Hydrate a Message domain model from a MessageRecord and attachment records."""
     # Domain messages expose semantic content blocks, not storage row identity.
-    # #1240: media_type is stored inside the block-metadata JSON (image/document
-    # blocks). Lift it back to the top-level for callers that still expect it.
     blocks = []
     for b in record.blocks:
         block_metadata = _parse_json_blob(b.metadata)
-        media_type: object = None
-        if isinstance(block_metadata, dict):
-            media_type = block_metadata.get("media_type")
         blocks.append(
             {
                 **BLOCKS_SPEC.domain_kwargs(b),
-                # Lifted out of the block-metadata JSON, so neither is a column
-                # projection the declaration can own.
-                "media_type": media_type,
                 "metadata": block_metadata,
                 "content_hash": b.content_hash,
             }

@@ -17,6 +17,7 @@ from polylogue.storage.cursor_state import CursorStatePayload
 from . import cursor as _cursor
 from .assembly import SidecarData, get_assembly_spec
 from .origin_specs import SourceClass, artifact_rule_for_path, recognize_source_class
+from .source_root_admission import SourceRootRefusedError, containing_archive_root, refuse_non_capture_source_root
 
 _SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
 _SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
@@ -61,7 +62,8 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
         source_census = census_source(root)
         antigravity_counts = source_census.counts
         disposition_counts: dict[SourceClass, int] = {
-            "session": antigravity_counts[AntigravitySourceRole.CONVERSATION_PROTOBUF],
+            "session": antigravity_counts[AntigravitySourceRole.CONVERSATION_PROTOBUF]
+            + antigravity_counts[AntigravitySourceRole.EXPORT_DOCUMENT],
             "non_session": antigravity_counts[AntigravitySourceRole.BRAIN_DOCUMENT]
             + antigravity_counts[AntigravitySourceRole.METADATA_SIDECAR],
             "unsupported": antigravity_counts[AntigravitySourceRole.UNKNOWN],
@@ -164,9 +166,11 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
     return provider is Provider.HERMES and path.suffix.lower() in _HERMES_SQLITE_EXTENSIONS
 
 
-def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
+def _walk_source_paths(
+    base: Path, *, provider: Provider = Provider.UNKNOWN, destination: Path | None = None
+) -> list[Path]:
     paths: list[Path] = []
-    for file_path in _iter_source_entries(base):
+    for file_path in _iter_source_entries(base, destination=destination):
         if not _is_supported_source_path(file_path, provider=provider):
             continue
         # Admission refuses symlinks, FIFOs, sockets, and other non-regular
@@ -185,11 +189,15 @@ def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> 
     return sorted(paths)
 
 
-def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | None = None) -> list[Path]:
+def _iter_source_entries(
+    base: Path, *, onerror: Callable[[OSError], None] | None = None, destination: Path | None = None
+) -> list[Path]:
     """Enumerate source files under the canonical traversal policy.
 
     Both admission and census use this helper so skipped directories and
-    follow-link behavior cannot drift between the two routes.
+    follow-link behavior cannot drift between the two routes. Nested foreign
+    archives are excluded before their files are offered; acquisition may
+    retain its own destination archive through the existing ownership law.
     """
     entries: list[Path] = []
     # Directory links are followed, so a linked export tree is acquired. A
@@ -205,6 +213,12 @@ def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | Non
     else:
         visited.add((base_stat.st_dev, base_stat.st_ino))
     for root, dirs, files in os.walk(base, followlinks=True, onerror=onerror):
+        if Path(root) != base and containing_archive_root(Path(root)) == Path(root):
+            try:
+                refuse_non_capture_source_root(Path(root), destination=destination)
+            except SourceRootRefusedError:
+                dirs[:] = []
+                continue
         descend: list[str] = []
         for directory in sorted(dirs):
             if directory in _SKIP_DIRS:
@@ -226,12 +240,12 @@ def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | Non
     return sorted(entries)
 
 
-def _resolve_source_paths(source: Source) -> list[Path]:
+def _resolve_source_paths(source: Source, *, destination: Path | None = None) -> list[Path]:
     if not source.path:
         return []
     base = source.path.expanduser()
     if base.is_dir():
-        return _walk_source_paths(base, provider=Provider.from_string(source.name))
+        return _walk_source_paths(base, provider=Provider.from_string(source.name), destination=destination)
     if base.is_file():
         return [base]
     return []
@@ -255,7 +269,7 @@ def _setup_source_walk(
     discover_sidecars: bool,
     blob_store: BlobStore | None = None,
 ) -> _SourceWalkSetup | None:
-    paths = _resolve_source_paths(source)
+    paths = _resolve_source_paths(source, destination=blob_store.root.parent if blob_store is not None else None)
     _cursor._initialize_cursor_state(cursor_state, paths)
     if not paths:
         return None

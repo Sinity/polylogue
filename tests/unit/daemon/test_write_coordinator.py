@@ -15,7 +15,7 @@ import textwrap
 import threading
 import time
 from builtins import BaseExceptionGroup
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import cast
 
@@ -2273,7 +2273,8 @@ async def test_cached_connection_settles_after_context_and_retains_failed_close(
     real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = arm_settlement(real_connect(*args, **kwargs))
+        handle = real_connect(*args, **kwargs)
+        assert isinstance(handle, SettlementConnection)
         handles.append(handle)
         return handle
 
@@ -2291,7 +2292,7 @@ async def test_cached_connection_settles_after_context_and_retains_failed_close(
 
     def failed_close() -> None:
         committed_after_context()
-        handles[-1].allow_cleanup.clear()
+        arm_settlement(handles[-1])
         try:
             cached._clear_connection_cache()
         except NativeConnectionSettlementError:
@@ -2399,9 +2400,8 @@ async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
     real_connect = cast(Callable[..., sqlite3.Connection], vars(cached)["connect_measured"])
 
     def controlled_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
-        handle = arm_settlement(real_connect(*args, **kwargs))
-        if handles:
-            handle.allow_cleanup.set()
+        handle = real_connect(*args, **kwargs)
+        assert isinstance(handle, SettlementConnection)
         handles.append(handle)
         return handle
 
@@ -2411,6 +2411,8 @@ async def test_cached_cleanup_attempts_later_handle_after_first_close_failure(
         for path in (root / "index.db", root / "scratch-index.db"):
             with cached.connection_context(path) as connection:
                 connection.execute("SELECT 1").fetchone()
+        assert len(handles) == 2
+        arm_settlement(handles[0])
         try:
             cached._clear_connection_cache()
         except NativeConnectionSettlementError:
@@ -2671,3 +2673,101 @@ async def test_coordinator_second_settlement_retries_original_last_grant_cleanup
         backend.request_sql_settlement()
         await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
         assert await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("actual async SQLite cleanup retains custody through canceled waiters")
+@pytest.mark.parametrize("post_close_failure", [False, True])
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_async_terminal_failure_classification_tracks_actual_physical_ownership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, post_close_failure: bool, cancelled: bool
+) -> None:
+    from polylogue.storage.sqlite import async_sqlite
+
+    root = tmp_path / "archive"
+    await asyncio.to_thread(initialize_active_archive_root, root)
+    coordinator = DaemonWriteCoordinator(archive_root=root)
+    backend = async_sqlite.SQLiteBackend(root / "index.db")
+    handles: list[SettlementConnection] = []
+    entered_cleanup = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    successor_called = False
+
+    async def leave_unsettled() -> None:
+        await backend.begin()
+        connection = backend._txn_conn
+        assert connection is not None
+
+        def arm_actual_admitted_connection() -> None:
+            native = connection._connection
+            assert native is not None
+            handles.append(arm_settlement(native))
+
+        execute_on_creator = cast(Callable[[Callable[[], None]], Awaitable[None]], connection._execute)
+        await execute_on_creator(arm_actual_admitted_connection)
+        with pytest.raises(BaseExceptionGroup) as original:
+            await backend.close()
+        assert len(original.value.exceptions) == 2
+        assert all(isinstance(error, OSError) for error in original.value.exceptions)
+
+    actual_close = backend.close
+
+    async def held_cleanup() -> None:
+        entered_cleanup.set()
+        await release_cleanup.wait()
+        await actual_close()
+        raise ValueError("synthetic failure after physical SQL settlement")
+
+    async def successor() -> None:
+        nonlocal successor_called
+        successor_called = True
+
+    try:
+        with pytest.raises(DaemonWriterSettlementError):
+            await coordinator.run("test.actual_async_initial_fault", leave_unsettled)
+        assert len(handles) == 1
+        assert handles[0].cleanup_started.is_set()
+        assert not archive_custody_available(root)
+        monkeypatch.setattr(backend, "close", held_cleanup)
+        if post_close_failure:
+            handles[0].allow_cleanup.set()
+        waiting = asyncio.create_task(coordinator.run("test.actual_async_cleanup", successor))
+        await asyncio.wait_for(entered_cleanup.wait(), timeout=5)
+        executions = tuple(coordinator._executions)
+        assert len(executions) == 1
+        assert coordinator.snapshot().unsettled_async_backends == 1
+        assert not successor_called
+        assert not archive_custody_available(root)
+        if cancelled:
+            waiting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiting
+            assert coordinator.snapshot().unsettled_async_backends == 1
+            assert not archive_custody_available(root)
+            assert not executions[0].done()
+        release_cleanup.set()
+        await asyncio.wait((executions[0],))
+        if post_close_failure:
+            with pytest.raises(ValueError):
+                executions[0].result()
+            assert coordinator.snapshot().unsettled_async_backends == 0
+            assert archive_custody_available(root)
+        else:
+            with pytest.raises(DaemonWriterSettlementError) as refused:
+                executions[0].result()
+            original_failure = refused.value.__cause__
+            assert isinstance(original_failure, BaseExceptionGroup)
+            assert len(original_failure.exceptions) == 2
+            assert all(isinstance(error, OSError) for error in original_failure.exceptions)
+            assert coordinator.snapshot().unsettled_async_backends == 1
+            assert not archive_custody_available(root)
+        if not cancelled:
+            with pytest.raises(ValueError if post_close_failure else DaemonWriterSettlementError):
+                await waiting
+        assert not successor_called
+    finally:
+        release_cleanup.set()
+        monkeypatch.setattr(backend, "close", actual_close)
+        for handle in handles:
+            handle.allow_cleanup.set()
+        assert await coordinator.shutdown(timeout=30.0)

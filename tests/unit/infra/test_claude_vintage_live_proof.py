@@ -26,6 +26,7 @@ def test_sanitized_pair_runs_the_real_route_and_emits_read_only_receipt(
 ) -> None:
     receipt = run_claude_vintage_live_proof(tmp_path / "archive")
 
+    assert receipt.schema_version == 2
     assert receipt.live_export_recovered is False
     assert receipt.confidence_gap == CONFIDENCE_GAP
     assert receipt.verdict == "equivalent"
@@ -42,10 +43,10 @@ def test_sanitized_pair_runs_the_real_route_and_emits_read_only_receipt(
     assert dict(receipt.route_counts) == {
         "ingest_sessions": 1,
         "ingest_messages": 3,
-        "backfill_scanned": 2,
-        "backfill_classified_full": 2,
-        "backfill_replayed_logical_sources": 1,
-        "backfill_quarantined": 0,
+        "membership_rows": 2,
+        "membership_applied": 1,
+        "membership_equivalent": 1,
+        "membership_quarantined": 0,
     }
     assert receipt.convergence_session_count == 1
 

@@ -10,7 +10,7 @@
 //   <out>/polylogue-browser-capture-<version>-chrome.zip
 //   <out>/polylogue-browser-capture-<version>-firefox.xpi
 //
-// Side effect: rewrites browser-extension/manifest.json + package.json
+// Side effect: rewrites browser-extension/manifest.json + package.json + package-lock.json
 // "version" fields to match the resolved version so the committed source
 // stays in sync with the published artifact. The Firefox artifact uses a
 // dedicated manifest with browser_specific_settings.gecko populated.
@@ -76,8 +76,10 @@ function normalizeChromeVersion(v) {
 function syncJsonVersion(path, version) {
   const original = readFileSync(path, "utf8");
   const data = JSON.parse(original);
-  if (data.version === version) return false;
+  const lockRoot = data.packages?.[""];
+  if (data.version === version && (!lockRoot || lockRoot.version === version)) return false;
   data.version = version;
+  if (lockRoot) lockRoot.version = version;
   // Preserve trailing newline if present.
   const serialized = JSON.stringify(data, null, 2) + (original.endsWith("\n") ? "\n" : "");
   writeFileSync(path, serialized);
@@ -165,6 +167,7 @@ with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
 }
 
 function main() {
+  execFileSync(process.execPath, [join(EXT_ROOT, "scripts/sync-sha256.mjs")], { stdio: "inherit" });
   const args = parseArgs(process.argv.slice(2));
   const rawVersion = args.version ?? readPyprojectVersion();
   const version = normalizeChromeVersion(rawVersion);
@@ -175,6 +178,7 @@ function main() {
   if (args.syncSource) {
     syncJsonVersion(manifestPath, version);
     syncJsonVersion(packagePath, version);
+    syncJsonVersion(join(EXT_ROOT, "package-lock.json"), version);
   }
 
   if (args.syncOnly) {

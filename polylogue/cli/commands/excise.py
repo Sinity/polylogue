@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, cast
 import click
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
+
     from polylogue.surfaces.payloads import MutationStatus
 
 from polylogue.cli.shared.types import AppEnv
@@ -55,6 +57,106 @@ def _emit(
         )
         return
     env.ui.console.print(plain_message)
+
+
+def _receipt_summary(session_id: str, domain_receipt: dict[str, object], reference: object) -> str:
+    """Render scalar receipt facts without opening the complete domain document."""
+    detail_message = (
+        f"Excised session {session_id}: {domain_receipt.get('counts', {})} "
+        f"(receipt: {domain_receipt.get('receipt_assertion_id', reference)})"
+    )
+    for field, description in (
+        ("cascaded_session_ids_count", "lineage-dependent sessions also excised"),
+        ("retained_hook_events_count", "hook events remain readable"),
+        ("retained_source_containers_count", "source containers retain bytes for other live sessions"),
+        ("shared_blob_hashes_count", "blobs retained for other live sessions"),
+    ):
+        count = domain_receipt.get(field)
+        if type(count) is not int or count < 0:
+            raise click.ClickException(f"Excision committed; invalid receipt summary field {field}.")
+        if count:
+            detail_message += f"; {count} {description}"
+    if domain_receipt.get("complete") is False:
+        detail_message += "; INCOMPLETE"
+    return detail_message
+
+
+def _emit_complete_receipt(env: AppEnv, result: dict[str, object], *, session_id: str, affected_count: int) -> None:
+    """Verify the entire request-owned document before emitting any machine bytes."""
+    import codecs
+    import hashlib
+
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationKernelError,
+        iter_configured_operation_result,
+    )
+    from polylogue.core.staged_content import staged_binary_content
+    from polylogue.surfaces.payloads import MutationResultPayload
+
+    document = result.get("result_document")
+    summary = result.get("result")
+    reference = summary.get("receipt_assertion_id") if isinstance(summary, dict) else None
+    reference = reference or result.get("receipt_ref")
+    request_id = document.get("request_id") if isinstance(document, dict) else None
+    effect = result.get("effect")
+    emitting = False
+    try:
+        if not isinstance(document, dict):
+            raise OperationFailedError("operation_result_delivery_failed", "missing complete receipt document")
+        length = document.get("byte_length")
+        expected_digest = document.get("sha256")
+        if (
+            not isinstance(request_id, str)
+            or not request_id
+            or type(length) is not int
+            or length < 0
+            or not isinstance(expected_digest, str)
+            or len(expected_digest) != 64
+        ):
+            raise OperationFailedError("operation_result_delivery_failed", "invalid receipt document identity")
+        with staged_binary_content() as stage:
+            digest = hashlib.sha256()
+            decoder = codecs.getincrementaldecoder("utf-8")("strict")
+            received = 0
+            chunks = cast("Generator[bytes, None, None]", iter_configured_operation_result(env.config, document))
+            try:
+                for chunk in chunks:
+                    decoder.decode(chunk)
+                    received += len(chunk)
+                    digest.update(chunk)
+                    stage.write(chunk)
+            finally:
+                chunks.close()
+            decoder.decode(b"", final=True)
+            if not received or received != length or digest.hexdigest() != expected_digest:
+                raise OperationFailedError("operation_result_delivery_failed", "incomplete or corrupt receipt document")
+            stage.seek(0)
+            prefix = MutationResultPayload(
+                status="ok",
+                operation="excise",
+                session_id=session_id,
+                affected_count=affected_count,
+                detail=str(reference) if reference else None,
+            ).to_json(exclude_none=True)
+            emitting = True
+            click.echo(prefix[:-1].encode("utf-8") + b',"domain_receipt":', nl=False)
+            while chunk := stage.read(64 * 1024):
+                click.echo(chunk, nl=False)
+            click.echo(b"}")
+    except (OperationKernelError, OSError, ValueError, KeyboardInterrupt) as exc:
+        if emitting:
+            # stdout cannot be rolled back; never append an error document to a partial write.
+            raise
+        failure = OperationFailedError(
+            "operation_result_delivery_cancelled"
+            if isinstance(exc, KeyboardInterrupt)
+            else "operation_result_delivery_failed",
+            f"Excision completed with {effect} (receipt {reference}); complete receipt delivery failed. Do not repeat the excision.",
+            {"reference": reference, "effect_committed": effect == "committed", "effect": effect},
+            request_id=request_id if isinstance(request_id, str) else None,
+        )
+        raise failure from exc
 
 
 @click.command("excise")
@@ -338,44 +440,21 @@ def excise_command(
     domain_receipt = domain_receipt if isinstance(domain_receipt, dict) else {}
     affected_raw = result.get("affected_count")
     affected_count = affected_raw if isinstance(affected_raw, int) else 0
-    cascaded_session_ids: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("cascaded_session_ids", ()))
-    )
-    detail_message = (
-        f"Excised session {session_id}: {domain_receipt.get('counts', {})} "
-        f"(receipt: {domain_receipt.get('receipt_assertion_id', result.get('reference', 'unknown'))})"
-    )
-    if cascaded_session_ids:
-        detail_message += f"; also excised lineage-dependent session(s): {', '.join(cascaded_session_ids)}"
-    retained_hook_events: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("retained_hook_events", ()))
-    )
-    if retained_hook_events:
-        # An excision that leaves session-addressable payloads behind is a
-        # partial result. Say so on the success line rather than letting the
-        # per-tier counts read as the whole job.
-        detail_message += (
-            f"; INCOMPLETE: {len(retained_hook_events)} hook event(s) for this session were NOT excised "
-            "and remain readable in source.db"
-        )
-    retained_containers: tuple[str, ...] = tuple(
-        str(item) for item in cast("list[object]", domain_receipt.get("retained_source_containers", ()))
-    )
-    if retained_containers:
-        # The container blob still holds this session's bytes because another
-        # session's member of the same export is still live (polylogue-q4f6d).
-        detail_message += (
-            f"; INCOMPLETE: {len(retained_containers)} source container(s) still hold this session's "
-            f"bytes for other live sessions: {', '.join(retained_containers)}"
-        )
-    shared_blobs = cast("list[object]", domain_receipt.get("shared_blob_hashes", ()))
-    if shared_blobs:
-        # Excision forgets this session, not the other sessions that share a
-        # content-addressed blob with it; those blobs stay theirs, unmarked.
-        detail_message += (
-            f"; kept {len(shared_blobs)} blob(s) another live session still references "
-            "(excising that session too forgets them)"
-        )
+    if output_format == "json":
+        from polylogue.cli.operation_kernel import OperationFailedError
+        from polylogue.cli.shared.machine_errors import MachineError
+
+        try:
+            _emit_complete_receipt(env, result, session_id=session_id, affected_count=affected_count)
+        except OperationFailedError as exc:
+            MachineError(
+                code=exc.code,
+                message=str(exc),
+                command=("ops", "excise"),
+                details={**exc.data, "request_id": exc.request_id, "operation": "operation.result"},
+            ).emit()
+        return
+    detail_message = _receipt_summary(session_id, domain_receipt, result.get("receipt_ref"))
     _emit(
         env,
         status="ok",
@@ -383,7 +462,7 @@ def excise_command(
         affected_count=affected_count,
         output_format=output_format,
         plain_message=detail_message,
-        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or str(result.get("reference", "")),
+        detail=cast(str | None, domain_receipt.get("receipt_assertion_id")) or str(result.get("receipt_ref", "")),
     )
 
 

@@ -894,3 +894,23 @@ def test_archive_profile_preserves_composition_without_private_dimension_values(
     write_archive_workload_profile(tmp_path / "staged", profile)
     assert path.read_bytes() == first_bytes
     assert json.loads(gzip.decompress(first_bytes)) == profile
+
+
+def test_canonical_archive_measurements_refuse_missing_columns_instead_of_emitting_partial_profiles() -> None:
+    from polylogue.schemas.generation.archive_workload_profile import (
+        _anonymous_cardinality_profile,
+        _mix,
+        _scan_table_profile,
+    )
+
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE sessions(session_id TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('neutral')")
+        for observe in (
+            lambda: _mix(conn, "sessions", "origin"),
+            lambda: _scan_table_profile(conn, "sessions", mix_columns=("origin",)),
+            lambda: _scan_table_profile(conn, "sessions", length_columns=("title",)),
+            lambda: _anonymous_cardinality_profile(conn, table="sessions", column="git_branch"),
+        ):
+            with pytest.raises(sqlite3.OperationalError):
+                observe()

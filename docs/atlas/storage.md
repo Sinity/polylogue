@@ -30,6 +30,37 @@ selected path without inspecting every source row
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
 `polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
+Prepared frontier inspection uses the resident preparation owner and the same
+original Source, Index and Ops inputs through publication. Source migration
+005 and the derived-tier DDL journal changes to the dependencies of accepted
+heads; an Ops coverage mark binds the measured journal watermarks and physical
+tier identity. A current mark certifies relational coverage. Explicit
+maintenance inspection also checks physical blob fingerprints through the
+existing verified-byte cache, because external blob changes have no SQLite
+journal entry. Relocating an archive invalidates the path-bound runtime mark;
+retained artifact completeness is checked from its census and physical inputs.
+
+Blocker acknowledgement prepares and validates the operator-visible facts
+before audited intent begins, physically closes that preparation, then
+prepares publication on the same admitted creator after intent is durable.
+Recovery uses the same supplied compute owner and short writer admissions; no
+Source capability crosses the preparation lifetime.
+
+## Backup readability
+
+Backup preflight preserves SQLite read failures and cancellation through both
+check-only and acquisition operations before a package is published. Its
+original connection and statement remain owned through physical settlement;
+failed close retains them for retry on the creator. Missing required tiers and
+disk-space observations remain separate diagnostics. Opaque pre-migration
+backup evidence keeps its declared version admission; readability does not
+authorize interpretation of current Source coordinates. The daemon runs this
+read-only phase before beginning a backup write attempt. Named infrastructure
+failures are retryable; deterministic SQLite refusals remain rejected. The
+snapshot repeats its admission under writer ownership, and later failures keep
+the runtime's effect-aware handling. Disk-space advisories do not refuse an
+actual backup merely because they make a check-only observation unsuccessful.
+
 ## Write custody and connection lifetime
 
 Reference preparation supports declared configured tier symlinks by opening
@@ -110,7 +141,7 @@ may interrupt from another thread. Independent read frames do not acquire writer
 custody; readers inside an admitted async write operation retain that operation's
 existing grant until actual SQL close and original worker exit.
 
-Compute and admitted archive-read workers complete their physical Future only after the existing native-owner census settles on the creator thread. Failed close retains the worker, submitter context, reservation or read lease, and backing artifacts; cancellation of an asyncio wrapper does not release them. The existing custody owner can request another cleanup attempt. Archive readers and reference seals bind native children to their actual terminal parent, and healthy parents retire after all SQL and artifact obligations settle. Revision projections close their writer before transfer and close each bounded readonly page before yielding immutable rows (`polylogue/core/sql_settlement.py`, `polylogue/storage/sqlite/connection_profile.py`, `polylogue/pipeline/ids.py`).
+Archive reads submit their exact UTF-8 request-byte demand to the shared bounded compute owner; interactive and scan work use its interactive-read and bulk-candidate classes. The read controller retains only the connection-weight budget. Compute workers complete their physical Future only after the existing native-owner census settles on the creator thread. Failed close retains the worker, submitter context, reservation or read lease, and backing artifacts; cancellation of an asyncio wrapper does not release them. The existing custody owner can request another cleanup attempt. Reset retains a shared compute owner while its physical workers survive; publishing a distinct owner requires that original owner to settle first. Archive readers and reference seals bind native children to their actual terminal parent, and healthy parents retire after all SQL and artifact obligations settle. Revision projections close their writer before transfer and close each bounded readonly page before yielding immutable rows (`polylogue/core/sql_settlement.py`, `polylogue/storage/sqlite/connection_profile.py`, `polylogue/pipeline/ids.py`).
 ## Baseline construction and durable trains
 
 The immutable fresh archive baseline creates all six tiers at version 1.
@@ -172,7 +203,11 @@ Archive backups retain original numbered Source, User and Audit train manifests
 only for the durable tiers included in the backup profile. The shared
 `durable_train_manifest_paths` enumerator selects numbered history; process
 lock files are not durable history. Copied receipts retain their original
-physical bindings and bytes. They do not authorize a relocated backup inode
+physical bindings and bytes. An earlier installed Source schema can be backed
+up as opaque evidence when its required bytes are retained. Acquiring missing
+bytes from current raw-source coordinates requires the current Source schema
+and otherwise raises the ordinary typed schema refusal before that read. Copied
+receipts do not authorize a relocated backup inode
 as the original live archive (`operations/archive_backup.py`). Explicit
 `maintenance.restore_verified_backup` consumes an authenticated package through
 `storage/sqlite/archive_population.py`, creates fresh destination train authority,
@@ -192,6 +227,7 @@ that shape, and this is not a general native SQLite memory bound.
 
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:805-813`).
 - `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; content-derived identity becomes `session_id || ':c:' || content_identity || '.' || content_occurrence` -- a digest of the message's own declared semantic fields, so an insertion elsewhere in the export cannot renumber it onto a different message (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:337-342`).
+- Raw export-member identity (`core/content_identity.py`) preserves every decoded string and mapping key exactly, including operational paths and Unicode spelling. JSON key order and integral numeric spellings remain equivalent. The v3 domain applies to fresh acquisition; it has no predecessor identity fallback.
 - Content hashes use canonical JSON: absence stays `null` and empty strings stay `""`. Only declared prose fields in `_NFC_TEXT_FIELDS` are NFC-folded; identifiers, tool arguments, paths, metadata, event payloads and mapping keys stay exact. Content-derived message IDs use one recursive encoder that preserves ordinary pre-a44 null, empty-string and empty-block preimages. Literal reserved values and lossy typed/key lowering receive a framed typed projection, while a reserved-looking mapping key alone does not trigger an escape. An occurrence ordinal distinguishes repeated identical messages without depending on their position (`polylogue/pipeline/ids.py`).
 - `messages.content_address` witnesses the complete declared message hash projection, including block metadata, file edits and web constructs. A parent replacement may retain a branch edge only where that complete witness agrees; a same-ID message with changed content cannot silently become the child's inherited prefix (`_message_content_address` in `polylogue/storage/sqlite/archive_tiers/write.py`).
 - `messages.identity_source` records which identity path fired; its index CHECK is generated from the semantic `MessageIdentitySource` Literal (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:360-365`; `polylogue/core/types.py:13-16`).
@@ -215,12 +251,13 @@ that shape, and this is not a general native SQLite memory bound.
 - Every producer declares its actual destination and transaction owner. Active archive writes use a durable-reference seal; an owned inactive generation defers the archive-wide proof to promotion. A genuine non-archive memory index declares its standalone transaction explicitly. Missing archive arguments or missing durable tiers do not grant standalone permission.
 - Bulk callers reuse one `IndexMutationScope` per commit window. Its disk-backed witness stores original typed lookups, re-resolves their targets before publication, and includes composed descendants affected by parent changes. Inserts, aliases and lineage changes also receive proof: unchanged message IDs alone do not establish preserved lookup or block-position semantics. Generation replacement checks the whole candidate. User/Audit JSON anchor enumeration remains global and unindexed; batching amortizes that census rather than making it independent of archive size (`polylogue/storage/sqlite/reference_seal.py`).
 - Audit preview and operation targets retain historical effect identity. The validated delete, identity-reset or excision apply may leave those exact targets absent within its authorized removal closure; it never changes their rows or digests. Suppression, excision-record and excision-request assertion target fields may likewise describe absent sessions. Ordinary User anchors in surviving rows prevent disappearance, including a duplicate of an Audit target, and every surviving reference must retain its original resolution. Exact bound excision may remove content-bearing assertion rows whose own targets lie in its declared excised session/message/block closure; its original witness retains each row and field so deleting one assertion never exempts a surviving row with the same reference. Lifecycle history remains retained. This permission is bound to the existing archive custody, creator task/thread and validated plan during apply. Retained reparse/replay and generation promotion retain normal reference proof (`polylogue/storage/sqlite/reference_seal.py`, `polylogue/operations/mutation_transaction.py`).
+- Authoritative retained replay keeps identical session and message rows when the semantic hash, provider aliases, parser/lowering fingerprints and canonical prefix representation match the original prepared write. It still settles Source governance and provenance, and applies the existing link and graph updater for current hook evidence. Changed prefix representation or fingerprints require lowering. Work-event raws insert their new events independently of transcript equality; duplicate event IDs retain their original idempotent result.
 - It is the parsed-session lowering choke point shared by batch ingest (`polylogue/pipeline/services/ingest_batch/_core.py`) and authoritative revision replay/reindex (`write_with_reparse_receipt` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). It is not the only mutation function in the six-tier substrate.
 
 ## Blob publication, liveness, and GC
 
 - Blob paths are SHA-256-addressed as `<root>/<first-two-hex>/<remaining-hex>` (`polylogue/storage/blob_store.py:193-197`).
-- Every preparation route hashes while writing a private staging file and fsyncs its bytes before publication; publication fsyncs the shard directory after an atomic `os.replace` (`polylogue/storage/blob_store.py:207-237`; `polylogue/storage/blob_store.py:245-274`; `polylogue/storage/blob_store.py:282-295`; `polylogue/storage/blob_store.py:303-316`).
+- Every preparation route hashes while writing a private staging file and fsyncs its bytes before publication; publication fsyncs the shard directory after an atomic `os.replace` (`polylogue/storage/blob_store.py:207-237`; `polylogue/storage/blob_store.py:245-274`; `polylogue/storage/blob_store.py:282-295`; `polylogue/storage/blob_store.py:303-316`). Preparation, publication deduplication and error cleanup admit the same owned private staging root or child directories; symlinks, foreign directories, parent traversal and escaping companion paths refuse before unlink.
 - Archive publication commits durable reservation receipts before exposing final paths; the exact receipt is consumed in the durable-reference transaction (`polylogue/storage/blob_publication.py:110-150`; `polylogue/storage/blob_publication.py:212-224`; `polylogue/storage/blob_publication.py:270-283`).
 - Liveness is descriptor-owned. Ordinary `blob_refs.ref_type` values must map unambiguously to one referent relation (`polylogue/storage/blob_liveness.py:90-113`).
 - A destructive liveness check returns `LIVE`, `UNREFERENCED`, or typed `BLOCKED`; unavailable or unreadable required tiers block deletion (`polylogue/storage/blob_liveness.py:250-291`).
@@ -258,7 +295,7 @@ Pending generations are restartable; a restart resumes their exact member set in
 ## DISCREPANCIES
 
 - The `docs/architecture.md` ring diagram draws only source, index, embeddings, user, and ops; code has six tiers and includes `audit.db` (`docs/architecture.md:25`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:49-85`).
-- `docs/architecture.md` calls embeddings plainly rebuildable; runtime metadata classifies them as `expensive_rebuild` with backup required (`docs/architecture.md:52-55`; `polylogue/storage/sqlite/archive_tiers/bootstrap.py:62-67`).
+- Embeddings are purchased state, require backup, and cannot be replayed from Source. `excision_embedding_completions` certifies the selected paid transaction under its original Source-command binding; it neither authorizes the command nor substitutes for current surviving-reference checks (`polylogue/storage/sqlite/archive_tiers/embeddings.py`; `polylogue/storage/sqlite/reference_seal.py`).
 
 Existing index and ops tiers are admitted by their derived schema identity
 before initialization issues any DDL. A mismatch raises typed `SchemaSkew`;
@@ -273,24 +310,34 @@ durable tiers are never replaced by ops startup.
 
 ## Tool-result association
 
-`storage/sqlite/action_pairs.py` owns associations for both materialized and
-canonical action reads and observed `tool_finished` events. An orphan result
-before the first use of an ID cannot certify that use. A clean alternating
-stream supports sequential ID reuse without a many-to-many join. A missing
-middle result, duplicate receipt, or overlapping same-ID invocation makes
-that invocation and the remaining same-ID suffix unresolved: the action has
-`result_state=outcome_unknown`, `outcome_unknown_reason=ambiguous_tool_id_reuse`,
-and no attributed result block, output, error flag or exit code. A clean final
-use with no result stays `no_result`.
+`core/tool_association.py` lowers the original occurrence and resolved-parent
+facts on the caller's existing SQL creator. Eager outcome preparation,
+materialized and canonical action reads, append reconciliation and observed
+`tool_finished` events share that decision. A unique native parent chain
+through tool replies proves the exact invocation, including multiple replies
+and replies exported before the call. Traversal terminates cycles with `UNION`;
+it imposes no depth limit. Original globally unique message keys permit an
+inherited reply intermediary; invocation assignment remains session-scoped.
+Replies naming the same native parent with different declared sibling ordinals
+are alternatives, not sequential fanout. Every physical reply remains stored.
 
-Session IDs isolate fork-local tool IDs. Variant creation order is not a
-causal branch identity: when a same-ID stream involves variants, only an
-otherwise unambiguous result in the same message is attributed; cross-message
-associations remain unknown rather than treating equal variant indexes as a
-branch path. These are evidence refusals, not loss of the underlying blocks.
-Reingesting complete evidence recomputes the relation at its ordinary write
-boundary. The decision does not depend on row insertion order or on whether
-a reader uses the materialized or directly computed relation.
+Without exact parent proof, a clean alternating stream supports sequential
+ID reuse. A missing middle result, duplicate receipt or overlapping same-ID
+invocation leaves that invocation and the unproved same-ID suffix unknown,
+with `outcome_unknown_reason=ambiguous_tool_id_reuse`. Variant creation order
+is not causal evidence. A proved invocation is resolved independently of an
+unrelated ambiguous window. A final resultless invocation remains `no_result`;
+absence of a paired reply does not retract independent execution-sidecar
+facts on the original tool-use block.
+
+A proved fanout aggregates error before unknown before success. One invocation
+event carries the call and every exact reply reference. Scalar result location,
+output, error flag and exit code remain absent for multiple replies rather
+than selecting a representative. Tool episodes expose the omission in their
+caveat and the existing authority gap `tool_episode_plural_output_omitted`.
+A known aggregate verdict does not certify a complete scalar output. Writers
+resolve original parent links before reconciling outcomes and refreshing
+associations; reads do not depend on insertion order or a populated cache.
 
 Facade settings and context-delivery reads distinguish an absent row in a
 readable tier from unavailable authority. Required user state, source events
@@ -299,3 +346,11 @@ for Hermes delivery correlation, and the ops injection ledger refuse with
 never create missing tiers. Named-source freshness reads current cursor progress
 only from ops `ingest_cursor`; a missing offset remains unknown, and successful
 empty canonical state cannot inherit progress from a retired index table.
+
+### Provider usage projection
+
+`storage/usage.py` owns the event fold, provider-inclusive to disjoint token lanes, and catalog pricing decisions. Full writes and append windows stream stored token-count events through that owner. The latest session-global cumulative replaces earlier deltas; append windows retain existing replacement or increment behavior. Unknown models are attributed only when the writer has exactly one measured session model; unresolved events stay retained without a guessed model.
+
+Provider total-only or reasoning-only counters cannot establish the priced input/output/cache lanes. Their cost remains unknown through append and usage-rollup derivation. The same derived `session_model_usage` row carries `provider_lanes_complete`, independently of nullable catalog price. Append composes that bit with the new event window; reads use the same SQLite snapshot and expose incompleteness without rescanning events. An empty model declaration has no unmappable provider evidence, but remains unknown usage rather than a measured zero. Catalog repricing precedes the provider fold during derivation so it cannot erase the refusal. Explicit zero lanes remain measured zero.
+
+Event projection and stored catalog costs retain precision; the origin/model rollup rounds only after summing. Session buckets are replaced directly for cumulative observations without rescanning other sessions. Memory follows the distinct session/model result cardinality, with stored source events streamed. The caller owns the transaction; projection performs no commits. This additive-derived column moves the Index identity and must land before reconvergence; there is no durable migration or live rebuild in this delivery.

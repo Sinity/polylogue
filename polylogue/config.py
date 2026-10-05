@@ -552,10 +552,6 @@ class PolylogueConfig:
         return int(str(self._data.get("ingest_commit_batch_messages", 8000)))
 
     @property
-    def live_full_ingest_workers(self) -> int:
-        return max(1, int(str(self._data.get("live_full_ingest_workers", 1))))
-
-    @property
     def live_watcher_parse_stage_workers(self) -> int | None:
         """Worker cap for the watcher-owned pre-parse thread pool.
 
@@ -1131,14 +1127,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         description="Message threshold for grouped index commits; <=0 restores per-session commits.",
     ),
     ConfigInventoryEntry(
-        "live_full_ingest_workers",
-        toml_path="pipeline.live.full_ingest_workers",
-        env_var="POLYLOGUE_LIVE_FULL_INGEST_WORKERS",
-        owner_class="resource-policy",
-        reload_behavior="startup-bound",
-        description="Maximum concurrent workers for live full-artifact ingestion.",
-    ),
-    ConfigInventoryEntry(
         "memory_budget_bytes",
         toml_path="resource.memory_budget_bytes",
         env_var="POLYLOGUE_MEMORY_BUDGET_BYTES",
@@ -1285,7 +1273,6 @@ _INT_CONFIG_KEYS = frozenset(
         "notification_email_port",
         "notification_email_max_per_hour",
         "ingest_commit_batch_messages",
-        "live_full_ingest_workers",
         "memory_budget_bytes",
         "judgment_automation_interval_s",
         "judgment_automation_batch_limit",
@@ -1503,7 +1490,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_allow_no_auth": False,
         "backup_verify_tmpdir": None,
         "ingest_commit_batch_messages": 8000,
-        "live_full_ingest_workers": 1,
         "memory_budget_bytes": None,
         "subscription_plans": (),
         "live_watcher_parse_stage_workers": None,
@@ -1835,6 +1821,7 @@ class ResolvedSourcePaths:
 
     claude_code: Path
     claude_code_todos: Path
+    claude_code_history: Path
     codex: Path
     codex_memories: Path
     gemini_cli: Path
@@ -1976,6 +1963,7 @@ def resolve_runtime_config(
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
         claude_code_todos=bootstrap.home / ".claude" / "todos",
+        claude_code_history=bootstrap.home / ".claude" / "history.jsonl",
         codex=bootstrap.home / ".codex" / "sessions",
         codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
@@ -1988,6 +1976,7 @@ def resolve_runtime_config(
     local_candidates = (
         ("claude-code", source_paths.claude_code),
         ("claude-code-todos", source_paths.claude_code_todos),
+        ("claude-code-history", source_paths.claude_code_history),
         ("codex", source_paths.codex),
         ("codex-memories", source_paths.codex_memories),
         ("gemini-cli", source_paths.gemini_cli),

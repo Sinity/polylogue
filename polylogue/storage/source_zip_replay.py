@@ -22,8 +22,6 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
     read_captured_zip_coordinate_receipt,
-    split_zip_member_text,
-    zip_member_coordinate,
 )
 from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.decoder_zip import ZipEntryValidator
@@ -187,6 +185,7 @@ def zip_reacquired_unit(
     *,
     source_path: str,
     zip_payload_cache: MemberCandidateCache,
+    on_failure: Callable[[Exception], None] | None = None,
 ) -> tuple[MemberCandidate | None, str | None]:
     """Replay one ZIP member and return the recorded unit it still holds.
 
@@ -201,6 +200,9 @@ def zip_reacquired_unit(
         if not isinstance(receipt, str):
             raise ValueError("captured ZIP coordinate receipt must be text")
         captured = read_captured_zip_coordinate_receipt(receipt)
+        if hint_mode is not None and hint_mode is not captured.addressing_mode:
+            return None, "container_coordinate_mismatch"
+        hint_mode = captured.addressing_mode
         if coordinate != (captured.entry_ordinal, captured.split_index):
             return None, "container_coordinate_mismatch"
         # Restoration relocates only the physical container and preserves this
@@ -211,29 +213,17 @@ def zip_reacquired_unit(
             return None, "container_coordinate_mismatch"
         zip_path, member = Path(source_path[: -len(suffix)]), captured.member_name
     else:
-        if split_zip_member_text(source_path) is None:
-            return None, "container_coordinate_missing"
-        located = zip_member_coordinate(source_path)
-        if located is None:
-            return None, "source_missing"
-        zip_path, member = located
+        return None, "container_coordinate_missing"
     try:
         with zipfile.ZipFile(zip_path) as archive:
             central_directory = archive.infolist()
-            if coordinate is None:
-                matching = [
-                    (ordinal, entry) for ordinal, entry in enumerate(central_directory) if entry.filename == member
-                ]
-                if len(matching) != 1:
-                    return None, "ambiguous_container_member"
-                entry_ordinal, entry = matching[0]
-            else:
-                entry_ordinal = coordinate[0]
-                if entry_ordinal >= len(central_directory):
-                    return None, "container_coordinate_mismatch"
-                entry = central_directory[entry_ordinal]
-                if entry.filename != member:
-                    return None, "container_coordinate_mismatch"
+            assert coordinate is not None
+            entry_ordinal = coordinate[0]
+            if entry_ordinal >= len(central_directory):
+                return None, "container_coordinate_mismatch"
+            entry = central_directory[entry_ordinal]
+            if entry.filename != member:
+                return None, "container_coordinate_mismatch"
             cache_key = f"{source_path}\0{entry_ordinal}"
             candidates = zip_payload_cache.get(cache_key)
             if candidates is None:
@@ -279,6 +269,8 @@ def zip_reacquired_unit(
                 candidates = tuple(replayed)
                 zip_payload_cache[cache_key] = candidates
     except Exception as exc:
+        if on_failure is not None:
+            on_failure(exc)
         # Source replay is evidence, not a prerequisite for constructing
         # the backup. Any unreadable or unparseable container therefore
         # leaves this reference unproven and lets verification fail closed.
@@ -355,26 +347,7 @@ def _zip_coordinate(row: Mapping[str, object]) -> tuple[int, int] | None:
         split_index = row.get("split_index")
         if isinstance(entry_ordinal, (int, str)) and isinstance(split_index, (int, str)):
             return int(entry_ordinal), int(split_index)
-    source_path = row.get("source_path")
-    source_index = row.get("source_index")
-    raw_id = str(row.get("raw_id") or row.get("ref_id") or "")
-    blob_hash = row.get("blob_hash")
-    blob_hash_hex = bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, bytearray)) else str(blob_hash or "")
-    if (
-        not isinstance(source_path, str)
-        or not source_path
-        or ":" not in source_path
-        or not isinstance(source_index, (int, str))
-    ):
-        return None
-    from polylogue.core.raw_coordinates import zip_member_identity_coordinate
-
-    return zip_member_identity_coordinate(
-        raw_id=raw_id,
-        source_path=source_path,
-        source_index=int(source_index),
-        blob_hash=blob_hash_hex,
-    )
+    return None
 
 
 __all__ = [

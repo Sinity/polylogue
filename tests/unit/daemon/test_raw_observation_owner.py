@@ -12,12 +12,12 @@ import pytest
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
-from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
 )
+from polylogue.storage.derived.raw import RawFrame, RawObservationReplacement
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -61,6 +61,7 @@ async def _owner(root: Path) -> tuple[RawObservationConvergenceOwner, BoundedCom
             root,
             compute_adapter=compute,
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            write_coordinator=coordinator,
         ),
         compute,
         coordinator,
@@ -112,6 +113,7 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
         tmp_path,
         compute_adapter=compute,
         write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
     )
 
     def no_singleton_merge(*_args: object, **_kwargs: object) -> object:
@@ -161,40 +163,88 @@ async def test_paused_raw_preparation_does_not_hold_writer_for_unrelated_publica
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compute is lease-free; only the final publication crosses the bridge."""
-    bootstrap_archive_root(tmp_path)
-    raw_id = _admit(tmp_path, "paused")
-    owner, compute, coordinator = await _owner(tmp_path)
-    adapter = owner._converger._derivation_adapter("raw_observation")
-    original_compute = adapter.compute
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
     started = threading.Event()
     release = threading.Event()
+    prepared_phases: list[tuple[bool, bool]] = []
+    async with prepared_live_convergence_owner(tmp_path) as owner:
+        coordinator = owner._write_coordinator
 
-    def paused_compute(frame: DerivationFrame, key: str) -> ReplacementLike:
-        assert not coordinator_write_lease_active()
-        started.set()
-        assert release.wait(timeout=2.0)
-        return original_compute(frame, key)
+        def acquire() -> str:
+            bootstrap_archive_root(tmp_path)
+            return _admit(tmp_path, "paused")
 
-    monkeypatch.setattr(adapter, "compute", paused_compute)
-    task = asyncio.create_task(owner.converge_raw_id(raw_id))
-    try:
-        await asyncio.wait_for(asyncio.to_thread(started.wait), timeout=1.0)
-        assert (
-            await asyncio.wait_for(coordinator.run_sync("unrelated.writer", lambda: "published"), timeout=1.0)
-            == "published"
-        )
-        release.set()
-        # The property is the unrelated writer above publishing within 1s
-        # while compute is paused. Completion only has to happen: since #5565
-        # retained preparation runs in a spawned worker process, whose start
-        # and replay take several seconds on a loaded host, so this bound is
-        # a hang guard, not a latency budget.
-        assert (await asyncio.wait_for(task, timeout=60.0)).done == 1
-    finally:
-        release.set()
-        if not task.done():
-            await task
-        await _shutdown(compute, coordinator)
+        raw_id = await coordinator.run_sync("test.raw.paused.acquire", acquire)
+        adapter, index_path = owner._destination_adapter()
+        monkeypatch.setattr(owner, "_destination_adapter", lambda: (adapter, index_path))
+        original_compute = adapter.compute
+
+        def source_progress() -> tuple[object, ...]:
+            from polylogue.storage.blob_store import BlobStore
+            from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead
+            from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+            with (
+                PreparedIndexMutation.source_only(archive_root=tmp_path) as seal,
+                seal.original_read_snapshot(),
+                seal.source_producer(),
+            ):
+                reader = PreparedSessionSourceRead(seal, blob_store=BlobStore(tmp_path / "blob"))
+                expanded, _member_keys = reader.expand_raw_membership_selection((raw_id,))
+                current = tuple((item, reader.raw_parser_census_is_current(item)) for item in expanded)
+                logical_keys = reader.raw_revision_rebuild_logical_keys(expanded)
+                return (
+                    tuple((item, reader.raw_revision_descriptor(item)) for item in expanded),
+                    current,
+                    reader.raw_membership_census_rows(expanded),
+                    tuple((key, reader.raw_revision_replay_plan(key)) for key in logical_keys)
+                    if all(valid for _item, valid in current)
+                    else (),
+                )
+
+        previous_inputs = await owner.run_convergence_sync("test.raw.paused.original-inputs", source_progress)
+
+        def paused_compute(frame: RawFrame, key: str) -> RawObservationReplacement:
+            assert not coordinator_write_lease_active()
+            started.set()
+            assert release.wait(timeout=2.0)
+            replacement = original_compute(frame, key)
+            prepared_phases.append((replacement.needs_source_census, replacement.needs_source_classification))
+            return replacement
+
+        monkeypatch.setattr(adapter, "compute", paused_compute)
+        task = asyncio.create_task(owner.converge_raw_id(raw_id))
+        started_wait = asyncio.create_task(asyncio.to_thread(started.wait))
+        try:
+            completed, _pending = await asyncio.wait((task, started_wait), return_when=asyncio.FIRST_COMPLETED)
+            if task in completed and not started.is_set():
+                report = await task
+                pytest.fail(f"raw preparation ended before the compute rendezvous: {report.outcomes!r}")
+            await started_wait
+            assert (
+                await asyncio.wait_for(coordinator.run_sync("unrelated.writer", lambda: "published"), timeout=1.0)
+                == "published"
+            )
+            release.set()
+            report = await asyncio.wait_for(task, timeout=60.0)
+            first_report = report
+            while report.pending:
+                assert report.failed == 0, report.outcomes
+                current_inputs = await owner.run_convergence_sync("test.raw.paused.phase-inputs", source_progress)
+                assert current_inputs != previous_inputs, (report.outcomes, prepared_phases)
+                previous_inputs = current_inputs
+                report = await owner.converge_raw_id(raw_id)
+            assert first_report.failed == 0, first_report.outcomes
+            assert report.done == 1, (report.counts, report.outcomes, prepared_phases)
+        finally:
+            release.set()
+            # Wake the fixture's physical Event.wait thread even if preparation
+            # failed or cancellation arrived before the compute rendezvous.
+            started.set()
+            await started_wait
+            if not task.done():
+                await task
 
 
 @pytest.mark.asyncio

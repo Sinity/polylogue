@@ -127,7 +127,8 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
                 "publisher_id": item.publisher_id,
                 "reserved_at_ms": item.reserved_at_ms,
                 "blob_present": item.blob_present,
-                "referenced": item.referenced,
+                "liveness_state": item.liveness.state.value,
+                "blockers": list(item.liveness.blockers),
             }
             for item in receipts
         ],
@@ -143,8 +144,10 @@ def blob_publications_command(publication_ids: tuple[str, ...], yes: bool, outpu
         )
     click.echo(f"Publication receipts: {len(receipts)}")
     for item in receipts:
-        state = "referenced" if item.referenced else "present" if item.blob_present else "missing"
-        click.echo(f"  {item.publication_id} {item.blob_hash} {item.size_bytes}B {state}")
+        state = item.liveness.state.value
+        click.echo(f"  {item.publication_id} {item.blob_hash} {item.size_bytes}B {state} present={item.blob_present}")
+        for blocker in item.liveness.blockers:
+            click.echo(f"    {blocker}")
 
 
 __all__ = ["blob_publications_command"]

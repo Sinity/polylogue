@@ -859,7 +859,8 @@ class _QueuedSink:
         self.high_water = 0
         self._dirty = False
         self._in_flight = False
-        self._flush_requested = False
+        self._flush_requested = 0
+        self._flush_completed = 0
         self._worker = threading.Thread(target=self._run, name="polylogue-diagnostic-sink", daemon=True)
         self._worker.start()
 
@@ -887,16 +888,16 @@ class _QueuedSink:
         event = record.get("event")
         if record.get("level") == "error":
             return 2
-        if isinstance(event, str) and event.endswith((".error", ".failed", ".stop", ".end")):
+        if isinstance(event, str) and event.endswith((".error", ".failed", ".stop", ".stopped", ".end")):
             return 2
-        if isinstance(event, str) and event.endswith(".ok"):
+        if isinstance(event, str) and event.rsplit(".", 1)[-1] in OUTCOMES:
             return 1
         return 1 if record.get("level") == "warning" else 0
 
     def _run(self) -> None:
         while True:
             with self._condition:
-                if not self._pending and not self._closing and not self._flush_requested:
+                if not self._pending and not self._closing and self._flush_requested == self._flush_completed:
                     self._condition.wait(timeout=0.5)
                 if not self._pending:
                     if self._closing:
@@ -925,8 +926,11 @@ class _QueuedSink:
 
     def _flush(self) -> None:
         with self._condition:
+            # A flush can acknowledge only requests present when it begins.
+            # Later requests may cover records queued while the stream blocks.
+            requested = self._flush_requested
             if not self._dirty:
-                self._flush_requested = False
+                self._flush_completed = requested
                 self._condition.notify_all()
                 return
             self._dirty = False
@@ -939,16 +943,16 @@ class _QueuedSink:
                 self.failures += 1
         finally:
             with self._condition:
-                self._flush_requested = False
+                self._flush_completed = requested
                 self._condition.notify_all()
 
     def flush(self, *, timeout_s: float) -> bool:
         deadline = time.monotonic() + max(timeout_s, 0.0)
         with self._condition:
             failures_before = self.failures
-            self._flush_requested = True
+            self._flush_requested += 1
             self._condition.notify_all()
-            while self._pending or self._in_flight or self._flush_requested:
+            while self._pending or self._in_flight or self._flush_requested != self._flush_completed:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False

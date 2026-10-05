@@ -687,37 +687,6 @@ def classify_termination(
 # ---------------------------------------------------------------------------
 
 
-def last_workload_evidence(conn: sqlite3.Connection, run_id: str) -> EvidenceSource:
-    """The run's last route-observation workload receipt, joined by its run id."""
-    row = conn.execute(
-        """
-        SELECT observation_id, surface, route, phase, started_at_ms, duration_ms, status
-        FROM route_observations
-        WHERE json_extract(attributes_json, '$.route_receipt.daemon_run_id') = ?
-        ORDER BY started_at_ms DESC, observation_id DESC
-        LIMIT 1
-        """,
-        (run_id,),
-    ).fetchone()
-    if row is None:
-        return EvidenceSource.missing(SOURCE_WORKLOAD, "no_workload_receipt_carries_run_id")
-    return EvidenceSource(
-        name=SOURCE_WORKLOAD,
-        records=(
-            {
-                "observation_id": str(row[0]),
-                "surface": str(row[1]),
-                "route": str(row[2]),
-                "phase": str(row[3]),
-                "started_at_ms": int(row[4]),
-                "duration_ms": int(row[5]),
-                "status": str(row[6]),
-            },
-        ),
-        refs=(f"ops:route_observation:{row[0]}",),
-    )
-
-
 def reconcile_ended_runs(
     conn: sqlite3.Connection,
     *,
@@ -739,7 +708,7 @@ def reconcile_ended_runs(
             reconciled_at_ms=now_ms,
             reconciled_by_run_id=current_run_id,
             evidence=evidence,
-            last_workload=last_workload_evidence(conn, item.lifecycle.run_id),
+            last_workload=EvidenceSource.missing(SOURCE_WORKLOAD, "resident_workload_receipt_unavailable"),
         )
         for item in pending
     )
@@ -782,7 +751,6 @@ __all__ = [
     "capture_host_run_identity",
     "classify_termination",
     "kernel_oom_pid",
-    "last_workload_evidence",
     "read_memory_events",
     "reconcile_ended_runs",
     "record_termination_receipts",

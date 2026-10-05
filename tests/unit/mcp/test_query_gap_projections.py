@@ -570,6 +570,38 @@ class TestInsightProjections:
         assert combined["tool_episodes"][0]["followup_class"] == "acknowledged"
 
     @pytest.mark.asyncio
+    async def test_tool_episode_projection_forwards_offset_before_paging(self, tmp_path: Path) -> None:
+        archive_root = tmp_path / "archive"
+        _seed_tool_episode_archive(archive_root)
+        query_fn = build_tools()["query"]
+
+        with installed_runtime_services(archive_root):
+            full = json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", limit=10))
+            pages = [
+                json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", limit=1, offset=offset))
+                for offset in range(4)
+            ]
+            filtered = json.loads(
+                await invoke_surface_async(
+                    query_fn, projection="tool-episodes", tag="episode-filter", limit=1, offset=1
+                )
+            )
+            filtered_full = json.loads(
+                await invoke_surface_async(query_fn, projection="tool-episodes", tag="episode-filter", limit=10)
+            )
+
+        assert full.get("is_error") is not True, full
+        assert len(full["tool_episodes"]) == 3
+        assert all(page.get("is_error") is not True for page in pages), pages
+        assert [page["tool_episodes"] for page in pages] == [
+            full["tool_episodes"][offset : offset + 1] for offset in range(4)
+        ]
+        assert pages[-1]["outcome"]["state"] == "empty"
+        assert filtered.get("is_error") is not True, filtered
+        assert len(filtered_full["tool_episodes"]) == 2
+        assert filtered["tool_episodes"] == filtered_full["tool_episodes"][1:2]
+
+    @pytest.mark.asyncio
     async def test_insight_projection_rejects_continuation(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         _seed_archive(archive_root)

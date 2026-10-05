@@ -318,9 +318,6 @@ def _load_archive_family_baseline(
             ).fetchone()
             if has_table is None:
                 return None
-            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(cursor_lag_samples)")}
-            if "family" not in columns:
-                return None
             rows = conn.execute(
                 """
                 SELECT lag_ms

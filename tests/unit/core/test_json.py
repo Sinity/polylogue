@@ -694,3 +694,31 @@ def test_exponent_scanner_does_not_slice_unchanged_json_strings() -> None:
     tracemalloc.stop()
     assert normalized is data
     assert peak < 100_000
+
+
+def test_json_document_lowering_preserves_deep_unchanged_container_identity() -> None:
+    value: dict[str, object] = {"value": True, "absent": None, "nonfinite": float("inf")}
+    for _ in range(2000):
+        value = {"child": [value]}
+    assert core_json.json_document_or_none(value) is value
+
+
+def test_json_document_lowering_refuses_only_active_ancestor_cycles() -> None:
+    shared = {"value": [1, False]}
+    repeated = {"left": shared, "right": shared}
+    assert core_json.json_document_or_none(repeated) is repeated
+    cycle: dict[str, object] = {}
+    cycle["child"] = [cycle]
+    with pytest.raises(ValueError, match="cyclic payload"):
+        core_json.json_document_or_none(cycle)
+
+
+def test_json_document_lowering_copies_only_decimal_changed_ancestors() -> None:
+    untouched = {"value": [False, None, "literal"]}
+    decimal = {"value": Decimal("2.5")}
+    changed = [decimal]
+    original = {"untouched": untouched, "changed": changed}
+    lowered = core_json.json_document_or_none(original)
+    assert lowered == {"untouched": untouched, "changed": [{"value": 2.5}]}
+    assert lowered["untouched"] is untouched
+    assert changed[0] is decimal

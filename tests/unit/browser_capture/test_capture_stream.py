@@ -17,6 +17,44 @@ from polylogue.browser_capture import capture_decode, capture_stream
 from polylogue.core.json import dumps_bytes
 
 
+def test_retained_capture_staging_borrows_inode_and_preserves_original_custody(tmp_path: Path) -> None:
+    raw = b"retained canonical capture"
+    artifact = tmp_path / "retained.native"
+    artifact.write_bytes(raw)
+    with artifact.open("rb") as retained:
+        staged = capture_stream.stage_retained_capture(
+            retained, artifact, size_bytes=len(raw), sha256=hashlib.sha256(raw).hexdigest(), spool_root=tmp_path
+        )
+    try:
+        assert staged.path.stat().st_ino == artifact.stat().st_ino
+        assert staged.path.read_bytes() == raw
+        # The stage owns a physical lock after the borrowing context closes.
+        assert capture_stream.reap_stale_staging(tmp_path) == 0
+    finally:
+        staged.discard()
+    assert artifact.read_bytes() == raw
+    assert not staged.path.exists()
+
+
+@pytest.mark.parametrize("mismatch", ["digest", "size"])
+def test_retained_capture_staging_refuses_changed_descriptor_without_retiring_original(
+    tmp_path: Path, mismatch: str
+) -> None:
+    raw = b"retained canonical capture"
+    artifact = tmp_path / "retained.native"
+    artifact.write_bytes(raw)
+    with artifact.open("rb") as retained, pytest.raises(capture_stream.CaptureEnvelopeError):
+        capture_stream.stage_retained_capture(
+            retained,
+            artifact,
+            size_bytes=len(raw) + (mismatch == "size"),
+            sha256="0" * 64 if mismatch == "digest" else hashlib.sha256(raw).hexdigest(),
+            spool_root=tmp_path,
+        )
+    assert artifact.read_bytes() == raw
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
 def test_numbers_parse_as_the_stdlib_decoder_reads_them() -> None:
     """A wide integer stays exact and a fraction becomes the stdlib float.
 
@@ -35,11 +73,21 @@ def test_raw_payload_shape_keeps_only_the_scalars_detection_reads() -> None:
     Anti-vacuity: retaining every root scalar keeps the ``padding`` string in
     the shape beside its digest.
     """
-    payload = {"padding": "x" * 4096, "polylogue_bridge_projection": "compact", "mapping": {"a": 1}, "items": [1]}
+    payload = {"padding": "x" * 4096, "mapping": {"a": 1}, "items": [1]}
     events = capture_decode._json_events(io.BytesIO(json.dumps(payload).encode()))
     event, value = next(events)
     fold = capture_stream._read_raw_payload(events, event, value)
-    assert fold.shape == {"padding": None, "polylogue_bridge_projection": "compact", "mapping": {}, "items": []}
+    assert fold.shape == {"padding": None, "mapping": {}, "items": []}
+
+
+def test_streamed_shape_retains_only_exact_retired_projection_provenance() -> None:
+    """Stream admission must see the same format refusal as ordinary parsing."""
+    for marker, expected in [("chatgpt-native-compact-v1", "chatgpt-native-compact-v1"), ("opaque", None)]:
+        payload = {"polylogue_bridge_projection": marker, "mapping": {}}
+        events = capture_decode._json_events(io.BytesIO(json.dumps(payload).encode()))
+        event, value = next(events)
+        fold = capture_stream._read_raw_payload(events, event, value)
+        assert fold.shape == {"polylogue_bridge_projection": expected, "mapping": {}}
 
 
 def test_a_string_digest_is_its_whole_encoding_hashed_piecewise(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -209,6 +257,21 @@ def test_the_admission_summary_retains_no_turn() -> None:
     assert summary.turn_count == 2
     assert summary.head.session.turns == []
     assert summary.turn_identities == ()
+
+
+def test_retired_compact_provenance_is_refused_by_stream_admission() -> None:
+    """Dropping the root marker would wrongly grant native admission."""
+    capture = _capture_with_carriers({"att-turn": b"carrier"})
+    capture["raw_provider_payload"] = {
+        "polylogue_bridge_projection": "chatgpt-native-compact-v1",
+        "mapping": {},
+    }
+    retained = json.dumps(capture).encode()
+    handle = io.BytesIO(retained)
+    with pytest.raises(capture_stream.CaptureEnvelopeError) as refused:
+        capture_stream.summarize_capture_stream(handle)
+    assert refused.value.reason == "invalid_payload"
+    assert handle.getvalue() == retained
 
 
 def test_a_session_without_turns_is_still_refused() -> None:

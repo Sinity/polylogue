@@ -949,10 +949,10 @@ def latency_command(
     since_hours: float,
     output_format: str,
 ) -> None:
-    """Report p50/p95 route latency from ops-tier telemetry (polylogue-jtwu).
+    """Report p50/p95 MCP call latency from ops-tier telemetry (polylogue-jtwu).
 
-    Groups ``route_observations`` and ``mcp_call_log`` (whole MCP tool
-    calls) by (surface, route).
+    Groups the live ``mcp_call_log`` by tool route. Other surfaces have
+    no resident timing producer and remain explicitly unmeasured.
     Buckets with fewer than 5 samples are marked low-confidence rather than
     presented as a reliable percentile, and every answer carries the drop
     disposition of the sample it was computed over: a percentile whose

@@ -38,6 +38,7 @@ class DriveClient:
     def __init__(self, before_download: Callable[[], None] = lambda: None) -> None:
         self.before_download = before_download
         self.grown = False
+        self.divergent = False
         self.modified_time = "2026-01-01T00:00:00Z"
 
     def resolve_folder_id(self, folder_ref: str) -> str:
@@ -60,16 +61,18 @@ class DriveClient:
             # The provider re-serializes the whole document on each save, so
             # a conversation that grew is rewritten, not byte-appended.
             chunks.append({"role": "user", "text": "Neutral follow-up"})
+            if self.divergent:
+                chunks[0] = {"role": "user", "text": "Different neutral question"}
         return json.dumps({"chunkedPrompt": {"chunks": chunks}, "runSettings": {"model": "neutral"}}).encode()
 
     def download_into(self, file_id: str, handle: IO[bytes]) -> None:
         handle.write(self.download_bytes(file_id))
 
 
-def make_parser(
+async def make_parser(
     root: Path, monkeypatch: pytest.MonkeyPatch, *, phased: bool = True
 ) -> tuple[ParsingService, Source, DaemonWriteCoordinator]:
-    bootstrap_archive_root(root)
+    await asyncio.to_thread(bootstrap_archive_root, root)
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
         lambda **kwargs: SimpleNamespace(schema_validation="advisory", sinex_mode="off", archive_root=root),
@@ -79,8 +82,23 @@ def make_parser(
     backend = SQLiteBackend(db_path=config.db_path)
     repository = SessionRepository(backend=backend, archive_root=root)
     coordinator = DaemonWriteCoordinator(archive_root=root)
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
+
+    execution = DriveCatchupExecution(coordinator)
+    raw_owner = RawObservationConvergenceOwner(
+        root,
+        compute_adapter=execution._compute_adapter,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+        write_coordinator=coordinator,
+    )
     parser = ParsingService(
-        repository, root, config, ingest_workers=1, execution=DriveCatchupExecution(coordinator) if phased else None
+        repository,
+        root,
+        config,
+        ingest_workers=1,
+        execution=execution,
+        retained_runner=raw_owner.ingest_retained_raw_ids,
     )
     return parser, source, coordinator
 
@@ -146,7 +164,7 @@ async def test_drive_preparation_leaves_real_writer_available(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Fails if either the full pass or parser iteration runs with a lease."""
-    parser, source, coordinator = make_parser(tmp_path, monkeypatch)
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
     started = threading.Event()
     release = threading.Event()
 
@@ -216,7 +234,7 @@ async def test_drive_preparation_leaves_real_writer_available(
 async def test_drive_artifact_inspection_error_retains_partial_acquisition(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    parser, source, _ = make_parser(tmp_path, monkeypatch)
+    parser, source, _ = await make_parser(tmp_path, monkeypatch)
     client = DriveClient()
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
 
@@ -241,7 +259,7 @@ async def test_drive_stale_preparation_never_marks_success(
     mutation: str,
 ) -> None:
     """Changing input, authority, policy or generation invalidates completed parser work."""
-    parser, source, coordinator = make_parser(tmp_path, monkeypatch)
+    parser, source, coordinator = await make_parser(tmp_path, monkeypatch)
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: DriveClient())
     acquired = await parser.ingest_sources(sources=[source], parse_records=False)
     raw_id = acquired.acquire_result.raw_ids[0]
@@ -368,7 +386,7 @@ async def test_drive_phased_matches_ordinary_document_growth(
     snapshots = []
     for phased in (False, True):
         root = tmp_path / ("phased" if phased else "ordinary")
-        parser, _, _ = make_parser(root, monkeypatch, phased=phased)
+        parser, _, _ = await make_parser(root, monkeypatch, phased=phased)
         client = DriveClient()
         monkeypatch.setattr(
             "polylogue.sources.drive._resolved_drive_client", lambda fixture_client=client, **kwargs: fixture_client
@@ -415,7 +433,7 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    parser, source, _ = make_parser(tmp_path, monkeypatch)
+    parser, source, _ = await make_parser(tmp_path, monkeypatch)
     started = threading.Event()
     release = threading.Event()
 
@@ -440,9 +458,11 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
     await parser.repository.close()
 
 
+@pytest.mark.parametrize("divergent", [False, True])
 async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    divergent: bool,
 ) -> None:
     """Generation ownership cardinality never turns a Drive cohort permanently stale.
 
@@ -450,33 +470,118 @@ async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
     the preparation scratch and this raw's 1,001 ownership rows exceed the
     cohort row cap, so every pass discards the grown revision unparsed.
     """
+    import ast
+    import inspect
+    import sys
+
+    from polylogue.storage.derived.raw import RawObservationDerivation
+
+    publish = RawObservationDerivation.publish
+    source_lines, source_start = inspect.getsourcelines(publish)
+    function_source = "".join(source_lines)
+    import textwrap
+
+    false_sites = {
+        source_start + node.lineno - 1
+        for node in ast.walk(ast.parse(textwrap.dedent(function_source)))
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant) and node.value.value is False
+    }
+    observations: list[tuple[bool, bool, bool, tuple[int, ...]]] = []
+
+    def observed_publish(self: Any, frame: Any, replacement: Any, **kwargs: Any) -> bool:
+        previous_trace = sys.gettrace()
+        reached: list[int] = []
+
+        def trace(actual_frame: Any, event: str, value: Any) -> Any:
+            if actual_frame.f_code is publish.__code__:
+                if event == "line" and actual_frame.f_lineno in false_sites:
+                    reached.append(actual_frame.f_lineno)
+                return trace
+            return previous_trace(actual_frame, event, value) if previous_trace is not None else None
+
+        sys.settrace(trace)
+        try:
+            return publish(self, frame, replacement, **kwargs)
+        finally:
+            sys.settrace(previous_trace)
+            observations.append(
+                (
+                    replacement.already_valid,
+                    replacement.needs_source_census,
+                    replacement.needs_source_classification,
+                    tuple(reached),
+                )
+            )
+
+    monkeypatch.setattr(RawObservationDerivation, "publish", observed_publish)
     root = tmp_path / "archive"
     source = Source(name="gemini", folder="fixture", path=tmp_path / "source")
-    parser, _, _ = make_parser(root, monkeypatch)
+    parser, _, coordinator = await make_parser(root, monkeypatch)
     client = DriveClient()
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
     with arm_write_lease_enforcement(process_wide=True):
         first = await parser.ingest_sources(sources=[source])
         assert first.parse_result.processed_ids
+        with contextlib.closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as source_read:
+            original_binding = source_read.execute(
+                "SELECT raw_id,logical_source_key,revision_kind,source_revision,revision_authority,"
+                "predecessor_raw_id,baseline_raw_id,acquisition_generation FROM raw_sessions"
+            ).fetchone()
+        assert original_binding is not None
+        with contextlib.closing(sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)) as index_read:
+            original_head = index_read.execute(
+                "SELECT accepted_raw_id,accepted_content_hash,accepted_frontier_kind,accepted_frontier "
+                "FROM raw_revision_heads"
+            ).fetchone()
+        assert original_head is not None
         client.grown = True
+        client.divergent = divergent
         client.modified_time = "2026-01-02T00:00:00Z"
         acquired = await parser.ingest_sources(sources=[source], parse_records=False)
         (raw_id,) = acquired.acquire_result.raw_ids
-        with sqlite3.connect(root / "source.db") as conn:
-            conn.executemany(
-                "INSERT INTO source_item_raw_members VALUES (?, 'item', 'coordinate', ?, ?)",
-                [(f"generation-{index}", raw_id, bytes(32)) for index in range(1001)],
-            )
-        second = await parser.parse_from_raw(raw_ids=[raw_id])
-        assert second.processed_ids
+
+        def bind_generations() -> None:
+            require_write_lease("bind fixture source generations", archive_root=root)
+            with sqlite3.connect(root / "source.db") as conn:
+                conn.executemany(
+                    "INSERT INTO source_item_raw_members VALUES (?, 'item', 'coordinate', ?, ?)",
+                    [(f"generation-{index}", raw_id, bytes(32)) for index in range(1001)],
+                )
+
+        await coordinator.run_sync("test.bind_generations", bind_generations)
+        try:
+            second = await parser.parse_from_raw(raw_ids=[raw_id])
+        except BaseException as failure:
+            failure.add_note(f"actual Raw publication flags and reached false sites: {observations}")
+            raise
+        if divergent:
+            assert not second.processed_ids
+            assert second.parse_failures > 0
+        else:
+            assert second.processed_ids
     await parser.repository.close()
-    with sqlite3.connect(root / "source.db") as conn:
+    with contextlib.closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as source_read:
         assert (
-            conn.execute(
-                "SELECT COUNT(*) FROM raw_sessions WHERE revision_authority='asserted' AND predecessor_raw_id IS NOT NULL"
-            ).fetchone()[0]
-            == 1
+            source_read.execute(
+                "SELECT raw_id,logical_source_key,revision_kind,source_revision,revision_authority,"
+                "predecessor_raw_id,baseline_raw_id,acquisition_generation FROM raw_sessions WHERE raw_id=?",
+                (original_binding[0],),
+            ).fetchone()
+            == original_binding
         )
+        assert source_read.execute(
+            "SELECT revision_authority,predecessor_raw_id FROM raw_sessions WHERE raw_id=?", (raw_id,)
+        ).fetchone() == ("quarantined", None)
+    with contextlib.closing(sqlite3.connect(f"file:{root / 'index.db'}?mode=ro", uri=True)) as index_read:
+        assert index_read.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == (2 if divergent else 3)
+        current_head = index_read.execute(
+            "SELECT accepted_raw_id,accepted_content_hash,accepted_frontier_kind,accepted_frontier "
+            "FROM raw_revision_heads"
+        ).fetchone()
+        if divergent:
+            assert current_head == original_head
+        else:
+            assert current_head is not None and current_head[0] == raw_id
 
 
 @pytest.mark.parametrize("failure_phase", ["prepare", "publish"])
@@ -518,7 +623,7 @@ async def test_prepared_publication_retains_failed_sql_on_its_original_compute_w
                 raise OSError("synthetic native close remains unsettled")
             super().close()
 
-    bootstrap_archive_root(tmp_path)
+    await asyncio.to_thread(bootstrap_archive_root, tmp_path)
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     adapter = BoundedComputeAdapter(max_workers=1)
     execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)
@@ -586,7 +691,7 @@ async def test_prepared_publication_cancellation_reaches_and_settles_the_referen
     from polylogue.core.compute_cancel import compute_cancel
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, _check_reference_cancellation
 
-    bootstrap_archive_root(tmp_path)
+    await asyncio.to_thread(bootstrap_archive_root, tmp_path)
     coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
     adapter = BoundedComputeAdapter(max_workers=1)
     execution = DriveCatchupExecution(coordinator, compute_adapter=adapter)

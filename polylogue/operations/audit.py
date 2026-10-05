@@ -56,9 +56,12 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     source_manifest_from_dict,
 )
 from polylogue.storage.sqlite.audit_continuity import (
+    EXCISION_SOURCE_COMMIT_KIND,
     AuditContinuityCoordinator,
     AuditContinuityUnknownMutationError,
     AuditMutation,
+    CanonicalAuditLiteral,
+    excision_completion_identity,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityError as AuditContinuityError
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityPendingError as AuditContinuityPendingError
@@ -775,7 +778,20 @@ class AuditRepository:
         return None if row is None else dict(row)
 
     @contextmanager
-    def settled_machine_read(self) -> Iterator[dict[str, int]]:
+    def recovery_discovery_read(self) -> Iterator[None]:
+        """Read recovery facts in their actual coordinated or settled view."""
+        if self._coordinated_connection is not None:
+            from polylogue.core.write_lease import require_write_lease
+
+            if require_write_lease("coordinated recovery discovery", archive_root=self.path.parent) is None:
+                raise RuntimeError("coordinated recovery discovery requires its original archive writer")
+            yield
+            return
+        with self.settled_machine_read(wait_for_lock=True):
+            yield
+
+    @contextmanager
+    def settled_machine_read(self, *, wait_for_lock: bool = False) -> Iterator[dict[str, int]]:
         """Read machine receipts without contending for audit's writer leaf.
 
         Continuity first proves that source and audit agree.  Every repository
@@ -783,7 +799,7 @@ class AuditRepository:
         a completion waiter must never turn a concurrent durable mutation into
         a second writer acquisition.
         """
-        with self._continuity.settled_read() as versions:
+        with self._continuity.settled_read(wait_for_lock=wait_for_lock) as versions:
             depth = getattr(self._settled_reader, "depth", 0)
             self._settled_reader.depth = depth + 1
             try:
@@ -871,12 +887,14 @@ class AuditRepository:
 
     @staticmethod
     def _bind_machine_result(conn: sqlite3.Connection, mutation: AuditMutation, result: object) -> None:
-        raw = mutation.payload.get("machine_request")
+        if mutation.kind == EXCISION_SOURCE_COMMIT_KIND:
+            return
+        raw = mutation.mapping_payload.get("machine_request")
         if raw is None:
             return
         binding = MachineRequestBinding(**cast(dict[str, str], raw))
         if mutation.kind == "accept_ingest":
-            manifest = source_manifest_from_dict(mutation.payload["manifest"])
+            manifest = source_manifest_from_dict(mutation.mapping_payload["manifest"])
             conn.execute(
                 """INSERT INTO machine_requests(
                     archive_identity, request_id, principal_ref, fingerprint, operation_name,
@@ -886,13 +904,13 @@ class AuditRepository:
                     *binding.to_dict().values(),
                     manifest.source_generation_id,
                     mutation.created_at_ms,
-                    mutation.payload.get("accepted_deadline_unix_ms"),
+                    mutation.mapping_payload.get("accepted_deadline_unix_ms"),
                 ),
             )
-            operation_id = mutation.payload.get("ingest_operation_id")
+            operation_id = mutation.mapping_payload.get("ingest_operation_id")
             if operation_id is not None:
-                preview_id = cast(str, mutation.payload["preview_id"])
-                authorization_id = cast(str, mutation.payload["authorization_id"])
+                preview_id = cast(str, mutation.mapping_payload["preview_id"])
+                authorization_id = cast(str, mutation.mapping_payload["authorization_id"])
                 conn.execute(
                     """INSERT INTO machine_request_parts(
                         archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref, operation_id
@@ -925,7 +943,7 @@ class AuditRepository:
                         *binding.to_dict().values(),
                         result,
                         mutation.created_at_ms,
-                        mutation.payload.get("accepted_deadline_unix_ms"),
+                        mutation.mapping_payload.get("accepted_deadline_unix_ms"),
                     ),
                 )
             else:
@@ -944,11 +962,11 @@ class AuditRepository:
                 (binding.archive_identity, binding.request_id, ordinal, result, result),
             )
             return
-        if "machine_part" in mutation.payload:
+        if "machine_part" in mutation.mapping_payload:
             changed = conn.execute(
                 """UPDATE machine_request_parts SET operation_id = ?
                 WHERE archive_identity = ? AND request_id = ? AND ordinal = ? AND operation_id IS NULL""",
-                (result, binding.archive_identity, binding.request_id, mutation.payload["machine_part"]),
+                (result, binding.archive_identity, binding.request_id, mutation.mapping_payload["machine_part"]),
             ).rowcount
             if changed != 1:
                 raise MachineRequestConflictError("machine execution part has already started or is missing")
@@ -964,9 +982,10 @@ class AuditRepository:
             return
         plan = cast(
             dict[str, object],
-            mutation.payload.get("plan") or cast(dict[str, object], mutation.payload["preview"])["plan"],
+            mutation.mapping_payload.get("plan")
+            or cast(dict[str, object], mutation.mapping_payload["preview"])["plan"],
         )
-        principal = mutation.payload.get("principal") or mutation.payload.get("authorization")
+        principal = mutation.mapping_payload.get("principal") or mutation.mapping_payload.get("authorization")
         if not isinstance(principal, dict):
             if mutation.kind != "cancel_preview":
                 raise RuntimeError("machine acceptance lacks authenticated authority")
@@ -982,7 +1001,7 @@ class AuditRepository:
         }
         artifact = result
         if mutation.kind == "cancel_preview":
-            artifact = cast(dict[str, object], mutation.payload["preview"])["preview_ref"]
+            artifact = cast(dict[str, object], mutation.mapping_payload["preview"])["preview_ref"]
         if artifact is None:
             return  # Expired authorization has no accepted domain execution.
         if not isinstance(artifact, str) or mutation.kind not in kinds:
@@ -1011,7 +1030,7 @@ class AuditRepository:
             "accept_execution_batch": "execution-batch",
             "seal_insight_execution": "execution-batch",
         }[mutation.kind]
-        raw_page = mutation.payload.get("machine_page")
+        raw_page = mutation.mapping_payload.get("machine_page")
         offset = 0
         if isinstance(raw_page, dict):
             offset, final = int(raw_page["offset"]), bool(raw_page["final"])
@@ -1028,7 +1047,7 @@ class AuditRepository:
                         refs[0],
                         mutation.created_at_ms,
                         len(refs),
-                        mutation.payload.get("accepted_deadline_unix_ms"),
+                        mutation.mapping_payload.get("accepted_deadline_unix_ms"),
                     ),
                 )
             else:
@@ -1056,7 +1075,7 @@ class AuditRepository:
                     kind,
                     refs[0],
                     mutation.created_at_ms,
-                    mutation.payload.get("accepted_deadline_unix_ms"),
+                    mutation.mapping_payload.get("accepted_deadline_unix_ms"),
                     binding.archive_identity,
                     binding.request_id,
                     len(refs),
@@ -1076,7 +1095,7 @@ class AuditRepository:
                     refs[0],
                     mutation.created_at_ms,
                     len(refs),
-                    mutation.payload.get("accepted_deadline_unix_ms"),
+                    mutation.mapping_payload.get("accepted_deadline_unix_ms"),
                 ),
             )
         for ordinal, ref in enumerate(refs):
@@ -1642,10 +1661,12 @@ class AuditRepository:
     def _replay_domain_mutation(self, conn: sqlite3.Connection, mutation: AuditMutation) -> object:
         """Replay the stored typed command without allocating fresh ids or clocks."""
 
-        payload = mutation.payload
+        payload = {} if mutation.kind == EXCISION_SOURCE_COMMIT_KIND else mutation.mapping_payload
         self._coordinated_connection = conn
         self._coordinated_mutation = mutation
         try:
+            if mutation.kind == EXCISION_SOURCE_COMMIT_KIND:
+                return self._project_excision_source_completion(conn, mutation)
             if mutation.kind in {"create_preview_batch", "issue_authorization_batch", "cancel_preview_batch"}:
                 return self._apply_authority_batch()
             if mutation.kind == "accept_ingest":
@@ -1774,10 +1795,85 @@ class AuditRepository:
             self._coordinated_mutation = None
             self._coordinated_connection = None
 
+    @staticmethod
+    def _project_excision_source_completion(conn: sqlite3.Connection, mutation: AuditMutation) -> None:
+        """Bind the whole actual Source receipt to its original begun closure."""
+        from polylogue.storage.io_phase_metrics import connection_cursor
+
+        payload = mutation.payload
+        if not isinstance(payload, CanonicalAuditLiteral):
+            raise AuditContinuityError("excision Source completion lacks its native canonical receipt")
+        operation_id, attempt_id, plan_hash = excision_completion_identity(payload)
+        with connection_cursor(
+            conn,
+            "SELECT r.operation_name,r.plan_hash,r.status,a.state FROM operation_runs AS r "
+            "JOIN operation_attempts AS a ON a.operation_id=r.operation_id "
+            "WHERE r.operation_id=? AND a.attempt_id=? AND a.target_ordinal=0 "
+            "AND a.rowid=(SELECT max(latest.rowid) FROM operation_attempts AS latest WHERE latest.operation_id=r.operation_id)",
+            (operation_id, attempt_id),
+        ) as cursor:
+            original = cursor.fetchone()
+        if (
+            original is None
+            or tuple(original[:2]) != ("mutate-session-excision", plan_hash)
+            or tuple(original[2:]) not in {("running", "running"), ("interrupted", "unknown")}
+        ):
+            raise AuditContinuityError("excision Source completion differs from its current begun attempt")
+        AuditRepository._append_event(
+            conn,
+            operation_id=operation_id,
+            attempt_id=attempt_id,
+            event_type="excision_source_committed",
+            occurred_at_ms=mutation.created_at_ms,
+            detail=payload,
+        )
+        # The event and continuity head share this transaction. Validate the
+        # native JSON relation without hydrating any target or hash array.
+        with connection_cursor(
+            conn,
+            "WITH receipt AS (SELECT e.detail_json FROM operation_events AS e "
+            "WHERE e.operation_id=? AND e.attempt_id=? AND e.event_type='excision_source_committed'), "
+            "actual AS (SELECT t.key AS ordinal,json_extract(t.value,'$.session_id') AS session_id,t.value AS detail "
+            "FROM receipt,json_each(receipt.detail_json,'$.targets') AS t), "
+            "expected AS (SELECT t.ordinal,t.target_ref,t.state,t.target_kind "
+            "FROM operation_targets AS t WHERE t.operation_id=?), "
+            "dispositions AS (SELECT h.value AS hash,1 AS removed FROM actual AS a,"
+            "json_each(a.detail,'$.removed_blob_hashes') AS h UNION ALL "
+            "SELECT h.value AS hash,0 AS removed FROM actual AS a,json_each(a.detail,'$.shared_blob_hashes') AS h) "
+            "SELECT (SELECT count(*) FROM receipt)=1 "
+            "AND (SELECT count(*) FROM actual)=(SELECT target_count FROM operation_runs WHERE operation_id=?) "
+            "AND (SELECT count(*) FROM actual)=(SELECT count(DISTINCT session_id) FROM actual) "
+            "AND NOT EXISTS(SELECT 1 FROM actual AS a LEFT JOIN expected AS e ON e.ordinal=a.ordinal "
+            "WHERE e.ordinal IS NULL OR e.target_ref IS NOT ('session:'||a.session_id) OR a.session_id='' "
+            "OR e.target_kind!='session' OR e.state!=CASE WHEN ? THEN 'unknown' "
+            "WHEN e.ordinal=0 THEN 'running' ELSE 'pending' END) "
+            "AND NOT EXISTS(SELECT 1 FROM expected AS e LEFT JOIN actual AS a ON a.ordinal=e.ordinal "
+            "WHERE a.ordinal IS NULL) "
+            "AND NOT EXISTS(SELECT 1 FROM dispositions GROUP BY hash HAVING min(removed)!=max(removed)) "
+            "AND NOT EXISTS(SELECT 1 FROM operation_runs AS r JOIN operation_previews AS p ON p.preview_id=r.preview_id, "
+            "json_each(p.plan_json,'$.replay_context.context.targets') AS frozen "
+            "LEFT JOIN actual AS a ON a.session_id=json_extract(frozen.value,'$.session_id') "
+            "WHERE r.operation_id=? AND a.ordinal IS NULL) "
+            "AND (SELECT count(*) FROM operation_runs AS r JOIN operation_previews AS p ON p.preview_id=r.preview_id, "
+            "json_each(p.plan_json,'$.replay_context.context.targets') WHERE r.operation_id=?)=(SELECT count(*) FROM actual)",
+            (
+                operation_id,
+                attempt_id,
+                operation_id,
+                operation_id,
+                original[2] == "interrupted",
+                operation_id,
+                operation_id,
+            ),
+        ) as cursor:
+            complete = cursor.fetchone()
+        if complete is None or complete[0] != 1:
+            raise AuditContinuityError("excision Source receipts differ from the complete original target closure")
+
     def _command_value(self, key: str, fallback: object) -> object:
         if self._coordinated_mutation is None:
             return fallback
-        return self._coordinated_mutation.payload.get(key, fallback)
+        return self._coordinated_mutation.mapping_payload.get(key, fallback)
 
     def _begin(self, conn: sqlite3.Connection) -> None:
         """Start a standalone audit transaction, or reuse the coordinator's one."""
@@ -1791,7 +1887,7 @@ class AuditRepository:
             raise RuntimeError("authority batches require source-WAL continuity")
         results: list[str] = []
         try:
-            for command in cast(list[dict[str, object]], outer.payload["commands"]):
+            for command in cast(list[dict[str, object]], outer.mapping_payload["commands"]):
                 result = self._replay_domain_mutation(conn, AuditMutation.from_command(command))
                 if outer.kind == "cancel_preview_batch":
                     result = cast(dict[str, object], cast(dict[str, object], command["payload"])["preview"])[
@@ -1834,7 +1930,7 @@ class AuditRepository:
         if plan is not None:
             if self._coordinated_mutation is None:
                 raise RuntimeError("paired ingest authority requires source-WAL coordination")
-            self._apply_ingest_runtime_payload(self._coordinated_mutation.payload)
+            self._apply_ingest_runtime_payload(self._coordinated_mutation.mapping_payload)
         return manifest.source_generation_id
 
     def _apply_ingest_runtime_payload(self, payload: Mapping[str, object]) -> None:
@@ -1983,7 +2079,7 @@ class AuditRepository:
             if transition == "seal_insight_execution" and binding.operation_name == _INSIGHT_MACHINE_OPERATION:
                 return binding.archive_identity
         if self._coordinated_mutation is not None:
-            raw = self._coordinated_mutation.payload.get("machine_request")
+            raw = self._coordinated_mutation.mapping_payload.get("machine_request")
             if isinstance(raw, dict) and raw.get("operation_name") == _INSIGHT_MACHINE_OPERATION:
                 archive_identity = raw.get("archive_identity")
                 if isinstance(archive_identity, str):
@@ -2446,7 +2542,7 @@ class AuditRepository:
                 WHERE p.authorization_ref = ?""",
                 (str(row[0]),),
             ).fetchone()
-            command = {} if self._coordinated_mutation is None else self._coordinated_mutation.payload
+            command = {} if self._coordinated_mutation is None else self._coordinated_mutation.mapping_payload
             if preview.plan.operation == "mutate-rebuild-insights" and reservation is None:
                 raise TokenConsumedError("unsealed insight authority cannot start an execution")
             if reservation is None and "machine_part" in command:
@@ -2888,6 +2984,10 @@ class AuditRepository:
             if complete
             else ()
         )
+        attempt = conn.execute(
+            "SELECT attempt_id FROM operation_attempts WHERE operation_id=? ORDER BY rowid DESC LIMIT 1",
+            (operation_id,),
+        ).fetchone()
         return RecoveryOperation(
             operation_id=str(operation_id),
             operation=str(operation),
@@ -2899,6 +2999,7 @@ class AuditRepository:
             reconstructed_target_count=len(target_rows),
             target_evidence_complete=complete,
             context=context,
+            attempt_id=None if attempt is None else str(attempt[0]),
         )
 
     def operation_plan(self, operation_id: str) -> MutationPlan:
@@ -3655,20 +3756,21 @@ class AuditRepository:
         operation_id: str,
         event_type: str,
         occurred_at_ms: int,
-        detail: Mapping[str, object],
+        detail: Mapping[str, object] | CanonicalAuditLiteral,
         target_ordinal: int | None = None,
         attempt_id: str | None = None,
         from_state: str | None = None,
         to_state: str | None = None,
         actor_ref: str | None = None,
     ) -> None:
-        sequence = int(
-            conn.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM operation_events WHERE operation_id = ?",
-                (operation_id,),
-            ).fetchone()[0]
-        )
-        conn.execute(
+        from polylogue.storage.io_phase_metrics import connection_cursor
+
+        with connection_cursor(
+            conn, "SELECT COALESCE(MAX(sequence), 0) + 1 FROM operation_events WHERE operation_id = ?", (operation_id,)
+        ) as cursor:
+            sequence = int(cursor.fetchone()[0])
+        with connection_cursor(
+            conn,
             """
             INSERT INTO operation_events(
                 operation_id, sequence, target_ordinal, attempt_id, event_type,
@@ -3685,9 +3787,20 @@ class AuditRepository:
                 to_state,
                 actor_ref,
                 occurred_at_ms,
-                json.dumps(dict(detail), sort_keys=True, separators=(",", ":")),
+                "{}"
+                if isinstance(detail, CanonicalAuditLiteral)
+                else json.dumps(dict(detail), sort_keys=True, separators=(",", ":")),
             ),
-        )
+        ):
+            pass
+        if isinstance(detail, CanonicalAuditLiteral):
+            from polylogue.storage.sqlite.audit_continuity import write_canonical_audit_literal
+
+            with connection_cursor(
+                conn, "SELECT rowid FROM operation_events WHERE operation_id=? AND sequence=?", (operation_id, sequence)
+            ) as cursor:
+                rowid = int(cursor.fetchone()[0])
+            write_canonical_audit_literal(conn, "operation_events", "detail_json", rowid, detail)
 
 
 __all__ = ["AuditRepository", "AuditTargetState", "plan_from_stored_payload", "token_sha256"]

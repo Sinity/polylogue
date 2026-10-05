@@ -174,6 +174,32 @@ def backup_archive(
     return result
 
 
+def _retryable_archive_io_failure(exc: BaseException) -> bool:
+    """Classify the backup family's existing named infrastructure failures."""
+    cause: BaseException | None = exc
+    visited: set[int] = set()
+    retryable = False
+    while cause is not None and id(cause) not in visited:
+        visited.add(id(cause))
+        if isinstance(cause, OSError):
+            retryable = True
+            break
+        if isinstance(cause, sqlite3.OperationalError) and (getattr(cause, "sqlite_errorcode", 0) & 0xFF) in {
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_READONLY,
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_FULL,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PROTOCOL,
+            sqlite3.SQLITE_PERM,
+        }:
+            retryable = True
+            break
+        cause = cause.__cause__
+    return retryable
+
+
 async def execute_backup_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
@@ -201,8 +227,34 @@ async def execute_backup_operation(
             archive_root_path=context.archive_root,
         )
 
+    # The first readability observation owns no backup artifact or write attempt.
+    # The snapshot route rechecks under its writer authority before copying.
+    try:
+        preflight = await runtime.compute_phase(
+            lambda: backup_archive(
+                output_dir=Path(str(payload["output_dir"])),
+                check_only=True,
+                profile=cast(BackupProfile, payload.get("profile", "rebuildable_cache_exclude")),
+                archive_root_path=context.archive_root,
+            )
+        )
+    except (sqlite3.Error, OSError) as exc:
+        retryable = _retryable_archive_io_failure(exc)
+        return operation_envelope(
+            request,
+            context,
+            snapshot=snapshot,
+            outcome="failed" if retryable else "rejected",
+            error={
+                "code": "backup_io_fault" if retryable else type(exc).__name__,
+                "detail": str(exc),
+                "retryable": retryable,
+            },
+        )
     if payload.get("check_only"):
-        result = await runtime.compute_phase(run)
+        result = preflight
+    elif package._has_backup_error(preflight.warnings):
+        result = preflight.model_copy(update={"check_only": False})
     else:
         runtime.begin_unbound_write(request, snapshot=snapshot)
         result = await runtime.write_phase("backup", run)
@@ -431,27 +483,7 @@ async def execute_restore_verified_backup_operation(
         json.JSONDecodeError,
     ) as exc:
         destination = Path(str(request.payload["destination"]))
-        cause: BaseException | None = exc
-        visited: set[int] = set()
-        retryable = False
-        while cause is not None and id(cause) not in visited:
-            visited.add(id(cause))
-            if isinstance(cause, OSError):
-                retryable = True
-                break
-            if isinstance(cause, sqlite3.OperationalError) and (getattr(cause, "sqlite_errorcode", 0) & 0xFF) in {
-                sqlite3.SQLITE_BUSY,
-                sqlite3.SQLITE_LOCKED,
-                sqlite3.SQLITE_READONLY,
-                sqlite3.SQLITE_IOERR,
-                sqlite3.SQLITE_FULL,
-                sqlite3.SQLITE_CANTOPEN,
-                sqlite3.SQLITE_PROTOCOL,
-                sqlite3.SQLITE_PERM,
-            }:
-                retryable = True
-                break
-            cause = cause.__cause__
+        retryable = _retryable_archive_io_failure(exc)
         error: dict[str, object] = {
             "code": "restore_io_fault" if retryable else getattr(exc, "code", "restore_invalid_evidence"),
             "retryable": retryable,

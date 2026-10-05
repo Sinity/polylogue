@@ -1,0 +1,119 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": "proof:authenticated-source-pre-migration-package",
+  "current_version": 5,
+  "declared_at_ms": 1,
+  "drop_constraints": [
+    {
+      "after_rider_ids": [
+        "frontier-dependency-journal"
+      ],
+      "consent_ref": "sinnix://projects/polylogue/beads/polylogue-pkhhu",
+      "copy_forward_proof_ref": "proof:frontier-journal-original-publication",
+      "object_ref": "trigger:raw_existence_delete"
+    },
+    {
+      "after_rider_ids": [
+        "frontier-dependency-journal"
+      ],
+      "consent_ref": "sinnix://projects/polylogue/beads/polylogue-pkhhu",
+      "copy_forward_proof_ref": "proof:frontier-journal-original-publication",
+      "object_ref": "trigger:raw_existence_key_change"
+    }
+  ],
+  "failure": null,
+  "manifest_format": "polylogue.durable-change-train.v2",
+  "manifest_sha256": "26aa85c898cd194b6d3de6f10ea6a04d467d9583d3c173fee56e68c40a9c4cba",
+  "migration": {
+    "owner_ref": "006_raw_frontier_dependency_journal.sql",
+    "path": "006_raw_frontier_dependency_journal.sql",
+    "requires_backup": true,
+    "slot": 6,
+    "sql_sha256": "c490c1a8d88c2bf1c884b8af2acf0af641cc2c8de10f6054746c2b85f776b5b7",
+    "target_version": 6,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "sinnix://projects/polylogue/beads/polylogue-pkhhu",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:frontier-journal-original-publication"
+      ],
+      "owner_ref": "sinnix://projects/polylogue/beads/polylogue-pkhhu",
+      "rider_id": "frontier-dependency-journal",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:frontier-journal-original-publication",
+          "consumer_id": "frontier-inspection",
+          "production_ref": "polylogue/storage/frontier_inspection.py:read_frontier_journal_state",
+          "roles": [
+            "read"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:frontier-journal-original-publication",
+          "consumer_id": "frontier-coverage-readiness",
+          "production_ref": "polylogue/storage/frontier_inspection.py:read_frontier_inspection_mark",
+          "roles": [
+            "read"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "trigger:raw_existence_frontier_raw_sessions_insert",
+        "trigger:raw_existence_frontier_raw_sessions_update",
+        "trigger:raw_existence_frontier_raw_sessions_update_old_key",
+        "trigger:raw_existence_frontier_raw_sessions_delete",
+        "trigger:raw_existence_frontier_raw_artifacts_insert",
+        "trigger:raw_existence_frontier_raw_artifacts_update",
+        "trigger:raw_existence_frontier_raw_artifacts_update_old_key",
+        "trigger:raw_existence_frontier_raw_artifacts_delete",
+        "trigger:raw_existence_frontier_raw_session_memberships_insert",
+        "trigger:raw_existence_frontier_raw_session_memberships_update",
+        "trigger:raw_existence_frontier_raw_session_memberships_update_old_key",
+        "trigger:raw_existence_frontier_raw_session_memberships_delete",
+        "trigger:raw_existence_frontier_raw_membership_census_insert",
+        "trigger:raw_existence_frontier_raw_membership_census_update",
+        "trigger:raw_existence_frontier_raw_membership_census_update_old_key",
+        "trigger:raw_existence_frontier_raw_membership_census_delete",
+        "trigger:raw_existence_frontier_raw_authority_parser_census_insert",
+        "trigger:raw_existence_frontier_raw_authority_parser_census_update",
+        "trigger:raw_existence_frontier_raw_authority_parser_census_update_old_key",
+        "trigger:raw_existence_frontier_raw_authority_parser_census_delete",
+        "trigger:raw_existence_frontier_verified_blob_receipts_insert",
+        "trigger:raw_existence_frontier_verified_blob_receipts_update",
+        "trigger:raw_existence_frontier_verified_blob_receipts_delete",
+        "trigger:raw_existence_frontier_gc_generation_members_insert",
+        "trigger:raw_existence_frontier_gc_generation_members_update",
+        "trigger:raw_existence_frontier_gc_generation_members_delete",
+        "trigger:raw_existence_frontier_verified_blob_receipts_update_old_key",
+        "trigger:raw_existence_frontier_gc_generation_members_update_old_key",
+        "trigger:raw_existence_frontier_blob_refs_insert",
+        "trigger:raw_existence_frontier_blob_refs_update",
+        "trigger:raw_existence_frontier_blob_refs_delete",
+        "trigger:raw_existence_frontier_blob_refs_update_old_key",
+        "index:idx_raw_authority_blockers_frontier_key"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "schema_replay_proof": null,
+  "slot": 6,
+  "state": "declared",
+  "target_version": 6,
+  "tier": "source",
+  "train_id": "source-frontier-dependency-journal-v6"
+}

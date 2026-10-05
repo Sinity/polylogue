@@ -41,7 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
-from tests.infra.excision_execution import apply_excision_fault_control, execute_excision
+from tests.infra.excision_execution import execute_excision
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
 
 _NATIVE_ID = "session-under-excision"
@@ -198,25 +198,22 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
         persist_pending_marker_input_sync(source, target, expected_incarnation_id=str(uuid.uuid4()))
         asyncio.run(append_accepted_marker_input(_AsyncConnection(source), accepted_target))
         asyncio.run(append_accepted_marker_input(_AsyncConnection(source), other))
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        index.execute(
-            "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
-            "VALUES (?, ?, '[]', ?)",
-            (target.identity, target.payload_sha256, str(uuid.uuid4())),
-        )
-        index.execute(
-            "INSERT INTO ingest_marker_witnesses(request_key, carrier_digest, dispositions_json, incarnation_id) "
-            "VALUES (?, ?, '[]', ?)",
-            (accepted_target.identity, accepted_target.payload_sha256, str(uuid.uuid4())),
-        )
+    from tests.infra.excision_embeddings import seed_excision_marker_witnesses
 
+    seed_excision_marker_witnesses(tmp_path, (target, accepted_target, other))
+
+    with sqlite3.connect(tmp_path / "index.db") as index:
+        outside_marker = index.execute(
+            "SELECT * FROM ingest_marker_witnesses WHERE request_key=?", (other.identity,)
+        ).fetchone()
+        assert outside_marker is not None
     plan = plan_session_excision(tmp_path, session_id)
     assert plan.source_marker_inputs_pending == 1
     assert plan.source_marker_inputs_accepted == 1
-    receipt = apply_excision_fault_control(tmp_path, session_id, reason="marker secret", actor="user:local", now_ms=7)
-    assert receipt.counts["source_marker_inputs_pending"] == 1
-    assert receipt.counts["source_marker_inputs_accepted"] == 1
-    assert receipt.counts["index_marker_witnesses"] == 2
+    receipt = execute_excision(tmp_path, session_id, reason="marker secret", actor="user:local")
+    assert receipt["counts"]["source_marker_inputs_pending"] == 1
+    assert receipt["counts"]["source_marker_inputs_accepted"] == 1
+    assert receipt["counts"]["index_marker_witnesses"] == 2
 
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
@@ -225,7 +222,7 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
             "SELECT raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms "
             "FROM excised_marker_inputs WHERE identity = ?",
             (target.identity,),
-        ).fetchone() == ("raw-target", target.payload_sha256, "pending", None, None, 7)
+        ).fetchone() == ("raw-target", target.payload_sha256, "pending", None, None, receipt["excised_at_ms"])
         accepted_tombstone = source.execute(
             "SELECT raw_id, carrier_digest, state, stream_id, accepted_sequence, excised_at_ms "
             "FROM excised_marker_inputs WHERE identity = ?",
@@ -233,7 +230,8 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
         ).fetchone()
         assert accepted_tombstone is not None
         assert accepted_tombstone[:3] == ("raw-target", accepted_target.payload_sha256, "accepted")
-        assert accepted_tombstone[3] and accepted_tombstone[4] and accepted_tombstone[5] == 7
+        assert accepted_tombstone[3] and accepted_tombstone[4]
+        assert accepted_tombstone[5] == receipt["excised_at_ms"]
         columns = {str(row[1]) for row in source.execute("PRAGMA table_info(excised_marker_inputs)")}
         assert columns.isdisjoint({"payload", "request_facts", "sessions", "candidates", "provenance"})
         source.execute("BEGIN IMMEDIATE")
@@ -256,6 +254,10 @@ def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_pa
             "SELECT COUNT(*) FROM ingest_marker_witnesses WHERE request_key IN (?, ?)",
             (target.identity, accepted_target.identity),
         ).fetchone() == (0,)
+        assert (
+            index.execute("SELECT * FROM ingest_marker_witnesses WHERE request_key=?", (other.identity,)).fetchone()
+            == outside_marker
+        )
 
 
 def test_mixed_marker_carrier_refuses_before_any_session_tier_mutates(tmp_path: Path) -> None:
@@ -322,7 +324,7 @@ def test_an_undeclared_session_keyed_table_makes_excision_refuse(tmp_path: Path)
 def test_raw_existence_journal_is_declared_as_excised(tmp_path: Path) -> None:
     """The deletion journal is scrubbed by name when its raw row is excised.
 
-    ``apply_session_excision`` deletes the journal rows for every excised raw
+    the audited Excision operation deletes the journal rows for every excised raw
     id (``test_excision`` asserts none survive), so the declaration must say
     EXCISED. Anti-vacuity: remove the declaration and the fresh source schema
     is rejected as an undeclared session carrier; declare any other reach and

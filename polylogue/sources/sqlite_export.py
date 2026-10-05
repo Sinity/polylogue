@@ -25,24 +25,28 @@ exactly as it did against the live database. A table with a user column named
 ``rowid`` shadows the alias and is the one shape whose row identity cannot be
 restored.
 
-A generated column is not stored content, and SQLite hides it from
-``PRAGMA table_info``: the export carries the columns it is computed from
-plus the table's original DDL, never the computed value.
+Readable generated columns carry their evaluated values from the same
+acquisition snapshot as ordinary columns. Their original DDL remains evidence;
+reconstruction stores the acquired typed values without replaying expressions.
+Hidden virtual-table implementation columns remain outside the readable shape.
 """
 
 from __future__ import annotations
 
+import array
 import errno
 import hashlib
 import json
 import os
 import resource
+import socket
 import sqlite3
 import stat
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import ExitStack, closing, contextmanager, suppress
@@ -356,106 +360,21 @@ def _raise_worker_error(payload: bytes) -> None:
     raise exc
 
 
-def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | None = None) -> dict[str, Any]:
-    """Exchange only the declared source operations with one drained fresh process."""
-    from polylogue.core.compute_cancel import check_compute_cancelled
-
-    operation = request["operation"]
+@contextmanager
+def _source_worker_process(pass_fds: tuple[int, ...]) -> Iterator[tuple[subprocess.Popen[bytes], str]]:
+    """Own the existing isolated process, pipes and scratch through actual reap."""
     with tempfile.TemporaryDirectory(prefix=".polylogue-sqlite-reader.") as scratch:
-        request["scratch"] = scratch
         process = subprocess.Popen(
             [sys.executable, "-c", _WORKER_COMMAND],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             close_fds=True,
-            pass_fds=tuple({request["directory"], request["metadata_directory"]}),
-            # Every private worker artifact stays below the parent-owned
-            # operation directory, which is removed only after actual reap.
+            pass_fds=pass_fds,
             env={**os.environ, "TMPDIR": scratch},
         )
         try:
-            assert process.stdin is not None and process.stdout is not None
-            _write_frame(process.stdin, b"Q", _control_bytes(request))
-            result: dict[str, Any] = {}
-            got_result = False
-            while True:
-                check_compute_cancelled()
-                kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
-                if kind == b"D":
-                    if (
-                        operation
-                        not in {
-                            "export",
-                            "bytes",
-                            "preflight_bytes",
-                            "staging_receipt",
-                            "copy",
-                            "backup",
-                            "inspect_preflight",
-                            "inspect_explain",
-                        }
-                        or handle is None
-                    ):
-                        raise OSError(errno.EPROTO, "unexpected SQLite export frame")
-                    if not size:
-                        handle.write(b"")
-                    while size:
-                        check_compute_cancelled()
-                        chunk = _read_exact(process.stdout, min(size, _STREAM_CHUNK))
-                        handle.write(chunk)
-                        size -= len(chunk)
-                    process.stdin.write(b"A")
-                    process.stdin.flush()
-                elif kind == b"R":
-                    if (
-                        operation
-                        not in {
-                            "shape",
-                            "inspect_explain",
-                            "inspect_preflight",
-                            "classify",
-                            "backup",
-                            "binding",
-                            "copy",
-                            "bytes",
-                            "preflight_bytes",
-                            "zip_container",
-                            "staging_receipt",
-                        }
-                        or got_result
-                    ):
-                        raise OSError(errno.EPROTO, "unexpected SQLite shape frame")
-                    result = (_decode_shape if operation == "shape" else _decode_control)(
-                        _read_exact(process.stdout, size)
-                    )
-                    got_result = True
-                elif kind == b"E":
-                    _raise_worker_error(_read_exact(process.stdout, size))
-                elif kind == b"S" and size == 0:
-                    if (
-                        operation
-                        in {
-                            "shape",
-                            "inspect_explain",
-                            "inspect_preflight",
-                            "classify",
-                            "backup",
-                            "binding",
-                            "copy",
-                            "bytes",
-                            "preflight_bytes",
-                            "zip_container",
-                            "staging_receipt",
-                        }
-                        and not got_result
-                    ):
-                        raise OSError(errno.EPROTO, "SQLite worker omitted its shape result")
-                    if process.stdout.read(1) or process.wait() != 0:
-                        raise OSError(errno.EPROTO, "SQLite worker did not settle successfully")
-                    return result
-                else:
-                    raise OSError(errno.EPROTO, "invalid SQLite worker frame")
+            yield process, scratch
         finally:
             # A failed callback, cancellation or malformed frame may leave the
             # child blocked on its ACK. Kill and reap that exact child before
@@ -472,6 +391,250 @@ def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | N
                         pass
                 finally:
                     process.stdout.close()
+
+
+def _exchange_worker_request(
+    process: subprocess.Popen[bytes],
+    request: dict[str, Any],
+    handle: BinaryWriteSink | None,
+    *,
+    final: bool,
+    send_request: bool = True,
+) -> dict[str, Any]:
+    from polylogue.core.compute_cancel import check_compute_cancelled
+
+    operation = request["operation"]
+    assert process.stdin is not None and process.stdout is not None
+    if send_request:
+        _write_frame(process.stdin, b"Q", _control_bytes(request))
+    result: dict[str, Any] = {}
+    got_result = False
+    while True:
+        check_compute_cancelled()
+        kind, size = _FRAME_HEADER.unpack(_read_exact(process.stdout, _FRAME_HEADER.size))
+        if kind == b"D":
+            if (
+                operation
+                not in {
+                    "export",
+                    "bytes",
+                    "preflight_bytes",
+                    "staging_receipt",
+                    "copy",
+                    "backup",
+                    "inspect_preflight",
+                    "inspect_explain",
+                }
+                or handle is None
+            ):
+                raise OSError(errno.EPROTO, "unexpected SQLite export frame")
+            if not size:
+                handle.write(b"")
+            while size:
+                check_compute_cancelled()
+                chunk = _read_exact(process.stdout, min(size, _STREAM_CHUNK))
+                if handle.write(chunk) != len(chunk):
+                    raise OSError(errno.EIO, "source sink did not accept its complete frame")
+                size -= len(chunk)
+            process.stdin.write(b"A")
+            process.stdin.flush()
+        elif kind == b"R":
+            if (
+                operation
+                not in {
+                    "binding",
+                    "shape",
+                    "inspect_explain",
+                    "inspect_preflight",
+                    "classify",
+                    "backup",
+                    "copy",
+                    "bytes",
+                    "preflight_bytes",
+                    "zip_container",
+                    "staging_receipt",
+                }
+                or got_result
+            ):
+                raise OSError(errno.EPROTO, "unexpected SQLite shape frame")
+            result = (_decode_shape if operation == "shape" else _decode_control)(_read_exact(process.stdout, size))
+            got_result = True
+        elif kind == b"E":
+            _raise_worker_error(_read_exact(process.stdout, size))
+        elif kind == (b"S" if final else b"C") and size == 0:
+            if (
+                operation
+                in {
+                    "binding",
+                    "shape",
+                    "inspect_explain",
+                    "inspect_preflight",
+                    "classify",
+                    "backup",
+                    "copy",
+                    "bytes",
+                    "preflight_bytes",
+                    "zip_container",
+                    "staging_receipt",
+                }
+                and not got_result
+            ):
+                raise OSError(errno.EPROTO, "SQLite worker omitted its shape result")
+            if final and (process.stdout.read(1) or process.wait() != 0):
+                raise OSError(errno.EPROTO, "SQLite worker did not settle successfully")
+            return result
+        else:
+            raise OSError(errno.EPROTO, "invalid SQLite worker frame")
+
+
+def _exchange_source_worker(request: dict[str, Any], handle: BinaryWriteSink | None = None) -> dict[str, Any]:
+    """Exchange declared non-byte source operations with one fresh process."""
+    if request["operation"] in {"bytes", "preflight_bytes"}:
+        raise OSError(errno.EPROTO, "byte observations require their page owner")
+    with _source_worker_process(tuple({request["directory"], request["metadata_directory"]})) as (process, scratch):
+        return _exchange_worker_request(process, {**request, "scratch": scratch}, handle, final=True)
+
+
+class SourceBytePage:
+    """One creator-owned byte process, acquired only on the first page input."""
+
+    def __init__(self, stack: ExitStack) -> None:
+        self._stack = stack
+        self._process: subprocess.Popen[bytes] | None = None
+        self._channel: socket.socket | None = None
+        self._scratch: str | None = None
+        self._failure: BaseException | None = None
+        self._finished = False
+        self._creator = threading.current_thread()
+
+    def exchange(self, request: dict[str, Any], handle: BinaryWriteSink) -> dict[str, Any]:
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        if threading.current_thread() is not self._creator:
+            raise RuntimeError("source byte page belongs to its original creator")
+        if self._failure is not None or self._finished:
+            raise RuntimeError("source byte page is no longer accepting observations")
+        try:
+            check_compute_cancelled()
+            if request["operation"] not in {"bytes", "preflight_bytes"}:
+                raise OSError(errno.EPROTO, "non-byte observation on source byte page")
+            if self._process is None:
+                parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._stack.callback(parent.close)
+                self._stack.callback(child.close)
+                self._process, self._scratch = self._stack.enter_context(_source_worker_process((child.fileno(),)))
+                assert self._process.stdin is not None
+                _write_frame(
+                    self._process.stdin, b"Q", _control_bytes({"operation": "byte_page", "channel": child.fileno()})
+                )
+                child.close()
+                self._channel = parent
+            assert self._channel is not None and self._process.stdin is not None
+            directory, metadata = request["directory"], request["metadata_directory"]
+            message = {
+                **request,
+                "scratch": self._scratch,
+                "directory_identity": list(_identity(os.fstat(directory))),
+                "metadata_identity": list(_identity(os.fstat(metadata))),
+            }
+            # One outstanding request and one ancillary marker bind the exact
+            # two original directory capabilities to that request, in order.
+            _write_frame(self._process.stdin, b"Q", _control_bytes(message))
+            rights = array.array("i", (directory, metadata))
+            if self._channel.sendmsg([b"A"], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)]) != 1:
+                raise OSError(errno.EPROTO, "source byte directory transfer was incomplete")
+            return _exchange_worker_request(self._process, message, handle, final=False, send_request=False)
+        except BaseException as error:
+            self.reject(error)
+            raise
+
+    def reject(self, error: BaseException) -> None:
+        """Settle the child before an original binding can release its anchors."""
+        if threading.current_thread() is not self._creator:
+            raise error
+        if self._failure is None:
+            self._failure = error
+        self._stack.close()
+
+    def finish(self) -> None:
+        from polylogue.core.compute_cancel import check_compute_cancelled
+
+        if threading.current_thread() is not self._creator:
+            raise RuntimeError("source byte page must settle on its original creator")
+        self._finished = True
+        if self._failure is not None:
+            raise self._failure
+        check_compute_cancelled()
+        if self._process is None:
+            return
+        assert self._process.stdin is not None and self._process.stdout is not None
+        _write_frame(self._process.stdin, b"F")
+        kind, size = _FRAME_HEADER.unpack(_read_exact(self._process.stdout, _FRAME_HEADER.size))
+        if kind != b"S" or size or self._process.stdout.read(1) or self._process.wait() != 0:
+            raise OSError(errno.EPROTO, "source byte page did not physically settle")
+
+
+@contextmanager
+def source_byte_page() -> Iterator[SourceBytePage]:
+    """Lend a bounded caller page; no process or socket is created for empty input."""
+    with ExitStack() as stack:
+        page = SourceBytePage(stack)
+        try:
+            yield page
+            page.finish()
+        finally:
+            page._finished = True
+
+
+def _source_byte_page_main(channel_fd: int) -> None:
+    """Each request closes its original file and received directories before C."""
+    from polylogue.sources.source_staging import _read_bound_input_in_worker
+
+    with socket.socket(fileno=channel_fd) as channel:
+        while True:
+            kind, size = _FRAME_HEADER.unpack(_read_exact(sys.stdin.buffer, _FRAME_HEADER.size))
+            if kind == b"F" and size == 0:
+                _write_frame(sys.stdout.buffer, b"S")
+                return
+            if kind != b"Q":
+                raise OSError(errno.EPROTO, "invalid source byte page request")
+            request = _decode_control(_read_exact(sys.stdin.buffer, size))
+            descriptors: list[int] = []
+            try:
+                marker, ancillary, flags, _address = channel.recvmsg(
+                    1, socket.CMSG_SPACE(2 * array.array("i").itemsize)
+                )
+                valid = marker == b"A" and not flags
+                for level, kind, payload in ancillary:
+                    if level != socket.SOL_SOCKET or kind != socket.SCM_RIGHTS:
+                        valid = False
+                        continue
+                    rights = array.array("i")
+                    complete = len(payload) - len(payload) % rights.itemsize
+                    rights.frombytes(payload[:complete])
+                    descriptors.extend(rights)
+                    if complete != len(payload):
+                        valid = False
+                if not valid or len(descriptors) != 2:
+                    raise OSError(errno.EPROTO, "invalid source byte directory capabilities")
+                directory, metadata = descriptors
+                for descriptor, expected in zip(
+                    descriptors, (request["directory_identity"], request["metadata_identity"]), strict=True
+                ):
+                    observed = os.fstat(descriptor)
+                    if not stat.S_ISDIR(observed.st_mode) or list(_identity(observed)) != expected:
+                        raise OSError(errno.ESTALE, "source byte directory differs from its accepted anchor")
+                if request["operation"] not in {"bytes", "preflight_bytes"}:
+                    raise OSError(errno.EPROTO, "invalid source byte page operation")
+                request["directory"], request["metadata_directory"] = directory, metadata
+                result = _read_bound_input_in_worker(
+                    request, _WorkerSink() if request["operation"] == "bytes" else None
+                )
+            finally:
+                for descriptor in descriptors:
+                    os.close(descriptor)
+            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
+            _write_frame(sys.stdout.buffer, b"C")
 
 
 class _ProgressSink:
@@ -717,6 +880,9 @@ def _source_worker_main() -> None:
         if kind != b"Q":
             raise OSError(errno.EPROTO, "invalid SQLite source request")
         request = json.loads(_read_exact(sys.stdin.buffer, size))
+        if request["operation"] == "byte_page":
+            _source_byte_page_main(request["channel"])
+            return
         source = Path(request["source"])
         accepted = {
             name: None if identity is None else cast(_FileIdentity, tuple(identity))
@@ -773,13 +939,6 @@ def _source_worker_main() -> None:
                     }
                 ),
             )
-            _write_frame(sys.stdout.buffer, b"S")
-            return
-        if request["operation"] in {"bytes", "preflight_bytes"}:
-            from polylogue.sources.source_staging import _read_bound_input_in_worker
-
-            result = _read_bound_input_in_worker(request, _WorkerSink() if request["operation"] == "bytes" else None)
-            _write_frame(sys.stdout.buffer, b"R", _control_bytes(result))
             _write_frame(sys.stdout.buffer, b"S")
             return
         if request["operation"] == "copy":
@@ -885,9 +1044,7 @@ def _source_worker_main() -> None:
                     for row in schema:
                         if _schema_text(row[0]) == "table":
                             table = _schema_text(row[1])
-                            quoted = '"' + table.replace('"', '""') + '"'
-                            with closing(conn.execute(f"PRAGMA table_info({quoted})")) as cursor:
-                                shape[table] = [_schema_text(item[1]) for item in cursor.fetchall()]
+                            shape[table] = [_schema_text(item[1]) for item in readable_table_info(conn, table)]
                 elif request["operation"] == "classify":
                     from polylogue.sources.sqlite_inspection import _classify_connection
 
@@ -1065,9 +1222,7 @@ def readable_table_info(conn: sqlite3.Connection, table: str) -> list[tuple[Any,
 def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str], bool]:
     """Return the exported columns, the row order, the declared columns, and
     whether the first exported column is the synthetic ``rowid``."""
-    quoted = '"' + table.replace('"', '""') + '"'
-    with closing(conn.execute(f"PRAGMA table_info({quoted})")) as cursor:
-        columns = cursor.fetchall()
+    columns = readable_table_info(conn, table)
     column_names = [_schema_text(row[1]) for row in columns]
     is_without_rowid = "WITHOUT ROWID" in table_sql.upper()
     # A user column literally named ``rowid`` shadows the alias, so the
@@ -1146,10 +1301,12 @@ def _write_export_connection(
         # contents are logical state: an insert-then-delete on an
         # AUTOINCREMENT table leaves every user row identical while
         # advancing the stored high-water mark.
-        with closing(conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name")) as cursor:
+        with closing(
+            conn.execute("SELECT typeof(name), name, typeof(seq), seq FROM sqlite_sequence ORDER BY name")
+        ) as cursor:
             sequence_rows = [
-                [_schema_text(name), _schema_text(seq) if seq is not None else None]
-                for name, seq in cursor
+                [_encode_value(_schema_text(name_type), name), _encode_value(_schema_text(seq_type), seq)]
+                for name_type, name, seq_type, seq in cursor
                 if declared is None or _schema_text(name) in declared
             ]
     header = (
@@ -1386,7 +1543,7 @@ def _create_statement(table: str, columns: Sequence[str]) -> str:
     """Recreate the table untyped so every stored value round-trips exactly.
 
     The original DDL is retained in the export as evidence, but replaying it
-    would refuse rows a generated column or a CHECK constraint owns. An
+    would recompute acquired generated values or refuse rows a CHECK owns. An
     untyped table applies no affinity conversion, so an INTEGER stays an
     INTEGER and a TEXT stays a TEXT.
 

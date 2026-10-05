@@ -16,6 +16,7 @@ from polylogue.config import Source
 from polylogue.core.errors import SchemaSkewError
 from polylogue.operations.canonical_archive_ingest import (
     ingest_sources_archive,
+    one_shot_compute_owner,
     scoped_one_shot_archive_owner,
 )
 from polylogue.scenarios import (
@@ -1695,7 +1696,10 @@ async def _seed_demo_archive_owned(
 
     source_root = materialize_demo_source(archive_root, force=force)
     with _pushd(source_root):
-        result = await ingest_sources_archive(archive_root, demo_source_specs(source_root), parse_workers=1)
+        async with one_shot_compute_owner(parse_workers=1) as adapter:
+            result = await ingest_sources_archive(
+                archive_root, demo_source_specs(source_root), compute_adapter=adapter, parse_workers=1
+            )
 
     apply_demo_post_ingest_augmentation(archive_root)
     overlay = seed_demo_user_overlays(archive_root) if with_overlays else None

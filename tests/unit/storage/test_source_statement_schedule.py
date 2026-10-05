@@ -572,7 +572,7 @@ def test_accepted_reservation_close_retry_never_reapplies_or_exposes_changed_aut
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from polylogue.storage.sqlite import connection_profile
     from polylogue.storage.sqlite.connection_profile import NativeConnectionSettlementError
-    from tests.infra.sqlite_cursor_settlement import ControlledConnection
+    from tests.infra.sqlite_cursor_settlement import ControlledConnection, sqlite_factory_targets_database
 
     root = source_statement_root
     publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
@@ -589,7 +589,7 @@ def test_accepted_reservation_close_retry_never_reapplies_or_exposes_changed_aut
             self.close_failure = OSError("synthetic committed reservation close remains unsettled")
 
     def controlled(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
-        if str(database) in {str(root / "source.db"), f"file:{root / 'source.db'}?mode=rw"}:
+        if sqlite_factory_targets_database(database, (root / "source.db",)):
             return sqlite3.connect(database, *args, factory=ReservationConnection, **kwargs)
         return original_factory(database, *args, **kwargs)
 
@@ -1044,7 +1044,7 @@ def test_prepared_cas_input_charges_actual_claim_before_read_and_reuses_original
                         seal._scratch,
                         "SELECT column_name,byte_length FROM temp.original_input_fields "
                         "WHERE tier='source' AND epoch=? AND table_name='blob_publication_reservations' "
-                        "AND physical_rowid=? AND column_name IN ('blob_hash','size_bytes','publisher_id')",
+                        "AND row_address=? AND column_name IN ('blob_hash','size_bytes','publisher_id')",
                         (seal._original_input_epochs["source"], physical_rowid),
                     ) as cursor:
                         fields = dict(cursor)

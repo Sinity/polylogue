@@ -22,7 +22,9 @@ from polylogue.archive.message.roles import Role
 from polylogue.config import Config
 from polylogue.core.errors import InsightMaintenanceRequiresDaemonError
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_archive_fixture_prepare
 from tests.infra.builders import make_conv, make_msg
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
 
@@ -530,7 +532,7 @@ class TestPolylogueReadSurfaces:
         from polylogue.sources.parsers.base import ParsedMessage, ParsedSession, ParsedSessionEvent
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        archive = _archive(tmp_path)
+        archive = await run_archive_fixture_prepare(lambda: _archive(tmp_path))
 
         parsed = ParsedSession(
             source_name=Provider.from_string("codex"),
@@ -552,13 +554,16 @@ class TestPolylogueReadSurfaces:
                 ),
             ],
         )
-        with ArchiveStore(archive.archive_root) as archive_db:
-            _raw_id, native_id = archive_db.write_raw_and_parsed(
-                parsed,
-                payload=b'{"raw": "codex payload"}',
-                source_path="/tmp/raw.jsonl",
-                acquired_at_ms=1735689600000,
-            )
+
+        def prepare_archive_1() -> str:
+            with ArchiveStore(archive.archive_root) as archive_db:
+                native_id = write_fixture_index_session(
+                    archive_db._conn, parsed, archive_root=archive_db.index_db_path.parent
+                )
+
+            return native_id
+
+        native_id = await run_archive_fixture_prepare(prepare_archive_1)
 
         events = await archive.get_session_events(native_id)
         assert events is not None
@@ -577,12 +582,14 @@ class TestPolylogueReadSurfaces:
         assert bounded is not None
         assert len(bounded) == 1
 
-        no_events_native_id = _seed(
-            archive,
-            "conv-no-events",
-            provider="claude-ai",
-            title="No Events",
-            provider_session_id="provider-no-events",
+        no_events_native_id = await run_archive_fixture_prepare(
+            lambda: _seed(
+                archive,
+                "conv-no-events",
+                provider="claude-ai",
+                title="No Events",
+                provider_session_id="provider-no-events",
+            )
         )
         empty = await archive.get_session_events(no_events_native_id)
         assert empty == []

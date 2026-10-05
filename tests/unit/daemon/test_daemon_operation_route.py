@@ -2450,8 +2450,13 @@ def test_slow_aggregate_waits_for_valid_work_unless_the_caller_declares_a_deadli
 
 
 def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from functools import partial
+
+    from tests.infra.archive_templates import run_archive_fixture_prepare
+
     def seed(root: Path) -> None:
-        _seed_sessions(root, count=2)
+        asyncio.run(run_archive_fixture_prepare(partial(_seed_sessions, root, count=2)))
 
     with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
         actual_submit = stack.execution_kernel.submit
@@ -2471,7 +2476,7 @@ def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatc
 
         monkeypatch.setattr(stack.execution_kernel, "submit", record_submit)
         monkeypatch.setattr(stack.runtime, "call", record_call)
-        envelope = stack.client.operation("query.aggregate", {"mode": "count", "params": {"limit": 1}})
+        envelope = stack.client.operation("query.aggregate", {"mode": "count"})
         assert envelope is not None
         assert envelope["outcome"] == "completed"
         assert envelope["result"]["count"] == 2
@@ -2480,13 +2485,17 @@ def test_socket_aggregate_uses_bulk_compute_admission(tmp_path: Path, monkeypatc
         assert reserved_bytes[0] > 0
 
 
+@pytest.mark.parametrize("shutdown_delivery", [False, True])
 def test_socket_controls_remain_available_during_waiting_work_and_slow_delivery(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shutdown_delivery: bool
 ) -> None:
     """Use real sockets, queued work and an unread large response, without reserving fake slots."""
+    import asyncio
+
     from polylogue.operations import daemon_reads
     from polylogue.operations.daemon_protocol import DaemonOperationRequest
     from polylogue.storage.sqlite.connection import _clear_connection_cache
+    from tests.infra.archive_templates import run_archive_fixture_prepare
 
     session_id = ""
     entered = threading.Event()
@@ -2498,10 +2507,15 @@ def test_socket_controls_remain_available_during_waiting_work_and_slow_delivery(
 
     def seed(root: Path) -> None:
         nonlocal session_id
-        builder = SessionBuilder(root / "index.db", "slow-delivery").provider("codex")
-        builder.add_message(text="Synthetic bounded delivery prose. " * 32768).save()
-        session_id = builder.native_session_id()
-        _clear_connection_cache()
+
+        def prepare() -> str:
+            builder = SessionBuilder(root / "index.db", "slow-delivery").provider("codex")
+            builder.add_message(text="Synthetic bounded delivery prose. " * 32768).save()
+            identity = builder.native_session_id()
+            _clear_connection_cache()
+            return identity
+
+        session_id = asyncio.run(run_archive_fixture_prepare(prepare))
 
     def held_aggregate(*args: Any, **kwargs: Any) -> Any:
         entered.set()
@@ -2577,8 +2591,16 @@ def test_socket_controls_remain_available_during_waiting_work_and_slow_delivery(
             assert not delivery_finished.is_set()
             assert not release.is_set()
         finally:
-            peer.close()
             release.set()
+            if shutdown_delivery:
+                for caller in callers:
+                    caller.join(30)
+                    assert not caller.is_alive()
+                stack.server.shutdown()
+                stack.server.server_close()
+                assert delivery_finished.is_set()
+                assert not stack.server._handler_sockets
+            peer.close()
             for caller in callers:
                 caller.join(30)
                 assert not caller.is_alive()
@@ -2632,3 +2654,48 @@ def test_keyless_text_read_skips_vector_snapshot_admission(
         assert result["failed_lanes"] == [], envelope
     admit.assert_not_called()
     acquire.assert_not_called()
+
+
+def test_socket_shutdown_physically_settles_an_admitted_incomplete_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered_read = threading.Event()
+    post_threads: set[int] = set()
+    actual_post = MachineOperationHandler.do_POST
+    actual_readinto = socket.SocketIO.readinto
+
+    def post(handler: MachineOperationHandler) -> None:
+        identity = threading.get_ident()
+        post_threads.add(identity)
+        try:
+            actual_post(handler)
+        finally:
+            post_threads.remove(identity)
+
+    def readinto(stream: socket.SocketIO, buffer: Any) -> int | None:
+        if threading.get_ident() in post_threads:
+            entered_read.set()
+        return actual_readinto(stream, buffer)
+
+    monkeypatch.setattr(MachineOperationHandler, "do_POST", post)
+    monkeypatch.setattr(socket.SocketIO, "readinto", readinto)
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            peer.connect(str(stack.socket_path))
+            peer.sendall(
+                b"POST /api/operation HTTP/1.1\r\nHost: local\r\n"
+                b"Content-Type: application/json\r\nContent-Length: 200\r\n\r\n{"
+            )
+            assert entered_read.wait(10)
+            with stack.runtime._condition:
+                assert not stack.runtime._exchanges
+            assert stack.server._handler_sockets
+            stack.server.shutdown()
+            stack.server.server_close()
+            assert not stack.server._handler_sockets
+            assert not post_threads
+            with stack.runtime._condition:
+                assert not stack.runtime._exchanges
+        finally:
+            peer.close()

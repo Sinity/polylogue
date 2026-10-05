@@ -1,3 +1,4 @@
+import { stagingRuntime } from "../infra/capture-staging.js";
 import { Buffer } from "node:buffer";
 import { createHash, webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -10,6 +11,7 @@ import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
+const assetStreamSource = readFileSync(resolve(testDirectory, "../../src/content/asset_stream.js"), "utf8");
 const bridgeSource = readFileSync(resolve(testDirectory, "../../src/content/grok_bridge.js"), "utf8");
 const commonSource = readFileSync(resolve(testDirectory, "../../src/common.js"), "utf8");
 const contentSource = readFileSync(resolve(testDirectory, "../../src/content/grok.js"), "utf8");
@@ -68,6 +70,7 @@ function makeDom(fetchImpl, url = `https://grok.com/c/${conversationId}`) {
   const dom = new JSDOM("<!doctype html><title>Grok fixture</title>", { url, runScripts: "outside-only" });
   openDoms.push(dom);
   const cryptoAdapter = {
+    randomUUID: () => webcrypto.randomUUID(),
     subtle: {
       digest(algorithm, data) {
         return webcrypto.subtle.digest(algorithm, Buffer.from(new dom.window.Uint8Array(data)));
@@ -81,25 +84,28 @@ function makeDom(fetchImpl, url = `https://grok.com/c/${conversationId}`) {
   return dom;
 }
 
-function installFullCapture(fetchImpl, { url } = {}) {
+function installFullCapture(fetchImpl, { url, captureResult = null } = {}) {
   const dom = makeDom(fetchImpl, url);
   const runtimeMessages = [];
   const runtimeListeners = [];
   const chrome = {
     runtime: {
-      id: "synthetic-extension-id",
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       getManifest: () => ({ version: "0.1.0" }),
       onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
       async sendMessage(message) {
+        const assetResult = await dom.__captureRuntime.sendMessage(message);
+        if (assetResult !== undefined) return assetResult;
         runtimeMessages.push(message);
         if (message.type === "polylogue.capture") {
-          return { ok: true, provider: "grok", provider_session_id: conversationId, receiver_request_id: "synthetic-request" };
+          return captureResult || { ok: true, provider: "grok", provider_session_id: conversationId, receiver_request_id: "synthetic-request" };
         }
         if (message.type === "polylogue.archiveState") return { captured: true, state: "archived" };
         return { ok: true };
       },
     },
   };
+  dom.__captureRuntime = stagingRuntime(undefined, { tab_id: 42, document_id: "synthetic-document", provider: "grok" });
   Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
   Object.defineProperty(dom.window, "postMessage", {
     configurable: true,
@@ -110,6 +116,7 @@ function installFullCapture(fetchImpl, { url } = {}) {
     },
   });
   const context = dom.getInternalVMContext();
+  new Script(assetStreamSource).runInContext(context);
   new Script(bridgeSource).runInContext(context);
   new Script(commonSource).runInContext(context);
   new Script(contentSource).runInContext(context);
@@ -119,7 +126,12 @@ function installFullCapture(fetchImpl, { url } = {}) {
       if (!listener) reject(new Error(`no runtime listener accepted ${message.type}`));
     });
   }
-  return { dom, runtimeMessages, sendRuntimeMessage };
+  dom.__captureRuntime.setDispatch(sendRuntimeMessage);
+  return { dom, runtimeMessages, sendRuntimeMessage: async (message) => {
+    const result = await sendRuntimeMessage(message);
+    if (result?.envelope) result.envelope = await dom.__captureRuntime.materialize(result.envelope);
+    return result;
+  } };
 }
 
 function conversationFetchImpl({ conversation = conversationMetadata(), responses = [humanResponse(), assistantResponse()], responsesStatus = 200, asset = null } = {}) {
@@ -148,34 +160,50 @@ afterEach(() => {
 });
 
 describe("Grok native capture end to end", () => {
-  it("captures message text, reasoning steps as thinking blocks, and forwards the capture reason", async () => {
-    const { runtimeMessages, sendRuntimeMessage } = installFullCapture(conversationFetchImpl());
+  it("cancels and drains concurrent record asset acquisitions sharing a raw revision", async () => {
+    const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl());
+    let started; const ready = new Promise((resolve) => { started = resolve; });
+    let requests = 0; let cancelled = 0;
+    dom.window.polylogueAssetStream.request = ({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { cancelled += 1; reject(signal.reason); }, { once: true });
+      if (++requests === 2) started();
+    });
+    const request = { type: "polylogue.acquireRecordAssets", provider: "grok", nativeId: "session", capture_ref: "same-raw-revision", recordKey: "first", attachmentOrdinal: 0, attachments: [{ provider_attachment_id: "asset", url: "file/asset", name: "asset.txt" }] };
+    const first = sendRuntimeMessage(request);
+    const second = sendRuntimeMessage({ ...request, recordKey: "second" });
+    await ready;
+    expect(await sendRuntimeMessage({ type: "polylogue.cancelRecordAssets", capture_ref: request.capture_ref }))
+      .toMatchObject({ ok: true, outcome: "cancelled" });
+    expect(cancelled).toBe(2);
+    expect(await first).toMatchObject({ ok: false, error: "capture_cancelled" });
+    expect(await second).toMatchObject({ ok: false, error: "capture_cancelled" });
+  });
+
+  it("retains original text and reasoning steps for canonical preparation and forwards capture reason", async () => {
+    const { dom, runtimeMessages, sendRuntimeMessage } = installFullCapture(conversationFetchImpl());
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "auto_capture_missing" });
 
     expect(response.ok).toBe(true);
-    expect(response.envelope.provenance.adapter_name).toBe("grok-native-v1");
+    expect(response.envelope.receiver_native).toBeTruthy();
     expect(response.envelope.session.provider_session_id).toBe(conversationId);
     expect(response.envelope.session.session_kind).toBe("standard");
-    const turns = response.envelope.session.turns;
-    expect(turns).toHaveLength(2);
-    expect(turns[0]).toMatchObject({ role: "user", text: "Do write much better story" });
-    expect(turns[1]).toMatchObject({ role: "assistant" });
-    expect(turns[1].blocks).toContainEqual(
-      expect.objectContaining({ type: "thinking", text: "Thinking about your request" }),
-    );
-    expect(runtimeMessages[0]).toMatchObject({ type: "polylogue.capture" });
-    expect(runtimeMessages[0].reason).toBe("auto_capture_missing");
+    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    expect(retained.responses.responses).toEqual([humanResponse(), assistantResponse()]);
+    expect(response.envelope.receiver_native).toBeDefined();
+    expect(response.envelope.session.turns).toEqual([]);
+    expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toEqual([expect.objectContaining({ reason: "auto_capture_missing" })]);
   });
 
-  it("marks a temporary conversation's session_kind from the provider's own temporary flag", async () => {
-    const { sendRuntimeMessage } = installFullCapture(
+  it("uses the canonical temporary session kind while retaining the original provider flag", async () => {
+    const { dom, sendRuntimeMessage } = installFullCapture(
       conversationFetchImpl({ conversation: conversationMetadata({ temporary: true }) }),
     );
+    dom.__captureRuntime.nativeContract.summary = { session_kind: "temporary" };
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
     expect(response.ok).toBe(true);
     expect(response.envelope.session.session_kind).toBe("temporary");
-    expect(response.envelope.session.provider_meta.conversation_temporary).toBe(true);
+    expect((await dom.__captureRuntime.retainedNativeReplies(response.envelope)).conversation.temporary).toBe(true);
   });
 
   it("acquires a file attachment's bytes through assets.grok.com and verifies its sha256", async () => {
@@ -184,48 +212,47 @@ describe("Grok native capture end to end", () => {
       fileUris: ["asset-1"],
       fileAttachmentsMetadata: [{ fileMetadataId: "asset-1", fileMimeType: "text/markdown", fileName: "notes.md", fileUri: "users/u1/asset-1/content", fileSource: "SELF_UPLOAD_FILE_SOURCE" }],
     });
-    const { sendRuntimeMessage } = installFullCapture(
+    const { dom, sendRuntimeMessage } = installFullCapture(
       conversationFetchImpl({ responses: [withAttachment, assistantResponse()], asset: assetBytes }),
     );
+    dom.__captureRuntime.nativeContract.plan = [{ ordinal: 0, descriptor: {
+      provider_attachment_id: "asset-1", message_provider_id: "r-human-1", name: "notes.md", mime_type: "text/markdown",
+      url: "users/u1/asset-1/content", original_record_ordinal: 0, provider_meta: { native_turn_ordinal: 0 },
+    } }];
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
     expect(response.ok).toBe(true);
-    const attachment = response.envelope.session.attachments.find((entry) => entry.provider_attachment_id === "asset-1");
-    expect(attachment).toBeTruthy();
-    expect(attachment.name).toBe("notes.md");
-    expect(attachment.provider_meta.content_sha256).toBe(expectedSha256);
-    expect(Buffer.from(attachment.inline_base64, "base64").toString("utf8")).toBe("polylogue grok attachment fixture\n");
+    const acquired = dom.__captureRuntime.nativeContract.receipts[0].result.attachments[0];
+    expect(acquired.provider_attachment_id).toBe("asset-1");
+    expect(acquired.name).toBe("notes.md");
+    expect(acquired.provider_meta.content_sha256).toBe(expectedSha256);
+    expect(await (await dom.__captureRuntime.staging.file(acquired.staged_asset.id)).text()).toBe("polylogue grok attachment fixture\n");
   });
 
-  it("keeps an unrecognized toolResponses entry as a flagged diagnostic block instead of dropping it silently", async () => {
+  it("retains unrecognized toolResponses verbatim for canonical receiver diagnostics", async () => {
     const withOddTool = assistantResponse({ toolResponses: [{ weird_shape: true, payload: [1, 2, 3] }] });
-    const { sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [humanResponse(), withOddTool] }));
+    const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [humanResponse(), withOddTool] }));
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
     expect(response.ok).toBe(true);
-    const assistantTurn = response.envelope.session.turns.find((turn) => turn.role === "assistant");
-    expect(assistantTurn.blocks).toContainEqual(
-      expect.objectContaining({ type: "tool_result", metadata: expect.objectContaining({ unrecognized_shape: true, source: "toolResponses" }) }),
-    );
+    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    expect(retained.responses.responses[1].toolResponses).toEqual(withOddTool.toolResponses);
+    expect(response.envelope.receiver_native).toBeDefined();
   });
 
-  it("projects web search evidence into tool_use/tool_result blocks", async () => {
+  it("retains web search evidence verbatim for canonical receiver tool blocks", async () => {
     const searchResponse = humanResponse({
       responseId: "r-search",
       query: "latest EU battery regulations",
       queryType: "web",
       webSearchResults: [{ url: "https://example.test/a", title: "A" }],
     });
-    const { sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [searchResponse, assistantResponse({ parentResponseId: "r-search" })] }));
+    const { dom, sendRuntimeMessage } = installFullCapture(conversationFetchImpl({ responses: [searchResponse, assistantResponse({ parentResponseId: "r-search" })] }));
     const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
 
-    const searchTurn = response.envelope.session.turns.find((turn) => turn.provider_turn_id === "r-search");
-    expect(searchTurn.blocks).toContainEqual(
-      expect.objectContaining({ type: "tool_use", tool_name: "web_search", tool_input: { query: "latest EU battery regulations", query_type: "web" } }),
-    );
-    expect(searchTurn.blocks).toContainEqual(
-      expect.objectContaining({ type: "tool_result", tool_name: "web_search", metadata: expect.objectContaining({ field: "webSearchResults", count: 1 }) }),
-    );
+    const retained = await dom.__captureRuntime.retainedNativeReplies(response.envelope);
+    expect(retained.responses.responses[0]).toEqual(searchResponse);
+    expect(response.envelope.receiver_native).toBeDefined();
   });
 
   it("fails loud instead of sending an empty capture when the responses endpoint is unavailable", async () => {
@@ -235,7 +262,11 @@ describe("Grok native capture end to end", () => {
     expect(response.ok).toBe(false);
     expect(response.error).toBe("native_capture_unavailable");
     expect(response.native_attempts.length).toBeGreaterThan(0);
-    expect(runtimeMessages).toHaveLength(0);
+    let repeated = response;
+    for (let attempt = 0; attempt < 8; attempt++) repeated = await sendRuntimeMessage({ type: "polylogue.capturePage" });
+    expect(repeated).toMatchObject({ ok: false, error: "native_capture_unavailable", native_attempts_dropped: 1 });
+    expect(repeated.native_attempts).toHaveLength(8);
+    expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toHaveLength(0);
   });
 
   it("fails loud when no conversation id is present in the URL, without ever sending a capture", async () => {
@@ -244,37 +275,16 @@ describe("Grok native capture end to end", () => {
 
     expect(response.ok).toBe(false);
     expect(response.error).toBe("native_capture_unavailable");
-    expect(runtimeMessages).toHaveLength(0);
+    expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toHaveLength(0);
   });
 
   it("reports a rejected runtime capture without refreshing archive state", async () => {
-    const dom = makeDom(conversationFetchImpl());
-    const runtimeListeners = [];
-    const chrome = {
-      runtime: {
-        getManifest: () => ({ version: "0.1.0" }),
-        onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
-        sendMessage: vi.fn(async (message) => (message.type === "polylogue.capture" ? { ok: false, error: "capture_rejected" } : { ok: true })),
-      },
-    };
-    Object.defineProperty(dom.window, "chrome", { configurable: true, value: chrome });
-    Object.defineProperty(dom.window, "postMessage", {
-      configurable: true,
-      value(data) {
-        dom.window.queueMicrotask(() => {
-          dom.window.dispatchEvent(new dom.window.MessageEvent("message", { source: dom.window, origin: dom.window.location.origin, data }));
-        });
-      },
+    const { sendRuntimeMessage, runtimeMessages } = installFullCapture(conversationFetchImpl(), {
+      captureResult: { ok: false, error: "capture_rejected" },
     });
-    const context = dom.getInternalVMContext();
-    new Script(bridgeSource).runInContext(context);
-    new Script(commonSource).runInContext(context);
-    new Script(contentSource).runInContext(context);
-    const listener = runtimeListeners[0];
-    const response = await new Promise((resolve) => {
-      listener({ type: "polylogue.capturePage" }, {}, resolve);
-    });
-
+    const response = await sendRuntimeMessage({ type: "polylogue.capturePage" });
     expect(response).toMatchObject({ ok: false, timelineRecorded: true, error: "capture_rejected" });
+    expect(runtimeMessages.filter((message) => message.type === "polylogue.capture")).toHaveLength(1);
+    expect(runtimeMessages.some((message) => message.type === "polylogue.archiveState")).toBe(false);
   });
 });

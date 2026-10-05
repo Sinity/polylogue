@@ -187,7 +187,10 @@ async def submit_facade_operation(config: Config, operation: str, payload: dict[
                 raise SessionNotFoundError(str(session_ids[0]))
         raise DaemonOperationRejectedError(code, detail)
     if envelope.get("outcome") != "completed":
-        raise RuntimeError(f"daemon mutation {operation} did not complete: {envelope.get('outcome')}")
+        error = envelope.get("error")
+        error = error if isinstance(error, dict) else {}
+        detail = str(error.get("detail") or error.get("code") or envelope.get("outcome"))
+        raise RuntimeError(f"daemon mutation {operation} did not complete: {detail}")
     state = envelope.get("result")
     if not isinstance(state, dict):
         raise ValueError(f"daemon {operation} returned no result")

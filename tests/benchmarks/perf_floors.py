@@ -277,8 +277,9 @@ def measure_action_pairs_refresh(
 
 
 def measure_query_latency(index_db: Path) -> list[FloorMetric]:
+    from types import SimpleNamespace
+
     from polylogue.operations.route_observation import RouteObservationDrops, compute_latency_percentiles
-    from polylogue.storage.sqlite.archive_tiers.ops_write import ArchiveRouteObservation
     from tests.benchmarks.helpers import open_bench_store
 
     durations_by_route: dict[str, list[float]] = defaultdict(list)
@@ -294,12 +295,12 @@ def measure_query_latency(index_db: Path) -> list[FloorMetric]:
             list(results)
             durations_by_route["query.list_summaries"].append((time.perf_counter() - start) * 1000.0)
 
-    observations: list[ArchiveRouteObservation] = []
+    observations: list[SimpleNamespace] = []
     started_at_ms = 1_700_000_000_000
     for route, durations in durations_by_route.items():
         for index, duration_ms in enumerate(durations):
             observations.append(
-                ArchiveRouteObservation(
+                SimpleNamespace(
                     observation_id=f"perf-floor-{route}-{index}",
                     trace_id=f"perf-floor-{route}",
                     surface="perf-floor",

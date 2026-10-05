@@ -43,7 +43,7 @@ The project devshell also provides `scc` for code-size and complexity summaries 
 
 Before choosing a module, read [Code Navigation](docs/code-navigation.md). It
 maps common changes to the package that owns their meaning, the production
-route that must be exercised, and the minimum verification expected. The
+route to inspect, and useful verification choices. The
 ordered placement decision remains in
 [Architecture § Placement Rules](docs/architecture.md#placement-rules).
 
@@ -63,11 +63,11 @@ targeting `master`.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
-7. Codex reviews every non-draft head. Answer each finding with a fix commit
-   or a concrete refutation in its thread, then resolve the thread. The
-   `codex-review` status turns green once Codex has completed a review of the
-   current head; the `codex-review-waived` label is an explicit maintainer
-   override for when Codex is unavailable.
+7. Honor the branch's actual required checks and resolve applicable review
+   findings. Do not request an optional hosted Codex review by default.
+   A green `codex-review` status may mean the review gate is disabled; read
+   its description before claiming a review ran. Repository instructions
+   do not authorize changes to account review settings or branch protections.
 8. Queue the squash merge with `gh pr merge --auto --squash
    --match-head-commit <sha>`; GitHub merges once every requirement holds.
 
@@ -224,8 +224,8 @@ The repository should stay aligned with the workflow above:
 
 - protect `master` against direct pushes
 - require pull requests for normal changes
-- require the authoritative CI checks (`ci/circleci: quick-gate`) and
-  `codex-review` before merge
+- require the authoritative CI checks (`ci/circleci: quick-gate`) and the
+  repository's configured review-thread checks before merge
 - require conversation resolution before merge
 - keep squash merge enabled and leave merge-commit and rebase-merge disabled
 - enable automatic deletion of head branches after merge

@@ -2516,15 +2516,6 @@ def _check_session_fingerprint_stamps(
         return _error_check("session-fingerprint-stamps", f"could not open index.db: {exc}", exc=exc)
 
     try:
-        required_columns = {"parser_fingerprint", "lowering_fingerprint"}
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
-        missing_columns = sorted(required_columns - columns)
-        if missing_columns:
-            return _error_check(
-                "session-fingerprint-stamps",
-                f"sessions is missing fingerprint column(s): {', '.join(missing_columns)}",
-            )
-
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         invalid_sql = "{column} IS NULL OR length({column}) != 64 OR {column} GLOB '*[^0-9a-f]*'"
         invalid_parser_count = int(

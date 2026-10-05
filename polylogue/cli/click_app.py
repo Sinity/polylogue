@@ -270,7 +270,7 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     from polylogue.cli.onboarding import render_guided_path
     from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.session_rows import query_session_rows_with_authority
+    from polylogue.cli.session_rows import query_session_selection
     from polylogue.cli.shared.helpers import load_effective_config
 
     config = load_effective_config(env)
@@ -284,7 +284,7 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     # imports the index schema constant to talk to one.
     daemon_disabled = bool(ctx.params.get("no_daemon"))
     try:
-        rows, source = query_session_rows_with_authority(
+        selection = query_session_selection(
             config, RootModeRequest.from_params({}), limit=5, daemon_disabled=daemon_disabled
         )
     except OperationKernelError:
@@ -295,14 +295,19 @@ def _show_bare_tty_triage(ctx: click.Context, env: AppEnv) -> bool:
     # kernel falls back to the in-process reader when no socket answers, so
     # "(daemon)" inferred from "--no-daemon was not passed" was a provenance
     # claim the result did not support (polylogue-jfabc).
-    click.echo(f"Archive: ready ({source})")
+    source = selection.server_authority
+    rows = selection.rows
+    state = selection.outcome.state if selection.outcome is not None else "unknown"
+    click.echo(f"Archive: {'ready' if state in {'ok', 'empty'} else state} ({source})")
     click.echo("Recent sessions:")
     if rows:
         for row in rows:
             click.echo(f"  {row.label}")
-    else:
+    elif selection.outcome is not None and selection.outcome.state == "empty":
         click.echo("  No sessions yet.")
     click.echo("Next: polylogue find …  |  polylogue read <id>  |  polylogue continue <id>  |  polylogue manual")
+    if selection.outcome is not None and not selection.outcome.rows_are_authoritative:
+        selection.finish()
     return True
 
 

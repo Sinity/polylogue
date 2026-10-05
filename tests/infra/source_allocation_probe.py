@@ -85,6 +85,7 @@ def run(root: Path) -> dict[str, object]:
                         keys: tuple[int, ...],
                         prepared_cells: dict[str, KnownTierCell] | None,
                         allocation_parameter: int | None,
+                        generated_primary_key: bool,
                         binding_cells: tuple[KnownTierCell, ...],
                     ) -> Iterator[sqlite3.Cursor]:
                         nonlocal attempts
@@ -99,6 +100,7 @@ def run(root: Path) -> dict[str, object]:
                             keys=keys,
                             prepared_cells=prepared_cells,
                             allocation_parameter=allocation_parameter,
+                            generated_primary_key=generated_primary_key,
                             binding_cells=binding_cells,
                         ) as cursor:
                             yield cursor

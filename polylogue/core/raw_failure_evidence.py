@@ -8,6 +8,7 @@ source that may progress from a payload that has reached a terminal refusal.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -289,3 +290,47 @@ __all__ = [
     "raw_failure_outcome_code",
     "validated_raw_failure_evidence_kind",
 ]
+
+
+def retained_raw_decode_refusal_from_row(
+    raw_id: str, row: Sequence[object] | None
+) -> RetainedRawDecodeRefusalError | None:
+    """Validate the canonical current parser/artifact receipt projection."""
+    if row is None:
+        return None
+    kind = validated_raw_failure_evidence_kind(
+        row[0],
+        row[2],
+        validation_failed=row[3] == "failed",
+        classification_reason=row[4],
+        outcome_code=raw_failure_outcome_code(row[4]),
+    )
+    return None if kind is None else RetainedRawDecodeRefusalError(raw_id, kind, str(row[1]))
+
+
+class RetainedRawDependencyRefusalError(ValueError):
+    """A subject still requires an input with current durable decode refusal."""
+
+    def __init__(
+        self, subject_raw_id: str, logical_source_keys: tuple[str, ...], dependency: RetainedRawDecodeRefusalError
+    ) -> None:
+        self.subject_raw_id = subject_raw_id
+        self.logical_source_keys = logical_source_keys
+        self.dependency = dependency
+        super().__init__(f"{subject_raw_id} requires refused retained input {dependency.raw_id}")
+
+
+class CohortMembershipRefusalError(Exception):
+    """One selector member cannot be resolved for one logical source key.
+
+    This outcome names the original member and logical key that cannot be
+    prepared. A callback owner records it while publishing healthy independent
+    keys. A strict owner physically closes preparation and raises it before
+    publishing (polylogue-163ku).
+    """
+
+    def __init__(self, logical_source_key: str, raw_id: str, reason: str) -> None:
+        super().__init__(f"membership {raw_id}:{logical_source_key} refused: {reason}")
+        self.logical_source_key = logical_source_key
+        self.raw_id = raw_id
+        self.reason = reason

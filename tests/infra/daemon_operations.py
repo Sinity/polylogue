@@ -173,10 +173,15 @@ def running_daemon_operations(
         session_maintenance = compose_session_profile_callback(
             archive_root, compute_adapter=kernel, write_bridge=bridge, now=time
         ).maintenance
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
     runtime = DaemonOperationRuntime(
         archive_root,
         write_bridge=bridge,
         execution_kernel=kernel,
+        raw_observation_owner=RawObservationConvergenceOwner(
+            archive_root, compute_adapter=kernel, write_bridge=bridge, write_coordinator=bridge.coordinator
+        ),
         owner_loop=bridge.owner_loop,
         session_maintenance=session_maintenance,
         read_dependencies=read_dependencies,

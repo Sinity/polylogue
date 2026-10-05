@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from polylogue.config import Config
 from polylogue.operations import mutation_actuators as actuators
 
 
@@ -105,33 +104,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
 
         parse_correction_kind(fields["kind"])
     return fields
-
-
-def record_work_event_product(
-    config: Config,
-    session_id: str,
-    *,
-    event_id: str,
-    event_type: str,
-    summary: str,
-    payload: dict[str, object] | None,
-    timestamp: str | None,
-) -> dict[str, object]:
-    """Append a typed work event under archive write authority."""
-    from polylogue.config import active_archive_root
-    from polylogue.operations.archive_mutation import require_archive_write_authority
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    require_archive_write_authority(config, "api.record_work_event")
-    with ArchiveStore.open_existing(active_archive_root(config), read_only=False) as archive:
-        return archive.append_work_event(
-            session_id=session_id,
-            event_type=event_type,
-            payload=dict(payload or {}),
-            event_id=event_id,
-            summary=summary,
-            timestamp=timestamp,
-        )
 
 
 def _to_wire(value: Any) -> Any:

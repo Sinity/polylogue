@@ -92,6 +92,7 @@ def iter_source_acquisition_records(
         known_mtimes=known_mtimes,
         known_cursors=known_cursors,
         discover_sidecars=False,
+        blob_store=blob_store,
     )
     if walk is None:
         return

@@ -152,6 +152,50 @@ async def get_attachments(
     return [_build_attachment_record(row, session_id=session_id) for row in rows]
 
 
+async def get_message_attachments(
+    conn: aiosqlite.Connection, message_ids: list[str]
+) -> dict[str, list[AttachmentRecord]]:
+    """Read each physical message owner's references in bounded SQL batches.
+
+    A child's logical transcript can contain parent messages. Reference
+    ownership follows those physical rows, not the requested child's session.
+    """
+    result: dict[str, list[AttachmentRecord]] = {}
+    for start in range(0, len(message_ids), 900):
+        batch = message_ids[start : start + 900]
+        placeholders = ",".join("?" for _ in batch)
+        async with conn.execute(
+            f"""
+        SELECT
+            a.attachment_id,
+            a.media_type AS mime_type,
+            a.byte_count AS size_bytes,
+            NULL AS path,
+            a.blob_hash,
+            a.acquisition_status,
+            a.display_name,
+            r.source_url,
+            r.caption,
+            r.message_id,
+            r.session_id,
+            r.upload_origin,
+            r.direction,
+            r.producer_ref,
+{_NATIVE_ID_COLUMNS}
+        FROM attachments a
+        JOIN attachment_refs r ON a.attachment_id = r.attachment_id
+        JOIN messages m ON m.message_id = r.message_id AND m.session_id = r.session_id
+        WHERE r.message_id IN ({placeholders})
+        ORDER BY r.message_id, a.attachment_id, r.ref_id
+        """,
+            tuple(batch),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        for row in rows:
+            result.setdefault(row["message_id"], []).append(_build_attachment_record(row, session_id=row["session_id"]))
+    return result
+
+
 async def get_attachments_batch(
     conn: aiosqlite.Connection,
     session_ids: list[str],

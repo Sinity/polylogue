@@ -4,7 +4,7 @@ Static trace from the live daemon:
 
 | Candidate | Production site | Trigger | Measured signal |
 | --- | --- | --- | --- |
-| H1 | ``_ingest_append_plans_archive`` | watcher append batch | batch/plan counts and process phases |
+| H1 | ``ingest_append_plans`` | watcher append batch | batch/plan counts and process phases |
 | H2 | ``raw_revision_replay_plan`` | accepted append | metadata-plan calls and accepted replay raws |
 | H3 | ``classify_raw_revision_cohort`` | incomplete/recovery cohort | fallback calls and historical full-blob bytes |
 

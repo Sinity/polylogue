@@ -346,7 +346,9 @@ def preflight_import_bindings(
         if is_sqlite_path(binding.source_path):
             _preflight_sqlite(binding.source, acc, label=label, source_binding=binding, check_stop=check_stop)
             continue
-        result = _decode_bound_preflight(preflight_bound_bytes(binding, check_stop=check_stop), binding.source_path)
+        result = _decode_bound_preflight(
+            preflight_bound_bytes(binding, label=label, check_stop=check_stop), binding.source_path
+        )
         for name in ("candidate_count", "supported_count", "unsupported_count", "malformed_count", "ignored_count"):
             setattr(acc, name, getattr(acc, name) + getattr(result, name))
         acc.providers.update(result.providers)

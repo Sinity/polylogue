@@ -337,10 +337,9 @@
   function captureQueueItems(captureQueue, receiverOnline) {
     const entries = Array.isArray(captureQueue?.entries) ? captureQueue.entries : [];
     return entries.map((entry, index) => {
-      const session = entry.envelope?.session || {};
-      const provider = session.provider || entry.provider || "unknown";
-      const sessionId = session.provider_session_id || entry.provider_session_id || "unknown session";
-      const title = session.title || `${providerLabel(provider)} conversation ${sessionId}`;
+      const provider = entry.provider || "unknown";
+      const sessionId = entry.provider_session_id || "unknown session";
+      const title = entry.title || `${providerLabel(provider)} conversation ${sessionId}`;
       return {
         id: entry.id || `capture-${index}`,
         kind: "capture_retry",

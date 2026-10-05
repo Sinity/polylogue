@@ -58,7 +58,7 @@ def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
         document = json_loads(path.read_bytes())
     except (JSONDecodeError, OSError):
         return False
-    return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+    return classify_artifact(document, provider=provider).parse_as_session
 
 
 def _decoded_session_admits_path_rule(

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 import sqlite3
 from collections.abc import Callable, Iterable, MutableSequence, Sequence
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import cast
 
 from pydantic import ValidationError
@@ -28,6 +30,7 @@ from .base import (
     parser_admission,
 )
 from .base_models import upgrade_chat_export_user_authorship
+from .base_support import AdmissionObserver, _unknown_wire_type
 from .drive_support import (
     TimestampBounds,
     extract_text_from_chunk,
@@ -168,12 +171,22 @@ def _non_negative_int_field(payload: JSONDocument, *keys: str) -> int | None:
         if isinstance(value, int):
             return value if value >= 0 else None
         if isinstance(value, float):
-            return int(value) if value >= 0 else None
+            return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
         if isinstance(value, str):
             try:
-                parsed = int(float(value))
+                parsed = int(value)
             except ValueError:
-                continue
+                try:
+                    number = Decimal(value)
+                    if (
+                        not number.is_finite()
+                        or not math.isfinite(float(number))
+                        or number != number.to_integral_value()
+                    ):
+                        continue
+                    parsed = int(number)
+                except (InvalidOperation, ValueError, OverflowError):
+                    continue
             return parsed if parsed >= 0 else None
     return None
 
@@ -488,6 +501,7 @@ def parse_chunked_prompt_stream(
     session_events: MutableSequence[ParsedSessionEvent],
     attachments: MutableSequence[ParsedAttachment],
     scratch: sqlite3.Connection,
+    record_stream: bool = False,
 ) -> ParsedSession:
     """Lower a proved chunked prompt without retaining its chunk array.
 
@@ -496,6 +510,7 @@ def parse_chunked_prompt_stream(
     rows go to ``scratch``. Admission runs over a stub that
     carries the document's first future wire type, so accounting and the
     typed unknown event match ``parse_chunked_prompt`` on the whole document.
+    Bare record streams instead carry the actual per-chunk fold dispositions.
     """
     future_type = envelope.get("__admission_future_type")
     payload = {key: value for key, value in envelope.items() if key != "__admission_future_type"}
@@ -508,7 +523,10 @@ def parse_chunked_prompt_stream(
         session_events=session_events,
         attachments=attachments,
         scratch=scratch,
+        record_stream=record_stream,
     )
+    if record_stream:
+        return session
     admission_stub: JSONDocument = {"chunks": []}
     if isinstance(future_type, str):
         admission_stub["type"] = future_type
@@ -527,6 +545,7 @@ def _parse_chunked_records(
     session_events: MutableSequence[ParsedSessionEvent] | None = None,
     attachments: MutableSequence[ParsedAttachment] | None = None,
     scratch: sqlite3.Connection | None = None,
+    record_stream: bool = False,
 ) -> ParsedSession:
     """Normalize chunks read once per pass into the supplied message rows.
 
@@ -546,7 +565,9 @@ def _parse_chunked_records(
                 session_events=session_events,
                 attachments=attachments,
                 scratch=memory,
+                record_stream=record_stream,
             )
+    observer = AdmissionObserver(record_stream=True) if record_stream else None
     order = _ChunkOrder(scratch)
     runtime_provider = Provider.from_string(provider)
     run_settings = json_document(payload.get("runSettings"))
@@ -575,11 +596,15 @@ def _parse_chunked_records(
         elif isinstance(chunk, dict):
             chunk_obj = chunk
         else:
+            if observer is not None:
+                observer.observe(chunk, lowered=False)
             continue
         text = extract_text_from_chunk(chunk_obj)
         # Role is required - skip chunks without one
         role_val = chunk_obj.get("role") or chunk_obj.get("author")
         if not isinstance(role_val, str) or not role_val:
+            if observer is not None:
+                observer.observe(chunk, lowered=False, malformed=_unknown_wire_type(chunk) is None)
             continue
         role = Role.normalize(role_val)
         msg_id = str(chunk_obj.get("id") or "")
@@ -642,6 +667,8 @@ def _parse_chunked_records(
             content_block_payloads = _append_attachment_blocks(content_block_payloads, chunk_attachments)
 
         if not text and not chunk_attachments and not content_block_payloads:
+            if observer is not None:
+                observer.observe(chunk, lowered=False)
             continue
 
         event_rows.extend(
@@ -712,6 +739,8 @@ def _parse_chunked_records(
         )
         message_position += 1
         attachment_rows.extend(chunk_attachments)
+        if observer is not None:
+            observer.observe(chunk, lowered=True)
 
     title_val = payload.get("title")
     title_source: TitleSource | None = TitleSource.ORIGIN
@@ -784,11 +813,11 @@ def _parse_chunked_records(
         pending_drafts=pending_drafts,
         parent_session_provider_id=parent_session_provider_id,
     )
-    if isinstance(message_rows, list) and isinstance(event_rows, list) and isinstance(attachment_rows, list):
-        return session
-    return session.model_copy(
-        update={"messages": message_rows, "session_events": event_rows, "attachments": attachment_rows}
-    )
+    if not (isinstance(message_rows, list) and isinstance(event_rows, list) and isinstance(attachment_rows, list)):
+        session = session.model_copy(
+            update={"messages": message_rows, "session_events": event_rows, "attachments": attachment_rows}
+        )
+    return observer.apply(session, runtime_provider.value) if observer is not None else session
 
 
 def looks_like_chunk(payload: object) -> bool:

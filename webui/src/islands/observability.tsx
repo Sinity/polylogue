@@ -170,6 +170,12 @@ export function ObservabilityIsland({
           await ensureCredential();
           if (stopped || requestController.signal.aborted || requestGeneration !== generation) return;
           const raw = await retryCredentialRejectedRequest(() => client.getStatus({}, { signal: requestController.signal, timeoutMs: STATUS_TIMEOUT_MS }));
+          if (raw === null) {
+            if (!stopped && !requestController.signal.aborted && requestGeneration === generation) {
+              setObservation((previous) => ({ ...previous, connection: 'online', receivedAt: Date.now(), error: null }));
+            }
+            return;
+          }
           const status = parseStatusObservation(raw);
           if (!stopped && !requestController.signal.aborted && requestGeneration === generation) {
             setObservation({ status, connection: 'online', receivedAt: Date.now(), error: null });

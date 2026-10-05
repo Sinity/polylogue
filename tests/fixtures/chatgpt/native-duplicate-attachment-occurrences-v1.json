@@ -1,0 +1,59 @@
+{
+  "id": "native-occurrences",
+  "title": "Synthetic attachment occurrences",
+  "mapping": {
+    "user-node": {
+      "id": "user-node",
+      "parent": null,
+      "children": [
+        "assistant-node"
+      ],
+      "message": {
+        "id": "duplicate",
+        "create_time": 1,
+        "author": {
+          "role": "user"
+        },
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "User image",
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "file-service://file-SHARED",
+              "name": "shared.png",
+              "mime_type": "image/png"
+            }
+          ]
+        },
+        "metadata": {}
+      }
+    },
+    "assistant-node": {
+      "id": "assistant-node",
+      "parent": "user-node",
+      "children": [],
+      "message": {
+        "id": "duplicate",
+        "create_time": 2,
+        "author": {
+          "role": "assistant"
+        },
+        "status": "finished_successfully",
+        "content": {
+          "content_type": "multimodal_text",
+          "parts": [
+            "Assistant image",
+            {
+              "content_type": "image_asset_pointer",
+              "asset_pointer": "file-service://file-SHARED",
+              "name": "shared.png",
+              "mime_type": "image/png"
+            }
+          ]
+        },
+        "metadata": {}
+      }
+    }
+  }
+}

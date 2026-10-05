@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from decimal import Decimal, InvalidOperation
+
 from polylogue.archive.viewport.viewports import ContentBlock
 from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument, json_document, json_document_list
@@ -21,12 +24,19 @@ def _optional_int(payload: JSONDocument, *keys: str) -> int | None:
         if isinstance(value, int):
             return value
         if isinstance(value, float):
-            return int(value)
+            if math.isfinite(value) and value.is_integer():
+                return int(value)
+            continue
         if isinstance(value, str):
             try:
-                return int(float(value))
+                return int(value)
             except ValueError:
-                continue
+                try:
+                    number = Decimal(value)
+                    if number.is_finite() and math.isfinite(float(number)) and number == number.to_integral_value():
+                        return int(number)
+                except (InvalidOperation, ValueError, OverflowError):
+                    continue
     return None
 
 
@@ -107,7 +117,14 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
             # hashed block payload (they travel as session-event evidence).
             if key in _THOUGHT_SIGNATURE_KEYS:
                 continue
-            metadata_out[key] = value
+            # Non-finite optional exit evidence has no JSON numeric spelling.
+            # Keep its reported key with the JSON facade's null representation;
+            # the outcome below still inspects the original unsupported value.
+            metadata_out[key] = (
+                None
+                if key in {"exitCode", "exit_code"} and isinstance(value, float) and not math.isfinite(value)
+                else value
+            )
         if isinstance(language, str) and language:
             metadata_out.setdefault("language", language)
         parsed_type = BlockType.from_string(block_type)

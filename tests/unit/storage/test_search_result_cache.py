@@ -11,12 +11,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from polylogue.operations import daemon_reads
 from polylogue.operations.daemon_reads import execute_read_operation
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.search import cache
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.frozen_clock import FrozenClock
 
 
 def _view(tmp_path: Path, generation: str = "generation-a") -> cache.ReadViewIdentity:
@@ -217,3 +220,145 @@ def test_a_read_whose_pin_straddles_an_invalidation_names_no_view(tmp_path: Path
         )
 
     assert cache.get_cache_stats()["result_cache_entries"] == 0
+
+
+@pytest.mark.frozen_clock_modules("polylogue.surfaces.query_rows")
+@pytest.mark.parametrize("ranked", [False, True], ids=["list", "ranked"])
+def test_warm_query_refreshes_relative_time_without_reexecuting_selection(
+    tmp_path: Path, monkeypatch: Any, frozen_clock: FrozenClock, ranked: bool
+) -> None:
+    bootstrap_archive_root(tmp_path)
+    cache.invalidate_search_cache()
+    timestamp = frozen_clock.now().isoformat()
+    row = {"id": "codex:one", "updated_at": timestamp, "relative_time": "just now"}
+    undated = {"id": "codex:undated", "relative_time": "unknown"}
+    unprojected = {"id": "codex:unprojected"}
+    rows = [row, undated, unprojected]
+    result: dict[str, object] = {
+        "hits" if ranked else "items": [{"session": value, "match": {"rank": i}} for i, value in enumerate(rows)]
+        if ranked
+        else rows,
+        "snapshot_epoch": "original-snapshot",
+        "outcome": {"state": "ok"},
+        "next_offset": 3,
+    }
+    executions: list[int] = []
+
+    def query(*args: Any, **kwargs: Any) -> dict[str, object]:
+        executions.append(1)
+        return result
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", query)
+
+    def read() -> dict[str, object]:
+        with open_operation_read(tmp_path) as pinned:
+            return execute_read_operation(
+                "cli.query",
+                {},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+
+    first = read()
+    before_hits = cache.get_cache_stats()["result_cache_hits"]
+    frozen_clock.advance(3600)
+    second = read()
+    delivered = second["hits" if ranked else "items"]
+    assert isinstance(delivered, list)
+    actual_rows = [hit["session"] for hit in delivered] if ranked else delivered
+    assert actual_rows == [
+        {**row, "relative_time": "1h ago"},
+        undated,
+        unprojected,
+    ]
+    assert executions == [1]
+    assert cache.get_cache_stats()["result_cache_hits"] == before_hits + 1
+    assert second["snapshot_epoch"] == first["snapshot_epoch"]
+    assert second["outcome"] == first["outcome"]
+    assert second["next_offset"] == first["next_offset"]
+    assert row["relative_time"] == "just now"
+
+
+def test_ranked_query_cache_preserves_the_actual_pinned_selection_frame(tmp_path: Path, monkeypatch: Any) -> None:
+    """A real fresh query and its cache hit carry the same authoritative frame."""
+    bootstrap_archive_root(tmp_path)
+    cache.invalidate_search_cache()
+    original = daemon_reads._query_payload
+    executions: list[int] = []
+
+    def query(*args: Any, **kwargs: Any) -> dict[str, object]:
+        executions.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", query)
+    with open_operation_read(tmp_path) as pinned:
+        values = [
+            execute_read_operation(
+                "cli.query",
+                {"params": {"query": "needle", "limit": 5}},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+            for _ in range(2)
+        ]
+    from polylogue.surfaces.payloads import SearchEnvelope
+
+    assert executions == [1]
+    assert values[0]["snapshot_epoch"] == values[1]["snapshot_epoch"]
+    assert SearchEnvelope.model_validate(values[0]).snapshot_epoch
+    assert SearchEnvelope.model_validate(values[1]).snapshot_epoch
+    import json
+
+    import jsonschema
+    from pydantic import ValidationError
+
+    from polylogue.operations.daemon_protocol import QueryResult
+
+    schema = json.loads((Path(__file__).parents[3] / "docs/schemas/cli-output/search-envelope.schema.json").read_text())
+    for value in values:
+        jsonschema.validate(value, schema)
+        QueryResult.model_validate(value)
+    with pytest.raises(ValidationError):
+        QueryResult.model_validate({key: value for key, value in values[0].items() if key != "snapshot_epoch"})
+
+
+def test_ranked_query_declines_missing_or_stale_cached_frames(tmp_path: Path, monkeypatch: Any) -> None:
+    """Neither absent authority nor an old epoch can reach cached decoration."""
+    import pytest
+
+    from polylogue.cli.operation_kernel import OperationEnvelopeError, OperationFailedError
+    from polylogue.cli.session_rows import _selection_frame
+
+    bootstrap_archive_root(tmp_path)
+    cache.invalidate_search_cache()
+    params = {"query": "needle", "limit": 5}
+    with open_operation_read(tmp_path) as pinned:
+        assert pinned.read_view is not None
+        current = execute_read_operation(
+            "cli.query",
+            {"params": params},
+            archive=pinned.archive,
+            serving_identity="daemon",
+            read_view=pinned.read_view,
+        )
+        epoch = current["snapshot_epoch"]
+        assert isinstance(epoch, str)
+        for bad_epoch in (None, epoch + ":stale-generation"):
+            poisoned = {**current, "snapshot_epoch": bad_epoch, "query": "poisoned-cache"}
+            cache.put_cached_result("cli.query", params, poisoned, view=pinned.read_view)
+            value = execute_read_operation(
+                "cli.query",
+                {"params": params},
+                archive=pinned.archive,
+                serving_identity="daemon",
+                read_view=pinned.read_view,
+            )
+            assert value["query"] == "needle"
+            assert value["snapshot_epoch"] == epoch
+        with pytest.raises(OperationEnvelopeError):
+            _selection_frame(None, {"snapshot_epoch": None})
+        with pytest.raises(OperationFailedError) as refusal:
+            _selection_frame(epoch, {"snapshot_epoch": epoch + ":stale-generation"})
+        assert refusal.value.code == "query_continuation_stale"

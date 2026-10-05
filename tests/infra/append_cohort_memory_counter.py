@@ -1,6 +1,6 @@
 """Phase-level evidence collection for watcher append/cohort investigations.
 
-The live incident was in ``_ingest_append_plans_archive`` while
+The live incident was in ``ingest_append_plans`` while
 ``classify_raw_revision_cohort_for_live_watch`` reread historical full
 snapshots.  This
 helper distinguishes the durable metadata replay-plan hot path from that
@@ -224,18 +224,18 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     counter = AppendCohortMemoryCounter()
-    real_append_ingest = append_ingest._ingest_append_plans_archive
+    real_append_ingest = append_ingest.ingest_append_plans
     real_classify = ArchiveStore.classify_raw_revision_cohort_for_live_watch
     real_replay_plan = ArchiveStore.raw_revision_replay_plan
     real_read_all = ArchiveBlobPublisher.read_all
     in_cohort_classification = False
 
-    def counted_append_ingest(owner: Any, plans: list[Any], archive_root: Path) -> Any:
+    def counted_append_ingest(owner: Any, plans: list[Any], **kwargs: Any) -> Any:
         counter.batch_count += 1
         counter.plan_count += len(plans)
         counter.record("watcher_append_payload", sum(len(plan.payload) for plan in plans))
         counter.snapshot("watcher_append:before")
-        result = real_append_ingest(owner, plans, archive_root)
+        result = real_append_ingest(owner, plans, **kwargs)
         counter.snapshot("watcher_append:after")
         return result
 
@@ -268,7 +268,7 @@ def append_cohort_memory_counter() -> Iterator[AppendCohortMemoryCounter]:
         return payload
 
     with (
-        patch.object(append_ingest, "_ingest_append_plans_archive", counted_append_ingest),
+        patch.object(append_ingest, "ingest_append_plans", counted_append_ingest),
         patch.object(ArchiveStore, "classify_raw_revision_cohort_for_live_watch", counted_classify),
         patch.object(ArchiveStore, "raw_revision_replay_plan", counted_replay_plan),
         patch.object(ArchiveBlobPublisher, "read_all", counted_read_all),

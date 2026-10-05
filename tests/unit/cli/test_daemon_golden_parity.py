@@ -22,6 +22,7 @@ import pytest
 from click.testing import CliRunner
 
 from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
+from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.storage_records import SessionBuilder
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -213,7 +214,8 @@ def _seed_evidence_archive(root: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore(root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_fixture_index_session(
+            archive_db._conn,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="evidence-parity",
@@ -258,9 +260,7 @@ def _seed_evidence_archive(root: Path) -> None:
                     ),
                 ],
             ),
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/evidence-parity.jsonl",
-            acquired_at_ms=1735689600000,
+            archive_root=archive_db.index_db_path.parent,
         )
 
 

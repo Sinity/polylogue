@@ -4,7 +4,7 @@ Blobs are content-addressed: two Claude Code sessions whose tool output
 overflowed into byte-identical ``tool-results/`` sidecars own one blob hash.
 The sidecar tests drive production acquisition (``LiveBatchProcessor``) for
 two such sessions, A and B, where A also overflowed a second output nobody
-else has, then excise A through ``apply_session_excision``.
+else has, then excise A through the audited Excision operation.
 
 Excision reaches the sidecar raws a session owns (polylogue-8j9rh): the
 forgets-its-own test removes and marks A's own sidecar while naming the one it

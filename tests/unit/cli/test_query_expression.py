@@ -22,8 +22,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Never, cast
 
 import pytest
 from click.testing import CliRunner
@@ -68,6 +70,7 @@ from polylogue.archive.query.predicate import (
     QueryTextPredicate,
 )
 from polylogue.archive.query.spec import SessionQuerySpec
+from polylogue.core.protocols import ScopedVectorQuery
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
 from tests.infra.daemon_operations import cli_daemon_archive
@@ -5375,6 +5378,9 @@ class TestBooleanQueryExpression:
         class StubVectorProvider:
             model = "stub"
 
+            def query(self, text: str, limit: int = 10) -> Never:
+                raise AssertionError("this fixture uses scoped retrieval")
+
             def upsert(
                 self,
                 session_id: str,
@@ -5384,18 +5390,33 @@ class TestBooleanQueryExpression:
             ) -> None:
                 raise NotImplementedError
 
-            def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
+            @contextmanager
+            def scoped_query(
+                self,
+                session_ids: Iterable[str],
+                *,
+                text: str | None = None,
+                seed_session_id: str | None = None,
+                index_connection: sqlite3.Connection,
+                configure_connection: Callable[[sqlite3.Connection], None],
+                check_cancelled: Callable[[], None],
+            ) -> Iterator[ScopedVectorQuery]:
+                del session_ids, index_connection, configure_connection
+                check_cancelled()
                 assert text == "query compiler"
-                assert limit >= 6
-                return [
-                    (_mid("chatgpt-export:ext-hit", "m-hit"), 0.01),
-                    (_mid("chatgpt-export:ext-miss", "m-miss"), 0.02),
-                ]
+                yield ScopedVectorQuery(
+                    rows=iter(
+                        [
+                            (_mid("chatgpt-export:ext-hit", "m-hit"), 0.01),
+                            (_mid("chatgpt-export:ext-miss", "m-miss"), 0.02),
+                        ]
+                    )
+                )
 
             def query_by_session(self, session_id: str, limit: int = 10) -> list[tuple[str, float]]:
                 raise NotImplementedError
 
-            async def read_session_similarity(self, *args: object, **kwargs: object) -> dict[str, object]:
+            async def read_similarity(self, *args: object, **kwargs: object) -> Never:
                 raise AssertionError("this fixture does not perform retained-session reads")
 
         archive_root = workspace_env["archive_root"]
@@ -6498,3 +6519,23 @@ class TestDaemonSessionIdFilter:
         assert isinstance(payload, dict)
         hits = payload.get("hits")
         assert isinstance(hits, list) and len(hits) == 1
+
+
+@pytest.mark.parametrize("projection", ["fields text", "select text"])
+@pytest.mark.parametrize("aggregate", ["count", "agg count", "agg sum:word_count"])
+@pytest.mark.parametrize("projection_first", [True, False])
+def test_aggregate_terminal_refuses_an_ignored_row_projection(
+    projection: str, aggregate: str, projection_first: bool
+) -> None:
+    stages = (projection, aggregate) if projection_first else (aggregate, projection)
+    with pytest.raises(ExpressionCompileError) as raised:
+        parse_unit_source_expression("messages where text:neutral | " + " | ".join(stages))
+    expected_field = ("count" if aggregate == "count" else "agg") if projection_first else "fields"
+    assert raised.value.field == expected_field
+
+
+def test_nonaggregate_row_projection_remains_executable() -> None:
+    source = parse_unit_source_expression("messages where text:neutral | fields text | limit 2")
+    assert source is not None
+    assert source.selected_fields == ("text",)
+    assert source.limit == 2

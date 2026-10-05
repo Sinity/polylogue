@@ -1239,3 +1239,25 @@ def test_a_database_larger_than_the_residue_cohort_acquires_in_bounded_memory(tm
     growth_bytes = (resource.getrusage(resource.RUSAGE_SELF).ru_maxrss - before_kb) * 1024
     # One row plus its hex and JSON encodings, with headroom; never the file.
     assert growth_bytes < 16 * _SCALE_ROW_BYTES, growth_bytes
+
+
+@pytest.mark.parametrize("sequence_value, expected", [(1, ["i", 1]), ("1", ["t", "1"]), (None, None)])
+def test_logical_export_preserves_sqlite_sequence_storage_class(
+    tmp_path: Path, sequence_value: object, expected: object
+) -> None:
+    import hashlib
+    import json
+
+    source = tmp_path / "sequence.sqlite"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("CREATE TABLE authored(id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT)")
+        conn.execute("INSERT INTO authored(body) VALUES ('neutral authored text')")
+        conn.execute("UPDATE sqlite_sequence SET seq=? WHERE name='authored'", (sequence_value,))
+    exported = sqlite_export.logical_export_bytes(source)
+    header = json.loads(exported.splitlines()[0])
+    assert header["sqlite_sequence"] == [[["t", "authored"], expected]]
+    assert sqlite_export.logical_export_digest(source) == hashlib.sha256(exported).hexdigest()
+    retained = tmp_path / "retained.jsonl"
+    retained.write_bytes(exported)
+    with logical_source_context(retained) as conn:
+        assert conn.execute("SELECT id, body FROM authored").fetchall() == [(1, "neutral authored text")]

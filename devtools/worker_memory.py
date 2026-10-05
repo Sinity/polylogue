@@ -330,15 +330,11 @@ class ChargeProfile:
         measured cgroup peak can be compared against what was predicted for it
         without reconstructing the arithmetic from the components.
 
-        The margin is worth reading, not just recording: ``width_within``
-        deliberately holds nothing back beyond the controller, so the chosen
-        width fills the ceiling. Under the superseded 2026-09-20 constants a
-        12 GiB ``memory.high`` predicted 11,725 MiB at width 3 -- a 4.6%
-        margin -- and admitted it; the 2026-09-17 run at that width stalled
-        pinned at ``memory.high``, throttled into continuous reclaim. The
-        2026-09-21 constants predict 15,400 MiB for the same width and refuse
-        it, which is the correction. Widening the margin is a Sinnix change to
-        the slice budget, not an arithmetic change here.
+        ``width_within`` accounts for the controller but carries no extra
+        safety margin. Arithmetic fit is distinct from qualification: the
+        width-three corpus run stalled in reclaim at ``memory.high``. The
+        shipped corpus ceiling remains two, independently of this prediction.
+        The observed charge model and the host slice budget are unchanged.
         """
         predicted = self.charge_mib(workers)
         tests_per_worker = self.tests_per_worker(workers)
@@ -384,11 +380,11 @@ def width_within(budget_mib: float, *, profile: ChargeProfile = MEASURED_CHARGE)
     return workers
 
 
-#: The corpus width, and the ceiling any configured width is reduced to. It is
-#: what the pytest slice holds at the peaks above rather than a number declared
-#: beside them, so an idle slice yields exactly this many workers and the live
-#: bounds below narrow only a slice that is already occupied.
-CORPUS_MAX_WORKERS = width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)
+#: Qualified corpus concurrency. The width-three corpus run stalled in
+#: reclaim at memory.high; the measured width-two run completed without a
+#: pressure kill. An arithmetic charge below the slice ceiling does not
+#: qualify a wider launch, including when the live limit cannot be read.
+CORPUS_MAX_WORKERS: Final = 2
 
 #: A focused selection's worker is not a corpus worker: it runs a bounded
 #: selection, so its peak is set by what that selection imports and builds,
@@ -449,7 +445,7 @@ def corroborate_profile(
     ``None`` when there is nothing to compare: no sampler document, a run too
     short to observe the group, or no width on record.
     """
-    if not memory or not sizing or memory.get("unmeasured"):
+    if not memory or not sizing or (memory.get("unmeasured") or memory.get("incomplete")):
         return None
     processes = [entry for entry in memory.get("processes") or [] if entry.get("peak_private_kib")]
     peak = memory.get("peak") or {}
@@ -726,7 +722,7 @@ def memory_bounded_worker_cap(
     The reading is live at launch, so a job that waited in the queue is sized
     against the budget it actually has, less what other admitted jobs in the
     same pool have reserved and not yet charged (``outstanding_mib``).  The
-    derived ``CORPUS_MAX_WORKERS`` cap remains the upper bound even when the
+    qualified ``CORPUS_MAX_WORKERS`` cap remains the upper bound even when the
     cgroup is roomy.
 
     ``in_process`` is a run without xdist: one process, charged
@@ -743,6 +739,8 @@ def memory_bounded_worker_cap(
     the question when its live enforcement cannot be read.
     """
     ceiling = CORPUS_MAX_WORKERS if max_workers is None else max_workers
+    if profile is MEASURED_CHARGE:
+        ceiling = min(ceiling, CORPUS_MAX_WORKERS)
     host = available_memory_mib(meminfo=meminfo)
     # Derive both the available budget and its owning hierarchy levels from
     # one observation.  Cgroup counters can change between reads; mixing an

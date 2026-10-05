@@ -27,12 +27,16 @@ Anti-vacuity:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+from typing import Any, BinaryIO, cast
 
 import pytest
 
-from devtools.pytest_memory import MAX_ATTRIBUTED_PROCESSES, ProcessGroupMemorySampler
+from devtools.pytest_memory import CUSTODY_ENV, MAX_ATTRIBUTED_PROCESSES, ProcessGroupMemorySampler
 
 KIB = 1024
 
@@ -49,7 +53,8 @@ def _process(proc: Path, pid: int, *, pgid: int, command: str = "pytest", pss_ki
     directory.mkdir(exist_ok=True)
     # The comm field is parenthesised and may contain spaces; the fields the
     # sampler reads come after it.
-    (directory / "stat").write_text(f"{pid} ({command} worker) S 1 {pgid} 0 0 -1 0\n", encoding="utf-8")
+    fields = ["S", "1", str(pgid), *(["0"] * 16), str(pid * 10)]
+    (directory / "stat").write_text(f"{pid} ({command} worker) " + " ".join(fields) + "\n", encoding="utf-8")
     (directory / "comm").write_text(f"{command}\n", encoding="utf-8")
     (directory / "smaps_rollup").write_text(
         f"00400000-7fff ---p 00000000 00:00 0 [rollup]\n"
@@ -105,18 +110,21 @@ def test_only_the_run_s_own_process_group_is_attributed(tmp_path: Path) -> None:
     assert [entry["pid"] for entry in document["processes"]] == [100]
 
 
-def test_detached_child_in_managed_cgroup_is_attributed(tmp_path: Path) -> None:
+def test_marker_owns_detached_child_among_shared_cgroup_peers(tmp_path: Path) -> None:
     """A setsid child remains charged to the managed cgroup after leaving its process group."""
     proc = _proc(tmp_path)
     _process(proc, 100, pgid=100, pss_kib=100 * KIB)
-    _process(proc, 101, pgid=900, command="detached", pss_kib=700 * KIB)
+    detached = _process(proc, 101, pgid=900, command="detached", pss_kib=700 * KIB)
+    (detached / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    unrelated = _process(proc, 555, pgid=555, command="peer", pss_kib=4000 * KIB)
+    (unrelated / "environ").write_bytes((CUSTODY_ENV + "=other").encode() + b"\0")
     (proc / "self").mkdir()
     (proc / "self" / "cgroup").write_text("0::/managed/pytest\n")
     cgroup_root = tmp_path / "cgroup"
     member_dir = cgroup_root / "managed" / "pytest"
     member_dir.mkdir(parents=True)
-    (member_dir / "cgroup.procs").write_text("100\n101\n")
-    sampler = ProcessGroupMemorySampler(100, proc=proc, cgroup_root=cgroup_root, meminfo=_meminfo(tmp_path, 8000))
+    (member_dir / "cgroup.procs").write_text("100\n101\n555\n")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
     sampler.sample()
     assert sampler.snapshot()["peak"]["pss_kib"] == 800 * KIB
 
@@ -263,6 +271,9 @@ def test_a_followed_rerun_group_is_part_of_the_run_peak(tmp_path: Path) -> None:
     sampler = _sampler(tmp_path, proc, pgid=100)
     sampler.sample()
 
+    for path in (proc / "100").iterdir():
+        path.unlink()
+    (proc / "100").rmdir()
     _process(proc, 300, pgid=300, pss_kib=900 * KIB)
     # No explicit sample: ``follow`` observes the new group at once, so a
     # rerun that ends within one interval is still measured.
@@ -270,3 +281,227 @@ def test_a_followed_rerun_group_is_part_of_the_run_peak(tmp_path: Path) -> None:
 
     document = sampler.stop()
     assert document["peak"]["pss_kib"] == 900 * KIB
+
+
+def test_reused_numeric_group_never_acquires_custody(tmp_path: Path) -> None:
+    proc = _proc(tmp_path)
+    leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    sampler = _sampler(tmp_path, proc)
+    sampler.sample()
+    (leader / "stat").write_text("100 (peer) S 1 100 " + "0 " * 16 + "99999\n")
+    _process(proc, 101, pgid=100, pss_kib=8000 * KIB)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["peak"]["pss_kib"] == 100 * KIB
+    assert document["processes_seen"] == 1
+
+
+def test_proven_detached_identity_survives_unreadable_marker(tmp_path: Path) -> None:
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    child = _process(proc, 101, pgid=900, pss_kib=700 * KIB)
+    (child / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    (child / "environ").unlink()
+    _process(proc, 101, pgid=900, pss_kib=1100 * KIB)
+    sampler.sample()
+    assert sampler.snapshot()["peak"]["pss_kib"] == 1200 * KIB
+    assert {entry["pid"] for entry in sampler.snapshot()["processes"]} == {100, 101}
+
+
+def test_unknown_unreadable_marker_leaves_visible_incomplete_sampling(tmp_path: Path) -> None:
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    _process(proc, 555, pgid=555, pss_kib=9000 * KIB)
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["peak"]["pss_kib"] == 100 * KIB
+    assert document["incomplete"]
+    assert {entry["pid"] for entry in document["processes"]} == {100}
+
+
+def test_reused_pid_during_payload_read_never_contributes_memory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    sampler = _sampler(tmp_path, proc)
+    original = pytest_memory._rollup
+
+    def raced(pid: int, *, proc: Path) -> dict[str, int] | None:
+        result = original(pid, proc=proc)
+        (leader / "stat").write_text("100 (peer) S 1 100 " + "0 " * 16 + "99999\n")
+        return result
+
+    monkeypatch.setattr(pytest_memory, "_rollup", raced)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["observed_samples"] == 0
+    assert document["unmeasured"] and document["incomplete"]
+    assert document["processes"] == []
+
+
+def test_custody_marker_comparison_streams_large_fields(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from devtools.pytest_memory import _marker_matches
+    from tests.infra.memory_attribution_fixture import EnvironmentReader
+
+    sizes: list[int] = []
+    original_open = Path.open
+
+    def tracked_open(path: Path, *args: Any, **kwargs: Any) -> Any:
+        handle = original_open(path, *args, **kwargs)
+        return EnvironmentReader(cast(BinaryIO, handle), sizes) if path.name == "environ" else handle
+
+    proc = _proc(tmp_path)
+    process = _process(proc, 100, pgid=100)
+    (process / "environ").write_bytes(b"UNRELATED=" + b"x" * 300000 + b"\0" + (CUSTODY_ENV + "=owned").encode() + b"\0")
+    monkeypatch.setattr(Path, "open", tracked_open)
+    assert _marker_matches(100, "owned", proc=proc) is True
+    assert _marker_matches(100, "other", proc=proc) is False
+    assert sizes and all(size == 65536 for size in sizes), sizes
+
+
+@pytest.mark.uses_real_clock("observes actual admitted controller and detached child processes")
+@pytest.mark.parametrize("route", ["held", "queued"])
+@pytest.mark.parametrize("reparent_before_sample", [False, True])
+def test_actual_launch_owns_detached_child_and_excludes_shared_peer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    reparent_before_sample: bool,
+) -> None:
+    from devtools import pytest_slot
+    from devtools.worker_memory import FOCUSED_CHARGE
+    from tests.infra.memory_attribution_fixture import DETACHED_PROGRAM, wait_until_detached_child_is_reparented
+
+    if not Path("/proc/self/stat").exists():
+        pytest.skip("actual procfs custody observation is unavailable")
+    observed_reparenting: list[tuple[int, int]] = []
+    if reparent_before_sample:
+        original_sampler = ProcessGroupMemorySampler
+
+        def after_reparenting(pgid: int, **kwargs: Any) -> ProcessGroupMemorySampler:
+            observed_reparenting.append(wait_until_detached_child_is_reparented(tmp_path))
+            return original_sampler(pgid, **kwargs)
+
+        monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", after_reparenting)
+    monkeypatch.setenv(CUSTODY_ENV, "ambient-parent")
+    peer = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    environment = {**os.environ, "POLYLOGUE_PYTEST_RUN_ID": "neutral-receipt", CUSTODY_ENV: "ambient-parent"}
+    command = [sys.executable, "-c", DETACHED_PROGRAM, str(tmp_path)]
+    try:
+        if route == "held":
+            code, receipt = pytest_slot._run_held_admitted(
+                command,
+                cwd=str(tmp_path),
+                env=environment,
+                stdout=None,
+                on_exit=lambda: None,
+                started=time.monotonic(),
+                worktree_provenance=None,
+                profile=FOCUSED_CHARGE,
+                sizing=None,
+                telemetry_path=None,
+                result_path=None,
+                on_interrupt=None,
+            )
+        else:
+            monkeypatch.setattr(pytest_slot, "admission_ledger", lambda _env: None)
+            monkeypatch.setattr(pytest_slot, "admit_width", lambda argv, **_kwargs: (list(argv), None))
+            launch, log = tmp_path / "launch.json", tmp_path / "slot.log"
+            pytest_slot._write_launch(launch, argv=command, cwd=str(tmp_path), env=environment, log_path=log)
+            code = pytest_slot._run_launch(launch)
+            receipt = json.loads(log.with_suffix(".result.json").read_text())
+        identities = json.loads((tmp_path / "identities.json").read_text())
+        assert code == 0
+        pids = {entry["pid"] for entry in receipt["memory"]["processes"]}
+        assert identities["detached"] in pids, pids
+        if reparent_before_sample:
+            assert observed_reparenting == [(identities["controller"], identities["detached"])]
+            assert identities["controller"] not in pids, pids
+        else:
+            assert identities["controller"] in pids, pids
+        assert peer.pid not in pids and os.getpid() not in pids, pids
+        assert identities["custody"] != "ambient-parent" and identities["receipt"] == "neutral-receipt"
+        assert os.environ[CUSTODY_ENV] == environment[CUSTODY_ENV] == "ambient-parent"
+    finally:
+        (tmp_path / "stop").touch()
+        peer.terminate()
+        peer.wait()
+        path = tmp_path / "identities.json"
+        if path.exists():
+            detached = json.loads(path.read_text())["detached"]
+            pytest_slot._group_reaped(detached)
+
+
+def test_reused_leader_between_group_check_and_payload_is_not_owned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from devtools import pytest_memory
+
+    proc = _proc(tmp_path)
+    leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    sampler = _sampler(tmp_path, proc)
+    original = pytest_memory._identity
+    reads = 0
+
+    def raced(pid: int, *, proc: Path) -> object:
+        nonlocal reads
+        if pid == 100:
+            reads += 1
+            if reads == 2:
+                (leader / "stat").write_text("100 (peer) S 1 100 " + "0 " * 16 + "99999\n")
+        return original(pid, proc=proc)
+
+    monkeypatch.setattr(pytest_memory, "_identity", raced)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["observed_samples"] == 0 and document["incomplete"]
+    assert document["processes"] == []
+
+
+def test_reused_owned_pid_keeps_separate_birth_identity(tmp_path: Path) -> None:
+    proc = _proc(tmp_path)
+    leader = _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    (leader / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    (leader / "stat").write_text("100 (successor) S 1 100 " + "0 " * 16 + "99999\n")
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["processes_seen"] == 2
+    assert {(entry["pid"], entry["start_ticks"]) for entry in document["processes"]} == {(100, 1000), (100, 99999)}
+
+
+def test_enumeration_fault_preserves_proven_birth_for_resumed_marker_fault(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=100 * KIB)
+    child = _process(proc, 101, pgid=900, pss_kib=700 * KIB)
+    (child / "environ").write_bytes((CUSTODY_ENV + "=owned").encode() + b"\0")
+    sampler = ProcessGroupMemorySampler(100, proc=proc, custody_marker="owned", meminfo=_meminfo(tmp_path, 8000))
+    sampler.sample()
+    original = Path.iterdir
+
+    def denied(path: Path) -> Any:
+        if path == proc:
+            raise PermissionError("neutral enumeration fault")
+        return original(path)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(Path, "iterdir", denied)
+        sampler.sample()
+    (child / "environ").unlink()
+    _process(proc, 101, pgid=900, pss_kib=1400 * KIB)
+    sampler.sample()
+    document = sampler.snapshot()
+    assert document["peak"]["pss_kib"] == 1500 * KIB
+    assert document["incomplete"]
+    assert document["processes_seen"] == 2
+    assert {entry["pid"] for entry in document["processes"]} == {100, 101}

@@ -13,7 +13,7 @@ from contextlib import closing, contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1332,11 +1332,11 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
 
     initialize_active_archive_root(tmp_path)
     receipt_root = tmp_path / ".maintenance-state/durable-change-trains"
-    receipts = tuple(receipt_root / f"source-{slot:03d}.json" for slot in (2, 3, 4))
+    receipts = tuple(receipt_root / f"source-{slot:03d}.json" for slot in (2, 3, 4, 5, 6))
     assert all(receipt.is_file() for receipt in receipts)
     assert reconcile_durable_change_train_startup(tmp_path) == receipts
 
-    train = load_durable_change_train_manifest(receipts[1])
+    train = load_durable_change_train_manifest(receipts[2])
     assert train.state is DurableChangeTrainState.RELEASED
     assert train.proof is not None
     assert {consumer.consumer_id for consumer in train.proof.runtime_consumers if consumer.passed} == {
@@ -1350,58 +1350,61 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
     }
     authorization = train.backup_authorization
     assert authorization is not None
-    assert authorization.live_user_version == 2
+    assert authorization.live_user_version == 3
     assert authorization.manifest_path is not None
     assert authorization.receipt_path is not None
     manifest_path = Path(authorization.manifest_path)
     assert Path(authorization.receipt_path).is_file()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["tier_source_fingerprints"]["source"]["user_version"] == 2
+    assert manifest["tier_source_fingerprints"]["source.db"]["user_version"] == 3
     with closing(sqlite3.connect(manifest_path.parent / "source.db")) as backed_up:
         previous_inventory = migration_runner.capture_durable_schema_inventory(backed_up)
-        assert backed_up.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert backed_up.execute("PRAGMA user_version").fetchone()[0] == 3
         assert (
             backed_up.execute("SELECT 1 FROM sqlite_schema WHERE name = 'raw_profile_identity_receipts'").fetchone()
             is None
         )
     with closing(sqlite3.connect(tmp_path / "source.db")) as current:
-        assert current.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert current.execute("PRAGMA user_version").fetchone()[0] == 6
         assert current.execute("SELECT count(*) FROM raw_profile_identity_receipts").fetchone()[0] == 0
-        with closing(migration_runner._schema_only_replica(current)) as source3:
-            reset_source_fixture_to_version(source3, 3)
-            for alteration in ("PRAGMA user_version = 2", "DROP INDEX idx_raw_artifacts_failure_identity"):
-                with closing(migration_runner._schema_only_replica(source3)) as mismatched:
+        with closing(migration_runner._schema_only_replica(current)) as source4:
+            reset_source_fixture_to_version(source4, 4)
+            for alteration in ("PRAGMA user_version = 3", "DROP INDEX idx_raw_artifacts_failure_identity"):
+                with closing(migration_runner._schema_only_replica(source4)) as mismatched:
                     mismatched.execute(alteration)
                     with pytest.raises(DurableChangeTrainError):
                         _runtime_consumer_results(train, tmp_path, candidate=mismatched)
 
+            consumer_failure = RuntimeError("synthetic original consumer interruption")
+
             def fail_consumer(_train: object, _root: Path) -> None:
-                raise RuntimeError("consumer interrupted")
+                raise consumer_failure
 
             with monkeypatch.context() as failure:
                 failure.setattr(durable_change_train_module, "_invoke_runtime_consumers", fail_consumer)
                 with runtime_tier_probe_authority(
-                    RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 2, previous_inventory.sha256)
+                    RuntimeTierProbeAuthority(ArchiveTier.SOURCE, 3, previous_inventory.sha256)
                 ):
-                    with pytest.raises(RuntimeError, match="consumer interrupted"):
-                        _runtime_consumer_results(train, tmp_path, candidate=source3)
+                    with pytest.raises(RuntimeError) as failed:
+                        _runtime_consumer_results(train, tmp_path, candidate=source4)
+                    assert failed.value is consumer_failure
                     with closing(sqlite3.connect(":memory:")) as restored_probe:
                         initialize_runtime_tier_probe(restored_probe, ArchiveTier.SOURCE)
-                        assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 2
+                        assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 3
                 with closing(sqlite3.connect(":memory:")) as ordinary_probe:
                     initialize_runtime_tier_probe(ordinary_probe, ArchiveTier.SOURCE)
-                    assert ordinary_probe.execute("PRAGMA user_version").fetchone()[0] == 4
+                    assert ordinary_probe.execute("PRAGMA user_version").fetchone()[0] == 6
     initialize_active_archive_root(tmp_path)
     assert reconcile_durable_change_train_startup(tmp_path) == receipts
 
 
-def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile(
+def test_source004_preserves_historical_raw_and_admits_distinct_captured_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from polylogue.core.enums import Origin, Provider
     from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
-    from polylogue.sources.parsers.hermes_identity import profile_key
-    from polylogue.sources.revision_backfill import _parse_one
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
+    from polylogue.sources.revision_backfill import parse_retained_raw_sessions, prepare_retained_jsonl_artifact
     from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
     from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite import archive_tiers
@@ -1414,7 +1417,13 @@ def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile
     external.mkdir()
     (profile / "sessions").symlink_to(external, target_is_directory=True)
     physical = external / "session_shared.json"
-    payload = json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same"}]}).encode()
+    payload = json.dumps(
+        {
+            "session_id": "shared",
+            "session_start": "2026-01-01T00:00:00Z",
+            "messages": [{"role": "user", "content": "same"}],
+        }
+    ).encode()
     physical.write_bytes(payload)
     declared = profile / "sessions" / physical.name
     root = tmp_path / "archive"
@@ -1457,7 +1466,7 @@ def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile
     new_id = hermes_profile_raw_id(physical, 0, blob_hash, identity_path=physical, profile_identity=key)
     assert new_id != old_id
     with closing(sqlite3.connect(root / "source.db")) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         for _ in range(2):
             write_source_raw_session(
                 connection,
@@ -1477,9 +1486,21 @@ def test_source003_preserves_historical_raw_and_admits_distinct_captured_profile
         assert connection.execute("SELECT raw_id, profile_key FROM raw_profile_identity_receipts").fetchall() == [
             (new_id, key)
         ]
-    with pytest.raises(MissingProfileIdentityError):
-        _parse_one(Provider.HERMES, payload, str(declared), archive_root=root)
-    assert _parse_one(Provider.HERMES, payload, str(physical), profile_identity=key, archive_root=root)
+    from tests.infra.retained_jsonl import prepared_source_fixture
+
+    with prepared_source_fixture(root) as original_reader:
+        with pytest.raises(MissingProfileIdentityError):
+            parse_retained_raw_sessions(original_reader, old_id)
+        prepared = prepare_retained_jsonl_artifact(original_reader, new_id, directory=tmp_path / "prepared-profile")
+        try:
+            assert prepared.error is None, prepared.error
+            assert prepared.captured_profile_key == key
+            sessions = prepared.session_sequence()
+            assert len(sessions) == 1
+            assert sessions[0].provider_session_id == qualified_session_id("shared", key)
+            assert sessions[0].messages[0].text == "same"
+        finally:
+            prepared.discard()
     bootstrap.initialize_active_archive_root(root)
 
 
@@ -1584,13 +1605,23 @@ def test_fresh_bootstrap_intent_recovers_after_late_tier_failure(
 
     receipt = marker_root / "source-002.json"
     assert receipt.is_file()
-    profile_receipt = marker_root / "source-003.json"
+    attachment_receipt = marker_root / "source-003.json"
+    assert attachment_receipt.is_file()
+    profile_receipt = marker_root / "source-004.json"
     assert profile_receipt.is_file()
     assert not (marker_root / ".bootstrap").exists()
     assert not (marker_root / ".bootstrap.pending").exists()
-    dependency_receipt = marker_root / "source-004.json"
+    dependency_receipt = marker_root / "source-005.json"
+    frontier_receipt = marker_root / "source-006.json"
+    assert frontier_receipt.is_file()
     assert dependency_receipt.is_file()
-    assert reconcile_durable_change_train_startup(tmp_path) == (receipt, profile_receipt, dependency_receipt)
+    assert reconcile_durable_change_train_startup(tmp_path) == (
+        receipt,
+        attachment_receipt,
+        profile_receipt,
+        dependency_receipt,
+        frontier_receipt,
+    )
 
 
 def test_fresh_bootstrap_intent_rejects_tampering_before_recovery(
@@ -2976,12 +3007,13 @@ def test_rechecks_manifest_semantics_after_a_valid_checksum(tmp_path: Path) -> N
         load_durable_change_train_manifest(path)
 
 
-def test_source004_indexes_actual_dependency_reader_and_preserves_populated_source(
+def test_source005_indexes_actual_dependency_reader_and_preserves_populated_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from importlib import resources
 
     from polylogue.core.enums import Origin, Provider
+    from polylogue.storage.blob_store import BlobStore
     from polylogue.storage.sqlite import archive_tiers
     from polylogue.storage.sqlite.archive_tiers import bootstrap
     from polylogue.storage.sqlite.archive_tiers.revision_governance import (
@@ -2990,16 +3022,21 @@ def test_source004_indexes_actual_dependency_reader_and_preserves_populated_sour
     )
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 
-    source3 = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE]
+    source4 = ARCHIVE_BASELINE_DDL_BY_TIER[ArchiveTier.SOURCE]
     directory = resources.files("polylogue.storage.sqlite.migrations.source")
-    for name in ("002_raw_artifact_failure_identity.sql", "003_captured_profile_identity.sql"):
-        source3 += "\n" + directory.joinpath(name).read_text(encoding="utf-8")
-    ddl = {**ARCHIVE_DDL_BY_TIER, ArchiveTier.SOURCE: source3}
+    for name in (
+        "002_raw_artifact_failure_identity.sql",
+        "003_attachment_coordinate_identity.sql",
+        "004_captured_profile_identity.sql",
+    ):
+        source4 += "\n" + directory.joinpath(name).read_text(encoding="utf-8")
+    ddl = {**ARCHIVE_DDL_BY_TIER, ArchiveTier.SOURCE: source4}
     with monkeypatch.context() as pinned:
-        _pin_source_runtime_version(pinned, 3)
+        _pin_source_runtime_version(pinned, 4)
         for owner in (archive_tiers, bootstrap, migration_runner):
             pinned.setattr(owner, "ARCHIVE_DDL_BY_TIER", ddl)
         bootstrap.initialize_active_archive_root(tmp_path)
+        BlobStore(tmp_path / "blob").write_from_bytes(b"{}")
         with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
             for raw_id in ("parent", "child"):
                 write_source_raw_session(
@@ -3017,16 +3054,16 @@ def test_source004_indexes_actual_dependency_reader_and_preserves_populated_sour
             before = connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall()
     with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
         proof = rehearse_durable_migration_chain(
-            connection, ArchiveTier.SOURCE, target_version=4, evidence_ref="proof:source004-populated-rehearsal"
+            connection, ArchiveTier.SOURCE, target_version=6, evidence_ref="proof:source005-populated-rehearsal"
         )
         assert proof.matches
-        assert tuple(step.version for step in proof.steps) == (4,)
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert tuple(step.version for step in proof.steps) == (5, 6)
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall() == before
     bootstrap.invalidate_active_archive_bootstrap(tmp_path)
     bootstrap.initialize_active_archive_root(tmp_path)
     with closing(sqlite3.connect(tmp_path / "source.db")) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
         assert connection.execute("SELECT * FROM raw_sessions ORDER BY raw_id").fetchall() == before
         plan = connection.execute(
             "EXPLAIN QUERY PLAN " + RAW_BYTE_REVISION_DEPENDENTS_SQL, ("parent", "parent", "parent")
@@ -3039,9 +3076,12 @@ def test_source004_indexes_actual_dependency_reader_and_preserves_populated_sour
         connection.execute("DELETE FROM raw_sessions WHERE raw_id = 'child'")
         assert not has_raw_byte_revision_dependents(connection, "parent")
         assert not has_raw_byte_revision_dependents(connection, "missing")
-    train = load_durable_change_train_manifest(tmp_path / ".maintenance-state/durable-change-trains/source-004.json")
+    train = load_durable_change_train_manifest(tmp_path / ".maintenance-state/durable-change-trains/source-005.json")
     assert train.state is DurableChangeTrainState.RELEASED
-    assert train.backup_authorization is None
+    assert train.backup_authorization is not None
+    assert train.backup_authorization.mode == "additive-no-backup"
+    assert train.backup_authorization.manifest_path is None
+    assert train.backup_authorization.receipt_path is None
     assert train.proof is not None
     assert all(result.passed for result in train.proof.runtime_consumers)
     bootstrap.initialize_active_archive_root(tmp_path)
@@ -3113,8 +3153,10 @@ def test_runtime_consumer_probe_keeps_native_owner_until_creator_retry(
     from polylogue.storage.sqlite import connection_profile, managed_connection
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
-    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
-        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+        assert isinstance(connection, ControlledConnection)
+        return connection
 
     monkeypatch.setattr(managed_connection, "connect_measured", connect)
     monkeypatch.setattr(connection_profile, "connect_measured", connect)
@@ -3153,8 +3195,10 @@ def test_canonical_train_inventory_retains_actual_connection_on_close_failure(
     from polylogue.storage.sqlite import connection_profile, managed_connection
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
-    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
-        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+        assert isinstance(connection, ControlledConnection)
+        return connection
 
     capture = migration_runner.capture_durable_schema_inventory
     actual: ControlledConnection | None = None
@@ -3226,8 +3270,10 @@ def test_runtime_probe_directory_survives_native_close_until_creator_retry(
     from polylogue.storage.sqlite import connection_profile, managed_connection
     from tests.infra.sqlite_cursor_settlement import ControlledConnection
 
-    def connect(database: str | Path, *args: object, **kwargs: object) -> sqlite3.Connection:
-        return sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+    def connect(database: str | Path, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        connection = sqlite3.connect(database, *args, factory=ControlledConnection, **kwargs)
+        assert isinstance(connection, ControlledConnection)
+        return connection
 
     monkeypatch.setattr(managed_connection, "connect_measured", connect)
     directory: Path | None = None
@@ -3259,4 +3305,4 @@ def test_runtime_probe_directory_survives_native_close_until_creator_retry(
         owner.close()
     assert actual.close_attempts == 2
     gc.collect()
-    assert directory is not None and not directory.exists()
+    assert not directory.exists()

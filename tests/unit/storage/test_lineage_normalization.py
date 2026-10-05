@@ -31,6 +31,7 @@ from polylogue.sources.parsers.base import (
 from polylogue.sources.parsers.hermes_state import parse_state_db
 from polylogue.storage.derived.session.derivation import archive_session_partition_statuses
 from polylogue.storage.derived.session.input_binding import session_input_bindings
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION, LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
@@ -51,12 +52,18 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     iter_messages,
 )
 from tests.infra.identity import archive_message_id
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import (
+    _fixture_writer_admission,
+    close_fixture_index_connection,
+    fixture_index_mutation_scope,
+    prepared_fixture_index_batch,
+    write_fixture_index_session,
+)
 from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -239,7 +246,7 @@ def test_prefix_sharing_child_stores_only_tail_and_composes(tmp_path: Path) -> N
         child_id,
     ]
 
-    conn.close()
+    close_fixture_index_connection(conn)
 
     # Reading the child via the async query path composes the same transcript.
     composed = asyncio.run(_read_texts(db, child_id))
@@ -342,9 +349,11 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
     )
     child_id = write_fixture_index_session(conn, child)
 
+    # The final event reports only an aggregate total, so its billing lanes are
+    # incomplete even though the earlier exact lane counters remain available.
     usage = conn.execute(
         """
-        SELECT input_tokens, output_tokens, cache_read_tokens,
+        SELECT input_tokens, output_tokens, cache_read_tokens, provider_lanes_complete,
                CASE WHEN provider_cost_usd IS NOT NULL THEN 'origin_reported'
                     WHEN catalog_cost_usd IS NOT NULL THEN 'priced' END AS cost_provenance
         FROM session_model_usage
@@ -359,7 +368,8 @@ def test_prefix_sharing_child_provider_usage_keeps_its_own_reported_totals(tmp_p
         "input_tokens": 130,
         "output_tokens": 25,
         "cache_read_tokens": 30,
-        "cost_provenance": "priced",
+        "provider_lanes_complete": 0,
+        "cost_provenance": None,
     }
     events = conn.execute(
         """
@@ -575,7 +585,7 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     assert link["inheritance"] == "prefix-sharing"
     assert link["branch_point_message_id"] is not None
 
-    conn.close()
+    close_fixture_index_connection(conn)
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
@@ -680,7 +690,7 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
         ).fetchall()
     ] == [0, 1]
 
-    conn.close()
+    close_fixture_index_connection(conn)
 
     assert asyncio.run(_read_texts(db, child_id)) == [
         "hello",
@@ -801,7 +811,7 @@ def test_prefix_inheritance_is_identical_under_every_timestamp_shape(tmp_path: P
         ).fetchall()
     ] == ["child diverges here", "child reply"]
 
-    conn.close()
+    close_fixture_index_connection(conn)
     assert asyncio.run(_read_texts(db, child_id)) == _COMPOSED_TEXTS
 
 
@@ -824,7 +834,7 @@ def test_transcript_reads_are_invariant_under_timestamp_mutation(tmp_path: Path)
     db = tmp_path / "index.db"
     conn = _connect(db)
     parent_id, child_id = _write_prefix_sharing_pair(conn, _TIMESTAMP_SHAPES["reversed"])
-    conn.close()
+    close_fixture_index_connection(conn)
 
     parent_texts = ["hello", "hi there", "parent continues alone"]
     before_child = asyncio.run(_read_all_routes(db, child_id))
@@ -837,7 +847,7 @@ def test_transcript_reads_are_invariant_under_timestamp_mutation(tmp_path: Path)
     # parent prefix and the child tail each read backwards on a timestamp key.
     conn.execute("UPDATE messages SET occurred_at_ms = 1000000 - position * 1000")
     conn.commit()
-    conn.close()
+    close_fixture_index_connection(conn)
 
     assert asyncio.run(_read_all_routes(db, child_id)) == before_child
     assert asyncio.run(_read_all_routes(db, parent_id)) == before_parent
@@ -894,6 +904,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
     child_id = write_fixture_index_session(conn, child)
     _seed_fresh_session_products(conn, child_id, message_count=4)
     assert _nonvalid_partitions(conn) == []
+    conn.commit()
 
     parent = ParsedSession(
         source_name=Provider.CODEX,
@@ -916,7 +927,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
         assert retained == 0, f"{relation} retained the pre-extraction projection"
     assert child_id in _nonvalid_partitions(conn)
 
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 @pytest.mark.parametrize("child_first", [False, True], ids=["parent-first", "child-first"])
@@ -1010,7 +1021,7 @@ def test_variant_prefix_lineage_converges_across_order_and_parent_replacement(
         ).fetchone()
         == link
     )
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> None:
@@ -1077,7 +1088,7 @@ def test_missing_variant_branch_point_keeps_the_child_whole(tmp_path: Path) -> N
         (child_id,),
     )
     assert [tuple(row) for row in coordinates] == [(0, 0), (1, 0), (1, 1), (2, 0)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: Path) -> None:
@@ -1136,7 +1147,7 @@ def test_reingest_after_dangling_ancestor_does_not_fabricate_a_prefix(tmp_path: 
         (child_id,),
     ).fetchall()
     assert [row[0] for row in physical] == ["c0", "c1", "c2", "c3"]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> None:
@@ -1223,7 +1234,7 @@ def test_nested_dangling_ancestor_keeps_only_reachable_tails(tmp_path: Path) -> 
         ).fetchall()
         == before_links
     )
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
@@ -1310,6 +1321,8 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
         add_timing: Callable[[str, float], None] | None = None,
         bulk_fts: bool = False,
         bulk_build: bool = False,
+        invalidated_session_ids: set[str] | None = None,
+        source_read: _write_module.SessionSourceRead | None = None,
     ) -> None:
         real_resolve(
             conn_inner,
@@ -1320,6 +1333,8 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
             add_timing=add_timing,
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
+            invalidated_session_ids=invalidated_session_ids,
+            source_read=source_read,
         )
         fired["count"] += 1
         raise RuntimeError("fault after graph resolution")
@@ -1336,7 +1351,7 @@ def test_full_replace_graph_failure_rolls_back_then_retries_idempotently(
     assert after_retry[2:] == (["root", "parent v2", "child tail"], True, None)
     write_fixture_index_session(conn, replacement)
     assert _state() == after_retry
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_path: Path) -> None:
@@ -1408,7 +1423,7 @@ def test_stale_immediate_parent_branch_point_repairs_to_composed_ancestor(tmp_pa
         "hi there",
         "child tail",
     ]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path: Path) -> None:
@@ -1475,7 +1490,7 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
         "inherited prompt",
         "child tail",
     ]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_path: Path) -> None:
@@ -1521,7 +1536,6 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
     assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
 
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("BEGIN IMMEDIATE")
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1540,7 +1554,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
             )
         ],
     )
-    parent_id = write_fixture_index_session(conn, parent, manage_transaction=False)
+    parent_id = write_fixture_index_session(conn, parent)
 
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     dangling_blocks = conn.execute(
@@ -1580,7 +1594,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
 
     # A source-tier rebuild reparses the child while the parent already exists.
     # The provider reference and canonical parent resolution must be identical.
-    write_fixture_index_session(conn, child, force_replace=True, manage_transaction=False)
+    write_fixture_index_session(conn, child, force_replace=True)
     rebuilt_event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
@@ -1590,7 +1604,7 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
     ).fetchone()
     assert dict(rebuilt_event_ref) == dict(event_ref)
     conn.rollback()
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) -> None:
@@ -1647,7 +1661,6 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
     conn.commit()
 
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("BEGIN IMMEDIATE")
     parent = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="parent",
@@ -1665,7 +1678,7 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
             )
         ],
     )
-    write_fixture_index_session(conn, parent, manage_transaction=False)
+    write_fixture_index_session(conn, parent)
 
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
@@ -1684,7 +1697,7 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
     assert link["inheritance"] == "prefix-sharing"
     assert link["branch_point_message_id"] is not None
     conn.rollback()
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_child_before_parent_reextracts_provider_usage_tail(tmp_path: Path) -> None:
@@ -1966,7 +1979,7 @@ def test_spawned_fresh_child_keeps_all_messages(tmp_path: Path) -> None:
     assert link["inheritance"] == "spawned-fresh"
     assert link["branch_point_message_id"] is None
 
-    conn.close()
+    close_fixture_index_connection(conn)
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["fresh subagent prompt", "fresh subagent answer"]
 
@@ -2100,10 +2113,12 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
         ).fetchone()[0]
         == parent_tip
     )
-    conn.close()
+    close_fixture_index_connection(conn)
     assert asyncio.run(_read_texts(db, continuation_id)) == ["before", "summary", "after", "continued"]
 
-    late_db = tmp_path / "late-index.db"
+    late_root = tmp_path / "late-archive"
+    late_root.mkdir()
+    late_db = late_root / "index.db"
     late_conn = _connect(late_db)
     late_continuation_id = write_fixture_index_session(late_conn, continuation)
     late_parent_id = write_fixture_index_session(late_conn, parent)
@@ -2123,7 +2138,7 @@ def test_hermes_compression_tail_composes_and_delegate_stays_fresh(
         ).fetchone()[0]
         == 2
     )
-    late_conn.close()
+    close_fixture_index_connection(late_conn)
     assert asyncio.run(_read_texts(late_db, late_continuation_id)) == [
         "before",
         "summary",
@@ -2165,7 +2180,7 @@ def _build_parent_and_fork(db: Path) -> tuple[str, str]:
         ],
     )
     child_id = write_fixture_index_session(conn, child)
-    conn.close()
+    close_fixture_index_connection(conn)
     return parent_id, child_id
 
 
@@ -2257,7 +2272,7 @@ def test_cycle_is_typed_in_sync_and_async_reads(tmp_path: Path) -> None:
     envelope = read_archive_session_envelope(conn, child_id)
     assert envelope.lineage_complete is False
     assert envelope.lineage_truncation_reason == "cycle"
-    conn.close()
+    close_fixture_index_connection(conn)
 
     async def exercise() -> None:
         reader = await aiosqlite.connect(db)
@@ -2350,7 +2365,7 @@ def test_shared_signature_cache_composes_correctly(tmp_path: Path) -> None:
     assert _composed(fork_a_id) == ["hello", "hi there", "fork A diverges", "fork A reply"]
     assert _composed(fork_b_id) == ["hello", "hi there", "fork B diverges", "fork B reply"]
 
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _setup_interleaving_fixture(db: Path) -> tuple[sqlite3.Connection, str, str]:
@@ -2418,7 +2433,7 @@ def test_sync_composition_holds_one_snapshot_across_concurrent_parent_write(
     parent content with the (unaffected) child's own tail."""
     db = tmp_path / "index.db"
     conn, parent_id, child_id = _setup_interleaving_fixture(db)
-    conn.close()
+    close_fixture_index_connection(conn)
 
     # Re-open on a fresh connection so the read below starts a clean snapshot,
     # matching how a live reader (CLI/MCP/API) connects independently of the
@@ -2429,12 +2444,16 @@ def test_sync_composition_holds_one_snapshot_across_concurrent_parent_write(
     real_edge_lookup = _write_module._prefix_sharing_edge_sync
     fired = {"count": 0}
 
-    def _hook(conn_inner: sqlite3.Connection, session_id: str) -> tuple[str, str] | None:
+    def _hook(
+        conn_inner: sqlite3.Connection,
+        session_id: str,
+        before_input: _write_module.BeforeIndexInput | None = None,
+    ) -> tuple[str, str] | None:
         if session_id == child_id and fired["count"] == 0:
             fired["count"] += 1
             assert conn_inner.in_transaction, "composition must already hold a transaction before this hook fires"
             _concurrently_mutate_parent_block_text(db, parent_id)
-        return real_edge_lookup(conn_inner, session_id)
+        return real_edge_lookup(conn_inner, session_id, before_input)
 
     monkeypatch.setattr(_write_module, "_prefix_sharing_edge_sync", _hook)
 
@@ -2446,7 +2465,7 @@ def test_sync_composition_holds_one_snapshot_across_concurrent_parent_write(
     # so it must see the ORIGINAL parent text, not a torn mix.
     assert texts == ["hello", "hi there", "child diverges"]
 
-    reader.close()
+    close_fixture_index_connection(reader)
 
     # The concurrent edit itself did land (proving it wasn't silently a no-op) --
     # a fresh read afterwards sees the new text.
@@ -2454,7 +2473,7 @@ def test_sync_composition_holds_one_snapshot_across_concurrent_parent_write(
     post_envelope = read_archive_session_envelope(post, child_id)
     post_texts = ["".join(block.text or "" for block in message.blocks) for message in post_envelope.messages]
     assert post_texts == ["hello", "hi there (concurrently edited)", "child diverges"]
-    post.close()
+    close_fixture_index_connection(post)
 
 
 def test_async_composition_holds_one_snapshot_across_concurrent_parent_write(
@@ -2464,7 +2483,7 @@ def test_async_composition_holds_one_snapshot_across_concurrent_parent_write(
     tear when a concurrent writer edits the parent's shared prefix mid-walk."""
     db = tmp_path / "index.db"
     conn, parent_id, child_id = _setup_interleaving_fixture(db)
-    conn.close()
+    close_fixture_index_connection(conn)
 
     real_edge_lookup = _message_query_reads_module._prefix_sharing_edge
     fired = {"count": 0}
@@ -2538,7 +2557,7 @@ def test_sync_and_async_report_incomplete_on_dangling_branch_point(tmp_path: Pat
     # The child's own tail is still returned, just flagged incomplete.
     assert ["".join(b.text or "" for b in m.blocks) for m in envelope.messages] == ["child diverges"]
 
-    conn.close()
+    close_fixture_index_connection(conn)
 
     async def _run() -> tuple[list[str | None], LineageCompleteness]:
         reader = await aiosqlite.connect(db)
@@ -2624,7 +2643,7 @@ def test_deep_chain_composes_complete_on_every_reader(tmp_path: Path) -> None:
     assert envelope.lineage_complete is True
     assert envelope.lineage_truncation_reason is None
     assert envelope.messages[0].blocks[0].text == "root message"
-    conn.close()
+    close_fixture_index_connection(conn)
 
     async def _run() -> LineageCompleteness:
         reader = await aiosqlite.connect(db)
@@ -2659,21 +2678,27 @@ def test_chain_deeper_than_every_former_cap_composes_complete(tmp_path: Path) ->
 
     db = tmp_path / "index.db"
     conn = _connect(db)
-    # One transaction: a per-write commit costs ~15x the write itself here.
-    conn.execute("BEGIN")
-    session_ids = [
-        write_fixture_index_session(
-            conn,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id=f"deep-{level:04d}",
-                title=f"deep-{level:04d}",
-                messages=[_msg("m", Role.USER, f"level {level}", 0)],
-            ),
-            manage_transaction=False,
+    sessions = [
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"deep-{level:04d}",
+            title=f"deep-{level:04d}",
+            messages=[_msg("m", Role.USER, f"level {level}", 0)],
         )
         for level in range(_VERY_DEEP_CHAIN_LEVELS)
     ]
+    # These seeds have no parent dependencies. The first real write initializes
+    # the archive; all remaining inputs prepare before one owned transaction.
+    session_ids = [write_fixture_index_session(conn, sessions[0])]
+    with (
+        prepared_fixture_index_batch(conn, sessions[1:], archive_root=tmp_path) as (seal, prepared),
+        _fixture_writer_admission(conn, "test.fixture.deep-lineage", tmp_path),
+        seal.mutation_scope(conn),
+    ):
+        session_ids.extend(
+            write_fixture_index_session(conn, session, prepared_write=carrier)
+            for session, carrier in zip(sessions[1:], prepared, strict=True)
+        )
     conn.executemany(
         """
         INSERT INTO session_links(
@@ -2695,7 +2720,7 @@ def test_chain_deeper_than_every_former_cap_composes_complete(tmp_path: Path) ->
     assert [message.blocks[0].text for message in envelope.messages] == expected
     assert len(_composed_db_signatures(conn, leaf_id)) == _VERY_DEEP_CHAIN_LEVELS
     assert _CompositionShape(conn).segments(leaf_id) is not None
-    conn.close()
+    close_fixture_index_connection(conn)
 
     async def _run() -> tuple[int, LineageCompleteness]:
         reader = await aiosqlite.connect(db)
@@ -2771,7 +2796,7 @@ def test_writer_composes_beyond_recursive_reader_depth(tmp_path: Path) -> None:
     ).fetchone()
     assert tuple(link) == ("prefix-sharing", archive_message_id(root_id, "root-0"))
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (leaf_id,)).fetchone()[0] == 1
-    conn.close()
+    close_fixture_index_connection(conn)
 
     assert asyncio.run(_read_texts(db, leaf_id)) == ["root message", f"level {_DEEP_CHAIN_LEVELS - 1} tail"]
 
@@ -2809,7 +2834,7 @@ def test_shallow_chain_reports_complete(tmp_path: Path) -> None:
     envelope = read_archive_session_envelope(conn, child_id)
     assert envelope.lineage_complete is True
     assert envelope.lineage_truncation_reason is None
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _three_generation_sessions() -> tuple[ParsedSession, ParsedSession, ParsedSession]:
@@ -2903,7 +2928,7 @@ def test_three_generation_lineage_composes_identically_in_every_visit_order(
         "m4",
     ]
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) -> None:
@@ -2936,7 +2961,7 @@ def test_dangling_branch_point_census_counts_edges_and_sessions(tmp_path: Path) 
     assert _repair_stale_prefix_branch_points_db(conn, {child_id}) == 1
     conn.commit()
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _hermes_chain_state_db(
@@ -3087,7 +3112,7 @@ def test_hermes_continuation_segments_store_each_message_once_and_read_composed(
     ).fetchall()
     assert len(witnesses) == links - 1
     assert all(row[0] is not None for row in witnesses)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_hermes_continuation_child_keeps_its_own_reported_usage(tmp_path: Path) -> None:
@@ -3125,7 +3150,7 @@ def test_hermes_continuation_child_keeps_its_own_reported_usage(tmp_path: Path) 
     }
 
     assert [totals[session_id] for session_id in written] == [(10 + i * 3, 20 + i * 5) for i in range(links)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_alias_invalidation_records_retryable_convergence_debt(tmp_path: Path) -> None:
@@ -3372,7 +3397,7 @@ def test_dropped_branch_point_keeps_the_child_whole(tmp_path: Path) -> None:
     assert count_dangling_prefix_branch_points(conn) == (0, 0)
     assert cursor.list_convergence_debt() == []
     assert conn.execute("SELECT name FROM sqlite_temp_master").fetchall() == []
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_intact_parent_rewrite_leaves_the_child_inheriting(tmp_path: Path) -> None:
@@ -3388,7 +3413,7 @@ def test_intact_parent_rewrite_leaves_the_child_inheriting(tmp_path: Path) -> No
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m1")
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 1
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_grandchild_follows_rows_its_parent_materialized(tmp_path: Path) -> None:
@@ -3416,7 +3441,7 @@ def test_grandchild_follows_rows_its_parent_materialized(tmp_path: Path) -> None
     assert grandchild.lineage_complete is True
     assert [message.blocks[0].text for message in grandchild.messages] == ["m0", "m1", "g2"]
     assert _edge_state(conn, grandchild_id) == (child_id, "prefix-sharing", f"{child_id}:n:m1")
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_prefix_restores_a_swept_attachment(tmp_path: Path) -> None:
@@ -3458,7 +3483,7 @@ def test_materialized_prefix_restores_a_swept_attachment(tmp_path: Path) -> None
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
     assert [tuple(row) for row in conn.execute("SELECT session_id FROM attachment_refs")] == [(child_id,)]
     assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(1,)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_prefix_remaps_child_event_refs_with_fks_suspended(tmp_path: Path) -> None:
@@ -3497,13 +3522,12 @@ def test_materialized_prefix_remaps_child_event_refs_with_fks_suspended(tmp_path
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{parent_id}:n:hi there",)]
 
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("BEGIN IMMEDIATE")
-    write_fixture_index_session(conn, _codex_session("parent", ["hello"]), manage_transaction=False)
+    write_fixture_index_session(conn, _codex_session("parent", ["hello"]))
     conn.commit()
 
     assert _composed_texts(conn, child_id) == ["hello", "hi there", "child diverges here"]
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{child_id}:n:hi there",)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_empty_tail_child_gets_an_active_leaf(tmp_path: Path) -> None:
@@ -3528,7 +3552,7 @@ def test_materialized_empty_tail_child_gets_an_active_leaf(tmp_path: Path) -> No
     assert tuple(pointer) == (leaf,)
     leaves = conn.execute("SELECT message_id FROM messages WHERE session_id = ? AND is_active_leaf = 1", (child_id,))
     assert [tuple(row) for row in leaves] == [(leaf,)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialization_evidence_survives_a_default_array_evidence(tmp_path: Path) -> None:
@@ -3556,7 +3580,7 @@ def test_materialization_evidence_survives_a_default_array_evidence(tmp_path: Pa
     ).fetchone()
     assert tuple(link) == ("spawned-fresh", "materialized-after-parent-rewrite")
     assert _composed_texts(conn, child_id) == ["m0", "m1", "c"]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
@@ -3595,7 +3619,7 @@ def test_relocated_branch_point_repairs_in_write(tmp_path: Path) -> None:
         ).fetchone()[0]
         == "codex-session:gp:n:m1"
     )
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path: Path) -> None:
@@ -3624,7 +3648,7 @@ def test_descendant_anchored_through_an_intermediate_parent_stays_whole(tmp_path
     assert _edge_state(conn, c_id) == (b_id, "prefix-sharing", f"{b_id}:n:m1")
     assert _composed_texts(conn, b_id) == ["m0", "m1", "m2", "b3"]
     assert read_archive_session_envelope(conn, b_id).lineage_complete is True
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_reanchored_child_keeps_its_event_reference(tmp_path: Path) -> None:
@@ -3657,7 +3681,7 @@ def test_reanchored_child_keeps_its_event_reference(tmp_path: Path) -> None:
 
     assert _edge_state(conn, child_id)[1:] == ("prefix-sharing", "codex-session:gp:n:m1")
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [("codex-session:gp:n:m1",)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> None:
@@ -3714,7 +3738,7 @@ def test_materialized_dispatch_block_keeps_its_subagent_edge(tmp_path: Path) -> 
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{child_id}:n:m1:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_prefix_across_ancestors_keeps_counts_and_references(tmp_path: Path) -> None:
@@ -3764,7 +3788,7 @@ def test_materialized_prefix_across_ancestors_keeps_counts_and_references(tmp_pa
     assert [tuple(row) for row in conn.execute(events, (child_id,))] == [(f"{child_id}:n:m1",)]
     assert [tuple(row) for row in conn.execute("SELECT COUNT(*) FROM attachment_refs")] == [(2,)]
     assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(2,)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_renumbered_tail_moves_its_compaction_boundary(tmp_path: Path) -> None:
@@ -3814,7 +3838,7 @@ def test_renumbered_tail_moves_its_compaction_boundary(tmp_path: Path) -> None:
         "SELECT boundary_start_position, boundary_end_position FROM session_events WHERE session_id = ?", (child_id,)
     )
     assert [tuple(row) for row in boundary] == [(2, 2)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_dispatch_pointer_follows_the_dispatchers_own_lineage(tmp_path: Path) -> None:
@@ -3871,7 +3895,7 @@ def test_dispatch_pointer_follows_the_dispatchers_own_lineage(tmp_path: Path) ->
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{c_id}:n:m1:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_ownership_is_by_session_not_by_id_prefix(tmp_path: Path) -> None:
@@ -3893,7 +3917,7 @@ def test_ownership_is_by_session_not_by_id_prefix(tmp_path: Path) -> None:
 
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _edge_state(conn, child_id) == (parent_id, "spawned-fresh", None)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_descendant_through_a_materialized_ancestor_follows_the_copy(tmp_path: Path) -> None:
@@ -3923,7 +3947,7 @@ def test_descendant_through_a_materialized_ancestor_follows_the_copy(tmp_path: P
     assert envelope.lineage_complete is True
     assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "d2"]
     assert _edge_state(conn, d_id) == (c_id, "prefix-sharing", f"{b_id}:n:m1")
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> None:
@@ -3978,7 +4002,7 @@ def test_prefix_compaction_boundary_stays_on_the_copied_rows(tmp_path: Path) -> 
         (child_id,),
     )
     assert [tuple(row) for row in boundaries] == [(0, 0), (0, 2), (2, 2)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path: Path) -> None:
@@ -4072,7 +4096,7 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{gp_id}:n:b:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Path) -> None:
@@ -4147,7 +4171,7 @@ def test_reanchor_never_hands_a_removed_duplicate_the_surviving_row(tmp_path: Pa
     referenced = [row[0] for row in conn.execute(events, (child_id,))]
     owned = {str(row[0]) for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (child_id,))}
     assert len(set(referenced)) == 2 and set(referenced) <= owned
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _dispatch_session(name: str, parent: str | None, tail: list[str]) -> ParsedSession:
@@ -4207,7 +4231,7 @@ def test_dispatch_pointer_into_a_live_ancestor_block_follows_the_copy(tmp_path: 
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{child_id}:n:m1:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_uncaptured_descendant_references_follow_the_materialized_copy(tmp_path: Path) -> None:
@@ -4249,7 +4273,7 @@ def test_uncaptured_descendant_references_follow_the_materialized_copy(tmp_path:
     assert _edge_state(conn, b_id)[1:] == ("spawned-fresh", None)
     assert _edge_state(conn, d_id)[2] == f"{b_id}:n:m1"
     assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{b_id}:n:m0",)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialized_generated_producer_ref_names_the_copy(tmp_path: Path) -> None:
@@ -4306,7 +4330,7 @@ def test_materialized_generated_producer_ref_names_the_copy(tmp_path: Path) -> N
     [(child_message, child_producer)] = [tuple(row) for row in conn.execute(refs, (child_id,))]
     assert child_message.startswith(f"{child_id}:")
     assert child_producer == f"message:{child_message}"
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_anchored_branch_point_lookup_uses_the_branch_index(tmp_path: Path) -> None:
@@ -4335,7 +4359,7 @@ def test_anchored_branch_point_lookup_uses_the_branch_index(tmp_path: Path) -> N
     detail = " | ".join(str(row["detail"]) for row in plan)
     assert "idx_session_links_branch_point" in detail, detail
     assert "SCAN" not in detail, detail
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_deferred_asserted_branch_point_with_a_lone_surrogate_binds_on_parent_save(tmp_path: Path) -> None:
@@ -4362,7 +4386,7 @@ def test_deferred_asserted_branch_point_with_a_lone_surrogate_binds_on_parent_sa
         "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
     ).fetchone()
     assert bound is not None and bound[0] is not None
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _child_ids(conn: sqlite3.Connection, child_id: str) -> list[str]:
@@ -4409,7 +4433,7 @@ def _materialize_then_replay(
     write_fixture_index_session(conn, session("child", child_messages, parent="parent"), force_replace=True)
     conn.commit()
     assert _child_ids(conn, child_id) == replayed
-    conn.close()
+    close_fixture_index_connection(conn)
     return inheriting, materialized, replayed
 
 
@@ -4480,7 +4504,7 @@ def test_a_materialized_child_keeps_its_ids_when_a_message_is_prepended(tmp_path
     )
     conn.commit()
     assert set(materialized) <= set(_child_ids(conn, "codex-session:child"))
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_scoped_replay_places_rows_as_materialization_did(tmp_path: Path) -> None:
@@ -4500,7 +4524,7 @@ def test_a_scoped_replay_places_rows_as_materialization_did(tmp_path: Path) -> N
         "SELECT native_id, position FROM messages WHERE session_id = ? ORDER BY position", ("codex-session:child",)
     ).fetchall()
     assert [row[0] for row in rows] == ["m0", "m1", "x"]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def _replay_child(tmp_path: Path, messages: list[ParsedMessage]) -> list[str]:
@@ -4519,7 +4543,7 @@ def _replay_child(tmp_path: Path, messages: list[ParsedMessage]) -> list[str]:
     )
     conn.commit()
     ids = _child_ids(conn, "codex-session:child")
-    conn.close()
+    close_fixture_index_connection(conn)
     return ids
 
 
@@ -4592,7 +4616,7 @@ def test_an_append_keeps_the_materialized_identity_scope(tmp_path: Path) -> None
         merge_append=True,
     )
     conn.commit()
-    conn.close()
+    close_fixture_index_connection(conn)
     replayed = _replay_child(tmp_path, [*child, appended])
     assert set(materialized) <= set(replayed)
 
@@ -4619,7 +4643,7 @@ def test_a_materialized_child_keeps_its_ids_after_a_replay_drops_its_parent(tmp_
             "SELECT 1 FROM session_links WHERE src_session_id = ?", ("codex-session:child",)
         ).fetchall()
         assert _child_ids(conn, "codex-session:child") == materialized
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_lost_row_before_a_surviving_branch_point_materializes_the_prefix(tmp_path: Path) -> None:
@@ -4638,7 +4662,7 @@ def test_a_lost_row_before_a_surviving_branch_point_materializes_the_prefix(tmp_
     conn.commit()
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_scoped_replay_refuses_a_prefix_that_no_longer_matches(tmp_path: Path) -> None:
@@ -4691,7 +4715,7 @@ def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
             distinct.add(id(node))
             node = node.prev
     assert len(distinct) <= 2 * depth
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_scoped_replay_keeps_an_appended_duplicate_of_a_copy(tmp_path: Path) -> None:
@@ -4722,11 +4746,12 @@ def test_a_scoped_replay_keeps_an_appended_duplicate_of_a_copy(tmp_path: Path) -
     )
     conn.commit()
     stored = _child_ids(conn, "codex-session:child")
-    conn.close()
+    close_fixture_index_connection(conn)
     assert len(stored) == 4 and set(materialized) <= set(stored)
     assert _replay_child(tmp_path, [*child, appended]) == stored
 
 
+@pytest.mark.timeout(0)
 def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -> None:
     """Each level is written through the production writer with its parent claim.
 
@@ -4735,7 +4760,6 @@ def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -
     quarantined as indeterminate instead of resolved.
     """
     conn = _connect(tmp_path / "index.db")
-    conn.execute("BEGIN")
     for level in range(_VERY_DEEP_CHAIN_LEVELS):
         write_fixture_index_session(
             conn,
@@ -4747,7 +4771,6 @@ def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -
                 branch_type=BranchType.FORK if level else None,
                 messages=[_msg("m", Role.USER, f"level {level}", 0)],
             ),
-            manage_transaction=False,
         )
     conn.commit()
     quarantined = conn.execute("SELECT COUNT(*) FROM session_links WHERE status = 'quarantined'").fetchone()[0]
@@ -4755,7 +4778,7 @@ def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -
         0
     ]
     assert (quarantined, resolved) == (0, _VERY_DEEP_CHAIN_LEVELS - 1)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_scoped_replay_finds_an_edited_native_prefix_row(tmp_path: Path) -> None:
@@ -4809,11 +4832,11 @@ def test_materialized_rows_carry_the_hash_a_replay_computes(tmp_path: Path) -> N
     # ``_materialize_then_replay`` already replayed twice; one more replay of
     # the materialized child must not move any stored hash.
     before = _child_hashes(conn, "codex-session:child")
-    conn.close()
+    close_fixture_index_connection(conn)
     _replay_child(tmp_path, child)
     conn = _connect(tmp_path / "index.db")
     assert _child_hashes(conn, "codex-session:child") == before
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_materialization_hashes_match_the_first_replay(tmp_path: Path) -> None:
@@ -4841,12 +4864,15 @@ def test_materialization_hashes_match_the_first_replay(tmp_path: Path) -> None:
     write_fixture_index_session(conn, session("child", child, "parent"), force_replace=True)
     conn.commit()
     assert _child_hashes(conn, child_id) == materialized
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
-def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Path) -> None:
-    """Anti-vacuity: copy the parent-owned tool use as it was and it keeps
-    ``no_result`` while the child's own tail holds its result."""
+def test_divergent_answered_tool_use_keeps_child_pairing_after_parent_replacement(tmp_path: Path) -> None:
+    """The answered child call differs from the parent's unanswered call.
+
+    Their shared prefix ends at m0. Replacing the parent keeps the child-owned
+    answered call and its result together, with unchanged canonical hashes.
+    """
     conn = _connect(tmp_path / "index.db")
     call = ParsedMessage(
         provider_message_id="m1",
@@ -4891,9 +4917,16 @@ def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Pat
         messages=[_msg("m0", Role.USER, "go", 0), answered, result],
     )
     child_id = write_fixture_index_session(conn, child)
+    expected_edge = ("codex-session:parent", "prefix-sharing", "codex-session:parent:n:m0")
+    assert _edge_state(conn, child_id) == expected_edge
+    assert tuple(
+        conn.execute(
+            "SELECT tool_outcome FROM blocks WHERE session_id=? AND block_type='tool_use'", (child_id,)
+        ).fetchone()
+    ) == (ToolOutcome.OK.value,)
     write_fixture_index_session(conn, parent.model_copy(update={"messages": [_msg("m0", Role.USER, "go", 0)]}))
     conn.commit()
-    assert _edge_state(conn, child_id)[1] == "spawned-fresh"
+    assert _edge_state(conn, child_id) == expected_edge
     outcome = conn.execute(
         "SELECT tool_outcome FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (child_id,)
     ).fetchone()
@@ -4902,7 +4935,7 @@ def test_a_copied_tool_use_pairs_with_the_result_in_the_child_tail(tmp_path: Pat
     write_fixture_index_session(conn, child, force_replace=True)
     conn.commit()
     assert _child_hashes(conn, child_id) == materialized
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_the_tail_stays_connected_to_the_copied_prefix(tmp_path: Path) -> None:
@@ -4925,7 +4958,7 @@ def test_the_tail_stays_connected_to_the_copied_prefix(tmp_path: Path) -> None:
     conn.commit()
     assert _edge_state(conn, child_id)[1] == "spawned-fresh"
     assert tuple(conn.execute(parent_of, (f"{child_id}:n:x2",)).fetchone()) == (f"{child_id}:n:m1",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_compaction_boundary_on_the_prefix_follows_its_copied_rows(tmp_path: Path) -> None:
@@ -4985,7 +5018,7 @@ def test_a_compaction_boundary_on_the_prefix_follows_its_copied_rows(tmp_path: P
         "SELECT boundary_start_position, boundary_end_position FROM session_events WHERE session_id = ?", (child_id,)
     ).fetchone()
     assert tuple(boundary) == (rows["m0"], rows["m1"])
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_boundary_message_id_follows_the_copied_row(tmp_path: Path) -> None:
@@ -5011,7 +5044,7 @@ def test_a_boundary_message_id_follows_the_copied_row(tmp_path: Path) -> None:
         "SELECT boundary_message_id FROM session_events WHERE session_id = ?", (child_id,)
     ).fetchone()
     assert tuple(boundary) == (f"{child_id}:n:m1",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_an_uncaptured_descendant_reference_to_a_deleted_row_follows_the_copy(tmp_path: Path) -> None:
@@ -5045,7 +5078,7 @@ def test_an_uncaptured_descendant_reference_to_a_deleted_row_follows_the_copy(tm
     conn.commit()
     assert _edge_state(conn, b_id)[1] == "spawned-fresh"
     assert [tuple(row) for row in conn.execute(events, (d_id,))] == [(f"{b_id}:n:p3",)]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_reused_block_id_is_not_taken_for_the_dispatched_call(tmp_path: Path) -> None:
@@ -5109,7 +5142,7 @@ def test_a_reused_block_id_is_not_taken_for_the_dispatched_call(tmp_path: Path) 
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{child_id}:n:m1:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_dispatch_pointer_follows_the_copy_its_dispatcher_composes(tmp_path: Path) -> None:
@@ -5143,7 +5176,7 @@ def test_a_dispatch_pointer_follows_the_copy_its_dispatcher_composes(tmp_path: P
         "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (worker_id,)
     ).fetchone()
     assert tuple(pointer) == (f"{b_id}:n:m1:0",)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_guard_follows_the_edge_readers_compose(tmp_path: Path) -> None:
@@ -5173,7 +5206,7 @@ def test_a_guard_follows_the_edge_readers_compose(tmp_path: Path) -> None:
     envelope = read_archive_session_envelope(conn, child_id)
     assert envelope.lineage_complete is True
     assert [message.blocks[0].text for message in envelope.messages] == ["m0", "m1", "x2"]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> None:
@@ -5235,7 +5268,7 @@ def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> N
     write_fixture_index_session(conn, child, force_replace=True)
     conn.commit()
     assert conn.execute(placed, (child_id,)).fetchall() == stored
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
@@ -5277,7 +5310,7 @@ def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
     for n, child_id in enumerate(children):
         assert _edge_state(conn, child_id)[1] == "spawned-fresh"
         assert _composed_texts(conn, child_id) == [*base, f"x{n}"]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 # --- Attachments owned by an inherited prefix message -----------------------
@@ -5346,7 +5379,7 @@ def test_inherited_attachment_the_parent_references_is_owned_by_the_parent_row(t
         tuple(row) for row in conn.execute("SELECT ref_count, acquisition_status, blob_hash FROM attachments")
     ]
     assert (ref_count, acquisition_status, bytes(blob_hash)) == (1, "acquired", digest)
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_inherited_message_whose_attachment_the_parent_lacks_stays_in_the_child_tail(tmp_path: Path) -> None:
@@ -5370,7 +5403,7 @@ def test_inherited_message_whose_attachment_the_parent_lacks_stays_in_the_child_
     assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
     assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
     assert conn.execute("SELECT COUNT(*) FROM attachments WHERE ref_count <= 0").fetchone()[0] == 0
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path) -> None:
@@ -5382,7 +5415,9 @@ def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path)
     ``_stored_attachment_shared_prefix_limit`` from late-parent resolution and
     ``m1``'s row -- and the attachment's only reference -- is deleted.
     """
-    parent_first = _connect(tmp_path / "parent-first.db")
+    parent_root = tmp_path / "parent-first"
+    parent_root.mkdir()
+    parent_first = _connect(parent_root / "index.db")
     write_fixture_index_session(parent_first, _codex_session("parent", ["m0", "m1"]))
     child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
         update={"attachments": [_prefix_attachment("m1")]}
@@ -5390,7 +5425,9 @@ def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path)
     expected_id = write_fixture_index_session(parent_first, child)
     parent_first.commit()
 
-    child_first = _connect(tmp_path / "child-first.db")
+    child_root = tmp_path / "child-first"
+    child_root.mkdir()
+    child_first = _connect(child_root / "index.db")
     child_id = write_fixture_index_session(child_first, child)
     parent_id = write_fixture_index_session(child_first, _codex_session("parent", ["m0", "m1"]))
     child_first.commit()
@@ -5401,8 +5438,8 @@ def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path)
     assert _composed_texts(child_first, child_id) == ["m0", "m1", "x2"]
     assert _composed_attachments(child_first, child_id) == _composed_attachments(parent_first, expected_id)
     assert _composed_attachments(child_first, child_id) == [(child_id, "m1", "shared.txt")]
-    parent_first.close()
-    child_first.close()
+    close_fixture_index_connection(parent_first)
+    close_fixture_index_connection(child_first)
 
 
 def test_prepared_child_write_refuses_once_the_parent_drops_an_inherited_attachment(tmp_path: Path) -> None:
@@ -5426,14 +5463,21 @@ def test_prepared_child_write_refuses_once_the_parent_drops_an_inherited_attachm
     write_fixture_index_session(conn, parent)
     conn.commit()
 
-    with pytest.raises(_write_module.PreparedSessionWriteRefusedError, match="attachments changed"):
-        write_fixture_index_session(conn, child, content_hash=str(session_content_hash(child)), prepared_write=prepared)
-    conn.rollback()
+    try:
+        with (
+            pytest.raises(_write_module.PreparedSessionWriteRefusedError, match="attachments changed"),
+            fixture_index_mutation_scope(conn),
+        ):
+            write_fixture_index_session(
+                conn, child, content_hash=str(session_content_hash(child)), prepared_write=prepared
+            )
+    finally:
+        prepared.close()
 
     child_id = write_fixture_index_session(conn, child)
     conn.commit()
     assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
-    conn.close()
+    close_fixture_index_connection(conn)
 
 
 def test_late_prefix_attachment_boundary_keeps_only_one_sql_batch(tmp_path: Path) -> None:
@@ -5481,9 +5525,11 @@ def test_late_prefix_attachment_boundary_keeps_only_one_sql_batch(tmp_path: Path
 def test_parent_replacement_preserves_already_inherited_attachments(
     tmp_path: Path, prepared: bool, grandchild: bool
 ) -> None:
-    from contextlib import closing
+    from contextlib import ExitStack
 
-    with closing(_connect(tmp_path / "index.db")) as conn:
+    with ExitStack() as cleanup:
+        conn = _connect(tmp_path / "index.db")
+        cleanup.callback(close_fixture_index_connection, conn)
         parent = _codex_session("parent", ["m0", "m1"])
         parent_id = write_fixture_index_session(
             conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]})
@@ -5502,9 +5548,10 @@ def test_parent_replacement_preserves_already_inherited_attachments(
         if prepared:
             carrier = _write_module.prepare_session_write(conn, parent, merge_append=False)
             try:
-                write_fixture_index_session(
-                    conn, parent, content_hash=str(session_content_hash(parent)), prepared_write=carrier
-                )
+                with fixture_index_mutation_scope(conn):
+                    write_fixture_index_session(
+                        conn, parent, content_hash=str(session_content_hash(parent)), prepared_write=carrier
+                    )
             finally:
                 carrier.close()
         else:

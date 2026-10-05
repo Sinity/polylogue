@@ -30,6 +30,7 @@ def test_declared_live_provider_proof_declares_no_port_lease() -> None:
 
     assert operation["exec"] == ["python", "-m", "devtools.live_provider_proof_service", "--json"]
     assert operation["cache"] == "none"
+    assert operation["arguments"] == "required"
     assert operation["timeout_seconds"] == 180
     assert "service" not in operation
     assert "parameters" not in operation
@@ -125,7 +126,11 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
     )
 
     assert completed.returncode == 1
-    assert "not inside the interactive pool" in completed.stderr
+    assert completed.stderr == ""
+    report = json.loads(completed.stdout)
+    assert report["ok"] is False
+    assert report["error"] == {"phase": "service_context", "category": "operation_failed"}
+    assert set(report["cleanup"].values()) == {"not_required"}
 
 
 def test_shared_browser_service_launches_only_the_fixed_control_proof(

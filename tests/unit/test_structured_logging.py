@@ -880,3 +880,101 @@ def test_pre_and_post_configuration_loggers_share_one_sink(json_logs: bool, monk
         assert not any(record.get("event") == "log.field_rejected" for record in records)
     finally:
         plog.reset_events()
+
+
+@pytest.mark.uses_real_clock("holds the diagnostic worker while filling its queue")
+@pytest.mark.parametrize("event", ["daemon.stopped", "business.operation.empty", "business.operation.skipped"])
+def test_other_terminal_events_displace_routine_records(event: str) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class HeldStream:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+
+        def write(self, line: str) -> None:
+            entered.set()
+            release.wait(timeout=2)
+            self.lines.append(line)
+
+        def flush(self) -> None:
+            pass
+
+    stream = HeldStream()
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=stream, fmt="json", bridge_stdlib=False)
+        plog.emit("routine.first")
+        assert entered.wait(timeout=1)
+        for _ in range(256):
+            plog.emit("routine.queued")
+        plog.emit(event)
+        assert plog.diagnostic_snapshot()["priority_evictions"] == 1
+        release.set()
+        assert plog.flush_events(timeout_s=1) is True
+        assert json.loads(stream.lines[-1])["event"] == event
+    finally:
+        release.set()
+        plog.reset_events()
+
+
+@pytest.mark.uses_real_clock("controls stream flushes and waits for a concurrent flush caller")
+def test_idle_flush_cannot_acknowledge_later_records() -> None:
+    first_flush = threading.Event()
+    second_flush = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+    done = threading.Event()
+    results: list[bool] = []
+
+    class HeldFlushStream:
+        def __init__(self) -> None:
+            self.lines: list[str] = []
+            self.flushed: list[list[str]] = []
+
+        def write(self, line: str) -> None:
+            self.lines.append(line)
+
+        def flush(self) -> None:
+            snapshot = list(self.lines)
+            if not self.flushed:
+                first_flush.set()
+                release_first.wait(timeout=3)
+            else:
+                second_flush.set()
+                release_second.wait(timeout=3)
+            self.flushed.append(snapshot)
+
+    def request_flush() -> None:
+        results.append(plog.flush_events(timeout_s=3))
+        done.set()
+
+    stream = HeldFlushStream()
+    caller = threading.Thread(target=request_flush)
+    plog.reset_events()
+    try:
+        plog.configure_events(stream=stream, fmt="json", bridge_stdlib=False)
+        plog.emit("routine.first")
+        assert first_flush.wait(timeout=1)
+        plog.emit("routine.second")
+        sink = plog._default_sink
+        assert isinstance(sink, plog._QueuedSink)
+        caller.start()
+        # Synchronize the public request with the held older flush.
+        with sink._condition:
+            assert sink._condition.wait_for(lambda: bool(sink._flush_requested), timeout=1)
+        release_first.set()
+        assert second_flush.wait(timeout=1)
+        assert not done.is_set()
+        release_second.set()
+        caller.join(timeout=1)
+        assert not caller.is_alive()
+        assert results == [True]
+        assert len(stream.flushed[0]) == 1
+        assert len(stream.flushed[1]) == 2
+    finally:
+        release_first.set()
+        release_second.set()
+        if caller.ident is not None:
+            caller.join(timeout=1)
+        plog.reset_events()

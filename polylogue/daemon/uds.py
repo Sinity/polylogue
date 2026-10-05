@@ -21,7 +21,6 @@ from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     DAEMON_PRINCIPAL_CAPABILITIES,
     MAX_DECLARED_OPERATION_BODY_BYTES,
-    MAX_OPERATION_RESULT_BYTES,
     DaemonOperationRequest,
     daemon_operation_spec,
 )
@@ -76,7 +75,7 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
     server: DaemonAPIUnixHTTPServer
 
     def setup(self) -> None:
-        self.request.settimeout(5.0)
+        self.request.settimeout(None)
         super().setup()
 
     def log_message(self, _format: str, *_args: object) -> None:
@@ -86,26 +85,22 @@ class MachineOperationHandler(BaseHTTPRequestHandler):
         self._reject(code, "invalid_http_request", message or "invalid HTTP operation request")
 
     def _send(self, status: int, payload: dict[str, object]) -> None:
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
-        if len(encoded) > MAX_OPERATION_RESULT_BYTES:
-            payload = {
-                **payload,
-                "result": None,
-                "outcome": "indeterminate" if payload.get("accepted_reference") else "failed",
-                "error": {"code": "result_too_large", "detail": "result exceeds the operation response bound"},
-            }
-            encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()
-            status = 413
+        from polylogue.operations.read_result_transport import TRANSFER_BYTES, staged_json_response
+
         self.close_connection = True
-        try:
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(encoded)
-        except (BrokenPipeError, ConnectionResetError, TimeoutError):
-            return
+        with staged_json_response(payload) as staged:
+            size = staged.seek(0, 2)
+            staged.seek(0)
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(size))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while chunk := staged.read(TRANSFER_BYTES):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                return
 
     def _reject(self, status: int, code: str, detail: str) -> None:
         """Refuse before dispatch, marking the refusal so no client can call it indeterminate.
@@ -251,7 +246,7 @@ def _unlink_stale_socket(socket_path: Path) -> None:
 
 
 class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    daemon_threads = True
+    daemon_threads = False
     request_queue_size = 24
     #: Bounded window for draining a refused caller's in-flight request so it
     #: reads the 503 instead of a reset. Never a retry or a wait for work.
@@ -273,10 +268,21 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         self.auth_token = auth_token
         self._connections = threading.BoundedSemaphore(self.request_queue_size)
         self._socket_identity: tuple[int, int] | None = None
+        self._handler_condition = threading.Condition()
+        self._handler_sockets: set[socket.socket] = set()
+        self._closing_handlers = False
+        from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+
         self.operation_runtime = operation_runtime or DaemonOperationRuntime(
             archive_root,
             write_bridge=write_bridge,
             execution_kernel=execution_kernel,
+            raw_observation_owner=RawObservationConvergenceOwner(
+                archive_root,
+                compute_adapter=execution_kernel,
+                write_bridge=write_bridge,
+                write_coordinator=write_bridge.coordinator,
+            ),
             owner_loop=write_bridge.owner_loop,
         )
         ensure_private_socket_dir(socket_path.parent)
@@ -330,9 +336,18 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             finally:
                 self.shutdown_request(request)
             return
+        with self._handler_condition:
+            if self._closing_handlers:
+                self._connections.release()
+                self.shutdown_request(request)
+                return
+            self._handler_sockets.add(request)
         try:
             super().process_request(request, client_address)
         except BaseException:
+            with self._handler_condition:
+                self._handler_sockets.remove(request)
+                self._handler_condition.notify_all()
             self._connections.release()
             raise
 
@@ -342,9 +357,24 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         try:
             super().process_request_thread(request, client_address)
         finally:
+            connection = request[1] if isinstance(request, tuple) else request
+            with self._handler_condition:
+                self._handler_sockets.remove(connection)
+                self._handler_condition.notify_all()
             self._connections.release()
 
     def server_close(self) -> None:
+        # Stop transport waits before joining their original handler lifetimes.
+        # Slow valid peers have no deadline; closing ingress interrupts their
+        # physical socket reads and writes, while runtime cancellation owns work.
+        with self._handler_condition:
+            self._closing_handlers = True
+            connections = tuple(self._handler_sockets)
+        for connection in connections:
+            with suppress(OSError):
+                connection.shutdown(socket.SHUT_RDWR)
+        with self._handler_condition:
+            self._handler_condition.wait_for(lambda: not self._handler_sockets)
         super().server_close()
         if self._socket_identity is not None:
             try:

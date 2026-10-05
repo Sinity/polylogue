@@ -623,21 +623,17 @@ def human_authored_override(
     message_type: MessageType,
     material_origin: MaterialOrigin,
 ) -> MaterialOrigin:
-    """Positive-evidence override for a plain user turn (polylogue-gzgyl).
+    """Honor caller-qualified human input while retaining structural provenance.
 
-    ``classify_material_origin`` (``archive/message/artifacts.py``) stopped
-    falling through role=user/MESSAGE rows to ``HUMAN_AUTHORED`` (PR #2502,
-    correct for agent runtimes where a user-shaped row can be
-    generated/relayed context, not a real human turn). Consumer chat-export
-    origins have no such ambiguity: a plain user message IS positive human
-    evidence there, so this mirrors the compensating override Codex
-    (``_codex_material_origin``) and Claude Code
-    (``_claude_code_user_turn_origin``) already carry, for parsers whose
-    genuine user-turn shape has no agent/subagent complexity to exclude.
-    Callers pass the *already-classified* origin so this stays a pure
-    positive-evidence bump, never a replacement for ``classify_material_origin``.
+    The caller has established the human-input channel independently of role
+    and text. Pasted runtime or generated-pack markers cannot refute that
+    evidence. Tool, summary and assistant evidence remains authoritative.
     """
-    if material_origin is MaterialOrigin.UNKNOWN and role is Role.USER and message_type is MessageType.MESSAGE:
+    if (
+        role is Role.USER
+        and message_type in (MessageType.MESSAGE, MessageType.CONTEXT, MessageType.PROTOCOL)
+        and material_origin not in (MaterialOrigin.TOOL_RESULT, MaterialOrigin.ASSISTANT_AUTHORED)
+    ):
         return MaterialOrigin.HUMAN_AUTHORED
     return material_origin
 

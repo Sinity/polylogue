@@ -239,7 +239,8 @@ def reconcile_session_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     other messages. The reset runs first so the provider aggregate sees the
     same model rows ingest attributed unnamed events to. Provider-event
     rollups are reapplied after the message aggregate, and the persisted
-    session-level provider total is then apportioned across the refreshed
+    catalog reprice runs before provider events so unknown lane evidence stays
+    unpriced. The session-level provider total is then apportioned across the refreshed
     model rows.
 
     The caller owns the transaction. Nothing here commits, so a reconciliation
@@ -256,8 +257,8 @@ def reconcile_session_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
 
     _reconcile_session_model_usage_rows(conn, session_id)
     _aggregate_message_tokens_into_model_usage(conn, session_id)
-    _aggregate_provider_usage_into_model_usage(conn, session_id)
     _reprice_model_usage_rows(conn, session_id)
+    _aggregate_provider_usage_into_model_usage(conn, session_id)
     reported_cost_row = conn.execute(
         "SELECT reported_cost_usd FROM sessions WHERE session_id = ?",
         (session_id,),
