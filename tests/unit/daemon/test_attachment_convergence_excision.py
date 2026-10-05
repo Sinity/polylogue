@@ -12,14 +12,22 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from polylogue.operations.attachment_convergence import converge_drive_attachments
+from polylogue.operations.attachment_convergence import AttachmentConvergenceResult, converge_drive_attachments
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.index_writer import write_fixture_index_session
 from tests.unit.daemon.test_attachment_convergence import _into, _open_index, _retain_raws, _session
+
+
+def _converge(index: sqlite3.Connection, source: sqlite3.Connection, **kwargs: Any) -> AttachmentConvergenceResult:
+    """A standalone convergence pass: its write sections run under the caller's lease."""
+    with write_lease("test.attachment-convergence", archive_root=kwargs["archive_root"]):
+        return converge_drive_attachments(index, source, **kwargs)
 
 
 def test_drive_backfill_refuses_bytes_the_operator_excised(tmp_path: Path) -> None:
@@ -55,7 +63,7 @@ def test_drive_backfill_refuses_bytes_the_operator_excised(tmp_path: Path) -> No
 
     payloads = {"drive-excised": excised_payload, "drive-kept": kept_payload}
 
-    result = converge_drive_attachments(
+    result = _converge(
         index,
         source,
         archive_root=tmp_path,
@@ -123,7 +131,7 @@ def test_an_excision_committed_before_the_flush_marks_the_attachment_unavailable
 
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", excise_then_flush)
 
-    result = converge_drive_attachments(
+    result = _converge(
         index, source, archive_root=tmp_path, download_into=_into(lambda file_id: payloads[file_id]), limit=10
     )
 
@@ -173,7 +181,7 @@ def test_an_excision_committed_after_the_flush_marks_the_attachment_unavailable(
 
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", excise_then_flush)
 
-    result = converge_drive_attachments(
+    result = _converge(
         index, source, archive_root=tmp_path, download_into=_into(lambda file_id: payloads[file_id]), limit=10
     )
 
