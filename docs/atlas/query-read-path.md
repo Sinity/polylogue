@@ -235,3 +235,11 @@ normalization and scratch SQL, and scratch resources settle before the read
 returns. A repository filter projects that admitted repository; unfiltered
 reads retain the alphabetical representative. MCP lowers its public `repo`
 operand to the registry model's declared repository field.
+
+Archive insight contract version 12 represents an unobserved materializer,
+inference, or enrichment version as `null` (or omitted when the selected
+renderer excludes null fields). A missing session profile cannot certify the
+current materializer version. Available thread and latency projections remain
+readable with unknown provenance; profile reads still require a profile row.
+Recorded versions are returned unchanged. Query-time projections may declare
+their own known projection version independently of profile materialization.
