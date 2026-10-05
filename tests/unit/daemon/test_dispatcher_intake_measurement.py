@@ -35,10 +35,10 @@ from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntake
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
-from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage import frontier_existence, raw_retention
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.daemon_cold_start import write_fixture
 from tests.infra.workload_declarations import convergence_corpus_specs
 
@@ -112,26 +112,21 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
     archive-wide convergence on one arm only, so the two arms would not be
     the same unit of work.
 
-    Both arms use the same test-owned parse stage. This isolated unit harness
-    has no daemon raw-materialization owner to drain a shard preparation that
-    is deferred pending authority, so the stage has no shard directory. The
-    stage is shut down inside each measured interval.
+    Both arms parse through the processor's own preparation route.
     """
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
-    parse_stage = LiveParseStage()
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="claude-code", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="dispatcher-measure-direct",
-        converger=converger,
-        parse_stage=parse_stage,
-    )
-    started = time.perf_counter()
-    try:
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
+        processor = LiveBatchProcessor(
+            cast(Any, polylogue),
+            (WatchSource(name="claude-code", root=corpus_root),),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="dispatcher-measure-direct",
+            converger=converger,
+        )
+        started = time.perf_counter()
         metrics = asyncio.run(
             processor.ingest_files(
                 files,
@@ -140,19 +135,17 @@ def _run_direct_ingest(corpus_root: Path, archive_root: Path) -> dict[str, float
                 whole_archive_convergence=False,
             )
         )
-    finally:
-        parse_stage.shutdown()
-    elapsed = time.perf_counter() - started
-    payload = _payload_bytes(files)
-    return {
-        "total_s": elapsed,
-        "payload_bytes": float(payload),
-        "end_to_end_mb_s": _mb_s(payload, elapsed),
-        "succeeded_files": float(metrics.succeeded_file_count),
-        "failed_files": float(metrics.failed_file_count),
-        "files": float(len(files)),
-        "passes": 1.0,
-    }
+        elapsed = time.perf_counter() - started
+        payload = _payload_bytes(files)
+        return {
+            "total_s": elapsed,
+            "payload_bytes": float(payload),
+            "end_to_end_mb_s": _mb_s(payload, elapsed),
+            "succeeded_files": float(metrics.succeeded_file_count),
+            "failed_files": float(metrics.failed_file_count),
+            "files": float(len(files)),
+            "passes": 1.0,
+        }
 
 
 def _run_dispatcher_ingest(
@@ -165,108 +158,108 @@ def _run_dispatcher_ingest(
     files = _jsonl_files(corpus_root)
     db_path = archive_root / "index.db"
     source = WatchSource(name="claude-code", root=corpus_root)
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
-    writer_events: list[DaemonWriteEvent] = []
-    batch_payloads: list[dict[str, object]] = []
-    parse_stage = LiveParseStage()
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=db_path))
+        writer_events: list[DaemonWriteEvent] = []
+        batch_payloads: list[dict[str, object]] = []
 
-    def record_batch_event(name: str, payload: dict[str, object]) -> None:
-        if name == "ingestion_batch":
-            batch_payloads.append(payload)
+        def record_batch_event(name: str, payload: dict[str, object]) -> None:
+            if name == "ingestion_batch":
+                batch_payloads.append(payload)
 
-    coordinator = (
-        DaemonWriteCoordinator(observer=writer_events.append, archive_root=archive_root)
-        if observe_writer_holds
-        else None
-    )
+        coordinator = (
+            DaemonWriteCoordinator(observer=writer_events.append, archive_root=archive_root)
+            if observe_writer_holds
+            else None
+        )
 
-    watcher = LiveWatcher(
-        cast(Any, polylogue),
-        (source,),
-        cursor=CursorStore(db_path),
-        converger=converger,
-        write_coordinator=coordinator,
-        event_emitter=record_batch_event if observe_writer_holds else None,
-        parse_stage=parse_stage,
-    )
-    adapter = FileIntakeAdapter(
-        DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
-        source,
-        class_name="configured_local",
-    )
-    dispatcher = FairIntakeDispatcher(
-        (IntakeClassSpec(name="configured_local", adapter=adapter, page_size=32),),
-        frame="test:dispatcher-measure",
-    )
+        watcher = LiveWatcher(
+            cast(Any, polylogue),
+            (source,),
+            cursor=CursorStore(db_path),
+            converger=converger,
+            write_coordinator=coordinator,
+            event_emitter=record_batch_event if observe_writer_holds else None,
+        )
+        adapter = FileIntakeAdapter(
+            DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=(source,)),
+            source,
+            class_name="configured_local",
+        )
+        dispatcher = FairIntakeDispatcher(
+            (IntakeClassSpec(name="configured_local", adapter=adapter, page_size=32),),
+            frame="test:dispatcher-measure",
+        )
 
-    async def drain() -> tuple[int, int, int, int, int]:
-        admitted = 0
-        failed = 0
-        retried = 0
-        deferred = 0
-        passes = 0
-        try:
-            while passes < _MAX_DISPATCHER_PASSES:
-                result = await dispatcher.run_once()
-                passes += 1
-                admitted += result.admitted
-                for report in result.classes:
-                    retried += report.retried
-                    deferred += report.deferred
-                    failed += report.retried + report.isolated
-                if result.quiescent and not adapter.discovery_pending:
-                    if admitted == len(files):
-                        break
-                    # A preparation deferral can leave a retry cursor due
-                    # after this otherwise idle pass. Give it a bounded turn.
-                    await asyncio.sleep(0.25)
-            else:
-                raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
-        finally:
-            watcher.stop()
-            parse_stage.shutdown()
-            if coordinator is not None:
-                assert await coordinator.shutdown(timeout=1.0)
-        return admitted, failed, retried, deferred, passes
+        async def drain() -> tuple[int, int, int, int, int]:
+            admitted = 0
+            failed = 0
+            retried = 0
+            deferred = 0
+            passes = 0
+            try:
+                while passes < _MAX_DISPATCHER_PASSES:
+                    result = await dispatcher.run_once()
+                    passes += 1
+                    admitted += result.admitted
+                    for report in result.classes:
+                        retried += report.retried
+                        deferred += report.deferred
+                        failed += report.retried + report.isolated
+                    if result.quiescent and not adapter.discovery_pending:
+                        if admitted == len(files):
+                            break
+                        # A preparation deferral can leave a retry cursor due
+                        # after this otherwise idle pass. Give it a bounded turn.
+                        await asyncio.sleep(0.25)
+                else:
+                    raise AssertionError(f"dispatcher did not drain in {_MAX_DISPATCHER_PASSES} passes")
+            finally:
+                watcher.stop()
+                if coordinator is not None:
+                    assert await coordinator.shutdown(timeout=1.0)
+            return admitted, failed, retried, deferred, passes
 
-    started = time.perf_counter()
-    admitted, failed, retried, deferred, passes = asyncio.run(drain())
-    assert admitted == len(files), f"dispatcher published {admitted} of {len(files)} expected files"
-    elapsed = time.perf_counter() - started
-    payload = _payload_bytes(files)
-    released = [event for event in writer_events if event.phase == "released"]
-    # The dispatcher no longer takes one page-wide lease.  Its ordinary batch
-    # processor instead self-admits each bounded publication (full write,
-    # compaction, and ops receipts).  Sum those actual released holds; looking
-    # for the deleted ``watcher.live_ingest`` wrapper would report no hold at
-    # all and hide the work this production route still serializes.
-    page_holds = [
-        event.hold_seconds
-        for event in released
-        if event.actor.startswith("watcher.live_ingest.") and event.hold_seconds is not None
-    ]
-    writer_hold_s = sum(page_holds) if page_holds else None
-    batch_payload = batch_payloads[0] if len(batch_payloads) == 1 else {}
-    stage_timings = cast(dict[str, object], batch_payload.get("stage_timings_s", {}))
-    raw_compaction_runs = batch_payload.get("raw_compaction_runs")
-    raw_compaction_time_s = stage_timings.get("raw_compaction")
-    return _DispatcherMeasurement(
-        total_s=elapsed,
-        payload_bytes=payload,
-        end_to_end_mb_s=_mb_s(payload, elapsed),
-        succeeded_files=admitted,
-        failed_files=failed,
-        retried_files=retried,
-        deferred_files=deferred,
-        files=len(files),
-        passes=passes,
-        writer_hold_s=writer_hold_s,
-        outside_writer_hold_s=(elapsed - writer_hold_s) if writer_hold_s is not None else None,
-        writer_hold_count=len(page_holds),
-        raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
-        raw_compaction_time_s=float(raw_compaction_time_s) if isinstance(raw_compaction_time_s, (int, float)) else None,
-    )
+        started = time.perf_counter()
+        admitted, failed, retried, deferred, passes = asyncio.run(drain())
+        assert admitted == len(files), f"dispatcher published {admitted} of {len(files)} expected files"
+        elapsed = time.perf_counter() - started
+        payload = _payload_bytes(files)
+        released = [event for event in writer_events if event.phase == "released"]
+        # The dispatcher no longer takes one page-wide lease.  Its ordinary batch
+        # processor instead self-admits each bounded publication (full write,
+        # compaction, and ops receipts).  Sum those actual released holds; looking
+        # for the deleted ``watcher.live_ingest`` wrapper would report no hold at
+        # all and hide the work this production route still serializes.
+        page_holds = [
+            event.hold_seconds
+            for event in released
+            if event.actor.startswith("watcher.live_ingest.") and event.hold_seconds is not None
+        ]
+        writer_hold_s = sum(page_holds) if page_holds else None
+        batch_payload = batch_payloads[0] if len(batch_payloads) == 1 else {}
+        stage_timings = cast(dict[str, object], batch_payload.get("stage_timings_s", {}))
+        raw_compaction_runs = batch_payload.get("raw_compaction_runs")
+        raw_compaction_time_s = stage_timings.get("raw_compaction")
+        return _DispatcherMeasurement(
+            total_s=elapsed,
+            payload_bytes=payload,
+            end_to_end_mb_s=_mb_s(payload, elapsed),
+            succeeded_files=admitted,
+            failed_files=failed,
+            retried_files=retried,
+            deferred_files=deferred,
+            files=len(files),
+            passes=passes,
+            writer_hold_s=writer_hold_s,
+            outside_writer_hold_s=(elapsed - writer_hold_s) if writer_hold_s is not None else None,
+            writer_hold_count=len(page_holds),
+            raw_compaction_runs=raw_compaction_runs if isinstance(raw_compaction_runs, int) else 0,
+            raw_compaction_time_s=float(raw_compaction_time_s)
+            if isinstance(raw_compaction_time_s, (int, float))
+            else None,
+        )
 
 
 def test_frontier_pages_reconcile_changes_without_repeating_global_scan(

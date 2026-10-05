@@ -21,6 +21,7 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
     MULTI_PROVIDER_SCALE_TIERS,
@@ -62,51 +63,52 @@ def _run_convergence_probe(
     # Filter only session files (skip metadata)
     files = [f for f in files if not f.name.startswith(".")]
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-multi-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = _BenchmarkPolylogue(tmp_path, db_path)
+        processor = LiveBatchProcessor(
+            cast(Any, polylogue),
+            (WatchSource(name="benchmark", root=corpus_root),),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="benchmark-multi-v1",
+            converger=converger,
+        )
 
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    elapsed = time.perf_counter() - t_total
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        t_total = time.perf_counter()
+        metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+        elapsed = time.perf_counter() - t_total
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
 
-    return {
-        # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
-        # run to ``0.0`` and trip the ``total_s > 0`` guard (#1878). Round at
-        # display time only.
-        "total_s": elapsed,
-        "files": float(len(files)),
-        "total_files": float(len(files)),
-        **{key: float(value) for key, value in measurement.items()},
-        "parse_wall_s": metrics.parse_time_s,
-        "convergence_wall_s": metrics.convergence_time_s,
-    }
+        return {
+            # Unrounded elapsed: rounding to 2 decimals would collapse a sub-10ms
+            # run to ``0.0`` and trip the ``total_s > 0`` guard (#1878). Round at
+            # display time only.
+            "total_s": elapsed,
+            "files": float(len(files)),
+            "total_files": float(len(files)),
+            **{key: float(value) for key, value in measurement.items()},
+            "parse_wall_s": metrics.parse_time_s,
+            "convergence_wall_s": metrics.convergence_time_s,
+        }
 
 
 class _BenchmarkPolylogue:

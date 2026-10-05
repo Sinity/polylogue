@@ -175,6 +175,7 @@ def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id for session in rebuild_sessions}
     assert rebuild_ids, "fixture must produce at least one session on the rebuild route"
@@ -262,6 +263,7 @@ def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobS
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id.split("@", 1)[0] for session in rebuild_sessions}
 
@@ -329,6 +331,7 @@ def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store:
             str(db_path),
             payload_path=db_path,
             archive_root=tmp_path,
+            sidecar_resolver=None,
         )
 
     record = _record(blob_store, page_image, source_path=str(db_path))

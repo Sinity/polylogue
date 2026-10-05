@@ -31,9 +31,9 @@ from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.retained_replay import replay_retained_components
 
 RUN_ID = "wf_54d4fb2e-841"
 ATTEMPT_COUNT = 91
@@ -198,7 +198,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     assert pending.retained_raw_revision_count == 225
     assert pending.artifact_counts.get("workflow_run_snapshot", 0) == 0
 
-    backfill_historical_revision_evidence(archive_root, selected_raw_ids=[revised_raw_id])
+    replay_retained_components(archive_root, selected_raw_ids=[revised_raw_id])
     assert claude_workflow_materialization_needed(archive_root) is True
     revised = materialize_claude_workflow_archive(archive_root)
     assert revised.current_artifact_count == 224

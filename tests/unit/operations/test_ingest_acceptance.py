@@ -102,12 +102,12 @@ def test_new_plan_refuses_inline_manifest_without_rewriting_historical_evidence(
     )
     with pytest.raises(TypeError, match="staged source manifest"):
         ingest_plan(
-            historical,
+            historical,  # type: ignore[arg-type]
             archive_instance_id="archive",
             archive_identity_digest="b" * 64,
             now_ms=1,
             expires_at_ms=1000,
-        )  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize("phase", ["after_source_prepare", "after_audit_commit", "after_source_promotion"])

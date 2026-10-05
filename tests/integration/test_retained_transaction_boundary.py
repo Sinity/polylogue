@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from contextlib import closing
@@ -74,12 +75,14 @@ async def test_retained_component_is_not_committed_per_session(tmp_path: Path, m
     assert _visible(root) == expected
 
 
-@pytest.mark.asyncio
-async def test_retained_component_interrupt_preserves_fts_and_rolls_back(
+def test_retained_component_interrupt_preserves_fts_and_rolls_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # asyncio lets KeyboardInterrupt escape the event loop instead of
+    # delivering it to the awaiting coroutine, so the genuine interrupt is
+    # observed where the loop returns it: outside ``asyncio.run``.
     root = tmp_path / "archive"
-    raw_ids = await _acquire(root)
+    raw_ids = asyncio.run(_acquire(root))
     baseline = _triggers(root)
     assert baseline == set(FTS_TRIGGER_NAMES)
     original = write._write_messages
@@ -101,9 +104,13 @@ async def test_retained_component_interrupt_preserves_fts_and_rolls_back(
         original(conn, *args, **kwargs)
 
     monkeypatch.setattr(write, "_write_messages", interrupt)
-    with pytest.raises(KeyboardInterrupt) as caught:
+
+    async def replay() -> None:
         async with prepared_live_convergence_owner(root) as owner:
             await owner.replay_retained_raw_ids(raw_ids, select_retained_raw_ids=lambda reader: raw_ids)
+
+    with pytest.raises(KeyboardInterrupt) as caught:
+        asyncio.run(replay())
     assert caught.value is primary
     assert calls == 2
     assert _triggers(root) == baseline

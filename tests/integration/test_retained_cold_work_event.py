@@ -55,7 +55,7 @@ async def test_cold_build_rebuilds_a_session_that_retains_an_agent_work_event(tm
     appended = await run_archive_fixture_write(root, append_event)
     async with prepared_live_convergence_owner(root) as owner:
         appended_receipts = await owner.replay_retained_raw_ids((str(appended["raw_id"]),))
-    assert any(receipt.changed_session_ids for receipt in appended_receipts)
+    assert any(receipt.changed_session_ids for receipt in appended_receipts), appended_receipts
 
     def session_state(
         index_path: Path,

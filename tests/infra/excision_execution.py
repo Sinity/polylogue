@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+from polylogue.operations.audit import AuditRepository
 from polylogue.operations.bindings import runtime_operation_binding
 from polylogue.operations.mutation_actuators import SessionExcisionActuator, SessionExcisionArgs
 from polylogue.operations.mutation_transaction import (
@@ -56,7 +57,7 @@ def execute_excision(
         )
         products = []
 
-        def sink(summary, literal):
+        def sink(summary: Any, literal: Any) -> Any:
             with owned_literal_stream(literal.chunks()) as chunks:
                 data = b"".join(chunks)
             assert len(data) == literal.byte_length
@@ -88,7 +89,7 @@ def execute_excision(
                     args,
                     principal,
                     raw_plan=raw,
-                    archive_instance_id=executor._audit.ensure_archive_authority(now_ms=executor._now_ms()),
+                    archive_instance_id=_required_audit(executor).ensure_archive_authority(now_ms=executor._now_ms()),
                     archive_identity_digest=ArchiveIdentity.resolve(archive_root).authority_identity_digest,
                     parameter_digest=compute_parameter_digest(raw),
                 ),
@@ -161,3 +162,10 @@ def recover_excision(archive_root: Path) -> None:
             assert await coordinator.shutdown(timeout=inf)
 
     asyncio.run(run())
+
+
+def _required_audit(executor: Any) -> AuditRepository:
+    """The fixture executor is archive-bound; its audit repository must exist."""
+    audit = executor._audit
+    assert isinstance(audit, AuditRepository)
+    return audit

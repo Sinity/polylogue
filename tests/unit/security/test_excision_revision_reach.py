@@ -308,7 +308,6 @@ def test_excision_names_hook_evidence_it_could_not_remove(tmp_path: Path) -> Non
     receipt = execute_excision(tmp_path, session_id, reason="test", actor="user:local")
     assert receipt["retained_hook_events"] == ["hook-2"]
     assert receipt["complete"] is False, "an excision that leaves hook payloads must not report completeness"
-    assert receipt.as_dict()["retained_hook_events"] == ["hook-2"]
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         rows = conn.execute("SELECT payload_json FROM raw_hook_events WHERE hook_event_id = 'hook-2'").fetchall()

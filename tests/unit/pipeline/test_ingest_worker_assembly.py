@@ -820,6 +820,7 @@ def _resolved_library_names(archive_root: Path, zip_path: Path) -> tuple[str | N
     from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
     from polylogue.sources.retained_assembly import retained_chatgpt_sidecars
     from polylogue.storage.sqlite.archive_tiers.source_write import read_raw_captured_zip_coordinate
+    from tests.infra.retained_jsonl import prepared_source_fixture
 
     live_index = ChatGPTAssemblySpec().discover_sidecars([zip_path])["chatgpt_asset_index"]
     conn = sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
@@ -833,12 +834,13 @@ def _resolved_library_names(archive_root: Path, zip_path: Path) -> tuple[str | N
         assert row is not None
         coordinate = read_raw_captured_zip_coordinate(conn, str(row[0]))
         assert coordinate is not None
-        retained = retained_chatgpt_sidecars(
-            conn,
-            BlobStore(archive_root / "blob"),
-            session_source_path=f"{zip_path}:conversations.json",
-            captured_zip_coordinate=coordinate,
-        )
+        with prepared_source_fixture(archive_root) as source_read:
+            retained = retained_chatgpt_sidecars(
+                source_read,
+                BlobStore(archive_root / "blob"),
+                session_source_path=f"{zip_path}:conversations.json",
+                captured_zip_coordinate=coordinate,
+            )
     finally:
         conn.close()
     retained_index = retained["chatgpt_asset_index"]

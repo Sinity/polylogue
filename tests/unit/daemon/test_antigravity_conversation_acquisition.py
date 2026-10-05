@@ -181,7 +181,7 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
         parser_fingerprint="test-parser",
     )
 
-    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity")
+    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity", captured_sqlite_by_path={})
 
     assert result.succeeded == [conversation], (result, caplog.text)
     assert result.failed == []
@@ -219,7 +219,7 @@ def test_failed_conversion_still_records_the_attempted_observation(
         parser_fingerprint="test-parser",
     )
 
-    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity")
+    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity", captured_sqlite_by_path={})
 
     assert result.failed == [conversation]
     assert conversation in result.captured_file_observations
@@ -358,7 +358,7 @@ def test_vendor_conversion_cannot_publish_a_later_protobuf_revision(
         return original_capture(store, path, provider)
 
     monkeypatch.setattr(source_parsing, "capture_bound_path", replace_between_conversion_and_capture)
-    result = processor._ingest_full_paths_sync(paths, source_name="antigravity")
+    result = processor._ingest_full_paths_sync(paths, source_name="antigravity", captured_sqlite_by_path={})
     assert set(exported) == {path.stem for path in paths}, (exported, result, caplog.text)
     assert result.failed == [paths[0]]
     assert result.succeeded == paths[1:]
@@ -390,6 +390,7 @@ def test_vendor_cohort_checks_the_pass_budget_between_conversations(
         source_name="antigravity",
         max_pass_seconds=1,
         pass_started=frozen_clock.monotonic(),
+        captured_sqlite_by_path={},
     )
     assert exported == [paths[0].stem]
     assert result.failed == []
@@ -414,7 +415,7 @@ def test_vendor_cohort_finishes_the_acquired_conversation_when_the_writer_budget
     )
     token = enter_write_hold("watcher.live_ingest.full", 30)
     try:
-        result = processor._ingest_full_paths_sync(paths, source_name="antigravity")
+        result = processor._ingest_full_paths_sync(paths, source_name="antigravity", captured_sqlite_by_path={})
     finally:
         exit_write_hold(token)
     assert exported == [path.stem for path in paths]

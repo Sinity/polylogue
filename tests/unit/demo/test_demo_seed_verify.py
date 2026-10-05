@@ -12,6 +12,7 @@ import pytest
 
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.config import Source
+from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.demo import (
     DemoSeedTargetUnsafeError,
     apply_demo_post_ingest_augmentation,
@@ -181,8 +182,8 @@ async def test_seed_demo_excludes_acquisition_without_certifying_voyage(
     """Real enabled daemon selection must respect exact synthetic ownership."""
     import asyncio
 
+    from polylogue.core.compute import BoundedComputeAdapter
     from polylogue.daemon.embedding_owner import compose_embedding_convergence
-    from polylogue.daemon.execution import BoundedComputeAdapter
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
     from polylogue.storage.archive_identity import demo_owned_session_ids
     from polylogue.storage.embeddings.derivation import EmbeddingDerivationAdapter
@@ -555,11 +556,19 @@ async def test_seed_demo_archive_forces_sequential_parse_workers(
     calls = 0
     workers: int | None = None
 
-    async def spy(archive_root: Path, sources: list[Source], *, parse_workers: int | None = None) -> ParseResult:
+    async def spy(
+        archive_root: Path,
+        sources: list[Source],
+        *,
+        compute_adapter: BoundedComputeAdapter,
+        parse_workers: int | None = None,
+    ) -> ParseResult:
         nonlocal calls, workers
         calls += 1
         workers = parse_workers
-        return await canonical_ingest(archive_root, sources, parse_workers=parse_workers)
+        return await canonical_ingest(
+            archive_root, sources, compute_adapter=compute_adapter, parse_workers=parse_workers
+        )
 
     monkeypatch.setattr(seed_module, "ingest_sources_archive", spy)
 

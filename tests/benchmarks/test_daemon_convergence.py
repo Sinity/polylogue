@@ -30,6 +30,7 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
+from tests.infra.compute_owner import owned_compute_adapter
 from tests.infra.convergence_probe_contract import intake_measurement
 from tests.infra.workload_declarations import (
     CONVERGENCE_SCALE_TIERS,
@@ -123,50 +124,51 @@ def _run_convergence_probe(
     # Collect all JSONL files.
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = _BenchmarkPolylogue(tmp_path, db_path)
+        processor = LiveBatchProcessor(
+            cast(Any, polylogue),
+            (WatchSource(name="benchmark", root=corpus_root),),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="benchmark-v1",
+            converger=converger,
+        )
 
-    timings: dict[str, float] = {}
+        timings: dict[str, float] = {}
 
-    # Measure canonical batched live ingestion with post-ingest convergence.
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    timings["total_s"] = time.perf_counter() - t_total
-    timings["files"] = float(len(files))
-    timings["parse_wall_s"] = metrics.parse_time_s
-    timings["convergence_wall_s"] = metrics.convergence_time_s
+        # Measure canonical batched live ingestion with post-ingest convergence.
+        t_total = time.perf_counter()
+        metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+        timings["total_s"] = time.perf_counter() - t_total
+        timings["files"] = float(len(files))
+        timings["parse_wall_s"] = metrics.parse_time_s
+        timings["convergence_wall_s"] = metrics.convergence_time_s
 
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
-    timings.update({key: float(value) for key, value in measurement.items()})
-    timings["total_files"] = float(len(files))
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
+        timings.update({key: float(value) for key, value in measurement.items()})
+        timings["total_files"] = float(len(files))
 
-    return timings
+        return timings
 
 
 class _BenchmarkPolylogue:
@@ -262,57 +264,58 @@ def _run_convergence_memory_probe(
 
     files = list(corpus_root.rglob("*.jsonl"))
 
-    converger = DaemonConverger(stages=make_default_convergence_stages(db_path))
-    polylogue = _BenchmarkPolylogue(tmp_path, db_path)
-    processor = LiveBatchProcessor(
-        cast(Any, polylogue),
-        (WatchSource(name="benchmark", root=corpus_root),),
-        cursor=CursorStore(db_path),
-        parser_fingerprint="benchmark-memory-v1",
-        converger=converger,
-    )
+    with owned_compute_adapter() as compute:
+        converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
+        polylogue = _BenchmarkPolylogue(tmp_path, db_path)
+        processor = LiveBatchProcessor(
+            cast(Any, polylogue),
+            (WatchSource(name="benchmark", root=corpus_root),),
+            cursor=CursorStore(db_path),
+            parser_fingerprint="benchmark-memory-v1",
+            converger=converger,
+        )
 
-    t_total = time.perf_counter()
-    metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
-    elapsed = time.perf_counter() - t_total
-    summary = converger.summary()
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+        t_total = time.perf_counter()
+        metrics = asyncio.run(processor.ingest_files(files, emit_event=False))
+        elapsed = time.perf_counter() - t_total
+        summary = converger.summary()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
-        stored_sessions = archive.count_sessions()
-        stored_messages = archive.count_session_messages(metrics.changed_session_ids)
-    measurement = intake_measurement(
-        expected_files=len(files),
-        expected_sessions=int(metrics.ingested_session_count),
-        expected_messages=int(metrics.ingested_message_count),
-        succeeded_files=metrics.succeeded_file_count,
-        failed_files=metrics.failed_file_count,
-        skipped_files=metrics.skipped_file_count,
-        excluded_files=metrics.excluded_file_count,
-        deferred_files=metrics.deferred_file_count,
-        refused_bytes=metrics.refused_bytes,
-        stored_sessions=stored_sessions,
-        stored_messages=stored_messages,
-        stage_summary=summary,
-    )
+        with ArchiveStore(tmp_path, initialize=False, read_only=True) as archive:
+            stored_sessions = archive.count_sessions()
+            stored_messages = archive.count_session_messages(metrics.changed_session_ids)
+        measurement = intake_measurement(
+            expected_files=len(files),
+            expected_sessions=int(metrics.ingested_session_count),
+            expected_messages=int(metrics.ingested_message_count),
+            succeeded_files=metrics.succeeded_file_count,
+            failed_files=metrics.failed_file_count,
+            skipped_files=metrics.skipped_file_count,
+            excluded_files=metrics.excluded_file_count,
+            deferred_files=metrics.deferred_file_count,
+            refused_bytes=metrics.refused_bytes,
+            stored_sessions=stored_sessions,
+            stored_messages=stored_messages,
+            stage_summary=summary,
+        )
 
-    return {
-        # Return the unrounded elapsed time. Rounding to 2 decimals here would
-        # collapse a sub-10ms run to ``0.0`` and trip the ``total_s > 0``
-        # measurement guard in callers (#1878); round only at display time.
-        "total_s": elapsed,
-        "files": float(len(files)),
-        **{key: float(value) for key, value in measurement.items()},
-        "parse_wall_s": metrics.parse_time_s,
-        "convergence_wall_s": metrics.convergence_time_s,
-        "rss_current_mb": metrics.rss_current_mb or 0.0,
-        "rss_peak_self_mb": metrics.rss_peak_self_mb or 0.0,
-        "rss_peak_children_mb": metrics.rss_peak_children_mb or 0.0,
-        "cgroup_memory_current_mb": metrics.cgroup_memory_current_mb or 0.0,
-        "cgroup_memory_peak_mb": metrics.cgroup_memory_peak_mb or 0.0,
-        "input_bytes": float(metrics.input_bytes),
-        "source_payload_read_bytes": float(metrics.source_payload_read_bytes),
-    }
+        return {
+            # Return the unrounded elapsed time. Rounding to 2 decimals here would
+            # collapse a sub-10ms run to ``0.0`` and trip the ``total_s > 0``
+            # measurement guard in callers (#1878); round only at display time.
+            "total_s": elapsed,
+            "files": float(len(files)),
+            **{key: float(value) for key, value in measurement.items()},
+            "parse_wall_s": metrics.parse_time_s,
+            "convergence_wall_s": metrics.convergence_time_s,
+            "rss_current_mb": metrics.rss_current_mb or 0.0,
+            "rss_peak_self_mb": metrics.rss_peak_self_mb or 0.0,
+            "rss_peak_children_mb": metrics.rss_peak_children_mb or 0.0,
+            "cgroup_memory_current_mb": metrics.cgroup_memory_current_mb or 0.0,
+            "cgroup_memory_peak_mb": metrics.cgroup_memory_peak_mb or 0.0,
+            "input_bytes": float(metrics.input_bytes),
+            "source_payload_read_bytes": float(metrics.source_payload_read_bytes),
+        }
 
 
 @pytest.mark.benchmark

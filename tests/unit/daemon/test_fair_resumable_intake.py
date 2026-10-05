@@ -3931,7 +3931,6 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
     its exhaustion streak each cooldown and was retried forever."""
     from polylogue import Polylogue
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-    from polylogue.operations.operation_context import open_operation_read
     from polylogue.sources.live import LiveWatcher, WatchSource
     from polylogue.sources.live.cursor import CursorStore
 
@@ -3944,7 +3943,6 @@ async def test_a_caught_page_error_is_classified_like_an_escaped_one(
         archive,
         (WatchSource(name="claude-code", root=source_root),),
         cursor=CursorStore(archive_root / "index.db"),
-        read_snapshot=open_operation_read,
     )
 
     async def failing_ingest(*_args: object, **_kwargs: object) -> object:

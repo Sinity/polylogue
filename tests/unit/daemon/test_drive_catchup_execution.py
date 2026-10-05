@@ -492,7 +492,7 @@ async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
         previous_trace = sys.gettrace()
         reached: list[int] = []
 
-        def trace(actual_frame: Any, event: str, value: Any) -> Any:
+        def trace(actual_frame: Any, event: Any, value: Any) -> Any:
             if actual_frame.f_code is publish.__code__:
                 if event == "line" and actual_frame.f_lineno in false_sites:
                     reached.append(actual_frame.f_lineno)

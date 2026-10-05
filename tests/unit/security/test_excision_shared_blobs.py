@@ -47,7 +47,6 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
@@ -58,6 +57,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import write_fixture_ingest_payload
+from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_A = "5c3d1e40-0000-4000-8000-00000000a001"
 _SESSION_B = "5c3d1e40-0000-4000-8000-00000000b002"
@@ -185,8 +185,8 @@ def _sidecar_payloads(archive_root: Path, session_id: str) -> list[dict[str, obj
 
 def _rederived_hash(archive_root: Path, raw_id: str) -> str:
     """The identity of the session the archive re-derives from its retained bytes."""
-    with ArchiveStore(archive_root, initialize=False, read_only=False) as store:
-        [session] = parse_retained_raw_sessions(store, raw_id)
+    with prepared_source_fixture(archive_root) as source_read:
+        [session] = parse_retained_raw_sessions(source_read, raw_id)
     return str(session_content_hash(session))
 
 
