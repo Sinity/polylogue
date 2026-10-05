@@ -103,6 +103,10 @@ def _replay_on_creator(
                 components.append(tuple(replacement.raw_ids))
                 visited.update(replacement.raw_ids)
                 break
+            if "replay" in phases:
+                # A lineage-deferral pass published its unit except the
+                # deferred children, which this seed's next pass re-prepares.
+                visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
             # A preparatory Source phase (census or classification) commits its
             # own receipt and changes the durable input binding; the next pass
             # prepares against it. A refusal that published no phase is surfaced.

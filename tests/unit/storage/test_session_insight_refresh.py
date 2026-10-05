@@ -1105,6 +1105,8 @@ def test_session_insight_load_includes_compaction_session_events_for_profile_cla
                 1775037900000,
             ),
         )
+        # A write connection may not close over an uncommitted transaction.
+        conn.commit()
         batch = load_sync_batch(conn, ["codex-session:conv-session-event-load"])
         hydrated = batch.session_events_by_session["codex-session:conv-session-event-load"]
 
@@ -1491,7 +1493,7 @@ def test_full_rebuild_commits_incrementally_and_prunes_orphans(tmp_path: Path) -
         # Live profiles whose committed title already flipped to v2.
         committed_v2_counts.append(sum(1 for row in rows if str(row["title"]).startswith("v2-")))
 
-    with open_read_connection(db_path) as conn:
+    with open_connection(db_path) as conn:
         counts = rebuild_session_insights_sync(conn, page_size=1, progress_callback=observe)
 
     # 3 live sessions, page_size=1 -> 3 single-session chunks -> 3 materialize callbacks.
@@ -1569,7 +1571,7 @@ def test_full_rebuild_chunks_by_message_budget_before_page_size(
         visible_profile_counts.append(len({str(row["session_id"]) for row in rows}))
         committed_v2_counts.append(sum(1 for row in rows if str(row["title"]).startswith("v2-")))
 
-    with open_read_connection(db_path) as conn:
+    with open_connection(db_path) as conn:
         counts = rebuild_session_insights_sync(conn, page_size=50, progress_callback=observe)
 
     # With page_size=50, fixed-count chunking would produce one callback. The
@@ -1742,7 +1744,7 @@ def test_publish_clears_a_profile_whose_session_is_gone(
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
 
-    with open_read_connection(db_path) as conn:
+    with open_connection(db_path) as conn:
         assert publish_session_profile(conn, session_id, input_binding="whatever") is True
         profile_count = conn.execute(
             "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?",
@@ -2117,12 +2119,15 @@ async def test_rebuild_binding_goes_stale_when_an_input_value_moves(
 
     assert _inspect_one(db_path, session_id) == "valid"
 
-    with open_connection(db_path) as index_conn:
-        index_conn.execute(
-            "UPDATE messages SET role = 'user' WHERE session_id = ? AND role = 'assistant'",
-            (session_id,),
-        )
-        index_conn.commit()
+    def _seed_0() -> None:
+        with open_connection(db_path) as index_conn:
+            index_conn.execute(
+                "UPDATE messages SET role = 'user' WHERE session_id = ? AND role = 'assistant'",
+                (session_id,),
+            )
+            index_conn.commit()
+
+    run_off_event_loop(_seed_0)
 
     assert _inspect_one(db_path, session_id) == "stale"
 

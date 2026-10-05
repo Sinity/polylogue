@@ -1387,7 +1387,7 @@ def test_fresh_archive_bootstrap_receipt_allows_repeat_startup(tmp_path: Path, m
                 ):
                     with pytest.raises(RuntimeError) as failed:
                         _runtime_consumer_results(train, tmp_path, candidate=source4)
-                    assert failed.value is consumer_failure
+                    assert failed.value is consumer_failure, repr(failed.value)
                     with closing(sqlite3.connect(":memory:")) as restored_probe:
                         initialize_runtime_tier_probe(restored_probe, ArchiveTier.SOURCE)
                         assert restored_probe.execute("PRAGMA user_version").fetchone()[0] == 3

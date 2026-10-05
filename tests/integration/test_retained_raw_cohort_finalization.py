@@ -347,24 +347,16 @@ async def test_resident_byte_aggregate_preserves_acquired_claims_from_both_origi
         previous_messages = [
             message for document in previous_documents for message in canonical_expected_messages(document)
         ]
-        previous_counts = Counter(message.provider_message_id for message in previous_messages)
-        previous_rows = [
-            (
-                message_id(
-                    key,
-                    message.provider_message_id if previous_counts[message.provider_message_id] == 1 else None,
-                    content_identity=digest,
-                    content_occurrence=occurrence,
-                ),
-                digest,
-                occurrence,
-            )
-            for message, (digest, occurrence) in zip(
-                previous_messages, message_content_identities(previous_messages), strict=True
-            )
-        ]
-        assert set(previous_rows) <= {row[:3] for row in expected_rows}
-        assert len(expected_rows) == len(previous_rows) + 2
+        # The insertion law is preservation: every previously present message
+        # (by provider ID and text, with multiplicity) survives, plus exactly
+        # the two inserted ones. Content digests are not compared because an
+        # insertion may legitimately re-parent a later message.
+        previous_preserved = Counter((message.provider_message_id, message.text) for message in previous_messages)
+        current_preserved = Counter(
+            (message.provider_message_id, message.text) for message in original_messages_in_order
+        )
+        assert not previous_preserved - current_preserved, previous_preserved - current_preserved
+        assert len(expected_rows) == len(previous_messages) + 2
 
     def acquire() -> tuple[str, str]:
         bootstrap_archive_root(root)

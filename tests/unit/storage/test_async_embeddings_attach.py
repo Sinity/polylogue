@@ -17,6 +17,13 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.async_sqlite import configure_connection, configure_read_connection
 
 
+def _exception_leaves(group: BaseExceptionGroup[BaseException]) -> list[BaseException]:
+    leaves: list[BaseException] = []
+    for error in group.exceptions:
+        leaves.extend(_exception_leaves(error) if isinstance(error, BaseExceptionGroup) else [error])
+    return leaves
+
+
 @pytest.mark.parametrize("read_only", [True, False], ids=["read", "write"])
 def test_attached_embeddings_are_measurable_on_async_index_connections(tmp_path: Path, read_only: bool) -> None:
     """Embedding coverage on a fresh archive is a measured zero, not unmeasurable.
@@ -214,8 +221,12 @@ def test_pool_refusal_retains_failed_raw_handles_and_attempts_all_closes(
             with pytest.raises(BaseExceptionGroup) as caught:
                 async with backend.read_pool(size=3):
                     pytest.fail("a refused pool was published")
-            assert caught.value.exceptions[0] is primary
-            assert isinstance(caught.value.exceptions[1], OSError)
+            # A connection's own cleanup failure is grouped with the operation
+            # failure it follows; the primary still leads, and both refused
+            # native closes (first and last handle) are reported.
+            leaves = _exception_leaves(caught.value)
+            assert leaves[0] is primary, caught.value.exceptions
+            assert [type(error) for error in leaves[1:]] == [OSError, OSError], leaves
             assert readiness_probe[0]._connection is None and not readiness_probe[0]._thread.is_alive()
             assert len(close_attempts) == 3 and set(close_attempts) == set(handles)
             assert backend._read_pool is None
@@ -262,7 +273,7 @@ def test_failed_writer_configuration_keeps_actual_handle_until_backend_retiremen
         try:
             with pytest.raises(BaseExceptionGroup) as caught:
                 await backend.begin()
-            assert caught.value.exceptions[0] is primary
+            assert caught.value.exceptions[0] is primary, caught.value.exceptions
             assert isinstance(caught.value.exceptions[1], OSError)
             conn = handles[0]
             assert backend._txn_conn is None

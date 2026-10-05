@@ -167,13 +167,33 @@ def apply_prepared_revision_replay(
         apply_options.setdefault("prepared_write", prepared_write)
         # The prepared write is published under the seal that prepared it.
         with archive.index_mutation_scope(prepared_seal=seal):
-            return archive.apply_raw_revision_replay(
+            result = archive.apply_raw_revision_replay(
                 plan,
                 parsed_by_raw_id,
                 prepared_outcome=outcome,
                 acquired_at_ms=acquired_at_ms,
                 **apply_options,
             )
+    if result[1]:
+        # Retained replay acknowledges an applied outcome's terminal raws on
+        # Source after the Index outcome, as prepare_retained_replay_source does.
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+            prepare_raw_parse_success,
+            raw_revision_descriptor,
+            revision_replay_terminal_raw_ids,
+        )
+
+        terminal = {
+            raw_id: raw_revision_descriptor(archive, raw_id)[0] for raw_id in revision_replay_terminal_raw_ids(plan)
+        }
+        archive.commit()
+
+        def acknowledge(source_seal: PreparedIndexMutation) -> None:
+            for raw_id, provider in terminal.items():
+                prepare_raw_parse_success(source_seal, raw_id, provider=provider)
+
+        publish_prepared_source(root, "test.revision-replay", acknowledge)
+    return result
 
 
 def ingest_append_plans_on_owner(root: Path, append_owner: Any, plans: list[Any]) -> Any:
@@ -309,6 +329,85 @@ def write_fixture_raw_session(
         publication_refused=outcome.stale_skipped or outcome.suppression_skipped,
         unresolved_attachment_owners=outcome.unresolved_attachment_owners,
     )
+
+
+def write_fixture_precedence_raw_session(
+    archive: ArchiveStore,
+    session: ParsedSession,
+    *,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+    source_index: int = 0,
+    file_mtime_ms: int | None = None,
+) -> ArchiveRawParsedWriteResult:
+    """Admit raw bytes, then publish a parsed session through ingest precedence.
+
+    ``write_fixture_raw_session`` publishes directly; this route prepares the
+    session write on an original seal and hands it to the store's precedence
+    decision (freshness, DOM fallback against native browser capture,
+    identical-content skip), the decision retained ingest makes.
+    """
+    from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        _write_parsed_precedence_result,
+        prepared_raw_revision_file_mtime,
+    )
+    from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, prepare_session_write
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    raw_id = archive.write_raw_payload(
+        provider=session.source_name,
+        payload=payload,
+        source_path=source_path,
+        canonical_source_path=source_path,
+        source_index=source_index,
+        acquired_at_ms=acquired_at_ms,
+        file_mtime_ms=file_mtime_ms,
+        native_id=session.provider_session_id,
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}",
+            kind=RawRevisionKind.FULL,
+            source_revision=deterministic_blob_hash(payload).hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
+    )
+    archive.commit()
+    blobs = BlobStore(archive.archive_root / "blob")
+    preacquired: dict[object, tuple[bytes | None, int, str]] = {}
+    for attachment in session.attachments:
+        if attachment.inline_bytes is not None:
+            blob_hash, size = blobs.write_from_bytes(attachment.inline_bytes)
+            preacquired[id(attachment)] = (bytes.fromhex(blob_hash), size, "acquired")
+    with PreparedIndexMutation(archive.index_db_path, archive_root=archive.archive_root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            read = PreparedSessionSourceRead(seal, blob_store=blobs)
+            prepared_write = prepare_session_write(
+                seal.observer("index"),
+                session,
+                merge_append=False,
+                fallback_timestamp=prepared_raw_revision_file_mtime(seal, raw_id),
+                source_read=read,
+                raw_id=raw_id,
+                force_replace=False,
+                before_input=seal.before_index_input,
+            )
+        with archive.index_mutation_scope(prepared_seal=seal):
+            return _write_parsed_precedence_result(
+                archive,
+                session,
+                raw_id=raw_id,
+                source_index=source_index,
+                stage_timings_s=None,
+                stage_timing_prefix="append",
+                manage_transaction=False,
+                preacquired_attachment_blobs=preacquired,
+                prepared_write=prepared_write,
+            )
 
 
 def apply_prepared_membership_classification(

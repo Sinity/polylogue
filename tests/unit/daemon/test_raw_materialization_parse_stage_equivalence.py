@@ -125,81 +125,38 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
 
 @pytest.mark.asyncio
 async def test_two_accepted_revisions_survive_one_periodic_profile_pass(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, bounded_compute_adapter: BoundedComputeAdapter
 ) -> None:
-    """Accepted R1/R2 marker inputs survive a coalesced profile publication."""
-    from polylogue.core.enums import Origin, Role
-    from polylogue.pipeline.ids import session_content_hash
-    from polylogue.pipeline.services.ingest_batch import _core as ingest_batch_core
-    from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload
-    from polylogue.pipeline.services.parsing import ParsingService
-    from polylogue.pipeline.services.parsing_models import ParseResult
-    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
-    from polylogue.storage.blob_store import BlobStore
-    from polylogue.storage.repository import SessionRepository
-    from polylogue.storage.runtime import RawSessionRecord
-    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
-    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+    """Accepted R1/R2 marker inputs survive a coalesced profile publication.
 
+    Two retained revisions of one Codex session each carry a note marker. They
+    publish through the canonical raw-observation route in arrival order.
+    """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
-    config = _config(archive_root)
-    repository = SessionRepository(backend=SQLiteBackend(db_path=archive_root / "index.db"), archive_root=archive_root)
-    service = ParsingService(repository=repository, archive_root=archive_root, config=config, ingest_workers=1)
-    raw_notes: dict[str, str] = {}
     for revision, note in ((1, "first retained note"), (2, "second retained note")):
-        payload_bytes = f"synthetic-revision-{revision}".encode()
-        BlobStore(archive_root / "blob").write_from_bytes(payload_bytes)
-        with sqlite3.connect(archive_root / "source.db") as source:
-            raw_id = write_source_raw_session(
-                source,
-                origin=Origin.CODEX_SESSION,
-                source_path=f"coalesced-{revision}.jsonl",
-                canonical_source_path=f"coalesced-{revision}.jsonl",
-                source_index=0,
-                payload=payload_bytes,
-                acquired_at_ms=revision,
-            )
-        raw_notes[raw_id] = note
 
-    def fresh_ingest(record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
-        parsed = ParsedSession(
-            source_name=Provider.CODEX,
-            provider_session_id="coalesced-profile",
-            created_at="2026-01-01T00:00:00Z",
-            messages=[
-                ParsedMessage(provider_message_id="question", role=Role.USER, text="question"),
-                ParsedMessage(
-                    provider_message_id="note", role=Role.ASSISTANT, text=f"::note: {raw_notes[record.raw_id]}"
-                ),
-            ],
-        )
-        return IngestRecordResult(
-            raw_id=record.raw_id,
-            payload_provider=Provider.CODEX.value,
-            validation_status="passed",
-            outcome_code="success",
-            sessions=[
-                SessionWritePayload(
-                    session_id="codex-session:coalesced-profile",
-                    content_hash=str(session_content_hash(parsed)),
-                    parsed_session=parsed,
-                    message_count=len(parsed.messages),
-                    raw_id=record.raw_id,
+        def acquire(revision: int = revision, note: str = note) -> str:
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                return archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=_codex_session(
+                        "coalesced-profile", (("user", "question"), ("assistant", f"::note: {note}"))
+                    ),
+                    source_path=f"coalesced-{revision}.jsonl",
+                    canonical_source_path=f"coalesced-{revision}.jsonl",
+                    acquired_at_ms=revision,
                 )
-            ],
-        )
 
-    monkeypatch.setattr(ingest_batch_core, "ingest_record", fresh_ingest)
-    monkeypatch.setattr(
-        "polylogue.config.load_polylogue_config",
-        lambda: type("Settings", (), {"schema_validation": "advisory", "sinex_mode": "off"})(),
-    )
-    try:
-        for raw_id in raw_notes:
-            await ingest_batch_core.process_ingest_batch(service, repository.backend, [raw_id], ParseResult(), None)
-    finally:
-        await repository.close()
+        await asyncio.to_thread(acquire)
+        result = await asyncio.to_thread(
+            converge_raw_observations,
+            archive_root,
+            source_roots=(),
+            limit=1,
+            compute_adapter=bounded_compute_adapter,
+        )
+        assert result.done == 1 and result.failed == 0
 
     with sqlite3.connect(archive_root / "source.db") as source:
         retained = source.execute("SELECT sequence, raw_id FROM accepted_marker_inputs ORDER BY sequence").fetchall()

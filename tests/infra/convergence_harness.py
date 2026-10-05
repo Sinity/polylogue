@@ -67,6 +67,8 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
+from polylogue.storage.sqlite.write_lease import write_lease
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session, write_fixture_ingest_payload
 from tests.infra.source_composer import (
     ComposedSources,
@@ -166,7 +168,26 @@ def build_converged_archive(
     incremental: bool = False,
     append_only: bool = False,
 ) -> ConvergenceArchive:
-    """Materialize a composed corpus through production writes, then converge it."""
+    """Materialize a composed corpus through production writes, then converge it.
+
+    Archive bootstrap and raw admission take the synchronous write lease, so
+    an async law's seeding runs off its event loop.
+    """
+    return run_off_event_loop(
+        lambda: _build_converged_archive(
+            root, composed, session_order=session_order, incremental=incremental, append_only=append_only
+        )
+    )
+
+
+def _build_converged_archive(
+    root: Path,
+    composed: ComposedSources,
+    *,
+    session_order: Sequence[int] | None,
+    incremental: bool,
+    append_only: bool,
+) -> ConvergenceArchive:
     initialize_active_archive(root)
     archive = ingest_composed_sources(
         root,
@@ -224,60 +245,64 @@ def ingest_composed_sources(
         source_path = root / "sources" / f"{index:03d}-{session.provider_session_id}.json"
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(payload)
-        raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-        raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
-        raw_blob_receipt = raw_blob_publisher.receipt_id(raw_blob_hash)
-        preacquired_attachments: list[ParsedAttachment] = []
-        attachment_blob_refs: list[ArchiveSourceBlobRef] = []
-        attachment_receipts: list[tuple[str, bytes]] = []
-        for attachment in session.attachments:
-            if attachment.inline_bytes is None:
-                preacquired_attachments.append(attachment)
-                continue
-            attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
-            attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
-            preacquired_attachments.append(
-                attachment.model_copy(
-                    update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+        # Raw admission is a durable Source/blob write: it holds the archive's
+        # write lease. Session preparation below refuses a held lease, so the
+        # lease covers exactly these Raw and blob writes.
+        with write_lease("test.convergence-harness.raw", archive_root=root):
+            raw_blob_publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+            raw_blob_hash, raw_blob_size = raw_blob_publisher.write_from_bytes(payload)
+            raw_blob_receipt = raw_blob_publisher.receipt_id(raw_blob_hash)
+            preacquired_attachments: list[ParsedAttachment] = []
+            attachment_blob_refs: list[ArchiveSourceBlobRef] = []
+            attachment_receipts: list[tuple[str, bytes]] = []
+            for attachment in session.attachments:
+                if attachment.inline_bytes is None:
+                    preacquired_attachments.append(attachment)
+                    continue
+                attachment_hash, attachment_size = raw_blob_publisher.write_from_bytes(attachment.inline_bytes)
+                attachment_receipt = raw_blob_publisher.receipt_id(attachment_hash)
+                preacquired_attachments.append(
+                    attachment.model_copy(
+                        update={"inline_bytes": None, "precomputed_blob": (attachment_hash, attachment_size)}
+                    )
                 )
-            )
-            attachment_blob_refs.append(
-                ArchiveSourceBlobRef(
-                    blob_hash=bytes.fromhex(attachment_hash),
-                    ref_type="attachment",
-                    source_path=str(source_path),
-                    size_bytes=attachment_size,
-                    acquired_at_ms=_acquired_at_ms(index),
-                    publication_receipt_id=attachment_receipt,
+                attachment_blob_refs.append(
+                    ArchiveSourceBlobRef(
+                        blob_hash=bytes.fromhex(attachment_hash),
+                        ref_type="attachment",
+                        source_path=str(source_path),
+                        size_bytes=attachment_size,
+                        acquired_at_ms=_acquired_at_ms(index),
+                        publication_receipt_id=attachment_receipt,
+                    )
                 )
-            )
-            if attachment_receipt is not None:
-                attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
-        session = session.model_copy(update={"attachments": preacquired_attachments})
-        raw_blob_publisher.flush()
-        with closing(sqlite3.connect(root / "source.db")) as source_conn:
-            with source_conn:
-                raw_id = write_source_raw_session(
-                    source_conn,
-                    origin="codex-session",
-                    capture_mode=Provider.CODEX,
-                    source_path=str(source_path),
-                    canonical_source_path=str(source_path),
-                    source_index=-1 if append_only else index,
-                    payload=payload,
-                    acquired_at_ms=_acquired_at_ms(index),
-                    native_id=session.provider_session_id,
-                    blob_publication_receipt_id=raw_blob_receipt,
-                    additional_blob_refs=tuple(attachment_blob_refs),
-                    manage_transaction=False,
-                )
-                consume_blob_publication_receipt(
-                    source_conn,
-                    raw_blob_receipt,
-                    bytes.fromhex(raw_blob_hash),
-                )
-                for attachment_receipt, attachment_hash_bytes in attachment_receipts:
-                    consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
+                if attachment_receipt is not None:
+                    attachment_receipts.append((attachment_receipt, bytes.fromhex(attachment_hash)))
+            session = session.model_copy(update={"attachments": preacquired_attachments})
+            raw_blob_publisher.flush()
+            with closing(sqlite3.connect(root / "source.db")) as source_conn:
+                with source_conn:
+                    raw_id = write_source_raw_session(
+                        source_conn,
+                        origin="codex-session",
+                        capture_mode=Provider.CODEX,
+                        source_path=str(source_path),
+                        canonical_source_path=str(source_path),
+                        source_index=-1 if append_only else index,
+                        payload=payload,
+                        acquired_at_ms=_acquired_at_ms(index),
+                        native_id=session.provider_session_id,
+                        blob_publication_receipt_id=raw_blob_receipt,
+                        additional_blob_refs=tuple(attachment_blob_refs),
+                        manage_transaction=False,
+                    )
+                    consume_blob_publication_receipt(
+                        source_conn,
+                        raw_blob_receipt,
+                        bytes.fromhex(raw_blob_hash),
+                    )
+                    for attachment_receipt, attachment_hash_bytes in attachment_receipts:
+                        consume_blob_publication_receipt(source_conn, attachment_receipt, attachment_hash_bytes)
         if raw_blob_size != len(payload):
             raise AssertionError(f"published raw payload size drifted for {source_path}")
         payload_model = SessionWritePayload(
@@ -760,7 +785,7 @@ def _analyze_registry_tables(index_db: Path) -> None:
         conn.commit()
 
 
-def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+def _seed_partial_convergence_archive_on_writer(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
     """Seed the current partial-convergence workload through typed archive writes."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -806,6 +831,11 @@ def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> Partial
             archive_id="archive:testdiet-02-partial-convergence",
         ),
     )
+
+
+def seed_partial_convergence_archive(root: Path, *, target_hot: bool) -> PartialConvergenceArchive:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_partial_convergence_archive_on_writer(root, target_hot=target_hot))
 
 
 def truncate_sparse(path: Path, size: int) -> None:

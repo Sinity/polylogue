@@ -56,6 +56,14 @@ CREATE TABLE messages (
     word_count INTEGER NOT NULL DEFAULT 8,
     content_hash BLOB DEFAULT x'01'
 );
+CREATE TABLE blocks (
+    block_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    block_type TEXT NOT NULL DEFAULT 'text',
+    text TEXT DEFAULT 'authored prose long enough for embedding',
+    position INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -83,6 +91,11 @@ def _connect_index(
                 conn.execute(
                     "INSERT INTO messages (message_id, session_id) VALUES (?, ?)",
                     (message_id, session_id),
+                )
+                # Embedding prose is read from the message's text blocks.
+                conn.execute(
+                    "INSERT INTO blocks (block_id, session_id, message_id) VALUES (?, ?, ?)",
+                    (f"{message_id}:block", session_id, message_id),
                 )
         conn.commit()
     finally:

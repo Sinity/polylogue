@@ -38,6 +38,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
@@ -46,7 +47,8 @@ from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -188,13 +190,13 @@ def test_bulk_fts_off_reextract_matches_trigger_maintained_fts(tmp_path: Path, s
 @pytest.mark.parametrize("scenario", [_write_partial_tail_scenario, _write_full_tail_scenario])
 def test_bulk_fts_on_produces_identical_fts_rows_as_off(tmp_path: Path, scenario: _Scenario) -> None:
     """THE key equivalence proof: bulk mode must not change FTS content, only how it gets there."""
-    conn_off = _connect(tmp_path / "off.db")
+    conn_off = _connect(tmp_path / "off" / "index.db")
     child_id_off = scenario(conn_off, bulk_fts=False)
     rows_off = _fts_rows_for_session(conn_off, child_id_off)
     assert_session_fts_exact_sync(conn_off, child_id_off)
     conn_off.close()
 
-    conn_on = _connect(tmp_path / "on.db")
+    conn_on = _connect(tmp_path / "on" / "index.db")
     child_id_on = scenario(conn_on, bulk_fts=True)
     rows_on = _fts_rows_for_session(conn_on, child_id_on)
     assert_session_fts_exact_sync(conn_on, child_id_on)

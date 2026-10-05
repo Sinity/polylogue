@@ -1054,11 +1054,12 @@ def test_raw_materialization_snapshot_marks_reverse_authority_query_failure_unav
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.executescript(
             """
-            CREATE TABLE session_rows (raw_value INTEGER NOT NULL);
-            INSERT INTO session_rows VALUES (-9223372036854775808);
-            CREATE VIEW sessions AS
-            SELECT abs(raw_value) AS raw_id
-            FROM session_rows;
+            -- A real table (the reverse query skips anything else) whose
+            -- raw_id fails only when the lost-source count reads it; the
+            -- generated column is added after the row so insertion succeeds.
+            CREATE TABLE sessions (raw_value INTEGER NOT NULL);
+            INSERT INTO sessions (raw_value) VALUES (-9223372036854775808);
+            ALTER TABLE sessions ADD COLUMN raw_id INTEGER GENERATED ALWAYS AS (abs(raw_value)) VIRTUAL;
             """
         )
 

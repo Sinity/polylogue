@@ -6,6 +6,7 @@ import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,7 @@ from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWri
 from polylogue.operations.intake_adapters import RawMaterializationDiscovery, RawMaterializationIntakeAdapter
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 
 def _codex_session(native_id: str, messages: tuple[tuple[str, str], ...]) -> bytes:
@@ -55,18 +57,23 @@ async def test_fair_intake_converges_multiblob_component_with_profiles(tmp_path:
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        for index in range(2):
-            archive.write_raw_payload(
-                provider=Provider.CODEX,
-                payload=_codex_session(
-                    f"large-component-{index}",
-                    (("user", f"question {index}"), ("assistant", f"answer {index}")),
-                ),
-                source_path="large-component.jsonl",
-                canonical_source_path="large-component.jsonl",
-                acquired_at_ms=index + 1,
-            )
+
+    def _off_loop_1() -> Any:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            for index in range(2):
+                archive.write_raw_payload(
+                    provider=Provider.CODEX,
+                    payload=_codex_session(
+                        f"large-component-{index}",
+                        (("user", f"question {index}"), ("assistant", f"answer {index}")),
+                    ),
+                    source_path="large-component.jsonl",
+                    canonical_source_path="large-component.jsonl",
+                    acquired_at_ms=index + 1,
+                )
+        return None
+
+    run_off_event_loop(_off_loop_1)
 
     sizes = _blob_sizes(archive_root)
     assert len(sizes) == 2

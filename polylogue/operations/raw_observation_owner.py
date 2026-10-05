@@ -262,6 +262,11 @@ class RawObservationArchiveWork:
                         captured_inputs: list[tuple[object, ...]] = original_inputs,
                         captured_keys: dict[str, tuple[str, ...]] = original_keys,
                     ) -> Sequence[str]:
+                        # A preparation that widens to a lineage parent selects
+                        # again on its new reader; the final attempt's capture
+                        # is the original input.
+                        captured_inputs.clear()
+                        captured_keys.clear()
                         # Exclude only explicit selections whose actual original
                         # Source receipt still refuses. Canonical dependencies are
                         # expanded afterward and retain their refusal obligation.
@@ -347,7 +352,7 @@ class RawObservationArchiveWork:
                         )
                         retire_original(replacement, progress_error)
                         raise progress_error
-                    progress_operand = (phase, original_inputs[0])
+                    progress_operand = (phase, (original_inputs[0], replacement.raw_ids))
                     if previous_progress == progress_operand:
                         progress_error = RetainedPreparationRetryableError(
                             "accepted preparatory Source phase left identical original inputs"
@@ -407,6 +412,24 @@ class RawObservationArchiveWork:
                         break
                     if publication_failures:
                         raise publication_failures[0]
+                    if (
+                        len(phases) == 1
+                        and phases[0][0] == "replay"
+                        and replacement.prepared_lineage_deferrals
+                        and isinstance(phases[0][1], PreparedRevisionReplayResult)
+                    ):
+                        # Parents published; their deferred children are
+                        # re-prepared against them next. The deferral itself
+                        # is the progress (a key is deferred at most once), so
+                        # the identical-Source-inputs guard does not apply.
+                        if replacement.prepared_key_refusals:
+                            assert on_membership_refusal is not None
+                            for membership_refusal in replacement.prepared_key_refusals:
+                                on_membership_refusal(membership_refusal)
+                        results.append(phases[0][1])
+                        visited.update(set(replacement.raw_ids).difference(replacement.lineage_deferred_raw_ids))
+                        previous_progress = None
+                        continue
                     if len(phases) != 1 or phases[0][0] not in ("census", "classification"):
                         raise RetainedPreparationRetryableError(
                             "retained publication deferred without accepted Source progress"

@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from tests.infra.daemon_operations import async_daemon_serving_archive
 from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -106,8 +107,9 @@ class TestDeleteCascadeConvergence:
 
         assert _archive_counts(db_path) == (1, 2, 2)
 
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            assert await delete_session_with_preview(poly, session_id) is True
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                assert await delete_session_with_preview(poly, session_id) is True
 
         # Cascade leaves no rows and, critically, no orphaned messages/blocks.
         assert _archive_counts(db_path) == (0, 0, 0)
@@ -120,9 +122,10 @@ class TestDeleteCascadeConvergence:
         target.save()
         target_id = target.native_session_id()
 
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            assert await delete_session_with_preview(poly, target_id) is True
-            remaining = {str(c.id) for c in await poly.list_sessions(limit=100)}
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                assert await delete_session_with_preview(poly, target_id) is True
+                remaining = {str(c.id) for c in await poly.list_sessions(limit=100)}
 
         assert target_id not in remaining
         assert len(remaining) == 2
@@ -184,8 +187,9 @@ class TestDeleteThenReingestConvergence:
         builder.save()
         session_id = builder.native_session_id()
 
-        async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            assert await delete_session_with_preview(poly, session_id) is True
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
+            async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
+                assert await delete_session_with_preview(poly, session_id) is True
 
         assert _archive_counts(db_path) == (0, 0, 0)
 

@@ -17,6 +17,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import ArchiveAggMetricSpec
 from polylogue.storage.sqlite.queries.sessions_reads import get_session, get_sessions_batch
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.session_profiles import write_session_profile
 
@@ -190,18 +191,23 @@ def test_empty_aggregate_page_preserves_total_group_count(tmp_path: Path, limit:
 async def test_session_record_reads_preserve_milliseconds(tmp_path: Path) -> None:
     created = "2026-01-02T03:04:05.123+00:00"
     updated = "2026-01-02T03:04:06.987+00:00"
-    with ArchiveStore(tmp_path) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="w6-time",
-                created_at=created,
-                updated_at=updated,
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
-            ),
-        )
-        index_path = archive.index_db_path
+
+    def seed() -> tuple[str, Path]:
+        with ArchiveStore(tmp_path) as archive:
+            written = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="w6-time",
+                    created_at=created,
+                    updated_at=updated,
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+                ),
+            )
+            return written, archive.index_db_path
+
+    # The archive writer's synchronous lease must not block this event loop.
+    session_id, index_path = run_off_event_loop(seed)
     async with aiosqlite.connect(index_path) as conn:
         conn.row_factory = sqlite3.Row
         one = await get_session(conn, session_id)
