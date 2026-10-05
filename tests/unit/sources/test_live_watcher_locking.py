@@ -74,16 +74,15 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                 cursor=cursor,
                 write_coordinator=coordinator,
             )
-            # This proof targets the writer bridge's process-exit semantics.
-            # Disable the independent prefetch lane so an executor worker
-            # cannot determine the subprocess lifetime instead.
-            watcher._parse_stage.shutdown()
-            watcher._parse_stage = None
-            watcher._batch_processor._parse_stage = None
+            # This proof targets the writer bridge's process-exit semantics:
+            # each injected route blocks inside the coordinator's bridge.
             started = threading.Event()
             def stuck(*args, **kwargs):
                 started.set()
                 threading.Event().wait()
+
+            async def stuck_append(*args, **kwargs):
+                return await coordinator.run_sync("watcher.live_ingest.append", stuck)
 
             if {route!r} == "append":
                 stat = path.stat()
@@ -101,7 +100,7 @@ def test_real_watcher_writer_routes_cannot_pin_process_exit(route: str) -> None:
                     cursor_fingerprint="base",
                     bytes_read=stat.st_size,
                 )
-                watcher._batch_processor._ingest_append_plans = stuck
+                watcher._batch_processor._append_runner = stuck_append
             else:
                 watcher._batch_processor._append_plan = lambda *args, **kwargs: None
                 watcher._batch_processor._ingest_full_paths_sync = stuck
