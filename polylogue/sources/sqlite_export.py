@@ -588,6 +588,65 @@ def source_byte_page() -> Iterator[SourceBytePage]:
             page._finished = True
 
 
+class SourceBytePageSequence:
+    """Lend one live byte page at a time across a creator's sequential inputs.
+
+    A request failure rejects its page, which kills and reaps that reader; the
+    caller has already handled the failure for its own input, so the next
+    input receives a fresh page instead of the refusal. A healthy page is
+    reused, so a page of inputs pays for one reader process, not one each.
+    """
+
+    def __init__(self) -> None:
+        self._creator = threading.current_thread()
+        self._stack: ExitStack | None = None
+        self._page: SourceBytePage | None = None
+
+    def page(self) -> SourceBytePage:
+        if threading.current_thread() is not self._creator:
+            raise RuntimeError("source byte page sequence belongs to its original creator")
+        page = self._page
+        if page is not None and (page._failure is not None or page._finished):
+            self._discard()
+            page = None
+        if page is None:
+            self._stack = ExitStack()
+            page = self._page = SourceBytePage(self._stack)
+        return page
+
+    def finish(self) -> None:
+        """Settle the healthy current page through its normal final exchange."""
+        page = self._page
+        if page is None or page._failure is not None:
+            self._discard()
+            return
+        try:
+            page.finish()
+        finally:
+            self._discard()
+
+    def _discard(self) -> None:
+        page, stack = self._page, self._stack
+        self._page = self._stack = None
+        if page is not None:
+            page._finished = True
+        if stack is not None:
+            # Rejection already closed a failed page's stack; closing again is
+            # a no-op. An abandoned healthy page has its reader killed and reaped.
+            stack.close()
+
+
+@contextmanager
+def source_byte_page_sequence() -> Iterator[SourceBytePageSequence]:
+    """Own a sequence's current page; an abandoned sequence kills its reader."""
+    sequence = SourceBytePageSequence()
+    try:
+        yield sequence
+        sequence.finish()
+    finally:
+        sequence._discard()
+
+
 def _source_byte_page_main(channel_fd: int) -> None:
     """Each request closes its original file and received directories before C."""
     from polylogue.sources.source_staging import _read_bound_input_in_worker
