@@ -2178,10 +2178,15 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
 
 
-def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
+def test_full_ingest_unrecognized_unknown_export_stays_a_visible_failed_census(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An input no provider recognizes is retained and refused visibly, never typed terminal.
+
+    Retained preparation refuses the unrecognized shape before any parser
+    runs; the refusal is a failed parser census naming the typed reason, not a
+    terminal raw-failure artifact that would close the input as explained.
+    """
     root = tmp_path / "unknown"
     root.mkdir()
     path = root / "export.json"
@@ -2195,19 +2200,20 @@ def test_full_ingest_unknown_semantic_value_error_remains_unexplained(
         parser_fingerprint="test-parser",
     )
 
-    def raise_semantic_value_error(*_args: object, **_kwargs: object) -> list[ParsedSession]:
-        raise ValueError("semantic parser rejection")
+    result = run_ingest_files(processor, [path], emit_event=False)
 
-    monkeypatch.setattr("polylogue.sources.live.batch.parse_payload", raise_semantic_value_error)
-
-    result = _full_paths_sync(processor, [path], source_name="unknown")
-
-    assert result.succeeded == []
+    assert result.succeeded_file_count == 0
+    assert result.ingested_session_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact_kinds = {row[0] for row in conn.execute("SELECT artifact_kind FROM raw_artifacts")}
+        retained = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
+        census = conn.execute("SELECT status, detail FROM raw_membership_census").fetchall()
+        parser_census = conn.execute("SELECT status FROM raw_authority_parser_census").fetchall()
     assert not artifact_kinds & RAW_FAILURE_EVIDENCE_KINDS
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.unexplained == 1
+    assert retained == 1
+    assert [status for status, _detail in census] == ["failed"]
+    assert "UnsupportedRetainedJsonShapeError" in census[0][1]
+    assert parser_census == [("failed",)]
 
 
 def test_full_ingest_defers_incomplete_jsonl_only_after_hot_prefix_proof(
@@ -2561,12 +2567,14 @@ def test_streaming_sized_full_ingest_uses_archive(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("streaming-sized JSONL ingest must not materialize through parse_payload")
-        ),
-    )
+    # Acquisition retains bytes only; parsing belongs to retained preparation.
+    for parser in ("iter_parsed_payload", "iter_parsed_stream"):
+        monkeypatch.setattr(
+            f"polylogue.sources.prepared_jsonl.{parser}",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("streaming-sized JSONL acquisition must not parse the input")
+            ),
+        )
 
     result = _full_paths_sync(processor, [source], source_name="codex")
 
@@ -6626,42 +6634,6 @@ def test_append_archive_lock_propagates_for_watcher_retry(
         ingest_append_with_owner(owner, [plan])
 
 
-def test_full_parse_failure_retains_typed_raw_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    root = tmp_path / "sessions"
-    root.mkdir()
-    source = root / "full-bad.jsonl"
-    source.write_bytes(b"{bad json}\n")
-    index_db = tmp_path / "index.db"
-    bootstrap_archive_root(tmp_path)
-    processor = LiveBatchProcessor(
-        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
-        cursor=CursorStore(index_db),
-        parser_fingerprint="test-parser",
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
-        lambda _path, fallback_provider: (fallback_provider, True, None),
-    )
-    monkeypatch.setattr(
-        "polylogue.sources.live.batch.parse_stream_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected full parse failure")),
-    )
-
-    result = _full_paths_sync(processor, [source], source_name="codex")
-
-    assert source in result.failed
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "injected full parse failure" in parse_error
-    assert len(parse_error) <= 2000
-    with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-
-
 def test_full_archive_lock_propagates_for_watcher_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -6781,7 +6753,10 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         "polylogue.sources.live.batch_support._jsonl_provider_and_session_artifact",
         lambda _path, fallback_provider: (fallback_provider, True, None),
     )
-    monkeypatch.setattr("polylogue.sources.live.batch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", lambda *_args, **_kwargs: iter(list(sessions))
+    )
     # polylogue-1r9c: _write_parsed_precedence_result is called internally by
     # revision_governance.py (a direct module-internal function reference),
     # not through ArchiveStore's `self.` dispatch -- patch it there.
@@ -6800,35 +6775,20 @@ def test_full_multi_session_failure_retries_without_success_mapping(
         return original_write(archive, session, **cast(Any, kwargs))
 
     monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", fail_second_index)
-    archive_results: list[_ArchiveFullWriteResult] = []
-    original_full_write = processor._acquire_full_records_archive
 
-    def capture_full_write(*args: Any, **kwargs: Any) -> _ArchiveFullWriteResult:
-        outcome = original_full_write(*args, **kwargs)
-        archive_results.append(outcome)
-        return outcome
+    with pytest.raises(BaseException, match="full second-session index failure") as failed:
+        run_ingest_files(processor, [source], emit_event=False)
+    del failed
 
-    monkeypatch.setattr(processor, "_acquire_full_records_archive", capture_full_write)
-
-    first = _full_paths_sync(processor, [source], source_name="codex")
-
-    assert first.succeeded == []
-    assert source in first.failed
-    assert archive_results[0].raw_ids == {}
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is None
-    assert isinstance(parse_error, str) and "full second-session index failure" in parse_error
+    # A partially written multi-session raw is not success: the component
+    # transaction rolls back, so no session from it is visible.
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
-    retry = _full_paths_sync(processor, [source], source_name="codex")
+    retry = run_ingest_files(processor, [source], emit_event=False)
 
-    assert retry.succeeded == [source]
-    assert retry.failed == []
-    assert archive_results[1].raw_ids
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
-    assert parsed_at_ms is not None
-    assert parse_error is None
+    assert retry.succeeded_file_count == 1
+    assert retry.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
 
