@@ -8739,6 +8739,24 @@ class PreparedSessionSourceRead:
 
         return prepared_raw_native_id(self._seal, raw_id)
 
+    def raw_ids_for_native_session(self, origin: str, native_id: str) -> tuple[str, ...]:
+        """Retained raws acquired as one origin's native session, before or after census."""
+        from polylogue.storage.sqlite.archive_tiers.revision_governance import _load_raw_observation_inputs
+
+        self._load_matches(
+            "raw_sessions",
+            "SELECT rowid FROM raw_sessions WHERE origin=? AND native_id=?",
+            (origin, native_id),
+        )
+        with self._seal.source_rows(
+            "SELECT raw_id FROM raw_sessions WHERE origin=? AND native_id=? ORDER BY raw_id",
+            (origin, native_id),
+        ) as rows:
+            raw_ids = tuple(str(row[0]) for row in rows)
+        for raw_id in raw_ids:
+            _load_raw_observation_inputs(self._seal, raw_id)
+        return raw_ids
+
     @contextmanager
     def open_raw_revision_material(
         self,
