@@ -43,6 +43,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
+from tests.infra.prepared_replay import apply_prepared_revision_replay
 
 
 def _write_blob(store: BlobStore, payload: bytes) -> tuple[str, int]:
@@ -314,7 +315,8 @@ def _seed_real_full_supersession(root: Path) -> tuple[str, str]:
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
+        apply_prepared_revision_replay(
+            archive,
             archive.raw_revision_replay_plan("codex:session-1"),
             {old_raw_id: _parsed_session("m0")},
             acquired_at_ms=1,
@@ -335,7 +337,8 @@ def _seed_real_full_supersession(root: Path) -> tuple[str, str]:
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        archive.apply_raw_revision_replay(
+        apply_prepared_revision_replay(
+            archive,
             archive.raw_revision_replay_plan("codex:session-1"),
             {new_raw_id: _parsed_session("m0", "m1")},
             acquired_at_ms=2,
@@ -3005,7 +3008,7 @@ def test_superseded_raw_snapshot_cleanup_uses_archive_blob_hashes(tmp_path: Path
     write_source_blob_refs(
         conn,
         "raw-old-not-a-blob-hash",
-        tuple(
+        lambda: (
             ArchiveSourceBlobRef(
                 blob_hash=bytes.fromhex(attachment_hash),
                 ref_type="attachment",

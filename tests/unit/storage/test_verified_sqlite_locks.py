@@ -183,7 +183,8 @@ def test_actual_audit_writer_failed_directory_close_retains_kernel_flock_and_nat
                 real_close(descriptor)
             if failed_owner is not None:
                 failed_owner.close()
-        assert failed_owner is not None and failed_owner._settled
+        assert failed_owner is not None
+        assert failed_owner._settled
         assert directory_flock_state(tmp_path) == "available"
 
 

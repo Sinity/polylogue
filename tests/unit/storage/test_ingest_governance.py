@@ -5,8 +5,9 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from contextlib import closing
+from functools import partial
 from pathlib import Path
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 import pytest
 
@@ -22,7 +23,15 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.sources.prepared_jsonl import PreparedJsonl
+from polylogue.sources.revision_backfill import (
+    PreparedRevisionReplayResult,
+    RetainedSessionRead,
+    RevisionCensusResult,
+)
+from polylogue.storage.blob_publication import PreparedBlobPublicationClaim
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.derived.raw import RawObservationReplacement
 from polylogue.storage.ingest_governance import (
     _census_binding,
     prepare_ingest_cohort,
@@ -35,6 +44,11 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
 ParseFunction: TypeAlias = Callable[[ArchiveStore, str], list[ParsedSession]]
+_Publish: TypeAlias = Callable[[], bool]
+_CarrierAssertion: TypeAlias = Callable[[ParsedSession, ParsedSession, RawObservationReplacement, _Publish], None]
+_PhaseReceipt: TypeAlias = tuple[
+    Literal["census", "classification", "replay"], RevisionCensusResult | PreparedRevisionReplayResult
+]
 
 
 def test_prepared_census_binding_includes_revision_authority(tmp_path: Path) -> None:
@@ -175,7 +189,9 @@ def test_prepared_census_reuses_projection_and_does_not_terminalize_parse(
 
 
 @pytest.mark.asyncio
-async def test_read_only_census_uses_canonical_retained_raw_parser(tmp_path: Path, monkeypatch) -> None:
+async def test_read_only_census_uses_canonical_retained_raw_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The original retained worker reads and censuses bytes before Index publication."""
     from polylogue.storage.raw_authority import iter_parser_census_logical_keys
 
@@ -185,7 +201,12 @@ async def test_read_only_census_uses_canonical_retained_raw_parser(tmp_path: Pat
         b'"role":"user","content":[{"type":"input_text","text":"retained"}]}}\n'
     )
 
-    def check(_unbound, carried, replacement, publish):
+    def check(
+        _unbound: ParsedSession,
+        carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        publish: _Publish,
+    ) -> None:
         assert carried.source_name is Provider.CODEX
         assert carried.provider_session_id == "prepared-membership"
         assert [message.text for message in carried.messages] == ["retained"]
@@ -206,15 +227,22 @@ async def test_read_only_census_uses_canonical_retained_raw_parser(tmp_path: Pat
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("binding", ["descriptor", "authority"])
-async def test_canonical_preparation_rejects_changed_source_binding(tmp_path: Path, monkeypatch, binding) -> None:
+async def test_canonical_preparation_rejects_changed_source_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, binding: str
+) -> None:
     """The original writer refuses stale Source evidence before any Index effects."""
     from polylogue.core.stage_admission import admit_stage_write
     from polylogue.storage.sqlite.reference_seal import ReferenceSealStaleError
 
-    def check(_unbound, _carried, replacement, publish):
+    def check(
+        _unbound: ParsedSession,
+        _carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        publish: _Publish,
+    ) -> None:
         raw_id = replacement.key
 
-        def move_source():
+        def move_source() -> None:
             with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
                 source = archive._ensure_source_conn()
                 if binding == "descriptor":
@@ -561,21 +589,27 @@ def test_convertible_multi_session_retirement_preserves_complete_census(tmp_path
             ]
 
 
-async def _run_precomputed_raw_case(root, monkeypatch, assertion, *, before_publication=None):
+async def _run_precomputed_raw_case(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    assertion: Callable[[str, PreparedBlobPublicationClaim, _Publish], None],
+    *,
+    before_publication: Callable[[str, PreparedBlobPublicationClaim], None] | None = None,
+) -> None:
     """Use a captured CAS attachment and the original retained Raw publication."""
-    precomputed = None
+    precomputed: tuple[str, int] | None = None
 
-    def setup():
+    def setup() -> None:
         nonlocal precomputed
         precomputed = BlobStore(root / "blob").write_from_bytes(b"precomputed attachment")
 
-    def session():
+    def session() -> ParsedSession:
         assert precomputed is not None
         return _session("one", precomputed_blob=precomputed)
 
-    captures = []
+    captures: list[PreparedBlobPublicationClaim] = []
 
-    def observe(artifact):
+    def observe(artifact: PreparedJsonl) -> None:
         from contextlib import closing
 
         assert precomputed is not None
@@ -594,7 +628,12 @@ async def _run_precomputed_raw_case(root, monkeypatch, assertion, *, before_publ
             before_publication(hash_hex, claim)
         captures.append(claim)
 
-    def check(_unbound, _carried, _replacement, publish):
+    def check(
+        _unbound: ParsedSession,
+        _carried: ParsedSession,
+        _replacement: RawObservationReplacement,
+        publish: _Publish,
+    ) -> None:
         assert precomputed is not None
         assert captures
         assertion(precomputed[0], captures[-1], publish)
@@ -609,7 +648,7 @@ async def _run_precomputed_raw_case(root, monkeypatch, assertion, *, before_publ
     )
 
 
-def _assert_precomputed_raw_refs(root, hash_hex):
+def _assert_precomputed_raw_refs(root: Path, hash_hex: str) -> None:
     with sqlite3.connect(root / "index.db") as conn:
         assert conn.execute("SELECT lower(hex(blob_hash)) FROM attachments").fetchone() == (hash_hex,)
     with sqlite3.connect(root / "source.db") as conn:
@@ -622,10 +661,12 @@ def _assert_precomputed_raw_refs(root, hash_hex):
 
 
 @pytest.mark.asyncio
-async def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(tmp_path: Path, monkeypatch) -> None:
+async def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The actual Raw writer references its captured claim and consumes its reservation."""
 
-    def check(hash_hex, claim, publish):
+    def check(hash_hex: str, claim: PreparedBlobPublicationClaim, publish: _Publish) -> None:
         assert publish()
         assert not claim.prepared_path.exists()
         _assert_precomputed_raw_refs(tmp_path, hash_hex)
@@ -635,16 +676,16 @@ async def test_precomputed_attachment_is_reserved_and_referenced_by_the_writer(t
 
 @pytest.mark.asyncio
 async def test_precomputed_attachment_captured_bytes_survive_public_blob_collection(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Collecting the public copy cannot erase the original prepared private capture."""
 
-    def collect(hash_hex, claim):
+    def collect(hash_hex: str, claim: PreparedBlobPublicationClaim) -> None:
         blob_path = BlobStore(tmp_path / "blob").blob_path(hash_hex)
         blob_path.unlink()
         assert claim.prepared_path.read_bytes() == b"precomputed attachment"
 
-    def check(hash_hex, claim, publish):
+    def check(hash_hex: str, claim: PreparedBlobPublicationClaim, publish: _Publish) -> None:
         assert publish()
         assert not claim.prepared_path.exists()
         _assert_precomputed_raw_refs(tmp_path, hash_hex)
@@ -654,15 +695,17 @@ async def test_precomputed_attachment_captured_bytes_survive_public_blob_collect
 
 
 @pytest.mark.asyncio
-async def test_missing_sealed_attachment_capture_refuses_before_index_publication(tmp_path: Path, monkeypatch) -> None:
+async def test_missing_sealed_attachment_capture_refuses_before_index_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Missing original private capture refuses without publishing an Index attachment."""
 
     from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 
-    def remove_capture(_hash_hex, claim):
+    def remove_capture(_hash_hex: str, claim: PreparedBlobPublicationClaim) -> None:
         claim.prepared_path.unlink()
 
-    def unexpected_publication(*_args):
+    def unexpected_publication(*_args: object) -> None:
         raise AssertionError("a missing private capture must refuse before destination publication")
 
     with pytest.raises(ArchiveStorageFaultError) as refusal:
@@ -676,17 +719,19 @@ async def test_missing_sealed_attachment_capture_refuses_before_index_publicatio
 
 
 @pytest.mark.asyncio
-async def test_canonical_raising_parser_publishes_only_failed_source_census(tmp_path: Path, monkeypatch) -> None:
+async def test_canonical_raising_parser_publishes_only_failed_source_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A genuine parser exception yields a publishable Source receipt, not Index work."""
-    calls = []
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def raising_parser(*args, **kwargs):
+    def raising_parser(*args: object, **kwargs: object) -> None:
         calls.append((args, kwargs))
         raise ValueError("synthetic retained parser failure")
 
     monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_stream", raising_parser)
 
-    def check(raw_id, receipts):
+    def check(raw_id: str, receipts: list[_PhaseReceipt]) -> None:
         assert len(calls) == 1
         assert len(receipts) == 1
         kind, result = receipts[0]
@@ -718,160 +763,6 @@ async def test_canonical_raising_parser_publishes_only_failed_source_census(tmp_
         ),
         source_receipt_assertion=check,
     )
-
-
-def test_raising_production_parser_records_a_failed_census_instead_of_escaping(tmp_path: Path) -> None:
-    """One unparseable retained raw is a FAILED census, not a refused generation.
-
-    Anti-vacuity: the FAILED arm of prepare_raw_census models parse failure as
-    ``parsed is None``, but the sole production callable is typed
-    ``-> list[ParsedSession]`` and raises. Remove the census-boundary catch and
-    this test raises instead of returning, which is what fenced the whole source
-    generation at operations/daemon_ingest.py. Every other test in this file
-    uses a ``_parse_from`` double that can only return, so none reaches here.
-    """
-    bootstrap_archive_root(tmp_path)
-
-    def raising_parse(_archive: ArchiveStore, _raw_id: str) -> list[ParsedSession]:
-        raise ValueError("synthetic unparseable retained payload")
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"census-failure"}}\n',
-            source_path="census-failure.jsonl",
-            acquired_at_ms=1,
-        )
-
-    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
-        prepared = prepare_raw_census(
-            reader,
-            raw_id,
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=raising_parse,
-            censused_at_ms=2,
-        )
-
-    assert prepared.status.value == "failed"
-    assert prepared.sessions is None
-    assert "synthetic unparseable retained payload" in prepared.detail
-
-    # The recorded disposition is publishable, so the generation continues.
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        publication = publish_raw_census(archive, prepared)
-    assert publication.published is True
-
-
-def test_transient_sqlite_contention_is_not_recorded_as_a_parse_failure(tmp_path: Path) -> None:
-    """Contention must stay retryable rather than quarantining the raw.
-
-    Anti-vacuity: catching bare ``Exception`` at the census boundary turns a
-    SQLITE_BUSY during retained-material reads into a permanent FAILED census;
-    this test then returns a census instead of propagating.
-    """
-    import sqlite3
-
-    bootstrap_archive_root(tmp_path)
-
-    def busy_parse(_archive: ArchiveStore, _raw_id: str) -> list[ParsedSession]:
-        exc = sqlite3.OperationalError("database is locked")
-        exc.sqlite_errorcode = sqlite3.SQLITE_BUSY
-        exc.sqlite_errorname = "SQLITE_BUSY"
-        raise exc
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=b'{"type":"session_meta","payload":{"id":"census-busy"}}\n',
-            source_path="census-busy.jsonl",
-            acquired_at_ms=1,
-        )
-
-    with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
-        with pytest.raises(sqlite3.OperationalError):
-            prepare_raw_census(
-                reader,
-                raw_id,
-                parser_fingerprint="prepared-test-parser",
-                parse_retained_raw=busy_parse,
-                censused_at_ms=2,
-            )
-
-
-def test_unparseable_selector_member_is_a_typed_per_key_refusal(tmp_path: Path) -> None:
-    """A selector member that no longer parses refuses its key, not the generation.
-
-    Anti-vacuity: ``prepare_ingest_cohort`` reaches ``_session_for_key`` for
-    every selector member, including the unconditionally-admitted
-    ``raw_revision_head_raw_id``. Before the fix that helper raised a bare
-    ``RuntimeError("... no longer parses uniquely")``, which escaped to
-    ``operations/daemon_ingest.py``'s ``except Exception: fence("refused")``
-    and cost every other logical key in the source generation. Delete the
-    ``CohortMembershipRefusalError`` raises (or the parse-boundary catch) and
-    this test fails: ``pytest.raises`` sees a plain ``RuntimeError`` /
-    ``ValueError`` that no caller can distinguish from a genuine
-    generation-level fault, and the ``reason``/``raw_id`` attributes the daemon
-    counts are absent.
-
-    It also pins message honesty: the zero-match case never established "no
-    longer parses uniquely", so the refusal must not claim it did.
-    """
-    bootstrap_archive_root(tmp_path)
-    key = "codex-session:prepared-membership"
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        first_raw, second_raw = _write_raws(archive, 2)
-        parse = _parse_from({first_raw: _session("one"), second_raw: _session("one", "two")})
-        _publish_census(archive, first_raw, parse, at_ms=1)
-        _publish_census(archive, second_raw, parse, at_ms=2)
-        published = prepare_ingest_cohort(
-            archive,
-            logical_source_key=key,
-            accepted_raw_ids=(first_raw, second_raw),
-            parser_fingerprint="prepared-test-parser",
-            parse_retained_raw=parse,
-            acquired_at_ms=3,
-        )
-        assert publish_ingest_cohort(archive, published).published
-
-        # The accepted head is now in the selector. Re-preparing with a parser
-        # that raises for it is exactly the production shape: the real
-        # ``parse_retained_raw_sessions`` raises rather than returning None.
-        def raising_for_head(archive_: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-            if raw_id == second_raw:
-                raise ValueError("synthetic unparseable retained payload")
-            return parse(archive_, raw_id)
-
-        with pytest.raises(CohortMembershipRefusalError) as raised:
-            prepare_ingest_cohort(
-                archive,
-                logical_source_key=key,
-                accepted_raw_ids=(first_raw, second_raw),
-                parser_fingerprint="prepared-test-parser",
-                parse_retained_raw=raising_for_head,
-                acquired_at_ms=4,
-            )
-        assert raised.value.logical_source_key == key
-        assert raised.value.raw_id == second_raw
-        assert "synthetic unparseable retained payload" in raised.value.reason
-
-        # A member that parses but contributes nothing to this key is the same
-        # typed refusal, with a reason that does not overclaim.
-        def foreign_for_head(archive_: ArchiveStore, raw_id: str) -> list[ParsedSession]:
-            if raw_id == second_raw:
-                return [_session("elsewhere", session_id="a-different-logical-session")]
-            return parse(archive_, raw_id)
-
-        with pytest.raises(CohortMembershipRefusalError) as empty:
-            prepare_ingest_cohort(
-                archive,
-                logical_source_key=key,
-                accepted_raw_ids=(first_raw, second_raw),
-                parser_fingerprint="prepared-test-parser",
-                parse_retained_raw=foreign_for_head,
-                acquired_at_ms=5,
-            )
-        assert "none for this logical key" in empty.value.reason
-        assert "no longer parses uniquely" not in str(empty.value)
 
 
 def _adversarial_session(*, session_id: str = "prepared-membership") -> ParsedSession:
@@ -946,18 +837,18 @@ def _adversarial_session(*, session_id: str = "prepared-membership") -> ParsedSe
 
 
 async def _run_original_raw_carrier_case(
-    root,
-    monkeypatch,
-    assertion,
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    assertion: _CarrierAssertion | None,
     *,
-    refuse_rehash=False,
-    session_factory=None,
-    seed_setup=None,
-    artifact_observer=None,
-    use_production_parser=False,
-    raw_payload=None,
-    source_receipt_assertion=None,
-):
+    refuse_rehash: bool = False,
+    session_factory: Callable[[], ParsedSession] | None = None,
+    seed_setup: Callable[[], None] | None = None,
+    artifact_observer: Callable[[PreparedJsonl], None] | None = None,
+    use_production_parser: bool = False,
+    raw_payload: bytes | None = None,
+    source_receipt_assertion: Callable[[str, list[_PhaseReceipt]], None] | None = None,
+) -> None:
     """Keep original Source evidence and the canonical paged carrier in one creator."""
     from contextlib import closing
 
@@ -967,9 +858,9 @@ async def _run_original_raw_carrier_case(
     from tests.infra.archive_templates import run_archive_fixture_write
     from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    parsed = None
+    parsed: ParsedSession | None = None
 
-    def seed():
+    def seed() -> str:
         bootstrap_archive_root(root)
         if seed_setup is not None:
             seed_setup()
@@ -988,7 +879,7 @@ async def _run_original_raw_carrier_case(
     raw_id = await run_archive_fixture_write(root, seed)
     unbound = _adversarial_session() if session_factory is None else session_factory()
 
-    def worker(reader, selected_raw_id, *, directory):
+    def worker(reader: RetainedSessionRead, selected_raw_id: str, *, directory: Path) -> PreparedJsonl:
         nonlocal parsed
         if parsed is None:
             parsed = unbound.model_copy(update={"content_hash": session_content_hash(unbound)})
@@ -998,7 +889,7 @@ async def _run_original_raw_carrier_case(
         # it does not supply another Source snapshot or publication permit.
         if refuse_rehash:
 
-            def refuse(*_args, **_kwargs):
+            def refuse(*_args: object, **_kwargs: object) -> str:
                 raise AssertionError("canonical Raw preparation must carry the parse-worker digest")
 
             monkeypatch.setattr("polylogue.pipeline.ids.session_content_hash", refuse)
@@ -1017,13 +908,13 @@ async def _run_original_raw_carrier_case(
         monkeypatch.setattr("polylogue.sources.revision_backfill.prepare_retained_jsonl_artifact", worker)
     async with prepared_live_convergence_owner(root) as owner:
 
-        def exercise():
+        def exercise() -> None:
             from polylogue.core.stage_admission import admit_stage_write
 
             adapter = make_raw_observation_derivation(root, compute_adapter=owner._compute_adapter)
             frame = raw_observation_frame(root)
             replacement = adapter.compute(frame, raw_id)
-            completed_preparatory_phases = set()
+            completed_preparatory_phases: set[tuple[bool, bool]] = set()
             try:
                 # The replacement first owns canonical Source receipts, not
                 # destination writes. Preserve that separation and then read
@@ -1035,7 +926,15 @@ async def _run_original_raw_carrier_case(
                     completed_preparatory_phases.add(phase)
                     from polylogue.core.stage_admission import admit_stage_write
 
-                    receipts = []
+                    receipts: list[_PhaseReceipt] = []
+
+                    def record_receipt(
+                        kind: Literal["census", "classification", "replay"],
+                        receipt: RevisionCensusResult | PreparedRevisionReplayResult,
+                        receipts: list[_PhaseReceipt] = receipts,
+                    ) -> None:
+                        receipts.append((kind, receipt))
+
                     expected_receipt = (
                         replacement.prepared_source_census
                         if replacement.needs_source_census
@@ -1044,9 +943,7 @@ async def _run_original_raw_carrier_case(
                     assert expected_receipt is not None
                     destination_changed = admit_stage_write(
                         "fixture.raw.preparatory-receipt",
-                        lambda frame=frame, replacement=replacement, receipts=receipts: adapter.publish(
-                            frame, replacement, phase_receipt=lambda kind, receipt: receipts.append((kind, receipt))
-                        ),
+                        partial(adapter.publish, frame, replacement, phase_receipt=record_receipt),
                     )
                     assert destination_changed is False
                     assert receipts == [
@@ -1058,18 +955,21 @@ async def _run_original_raw_carrier_case(
                     replacement.close()
                     frame = raw_observation_frame(root)
                     replacement = adapter.compute(frame, raw_id)
+                assert replacement.prepared_inputs is not None
                 retained = replacement.prepared_inputs[raw_id]
                 assert retained.prepared_artifact is not None
                 with closing(retained.prepared_artifact.iter_sessions()) as sessions:
                     carried = next(sessions)
                     assert next(sessions, None) is None
+                assert assertion is not None, "a carrier case without a Source receipt check asserts its carrier"
                 assertion(
                     unbound,
                     carried,
                     replacement,
-                    lambda: admit_stage_write(
+                    partial(
+                        admit_stage_write,
                         "fixture.raw.final-publication",
-                        lambda frame=frame, replacement=replacement: adapter.publish(frame, replacement),
+                        partial(adapter.publish, frame, replacement),
                     ),
                 )
             finally:
@@ -1079,10 +979,15 @@ async def _run_original_raw_carrier_case(
 
 
 @pytest.mark.asyncio
-async def test_cohort_carries_byte_identical_session_digest(tmp_path: Path, monkeypatch) -> None:
+async def test_cohort_carries_byte_identical_session_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The actual retained Raw carrier preserves every original digest axis."""
 
-    def assert_carrier(unbound, carried, replacement, _publish):
+    def assert_carrier(
+        unbound: ParsedSession,
+        carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        _publish: _Publish,
+    ) -> None:
         expected_hex = str(session_content_hash(unbound))
         assert bound_session_content_hash(unbound) is None
         assert bound_session_content_hash(carried) == expected_hex
@@ -1097,6 +1002,7 @@ async def test_cohort_carries_byte_identical_session_digest(tmp_path: Path, monk
         assert [attachment.model_dump(mode="json") for attachment in carried.attachments] == [
             attachment.model_dump(mode="json") for attachment in unbound.attachments
         ]
+        assert replacement.prepared_writes is not None
         writes = tuple(replacement.prepared_writes.values())
         assert len(writes) == 1
         rows = writes[0].rows
@@ -1112,12 +1018,18 @@ async def test_cohort_carries_byte_identical_session_digest(tmp_path: Path, monk
 
 
 @pytest.mark.asyncio
-async def test_cohort_does_not_rehash_projected_session(tmp_path: Path, monkeypatch) -> None:
+async def test_cohort_does_not_rehash_projected_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """After the worker binds the digest, the genuine Raw lowering must reuse it."""
     expected_hex = str(session_content_hash(_adversarial_session()))
 
-    def assert_carrier(_unbound, carried, replacement, _publish):
+    def assert_carrier(
+        _unbound: ParsedSession,
+        carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        _publish: _Publish,
+    ) -> None:
         assert bound_session_content_hash(carried) == expected_hex
+        assert replacement.prepared_writes is not None
         writes = tuple(replacement.prepared_writes.values())
         assert len(writes) == 1
         assert writes[0].rows.session_content_hash == bytes.fromhex(expected_hex)
@@ -1126,14 +1038,16 @@ async def test_cohort_does_not_rehash_projected_session(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(tmp_path: Path, monkeypatch) -> None:
+async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The actual accepted Raw head refuses a valid parse missing its selected key."""
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
     from tests.infra.archive_templates import run_archive_fixture_write
     from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    def seed():
+    def seed() -> str:
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             return archive.write_raw_payload(
@@ -1146,7 +1060,7 @@ async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
     raw_id = await run_archive_fixture_write(tmp_path, seed)
     session = _session("one")
 
-    def worker(reader, selected_raw_id, *, directory):
+    def worker(reader: RetainedSessionRead, selected_raw_id: str, *, directory: Path) -> PreparedJsonl:
         assert selected_raw_id == raw_id
         _provider, blob_hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
         parsed = session.model_copy(update={"content_hash": session_content_hash(session)})
@@ -1177,13 +1091,13 @@ async def test_canonical_accepted_head_foreign_parse_is_a_typed_per_key_refusal(
 
 
 @pytest.mark.asyncio
-async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, monkeypatch) -> None:
+async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SQLITE_BUSY through the actual worker is never a terminal parse census."""
     from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
     from tests.infra.archive_templates import run_archive_fixture_write
     from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    def seed():
+    def seed() -> str:
         bootstrap_archive_root(tmp_path)
         with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
             return archive.write_raw_payload(
@@ -1197,9 +1111,9 @@ async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, mo
     failure = sqlite3.OperationalError("database is locked")
     failure.sqlite_errorcode = sqlite3.SQLITE_BUSY
     failure.sqlite_errorname = "SQLITE_BUSY"
-    calls = []
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
-    def busy_parse(*args, **kwargs):
+    def busy_parse(*args: object, **kwargs: object) -> None:
         calls.append((args, kwargs))
         raise failure
 
@@ -1220,7 +1134,9 @@ async def test_canonical_retained_sqlite_busy_stays_retryable(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_original_raw_selects_each_sessions_own_attachment_claim(tmp_path: Path, monkeypatch) -> None:
+async def test_original_raw_selects_each_sessions_own_attachment_claim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """One actual Raw never reuses its first session's attachment lookup."""
     from polylogue.pipeline.ids import session_id as make_session_id
     from polylogue.sources.prepared_jsonl import PreparedJsonl
@@ -1228,10 +1144,10 @@ async def test_original_raw_selects_each_sessions_own_attachment_claim(tmp_path:
     from tests.infra.archive_templates import run_archive_fixture_write
     from tests.infra.live_ingest import prepared_live_convergence_owner
 
-    sessions = []
-    expected = {}
+    sessions: list[ParsedSession] = []
+    expected: dict[str, str] = {}
 
-    def seed():
+    def seed() -> str:
         bootstrap_archive_root(tmp_path)
         store = BlobStore(tmp_path / "blob")
         for name in ("first", "second"):
@@ -1262,7 +1178,7 @@ async def test_original_raw_selects_each_sessions_own_attachment_claim(tmp_path:
 
     raw_id = await run_archive_fixture_write(tmp_path, seed)
 
-    def worker(reader, selected_raw_id, *, directory):
+    def worker(reader: RetainedSessionRead, selected_raw_id: str, *, directory: Path) -> PreparedJsonl:
         assert selected_raw_id == raw_id
         _provider, blob_hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
         return PreparedJsonl.from_sessions(
@@ -1318,7 +1234,12 @@ async def test_canonical_retained_attachment_claims_keep_equal_content_coordinat
         ]
         return parsed
 
-    def check(_unbound, _carried, replacement, publish) -> None:
+    def check(
+        _unbound: ParsedSession,
+        _carried: ParsedSession,
+        replacement: RawObservationReplacement,
+        publish: _Publish,
+    ) -> None:
         assert precomputed is not None
         assert publish()
         blob_hash = bytes.fromhex(precomputed[0])
@@ -1341,46 +1262,3 @@ async def test_canonical_retained_attachment_claims_keep_equal_content_coordinat
             assert index.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash=?", (blob_hash,)).fetchone() == (2,)
 
     await _run_original_raw_carrier_case(tmp_path, monkeypatch, check, session_factory=session, seed_setup=seed)
-
-
-@pytest.mark.parametrize("prepared", (False, True))
-def test_equal_content_inline_provider_coordinates_survive_publication(tmp_path: Path, prepared: bool) -> None:
-    """Raw-wide inline coordinates would collapse the two durable references."""
-    bootstrap_archive_root(tmp_path)
-    session = _session("two attachments", attachment_bytes=b"identical inline payload")
-    first = session.attachments[0]
-    session.attachments = [
-        first.model_copy(update={"provider_attachment_id": file_id, "provider_file_id": file_id})
-        for file_id in ("inline-file-a", "inline-file-b")
-    ]
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as writer:
-        if prepared:
-            (raw_id,) = _write_raws(writer, 1)
-            parse = _parse_from({raw_id: session})
-            _publish_census(writer, raw_id, parse, at_ms=1)
-            cohort = prepare_ingest_cohort(
-                writer,
-                logical_source_key="codex-session:prepared-membership",
-                accepted_raw_ids=(raw_id,),
-                parser_fingerprint="prepared-test-parser",
-                parse_retained_raw=parse,
-                acquired_at_ms=2,
-            )
-            assert publish_ingest_cohort(writer, cohort).published
-        else:
-            raw_id, _session_id = writer.write_raw_and_parsed(
-                session,
-                payload=b'{"synthetic":"two-inline-attachments"}',
-                source_path="/synthetic/inline.json",
-                acquired_at_ms=2,
-            )
-        refs = (
-            writer._ensure_source_conn()
-            .execute("SELECT ref_id, source_path FROM blob_refs WHERE ref_type='attachment' ORDER BY source_path")
-            .fetchall()
-        )
-        assert refs == [(raw_id, "attachment:inline-file-a"), (raw_id, "attachment:inline-file-b")]
-        assert (
-            writer._conn.execute("SELECT COUNT(*) FROM attachments WHERE acquisition_status='acquired'").fetchone()[0]
-            == 2
-        )

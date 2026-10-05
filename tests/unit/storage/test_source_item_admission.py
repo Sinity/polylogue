@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission, publish_source_generation
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
+from tests.infra.prepared_replay import run_on_convergence_owner
 
 _PAYLOAD = b'{"synthetic":"source-item"}\n'
 _BLOB_HASH = hashlib.sha256(_PAYLOAD).digest()
@@ -155,7 +156,12 @@ def test_duplicate_member_preserves_revision_refined_by_actual_retained_parser(t
         conn.execute("BEGIN")
         execute_source_item_admission(conn, plan, _member(item_id))
     conn.close()
-    report = converge_raw_observations(tmp_path / "archive", source_roots=(), limit=32)
+    archive_root = tmp_path / "archive"
+    report = run_on_convergence_owner(
+        archive_root,
+        "test.source-item.converge",
+        lambda compute: converge_raw_observations(archive_root, source_roots=(), compute_adapter=compute, limit=32),
+    )
     assert report.failed == 0
     with sqlite3.connect(tmp_path / "archive" / "source.db") as source:
         before = source.execute(
@@ -345,6 +351,7 @@ def test_completed_group_equivalence_requires_the_same_decoder(tmp_path: Path, s
     """Identical member sets do not erase the accepted enumeration authority."""
     from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
     from polylogue.storage.sqlite.archive_tiers.source_items import (
+        ConnectionCompletedSourceItemRead,
         complete_source_item_enumeration,
         retained_completed_source_item_for_raw,
     )
@@ -391,9 +398,9 @@ def test_completed_group_equivalence_requires_the_same_decoder(tmp_path: Path, s
         )
         if second_decoder != "b" * 64:
             with pytest.raises(RetainedZipMembershipUnprovedError):
-                retained_completed_source_item_for_raw(conn, plan.raw_id)
+                retained_completed_source_item_for_raw(ConnectionCompletedSourceItemRead(conn), plan.raw_id)
         else:
-            assert retained_completed_source_item_for_raw(conn, plan.raw_id) in {
+            assert retained_completed_source_item_for_raw(ConnectionCompletedSourceItemRead(conn), plan.raw_id) in {
                 (generation, item_id),
                 ("another-generation", second_item),
             }

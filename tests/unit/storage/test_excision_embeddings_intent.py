@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation, ReferenceSealError
+from polylogue.storage.sqlite.reference_seal import KnownTierRowImage, PreparedIndexMutation, ReferenceSealError
 from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.excision_embeddings import begin_embedding_excision_control, prepare_embedding_excision_source_command
 
@@ -163,7 +163,7 @@ async def test_actual_embedding_child_guards_deletes_and_physically_settles(
                     selected_vector = seal.retain_tier_row("embeddings", "message_embeddings", vector_hash)
                     assert selected_vector is not None
                     assert last_vector or surviving_vector is not None
-                    original_rows = []
+                    original_rows: list[KnownTierRowImage | None] = []
                     for table in ("message_embedding_refs", "message_embeddings_meta", "embedding_status"):
                         with seal.original_rows("embeddings", f"SELECT rowid FROM {table} ORDER BY rowid") as rows:
                             addresses = tuple(row[0] for row in rows)

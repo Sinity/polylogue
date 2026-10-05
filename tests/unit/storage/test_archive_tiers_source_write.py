@@ -951,69 +951,59 @@ def test_fresh_source_ddl_declares_no_parser_census_timestamp(tmp_path: Path) ->
 
 
 def test_parser_census_writers_persist_a_row_without_a_timestamp(tmp_path: Path) -> None:
-    """polylogue-48bos: both production writers still record their receipt.
+    """polylogue-48bos: the production census writer still records its receipt.
 
-    Concrete input: a fresh source tier holding one raw session, driven
-    through the complete production writer set for
-    ``raw_authority_parser_census`` --
-    ``record_current_parser_source_census`` and
-    ``record_resource_blocked_revision_census``.
+    Concrete input: a fresh archive holding one raw session, driven through
+    the production writer for ``raw_authority_parser_census``:
+    ``record_current_parser_source_census`` prepared on its original Source
+    seal and published by the dedicated Source writer. The former
+    ``record_resource_blocked_revision_census`` writer was retired with its
+    payload-envelope refusal (an outcome-changing size cap), so it has no arm.
 
     Wrong observable outcome prevented: a retirement that removed the column
     from the DDL and left a writer naming it, which turns every authority
     census into an ``OperationalError`` at the write boundary rather than a
     recorded receipt.
 
-    Anti-vacuity: reinstating ``censused_at_ms`` in either INSERT makes
-    exactly that writer's arm red with "table raw_authority_parser_census
-    has no column named censused_at_ms"; asserting the receipt row's
-    contents keeps a writer that silently wrote nothing from passing.
+    Anti-vacuity: reinstating ``censused_at_ms`` in the INSERT makes this law
+    red with "table raw_authority_parser_census has no column named
+    censused_at_ms"; asserting the receipt row's contents keeps a writer that
+    silently wrote nothing from passing.
     """
-    from polylogue.sources.revision_backfill import record_resource_blocked_revision_census
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+    from tests.infra.archive_templates import bootstrap_archive_root
+    from tests.infra.prepared_replay import publish_prepared_source
 
-    conn = _connect(tmp_path / "source.db")
-    raw_id = write_source_raw_session(
-        conn,
-        origin=Origin.CODEX_SESSION,
-        capture_mode=Provider.CODEX,
-        source_path="/tmp/session.jsonl",
-        source_index=0,
-        native_id="session-1",
-        payload=b'{"kind":"session"}',
-        acquired_at_ms=1_767_000_000_000,
-        parsed_at_ms=1_767_000_000_050,
-        validation_status=ValidationStatus.PASSED,
-        validation_drift_count=0,
-    )
-    conn.commit()
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"kind":"session"}',
+            source_path="/tmp/session.jsonl",
+            source_index=0,
+            native_id="session-1",
+            acquired_at_ms=1_767_000_000_000,
+        )
 
-    record_current_parser_source_census(conn, raw_id, parser_sessions=[])
-    conn.commit()
-    row = conn.execute(
-        "SELECT parser_fingerprint, status, logical_keys_json, detail FROM raw_authority_parser_census WHERE raw_id = ?",
-        (raw_id,),
-    ).fetchone()
-    assert row is not None
-    assert str(row["status"]) in {"complete", "failed"}
-    assert str(row["detail"])
-
-    conn.close()
-    record_resource_blocked_revision_census(
+    publish_prepared_source(
         tmp_path,
-        (raw_id,),
-        max_payload_bytes=1,
-        total_payload_bytes=2,
-        stream_safe=True,
+        "test.parser-census-writer",
+        lambda seal: record_current_parser_source_census(seal, raw_id, parser_sessions=[]),
     )
     verify = sqlite3.connect(tmp_path / "source.db")
     verify.row_factory = sqlite3.Row
-    blocked = verify.execute(
-        "SELECT status, detail FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
-    ).fetchone()
-    assert str(blocked["status"]) == "failed"
-    assert "exceeds envelope" in str(blocked["detail"])
-    verify.close()
+    try:
+        row = verify.execute(
+            "SELECT parser_fingerprint, status, logical_keys_json, detail FROM raw_authority_parser_census "
+            "WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+        assert row is not None
+        assert str(row["status"]) in {"complete", "failed"}
+        assert str(row["detail"])
+    finally:
+        verify.close()
 
 
 def test_parser_census_identity_comparison_is_streamed_and_deduplicated(tmp_path: Path) -> None:

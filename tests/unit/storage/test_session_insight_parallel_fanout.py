@@ -5,14 +5,15 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 import polylogue.storage.derived.session.rebuild as rebuild_mod
-from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.compute import BoundedComputeAdapter, SubmittedOperation
 from polylogue.storage.derived.session.rebuild import (
     SessionInsightRecordBundle,
     compute_session_insight_bundles,
@@ -26,7 +27,7 @@ _BASE_TS = "2026-01-01T00:00:00+00:00"
 
 
 @pytest.fixture
-def insight_adapter(monkeypatch: pytest.MonkeyPatch):
+def insight_adapter(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[[int], BoundedComputeAdapter]]:
     adapters: list[BoundedComputeAdapter] = []
 
     def install(workers: int) -> BoundedComputeAdapter:
@@ -230,7 +231,7 @@ def test_rebuild_session_insights_writes_only_happen_on_calling_thread(
     admitted_bytes: list[int] = []
     original_submit = adapter.submit
 
-    def recording_submit(function: Callable[[], object], **kwargs: object):
+    def recording_submit(function: Callable[[], object], **kwargs: Any) -> SubmittedOperation[object]:
         admitted_bytes.append(int(kwargs["estimated_bytes"]))
         return original_submit(function, **kwargs)
 

@@ -30,6 +30,7 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.prepared_replay import apply_prepared_revision_replay
 
 LOGICAL_KEY = "codex:reparse-session"
 SESSION_ID = "codex-session:reparse-session"
@@ -78,7 +79,7 @@ def test_revision_replay_receipts_the_parser_identity_of_a_retained_raw(tmp_path
             ),
         )
         plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("retained parse")}, acquired_at_ms=1)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("retained parse")}, acquired_at_ms=1)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -113,7 +114,7 @@ def test_reparse_of_accepted_head_keeps_head_and_session_content_hash_in_sync(tm
             ),
         )
         plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
 
     head_hash, session_hash = _hashes(tmp_path)
     assert head_hash is not None, "the replay must establish an accepted head"
@@ -173,7 +174,7 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
             ),
         )
         plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
         before = _hashes(tmp_path)
         before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
 
@@ -182,7 +183,8 @@ def test_batched_reparse_rolls_back_receipt_and_head_with_failed_session_write(t
             side_effect=RuntimeError("synthetic session-write failure"),
         ):
             with pytest.raises(RuntimeError, match="synthetic session-write failure"):
-                archive.apply_raw_revision_replay(
+                apply_prepared_revision_replay(
+                    archive,
                     plan,
                     {raw_id: _session("corrected parse")},
                     acquired_at_ms=2,
@@ -220,7 +222,7 @@ def test_batched_retained_reparse_keeps_receipt_uncommitted_with_failed_session_
             ),
         )
         plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("original parse")}, acquired_at_ms=1)
         before = _hashes(tmp_path)
         before_receipt_count = archive._conn.execute("SELECT COUNT(*) FROM raw_revision_applications").fetchone()[0]
 
@@ -268,7 +270,7 @@ def test_unchanged_reparse_of_accepted_head_issues_no_new_receipt(tmp_path: Path
             ),
         )
         plan = archive.classify_raw_revision_cohort_for_live_watch(LOGICAL_KEY)
-        archive.apply_raw_revision_replay(plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
+        apply_prepared_revision_replay(archive, plan, {raw_id: _session("stable parse")}, acquired_at_ms=1)
 
     def receipt_count() -> int:
         with sqlite3.connect(tmp_path / "index.db") as conn:
