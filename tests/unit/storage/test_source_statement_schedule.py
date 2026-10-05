@@ -232,6 +232,7 @@ def test_source_only_blob_reference_transient_delete_requires_exact_original_key
                     parameters,
                     table="blob_refs",
                     writable_targets=(("blob_refs", key),),
+                    prepared_cells=dict(zip(("blob_hash", "ref_type", "ref_id", "source_path"), key, strict=True)),
                     allocation_parameter=0,
                 ):
                     pass
@@ -309,15 +310,18 @@ def test_source_only_non_session_artifact_retarget_and_empty_parser_census_keep_
             original_values = dict(zip(artifact.columns, artifact.cells, strict=True))
             new_raw = seal.retain_literal_scalar("new-non-session")
             raw_expression, raw_operands = seal.source_literal_expression(new_raw)
+            artifact_key = seal.retain_literal_scalar("artifact")
+            artifact_expression, artifact_operands = seal.source_literal_expression(artifact_key)
             with seal.source_statement(
                 "INSERT INTO raw_artifacts(rowid,artifact_id,raw_id,origin,source_path,source_index,artifact_kind,"
                 "support_status,classification_reason,first_observed_at_ms,last_observed_at_ms) "
-                f"VALUES(?,'artifact',{raw_expression},'unknown-export','synthetic/artifact',0,"
+                f"VALUES(?,{artifact_expression},{raw_expression},'unknown-export','synthetic/artifact',0,"
                 "'terminal_unknown_export_no_session','unsupported','synthetic',1,2) "
                 "ON CONFLICT(artifact_id) DO UPDATE SET raw_id=excluded.raw_id,last_observed_at_ms=excluded.last_observed_at_ms",
-                (None, *raw_operands),
+                (None, *artifact_operands, *raw_operands),
                 table="raw_artifacts",
                 writable_targets=(("raw_artifacts", (original_values["artifact_id"],)),),
+                prepared_cells={"artifact_id": artifact_key},
                 allocation_parameter=0,
             ):
                 pass
@@ -330,7 +334,7 @@ def test_source_only_non_session_artifact_retarget_and_empty_parser_census_keep_
                 (None, *raw_operands, *empty_operands),
                 table="raw_authority_parser_census",
                 writable_targets=(("raw_authority_parser_census", (new_raw,)),),
-                prepared_cells={"logical_keys_json": empty},
+                prepared_cells={"raw_id": new_raw, "logical_keys_json": empty},
                 allocation_parameter=0,
             ):
                 pass
@@ -487,6 +491,7 @@ def test_source_only_original_full_normalization_requires_complete_current_censu
                     (None, *raw_parameters, *fingerprint_parameters),
                     table="raw_authority_parser_census",
                     writable_targets=(("raw_authority_parser_census", (values["raw_id"],)),),
+                    prepared_cells={"raw_id": values["raw_id"]},
                     allocation_parameter=0,
                 ):
                     pass
