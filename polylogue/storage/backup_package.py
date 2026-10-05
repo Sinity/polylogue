@@ -328,7 +328,18 @@ def _open_backup_readonly_connection(
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with closing(_open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")) as conn:
+    # A live WAL-mode tier can hold committed frames its main file does not;
+    # an immutable open refuses such a file, so it is read through the WAL.
+    # Package artifacts and checkpointed copies carry no frames and stay
+    # immutable, which creates no sidecar beside them.
+    wal = path.with_name(f"{path.name}-wal")
+    try:
+        has_frames = wal.stat().st_size > 0
+    except FileNotFoundError:
+        has_frames = False
+    with closing(
+        _open_backup_readonly_connection(path, immutable=not has_frames, timeout_class="offline-bulk")
+    ) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
@@ -344,11 +355,7 @@ def _readable_sqlite_index(path: Path) -> bool:
     with path.open("rb") as stream:
         if stream.read(16) != b"SQLite format 3\x00":
             return False
-    # A live candidate in WAL mode may hold committed state the main file does
-    # not; an ordinary read-only open reads it, where an immutable one refuses.
-    # The copy itself is still taken from a checkpointed, write-locked snapshot.
-    with closing(_open_backup_readonly_connection(path, immutable=False, timeout_class="offline-bulk")):
-        pass
+    _sqlite_user_version(path)
     return True
 
 
