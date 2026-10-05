@@ -1027,7 +1027,16 @@ def _summary_all_output_param(destination: str, out_path: str | None) -> str | N
 @json_output_option
 @click.pass_context
 def select_verb(ctx: click.Context, limit: int, print_field: str, output_format: str | None) -> None:
-    """Select one matched session or print bounded candidate identities."""
+    """Select one matched session or print bounded candidate identities.
+
+    \b
+    Examples:
+        polylogue find 'origin:codex-session since:30d' then select --print title
+        polylogue find 'tag:review AND NOT tag:archived' then select --limit 5
+        polylogue find 'title:"release notes"' then select --format json
+        polylogue find 'origin:claude-code-session AND has:thinking' then select
+        polylogue find 'has:tools since:7d' then select --print origin
+    """
     from polylogue.cli.select import run_select
 
     request = _parent_request(ctx)

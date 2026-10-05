@@ -450,6 +450,7 @@ Arguments:
 |---|---|---:|---|
 | `operation` | `string` | yes | The declared maintenance operation. |
 | `confirm` | `boolean` | no | Explicit confirmation required by the full-effect operations. |
+| `session_ids` | `array` | no | Sessions whose insights to rebuild; omitted selects every session. |
 
 Example — Rebuild session insights:
 
