@@ -392,7 +392,11 @@ def test_real_claude_repeated_occurrence_events_keep_their_message(tmp_path: Pat
         configurations = {json.loads(row[1])["model"]: row[2] for row in rows if row[0] == "model_configuration"}
         assert configurations == {"synthetic-first": "first occurrence", "synthetic-second": "second occurrence"}
         revisions = {json.loads(row[1])["updated_at"]: row[2] for row in rows if row[0] == "message_revision"}
-        assert revisions == {"2026-01-01T00:01:00Z": "first occurrence", "2026-01-01T00:03:00Z": "second occurrence"}
+        # The parser stores provider timestamps as normalized ISO-8601.
+        assert revisions == {
+            "2026-01-01T00:01:00+00:00": "first occurrence",
+            "2026-01-01T00:03:00+00:00": "second occurrence",
+        }
     finally:
         if artifact is not None:
             artifact.discard()

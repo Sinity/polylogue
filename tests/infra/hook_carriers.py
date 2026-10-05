@@ -130,10 +130,16 @@ def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None)
     """Admit every carrier under the spool root; return the items admitted."""
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import run_off_event_loop
 
-    with _pinned_archive_root(archive_root):
-        initialize_active_archive_root(archive_root)
-        return _run(_acquire(archive_root, spool_root or archive_root / "hooks"))
+    def acquire() -> int:
+        with _pinned_archive_root(archive_root):
+            initialize_active_archive_root(archive_root)
+            return _run(_acquire(archive_root, spool_root or archive_root / "hooks"))
+
+    # Async facade tests call this from their loop; bootstrap's synchronous
+    # write lease must run where it cannot block that loop.
+    return run_off_event_loop(acquire)
 
 
 def hook_event_count(archive_root: Path) -> int:
@@ -151,9 +157,15 @@ def hook_event_count(archive_root: Path) -> int:
 def materialize_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:
     """Acquire every pending carrier, materialize its events, and count them."""
 
+    from tests.infra.archive_templates import run_off_event_loop
+
     acquire_hook_carriers(archive_root, spool_root=spool_root)
-    with _pinned_archive_root(archive_root):
-        return _converge(archive_root)
+
+    def converge() -> int:
+        with _pinned_archive_root(archive_root):
+            return _converge(archive_root)
+
+    return run_off_event_loop(converge)
 
 
 def _converge(archive_root: Path) -> int:

@@ -28,6 +28,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
+from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.operations.intake_adapters import (
     DaemonIntakeContext,
     FileIntakeAdapter,
@@ -59,9 +60,15 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
+from tests.infra.raw_owner_routes import (
+    ingest_files_with_owners,
+    replay_retained_raws_async,
+    seed_membership_census,
+    supplied_live_owners,
+)
 
 
 class _FullIngestMock:
@@ -150,24 +157,33 @@ async def _seed_live_cursor_authority_case(
     )
     source_path.write_bytes(prefix + tail)
     await asyncio.to_thread(initialize_active_archive_root, root)
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=prefix,
-            source_path=str(source_path),
-            acquired_at_ms=1,
-            native_id="session-1",
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                "codex-session:session-1",
-                RawRevisionKind.FULL,
-                "revision-0",
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
+
+    def acquire_prefix() -> str:
+        # A writable open takes a synchronous lease, which may not block the loop.
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=prefix,
+                source_path=str(source_path),
+                # Acquisition records the canonical coordinate; the live
+                # frontier gate refuses an archive holding a raw without one.
+                canonical_source_path=str(source_path.resolve()),
+                acquired_at_ms=1,
+                native_id="session-1",
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "codex-session:session-1",
+                    RawRevisionKind.FULL,
+                    "revision-0",
+                    0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            return raw_id
+
+    raw_id = await asyncio.to_thread(acquire_prefix)
     # The accepted head is published from the acquired prefix through the
     # canonical retained replay route.
     await replay_retained_raws_async(root, [raw_id])
@@ -307,7 +323,7 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
         exact_frontier=True,
     )
 
-    metrics = await processor.ingest_files([source_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
     assert metrics.succeeded_file_count == 1
     assert metrics.append_file_count == 1
@@ -341,7 +357,7 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
         plan_digest="active-index-test",
         force_full_ingest=True,
     ):
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
     assert metrics.full_file_count == 1
     assert shadow_index.read_bytes() == shadow_before
@@ -386,7 +402,8 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     )
     before = _live_archive_snapshot(tmp_path)
 
-    metrics = await watcher._ingest_files([blocked_path, sibling])
+    async with supplied_live_owners(watcher._batch_processor):
+        metrics = await watcher._ingest_files([blocked_path, sibling])
 
     assert metrics.skipped_file_count == 1
     assert metrics.succeeded_file_count == 1
@@ -1089,7 +1106,8 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
 
-    result = await processor._ingest_full_paths([source_path], source_name="projects")
+    async with supplied_live_owners(processor):
+        result = await processor._ingest_full_paths([source_path], source_name="projects")
 
     assert result.succeeded == [source_path]
     assert result.failed == []
@@ -1204,7 +1222,19 @@ def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
     """Helper: check and ingest a single file (mimics old _ingest_if_grown)."""
     if watcher._needs_work(path):
-        await watcher._ingest_files([path])
+        # Source bodies (raw compaction) run only on the daemon writer.
+        async with supplied_live_owners(watcher._batch_processor):
+            await watcher._ingest_files([path])
+
+
+def _run_watcher_ingest(watcher: LiveWatcher, paths: list[Path], **kwargs: Any) -> None:
+    """Run one watcher pass with the daemon's owners, as ``polylogued`` supplies them."""
+
+    async def run() -> None:
+        async with supplied_live_owners(watcher._batch_processor):
+            await watcher._ingest_files(paths, **kwargs)
+
+    asyncio.run(run())
 
 
 def test_skip_when_file_not_grown(tmp_path: Path) -> None:
@@ -1547,8 +1577,9 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
 
 @pytest.mark.parametrize("sqlite_input", [False, True], ids=["jsonl", "sqlite"])
 @pytest.mark.parametrize("cursor_state", ["settled", "excluded", "deferred", "failed"])
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher")
 def test_hermes_profile_retarget_reopens_same_inode_cursor(
-    tmp_path: Path, sqlite_input: bool, cursor_state: str
+    tmp_path: Path, sqlite_input: bool, cursor_state: str, frozen_clock: FrozenClock
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.acquisition_boundary import capture_bound_path
@@ -1568,8 +1599,10 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             connection.execute("CREATE TABLE state (value TEXT)")
             connection.execute("INSERT INTO state VALUES ('same accepted input')")
     else:
-        actual.write_text(
-            json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same"}]}) + "\n"
+        # A genuine Hermes ATOF event stream: a session-shaped record from
+        # another harness at a Hermes location is refused as foreign origin.
+        actual.write_bytes(
+            (Path(__file__).parents[2] / "fixtures" / "origin-capability" / "hermes-session.jsonl").read_bytes()
         )
     alias = tmp_path / "profile"
     alias.symlink_to(first, target_is_directory=True)
@@ -1603,7 +1636,7 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             mtime_ns=original_stat.st_mtime_ns,
             excluded=cursor_state == "excluded",
             failure_count=int(cursor_state == "failed"),
-            next_retry_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            next_retry_at=(frozen_clock.now(UTC) + timedelta(days=1)).isoformat(),
         )
 
     stamp(original_profile)
@@ -2270,6 +2303,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2277,7 +2311,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
         parser_fingerprint="test-parser",
     )
 
-    metrics = await processor.ingest_files([source_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
     summary = _archive_live_ingest_attempt_summary_info(db_path.parent / "ops.db")
     assert summary is not None and summary.available
     attempts = summary.recent
@@ -2332,6 +2366,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2344,7 +2379,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
         lambda paths: ([path] for path in paths),
     )
 
-    metrics = await processor.ingest_files([first_path, second_path], emit_event=False)
+    metrics = await ingest_files_with_owners(processor, [first_path, second_path], emit_event=False)
 
     first_cursor = cursor.get_record(first_path)
     second_cursor = cursor.get_record(second_path)
@@ -2408,6 +2443,7 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
     source_path.write_text('{"type":"session_meta","payload":{"id":"responsive"}}\n', encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2436,7 +2472,7 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
 
     monkeypatch.setattr(processor, "_ingest_full_paths_sync", slow_full_ingest)
 
-    ingest_task = asyncio.create_task(processor.ingest_files([source_path], emit_event=False))
+    ingest_task = asyncio.create_task(ingest_files_with_owners(processor, [source_path], emit_event=False))
     await asyncio.sleep(0.02)
 
     assert not ingest_task.done()
@@ -2466,6 +2502,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
@@ -2474,7 +2511,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     )
 
     try:
-        metrics = await processor.ingest_files([run_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [run_path], emit_event=False)
 
         assert metrics.succeeded_file_count == 1
         assert metrics.failed_file_count == 0
@@ -2525,6 +2562,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
@@ -2533,7 +2571,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
     )
 
     try:
-        first = await processor.ingest_files([run_path, journal_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [run_path, journal_path], emit_event=False)
         with journal_path.open("a", encoding="utf-8") as handle:
             handle.write(
                 json.dumps(
@@ -2548,7 +2586,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
                 )
                 + "\n"
             )
-        second = await processor.ingest_files([journal_path], emit_event=False)
+        second = await ingest_files_with_owners(processor, [journal_path], emit_event=False)
 
         assert first.succeeded_file_count == 2
         assert second.succeeded_file_count == 1
@@ -2644,7 +2682,8 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
     root = workspace_env["data_root"] / "hermes-observability"
     root.mkdir(parents=True)
     source_path = root / "events.jsonl"
-    db_path = workspace_env["data_root"] / "append-atof-boundary.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2661,7 +2700,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-a", uuid="a-turn-1", timestamp="2026-07-18T00:00:00Z"),
             ],
         )
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # Growth batch spans a session boundary -- the real shared-file shape.
         with source_path.open("a", encoding="utf-8") as handle:
@@ -2670,7 +2709,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-b", uuid="b-turn-1", timestamp="2026-07-18T00:00:02Z"),
             ):
                 handle.write(json.dumps(record) + "\n")
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # fs1.14: a resolvable profile root (the watched directory) now
         # artifact- AND profile-qualifies the observer session identity --
@@ -2688,7 +2727,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         # Idempotent replay: re-ingesting the SAME growth batch bytes again
         # (e.g. a poll cycle firing before the cursor advanced, or a daemon
         # restart replaying its tail) must not duplicate or lose anything.
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
         assert processor.require_cursor_authority() is None
@@ -2785,7 +2824,8 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
     chatgpt_dir = root / "chatgpt"
     chatgpt_dir.mkdir(parents=True)
     source_path = chatgpt_dir / "conv-emx2.json"
-    db_path = workspace_env["data_root"] / "membership-defer.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2806,7 +2846,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
-        first = await processor.ingest_files([source_path], emit_event=False)
+        first = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert first.succeeded_file_count == 1
         assert first.failed_file_count == 0
 
@@ -2828,7 +2868,7 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
-        second = await processor.ingest_files([source_path], emit_event=False)
+        second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
         assert processor.require_cursor_authority() is None
@@ -2867,7 +2907,8 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "append-public-read.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2906,7 +2947,7 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 ),
             ],
         )
-        initial_metrics = await processor.ingest_files([source_path], emit_event=False)
+        initial_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with source_path.open("a", encoding="utf-8") as handle:
             for record in (
@@ -2928,7 +2969,7 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
                 ),
             ):
                 handle.write(json.dumps(record) + "\n")
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         session = await archive.get_session("claude-code-session:session-public-read")
         assert initial_metrics.full_file_count == 1
@@ -2961,7 +3002,8 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "session-identity.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2984,7 +3026,7 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
                 ),
             ],
         )
-        full_metrics = await processor.ingest_files([source_path], emit_event=False)
+        full_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert full_metrics.new_sessions == (("claude-code", "claude-code-session:session-identity"),)
         assert full_metrics.updated_sessions == ()
 
@@ -3002,7 +3044,7 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
                 )
                 + "\n"
             )
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         # The append route only ever grows an already-tracked file: this is
         # an EXISTING session growing, never a fresh one -- exactly the
         # session.updated semantics this bead introduces.
@@ -3054,7 +3096,8 @@ async def test_live_full_ingest_expands_inbox_zip_members(
         zf.writestr("session-a.jsonl", member_a + "\n")
         zf.writestr("session-b.jsonl", member_b + "\n")
 
-    db_path = workspace_env["data_root"] / "inbox-zip-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3065,7 +3108,7 @@ async def test_live_full_ingest_expands_inbox_zip_members(
     )
 
     try:
-        metrics = await processor.ingest_files([zip_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [zip_path], emit_event=False)
         record = cursor.get_record(zip_path)
 
         session_a = await archive.get_session("claude-code-session:zip-session-a")
@@ -3144,7 +3187,8 @@ async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
         zf.writestr("conversations.json", json.dumps([conversation]))
         zf.writestr("message_feedback.json", json.dumps([{"conversation_id": "chatgpt-zip-sniff-1", "rating": 1}]))
 
-    db_path = workspace_env["data_root"] / "inbox-zip-sniff-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3155,7 +3199,7 @@ async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
     )
 
     try:
-        metrics = await processor.ingest_files([zip_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [zip_path], emit_event=False)
 
         assert ("inbox", "chatgpt-export:chatgpt-zip-sniff-1") in metrics.new_sessions
 
@@ -3185,7 +3229,8 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "detect-provider-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3208,7 +3253,7 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
                 ),
             ],
         )
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         session = await archive.get_session("claude-code-session:session-detected-provider")
         assert metrics.succeeded_file_count == 1
@@ -3228,7 +3273,8 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
     project.mkdir(parents=True)
     source_path = project / "sessions-index.json"
     source_path.write_text(json.dumps({"sessions": [{"id": "metadata-only"}]}), encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-sidecar-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3239,7 +3285,7 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
     )
 
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         record = cursor.get_record(source_path)
 
         with sqlite3.connect(db_path) as conn:
@@ -3269,7 +3315,8 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
     project.mkdir(parents=True)
     source_path = project / "architecture_discussions.jsonl"
     source_path.write_text("not json\nstill not json\n", encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-invalid-jsonl-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3280,7 +3327,7 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
     )
 
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         record = cursor.get_record(source_path)
 
         with sqlite3.connect(db_path) as conn:
@@ -3307,7 +3354,8 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "codex-session.jsonl"
-    db_path = workspace_env["data_root"] / "append-codex.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3330,7 +3378,7 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
                 ),
             ],
         )
-        await processor.ingest_files([source_path], emit_event=False)
+        await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         with source_path.open("a", encoding="utf-8") as handle:
             handle.write(
@@ -3344,7 +3392,7 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
                 )
                 + "\n"
             )
-        append_metrics = await processor.ingest_files([source_path], emit_event=False)
+        append_metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         existing = await archive.get_session("codex-session:codex-real-session")
         fallback = await archive.get_session("codex-session:codex-session")
@@ -3396,7 +3444,7 @@ def test_v5_cursor_reprocesses_unchanged_bytes_through_live_batch(tmp_path: Path
     selected, deferred = watcher.classify_ingest_candidates([path])
     assert selected == (path,)
     assert deferred == ()
-    asyncio.run(watcher._ingest_files(list(selected)))
+    _run_watcher_ingest(watcher, list(selected))
 
     after = path.stat()
     assert (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns) == (
@@ -3596,7 +3644,7 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     emit = MagicMock()
     watcher, _parse_sources = _make_watcher(tmp_path, root, event_emitter=emit)
 
-    asyncio.run(watcher._ingest_files([f], queued_file_count=3, skipped_file_count=2))
+    _run_watcher_ingest(watcher, [f], queued_file_count=3, skipped_file_count=2)
 
     emit.assert_called_once()
     kind = emit.call_args.args[0]
@@ -3713,7 +3761,7 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
         )
     )
     try:
-        asyncio.run(watcher._ingest_files([path], queued_file_count=1))
+        _run_watcher_ingest(watcher, [path], queued_file_count=1)
     finally:
         clear_degraded()
 
@@ -3746,9 +3794,16 @@ def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: 
     )
 
     async def _admit() -> dict[str, Any]:
-        page = await adapter.discover(limit=8)
-        assert [Path(cast(Any, item.payload)) for item in page] == [f]
-        return dict(await adapter.admit_page(page))
+        # Page admission initializes the cursor on the daemon writer.
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        watcher._write_coordinator = coordinator
+        try:
+            page = await adapter.discover(limit=8)
+            assert [Path(cast(Any, item.payload)) for item in page] == [f]
+            return dict(await adapter.admit_page(page))
+        finally:
+            watcher._write_coordinator = None
+            assert await coordinator.shutdown(timeout=float("inf"))
 
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.DUPLICATE]
@@ -4007,6 +4062,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4016,7 +4072,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
 
     # The zero-budget law admits the first item, then leaves its siblings
     # retryable. Keep asyncio and worker settlement on the real host clock.
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.failed_file_count == 0
@@ -4026,7 +4082,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     unrecorded = [path for path in paths if path not in recorded]
     assert len(unrecorded) == 2
 
-    remainder = await processor.ingest_files(unrecorded, emit_event=False)
+    remainder = await ingest_files_with_owners(processor, unrecorded, emit_event=False)
 
     assert remainder.succeeded_file_count == 2
     assert remainder.failed_file_count == 0
@@ -4060,6 +4116,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
             ],
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4072,7 +4129,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
         "_ingest_pass_exhausted",
         lambda *, max_pass_seconds, pass_started, checkpoint: checkpoint == "archive_write_record",
     )
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=30.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=30.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.time_budget_exceeded is True
@@ -4120,6 +4177,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4131,7 +4189,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
     # guarantee), then refuses the next item at the per-file checkpoint. This
     # avoids replacing the process-wide clock used by asyncio's executor
     # shutdown.
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.succeeded_file_count == 1
     assert bounded.failed_file_count == 0
@@ -4175,6 +4233,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 
     monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4184,7 +4243,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 
     token = enter_write_hold("watcher.live_ingest.full", 30.0)
     try:
-        result = await processor.ingest_files(paths, emit_event=False)
+        result = await ingest_files_with_owners(processor, paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
@@ -4219,6 +4278,7 @@ async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4228,7 +4288,7 @@ async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path
 
     token = enter_write_hold("watcher.catch_up.chunk", 0.0)
     try:
-        result = await processor.ingest_files(paths, emit_event=False)
+        result = await ingest_files_with_owners(processor, paths, emit_event=False)
     finally:
         exit_write_hold(token)
 
@@ -4464,7 +4524,10 @@ def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path:
 
     root = tmp_path / "src"
     root.mkdir()
-    watcher, parse_sources = _make_watcher(tmp_path, root)
+    # Page admission and the batch's Source bodies run on the daemon writer.
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    watcher, parse_sources = _make_watcher(tmp_path, root, write_coordinator=coordinator)
     wakeup = asyncio.Event()
     watcher._intake_wakeup = wakeup
     source = watcher._sources[0]
@@ -4483,9 +4546,12 @@ def test_a_watch_event_wakes_the_dispatcher_which_ingests_the_new_file(tmp_path:
     )
 
     async def _admit() -> dict[str, Any]:
-        page = await adapter.discover(limit=8)
-        assert [Path(cast(Any, item.payload)) for item in page] == [created]
-        return dict(await adapter.admit_page(page))
+        try:
+            page = await adapter.discover(limit=8)
+            assert [Path(cast(Any, item.payload)) for item in page] == [created]
+            return dict(await adapter.admit_page(page))
+        finally:
+            assert await coordinator.shutdown(timeout=float("inf"))
 
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.ADMITTED]
@@ -4585,13 +4651,14 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
             encoding="utf-8",
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="claude-code", root=root),),
         cursor=cursor,
         parser_fingerprint="test-parser",
     )
-    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+    bounded = await ingest_files_with_owners(processor, paths, emit_event=False, max_pass_seconds=0.0)
 
     assert bounded.time_budget_exceeded is True
     assert set(bounded.settled_exclusion_paths.values()) == {REFUSED_NO_SESSIONS}

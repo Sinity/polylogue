@@ -361,7 +361,8 @@ class TestFormatMetricsReadsArchiveState:
                 CREATE TABLE sessions (
                     session_id TEXT PRIMARY KEY,
                     origin TEXT NOT NULL DEFAULT 'codex-session',
-                    message_count INTEGER NOT NULL DEFAULT 0
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    raw_id TEXT
                 );
                 CREATE TABLE messages (
                     message_id TEXT PRIMARY KEY,

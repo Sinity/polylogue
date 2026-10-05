@@ -24,6 +24,7 @@ from tests.infra.archive_scenarios import (
     ScenarioMessage,
     seed_workspace_scenarios,
 )
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.json_contracts import json_object
 from tests.infra.semantic_facts import (
     SessionProfileFacts,
@@ -143,7 +144,9 @@ async def test_session_profile_fact_survives_repository_facade_cli_and_daemon_ht
     session to 404 disagrees with the explicit ``q-missing`` state.
     """
     selected, decoy, missing = _profile_fact_scenarios()
-    db_path, _ = seed_workspace_scenarios(workspace_env, (selected, decoy))
+    # Seeding and materialization take synchronous write leases, which may not
+    # block this test's event loop.
+    db_path, _ = run_off_event_loop(lambda: seed_workspace_scenarios(workspace_env, (selected, decoy)))
 
     # ``Polylogue.rebuild_insights`` refuses in-process execution: a sweep is a
     # sealed machine owned by ``polylogued run``. This test needs materialized

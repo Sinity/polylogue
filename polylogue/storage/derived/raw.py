@@ -830,6 +830,30 @@ class RawObservationDerivation(RawObservationInspection):
         """
         return self._phase_committed.pop(id(replacement), None) == replacement.key
 
+    #: The durable Source rows a census or classification phase may change.
+    _CENSUS_STATE_TABLES = (
+        "raw_sessions",
+        "raw_artifacts",
+        "raw_session_memberships",
+        "raw_membership_census",
+        "raw_authority_parser_census",
+    )
+
+    def _census_state(self, raw_ids: Sequence[str]) -> tuple[tuple[object, ...], ...]:
+        """Committed census state of ``raw_ids``; equal before and after means no progress."""
+        from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+        selected = tuple(sorted(raw_ids))
+        marks = ",".join("?" for _ in selected)
+        state: list[tuple[object, ...]] = []
+        with readonly_connection_context(self.archive_root / "source.db") as source:
+            for table in self._CENSUS_STATE_TABLES:
+                with closing(
+                    source.execute(f"SELECT * FROM {table} WHERE raw_id IN ({marks}) ORDER BY rowid", selected)
+                ) as rows:
+                    state.extend((table, *row) for row in rows)
+        return tuple(state)
+
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
         stat = path.stat()
@@ -1749,6 +1773,7 @@ class RawObservationDerivation(RawObservationInspection):
         publication_failure: Callable[[BaseException], None] | None = None,
     ) -> bool:
         from polylogue.sources.revision_backfill import (
+            RetainedPreparationNoProgressError,
             RetainedPreparationRetryableError,
             apply_prepared_revision_census,
             apply_prepared_revision_classification,
@@ -1825,10 +1850,15 @@ class RawObservationDerivation(RawObservationInspection):
                         raise RetainedPreparationRetryableError(
                             "retained census lacks its original prepared Source tape"
                         )
+                    before = self._census_state(replacement.raw_ids)
                     receipt = apply_prepared_revision_census(
                         replacement.reference_seal,
                         replacement.prepared_source_census,
                     )
+                    if self._census_state(replacement.raw_ids) == before:
+                        raise RetainedPreparationNoProgressError(
+                            f"retained census left its durable inputs unchanged: {replacement.key}"
+                        )
                     if phase_receipt is not None:
                         phase_receipt("census", receipt)
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
@@ -1841,6 +1871,7 @@ class RawObservationDerivation(RawObservationInspection):
                         raise RetainedPreparationRetryableError(
                             "retained classification lacks its original Source tape"
                         )
+                    before = self._census_state(replacement.raw_ids)
                     try:
                         receipt = apply_prepared_revision_classification(
                             replacement.reference_seal,
@@ -1851,6 +1882,10 @@ class RawObservationDerivation(RawObservationInspection):
                         if publication_failure is not None:
                             publication_failure(failure)
                         return False
+                    if self._census_state(replacement.raw_ids) == before:
+                        raise RetainedPreparationNoProgressError(
+                            f"retained classification left its durable inputs unchanged: {replacement.key}"
+                        )
                     if phase_receipt is not None:
                         phase_receipt("classification", receipt)
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)

@@ -118,7 +118,7 @@ def test_default_stage_set_evaluates_a_watched_query_without_an_injected_fake(tm
 # surface -- and then run the real convergence stage set over it.
 
 
-def _seed_second_codex_session(archive_root: Path) -> str:
+def _seed_second_codex_session_on_writer(archive_root: Path) -> str:
     with ArchiveStore(archive_root) as archive:
         return write_index_session(
             archive,
@@ -139,6 +139,11 @@ def _seed_second_codex_session(archive_root: Path) -> str:
                 ],
             ),
         )
+
+
+def _seed_second_codex_session(archive_root: Path) -> str:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_second_codex_session_on_writer(archive_root))
 
 
 @contextmanager

@@ -16,13 +16,15 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedMessage, ParsedPasteEvidence, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # The Index writer admits only connections from its measured creator.
+    conn = connect_measured(path)
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
