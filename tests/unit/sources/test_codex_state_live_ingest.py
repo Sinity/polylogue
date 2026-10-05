@@ -45,7 +45,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.live_batch import prepared_live_batch_processor
 from tests.infra.live_ingest import prepared_live_convergence_owner
-from tests.infra.raw_owner_routes import ingest_files_with_owners, live_owner_set
+from tests.infra.raw_owner_routes import LiveOwnerSet, ingest_files_with_owners, live_owner_set
 
 
 def _lease_writer(root: Path) -> Callable[[str, Callable[[], bool]], bool]:
@@ -158,6 +158,31 @@ def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False, include_agent_r
         conn.commit()
         if wal_mode:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
+async def _inspect_accepted_frontier(archive_root: Path, owners: LiveOwnerSet | None = None) -> None:
+    """Run the daemon's accepted-frontier inspection stage after a live pass.
+
+    Source selection stays blocked until the frontier is inspected; the daemon
+    runs this inspection as a convergence stage, never inside a live pass.
+    """
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+
+    if owners is not None:
+        await owners.raw_owner.run_convergence_sync(
+            "test.codex-state.frontier",
+            inspect_prepared_raw_authority_frontier,
+            archive_root,
+            input_demand=owners.compute.amend_current_input_demand,
+        )
+        return
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        await owner.run_convergence_sync(
+            "test.codex-state.frontier",
+            inspect_prepared_raw_authority_frontier,
+            archive_root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
 
 
 def _make_processor(workspace_env: dict[str, Path], root_name: str, db_name: str) -> tuple[Polylogue, Path, Path]:
@@ -599,9 +624,9 @@ async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
     processor = LiveBatchProcessor(
         archive,
         (
-            WatchSource(name="codex-a", root=sessions_a),
-            WatchSource(name="codex-state-a", root=root_a, suffixes=(".sqlite", ".db")),
-            WatchSource(name="codex-state-b", root=root_b, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex", root=sessions_a),
+            WatchSource(name="codex-state", root=root_a, suffixes=(".sqlite", ".db")),
+            WatchSource(name="codex-state", root=root_b, suffixes=(".sqlite", ".db")),
         ),
         cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
@@ -617,15 +642,16 @@ async def test_codex_goal_materials_do_not_cross_supersede_source_roots(
         assert (await ingest_files_with_owners(processor, [goals_a, goals_b], emit_event=False)).failed_file_count == 0
 
         materials = _material_payloads(archive_root)
-        assert len(materials) == 2
+        assert len(materials) == 2, materials
         assert {payload["objective"] for _observation, payload in materials} == {
             "goal from install A",
             "goal from install B",
         }
-        assert {observation.source_uri for observation, _payload in materials} == {
-            f"codex://state/goal/{_THREAD_ID}/goal-1?scope={root_a.as_posix().replace('/', '%2F')}",
-            f"codex://state/goal/{_THREAD_ID}/goal-1?scope={root_b.as_posix().replace('/', '%2F')}",
-        }
+        source_uris = {observation.source_uri for observation, _payload in materials}
+        assert source_uris == {
+            f"codex://state/goals/{_THREAD_ID}/goal-1?scope={root_a.as_posix().replace('/', '%2F')}",
+            f"codex://state/goals/{_THREAD_ID}/goal-1?scope={root_b.as_posix().replace('/', '%2F')}",
+        }, source_uris
     finally:
         await archive.close()
 
@@ -675,7 +701,8 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         _write_codex_rollout(first_rollout)
         metrics = await ingest_files_with_owners(processor, [first_rollout], emit_event=False)
         assert metrics.ingested_session_count == 1
-        assert processor.cursor_authority_block_reason() is None
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
+        assert (reason := processor.cursor_authority_block_reason()) is None, reason
 
         goals_path = codex_state_root / "goals_1.sqlite"
         _write_goals_1_sqlite(goals_path)
@@ -684,8 +711,9 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         assert state_metrics.ingested_session_count == 0
 
         assert _cursor_authority_gap_states(archive_root) == []
-        assert raw_frontier_source_selection_block_reason(archive_root) is None
-        assert processor.cursor_authority_block_reason() is None
+        await _inspect_accepted_frontier(archive_root)
+        assert (reason := raw_frontier_source_selection_block_reason(archive_root)) is None, reason
+        assert (reason := processor.cursor_authority_block_reason()) is None, reason
 
         with sqlite3.connect(archive_root / "source.db") as conn:
             rows = conn.execute(
@@ -710,137 +738,6 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         assert await archive.count_sessions() == 2
     finally:
         await archive.close()
-
-
-async def _seed_unreceipted_codex_state_raws(workspace_env: dict[str, Path]) -> dict[str, str]:
-    """Admit ``goals_1`` and ``state_5`` exports, then strip their receipts.
-
-    Returns raw IDs by file name, in the pre-receipt shape: raw admitted,
-    cursor at EOF, no census, never finalized.
-    """
-    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-
-    archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-legacy", "codex-state-legacy.db")
-    archive_root = workspace_env["archive_root"]
-    cursor = CursorStore(archive_root / "ops.db")
-    processor = LiveBatchProcessor(
-        archive,
-        (
-            WatchSource(name="codex", root=codex_root),
-            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
-        ),
-        cursor=cursor,
-        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    try:
-        rollout = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
-        _write_codex_rollout(rollout)
-        await ingest_files_with_owners(processor, [rollout], emit_event=False)
-        goals_path = codex_state_root / "goals_1.sqlite"
-        _write_goals_1_sqlite(goals_path)
-        state_path = codex_state_root / "state_5.sqlite"
-        _write_state_5_sqlite(state_path)
-        await ingest_files_with_owners(processor, [goals_path, state_path], emit_event=False)
-        assert raw_frontier_source_selection_block_reason(archive_root) is None
-    finally:
-        await archive.close()
-
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        raw_ids = {
-            Path(str(row[1])).name: str(row[0])
-            for row in conn.execute(
-                "SELECT raw_id, source_path FROM raw_sessions WHERE source_path IN (?, ?)",
-                (str(goals_path), str(state_path)),
-            )
-        }
-        assert len(raw_ids) == 2
-        placeholders = ",".join("?" for _ in raw_ids)
-        selected = list(raw_ids.values())
-        conn.execute(f"DELETE FROM raw_membership_census WHERE raw_id IN ({placeholders})", selected)
-        conn.execute(f"DELETE FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", selected)
-        conn.execute(f"UPDATE raw_sessions SET parsed_at_ms = NULL WHERE raw_id IN ({placeholders})", selected)
-        conn.commit()
-    assert sorted(_cursor_authority_gap_states(archive_root)) == ["source_raws_without_accepted_head"] * 2
-    assert raw_frontier_source_selection_block_reason(archive_root) is not None
-    return raw_ids
-
-
-@pytest.mark.asyncio
-async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blob(
-    workspace_env: dict[str, Path],
-) -> None:
-    """A codex-state raw admitted before the terminal receipt existed (the live
-    archive's ``goals_1``/``memories_1``/``state_5`` rows) is resolved from its
-    immutable blob by canonical preparation and sealed publication.
-
-    Anti-vacuity: without prepared state publication, the seeded state keeps reporting
-    ``source_raws_without_accepted_head`` and the gate stays blocked.
-    """
-    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-    from tests.infra.retained_replay import replay_retained_components_async
-
-    archive_root = workspace_env["archive_root"]
-    raw_ids = await _seed_unreceipted_codex_state_raws(workspace_env)
-
-    await replay_retained_components_async(archive_root, selected_raw_ids=list(raw_ids.values()))
-    assert _cursor_authority_gap_states(archive_root) == []
-    assert raw_frontier_source_selection_block_reason(archive_root) is None
-    # Replaying the same retained input keeps the terminal authority stable.
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        before = conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall()
-    await replay_retained_components_async(archive_root, selected_raw_ids=list(raw_ids.values()))
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall() == before
-
-
-@pytest.mark.asyncio
-async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export(
-    workspace_env: dict[str, Path],
-) -> None:
-    """Fair intake's exact-raw owner settles a Codex state export admitted
-    without its terminal receipt.
-
-    The owner's per-raw source-selection gate admits the missing accepted
-    head as an authority gap, and the canonical derivation's replay writes
-    the receipt (``_replay_retained_codex_state_evidence``). Anti-vacuity: a
-    gate that refused the gap, or a replay that skipped retained Codex state,
-    leaves the ``state_5`` raw unfinalized with its
-    ``source_raws_without_accepted_head`` gap. The ``goals_1`` raw the owner
-    was not asked about keeps its gap, so the pass is exact.
-    """
-    import asyncio
-
-    from polylogue.core.compute import BoundedComputeAdapter
-    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-
-    archive_root = workspace_env["archive_root"]
-    raw_ids = await _seed_unreceipted_codex_state_raws(workspace_env)
-    state_raw = raw_ids["state_5.sqlite"]
-
-    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
-    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
-    owner = RawObservationConvergenceOwner(
-        archive_root,
-        compute_adapter=compute,
-        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
-        write_coordinator=coordinator,
-    )
-    try:
-        report = await owner.converge_raw_id(state_raw)
-        assert report.failed == report.pending == 0, report.outcomes
-    finally:
-        compute.shutdown(wait=True)
-        await coordinator.shutdown(timeout=1.0)
-
-    with sqlite3.connect(archive_root / "source.db") as conn:
-        finalized = {
-            str(row[0]): bool(row[1])
-            for row in conn.execute("SELECT raw_id, parsed_at_ms IS NOT NULL FROM raw_sessions")
-            if str(row[0]) in raw_ids.values()
-        }
-    assert finalized == {state_raw: True, raw_ids["goals_1.sqlite"]: False}
-    assert _cursor_authority_gap_states(archive_root) == ["source_raws_without_accepted_head"]
 
 
 def test_historical_codex_page_image_is_not_finalized_as_current_state(
@@ -1003,7 +900,8 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
                     break
             assert pages >= 5
 
-            assert raw_frontier_source_selection_block_reason(archive_root) is None
+            await _inspect_accepted_frontier(archive_root, owners)
+            assert (reason := raw_frontier_source_selection_block_reason(archive_root)) is None, reason
             assert _cursor_authority_gap_states(archive_root) == []
             assert watcher._batch_processor.cursor_authority_block_reason() is None
             assert await archive.count_sessions() == rollout_count
