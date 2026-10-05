@@ -79,13 +79,23 @@ async def test_actual_embedding_child_precommit_failure_preserves_original_paid_
                 actual_delete = _PreparedExcisionEmbeddingsChild._delete
                 actual_authorize = _PreparedExcisionEmbeddingsChild.authorize_tier_sql
 
-                def delete_then_cancel(selected, connection):
+                def delete_then_cancel(
+                    selected: _PreparedExcisionEmbeddingsChild, connection: sqlite3.Connection
+                ) -> None:
                     actual_delete(selected, connection)
                     deleted.append(connection)
                     if failure == "cancellation":
                         cancelled.set()
 
-                def refuse_native_commit(selected, connection, action, first, second, schema, trigger):
+                def refuse_native_commit(
+                    selected: _PreparedExcisionEmbeddingsChild,
+                    connection: sqlite3.Connection,
+                    action: int,
+                    first: str | None,
+                    second: str | None,
+                    schema: str | None,
+                    trigger: str | None,
+                ) -> bool:
                     if selected is child and action == sqlite3.SQLITE_TRANSACTION and first == "COMMIT":
                         commits.append(connection)
                         if failure == "commit":
@@ -160,13 +170,15 @@ async def test_actual_embedding_child_failed_native_close_keeps_original_custody
                 actual_postimage = _PreparedExcisionEmbeddingsChild._verify_postimage
                 with monkeypatch.context() as patch:
 
-                    def block_exact_native_close(selected, connection):
+                    def block_exact_native_close(
+                        selected: _PreparedExcisionEmbeddingsChild, connection: sqlite3.Connection
+                    ) -> None:
                         actual_postimage(selected, connection)
                         owner = next(owner for owner in native_sql_children(seal) if owner.connection is connection)
                         captured.append(owner)
                         actual_close = type(connection).close
 
-                        def close(writer):
+                        def close(writer: sqlite3.Connection) -> None:
                             if writer is connection and blocked.is_set():
                                 raise OSError("synthetic exact paid-writer native close fault")
                             return actual_close(writer)
@@ -192,6 +204,8 @@ async def test_actual_embedding_child_failed_native_close_keeps_original_custody
                             "SELECT operation_id, attempt_id, plan_hash, source_command_sha256 FROM excision_embedding_completions",
                         ) as rows:
                             fact = rows.fetchone()
+                            assert seal._begun_excision is not None
+                            assert seal._excision_source_command_sha256 is not None
                             assert fact is not None and tuple(fact) == (
                                 started.operation_id,
                                 seal._begun_excision[1],
@@ -218,7 +232,8 @@ async def test_actual_embedding_child_failed_native_close_keeps_original_custody
                         seal.close()
                     assert still_unsettled.value.owner is owner
                     assert owner.connection is child._connection and witness.exists()
-                    assert seal._mutation_custody is not None and child._completed is False
+                    assert seal._mutation_custody is not None
+                    assert child._completed is False
                     blocked.clear()
                     seal.close()
                     assert owner.connection is None and owner._settled

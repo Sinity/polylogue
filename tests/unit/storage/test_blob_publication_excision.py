@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.write_lease import write_lease
 
 def test_completed_claim_retirement_preserves_other_same_hash_capture(tmp_path: Path) -> None:
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -52,6 +53,7 @@ def test_completed_claim_retirement_preserves_other_same_hash_capture(tmp_path: 
 
 def test_completed_excised_claim_releases_local_refusal_but_preserves_ledger(tmp_path: Path) -> None:
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -77,6 +79,7 @@ def test_completed_excised_claim_releases_local_refusal_but_preserves_ledger(tmp
 
 def test_an_excised_payload_is_never_published(tmp_path: Path) -> None:
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -110,6 +113,7 @@ def test_an_excised_payload_is_never_published(tmp_path: Path) -> None:
 
 def test_repeated_sealed_claim_reuses_exact_reservation_after_private_file_publication(tmp_path: Path) -> None:
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -153,6 +157,7 @@ def test_an_excised_sqlite_snapshot_is_a_typed_excision_not_a_parse_failure(tmp_
     from tests.unit.sources.test_hermes_import_explain import _write_state_db
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -194,6 +199,7 @@ def test_reading_a_refused_hash_is_a_typed_excision(tmp_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -244,6 +250,7 @@ def test_an_excised_grouped_raw_capture_is_refused_and_a_zip_keeps_its_other_mem
     from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -305,6 +312,7 @@ def test_archive_store_records_an_excised_inline_attachment_unavailable(tmp_path
     from polylogue.sources.parsers.base import ParsedAttachment
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         excised = b"attachment bytes excised from another session"
         kept = b"attachment bytes that stay"
@@ -344,6 +352,7 @@ def test_attachments_refused_between_check_and_flush_are_reconciled(tmp_path: Pa
     from polylogue.storage.blob_publication import reconcile_refused_attachments
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -386,6 +395,7 @@ def test_a_refused_publication_does_not_hide_bytes_still_retained(tmp_path: Path
     ``ContentExcisedError``.
     """
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -421,6 +431,7 @@ def test_an_excision_after_a_successful_flush_is_reconciled_from_the_ledger(tmp_
     from polylogue.storage.blob_publication import reconcile_refused_attachments
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -456,6 +467,7 @@ def test_require_published_refuses_a_hash_excised_after_the_flush(tmp_path: Path
     from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -493,6 +505,7 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
     from polylogue.storage.blob_publication import _writer_lock_path
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
@@ -556,6 +569,7 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
     from polylogue.storage.blob_publication import _writer_lock_path
 
     root = tmp_path / "archive"
+    root.mkdir()
     with write_lease("test.blob-publication", archive_root=root):
         with ArchiveStore(root, initialize=True, read_only=False):
             pass
