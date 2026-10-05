@@ -353,6 +353,13 @@ Usage: polylogue select [OPTIONS]
 
   Select one matched session or print bounded candidate identities.
 
+  Examples:
+      polylogue find 'origin:codex-session since:30d' then select --print title
+      polylogue find 'tag:review AND NOT tag:archived' then select --limit 5
+      polylogue find 'title:"release notes"' then select --format json
+      polylogue find 'origin:claude-code-session AND has:thinking' then select
+      polylogue find 'has:tools since:7d' then select --print origin
+
 Options:
   -n, --limit INTEGER RANGE  Max candidate sessions.  [default: 20; x>=1]
   --print [id|title|origin]  Field to print for selected or candidate
