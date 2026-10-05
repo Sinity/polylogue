@@ -66,7 +66,7 @@ def _run(
             budget=Budget(page=limit, discovery=limit, inspection=2 * limit, compute=limit, publication=limit),
             # Each publication enters the owner's writer admission, as the
             # daemon's derivation publisher does; preparation stays outside it.
-            publisher=lambda domain, publish: admit_stage_write(f"test.rebuild.{domain}", publish),
+            publisher=admit_stage_write,
             cursor=cursor,
         ),
     )

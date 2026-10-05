@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -20,12 +21,12 @@ from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.derivation import (
     Budget,
     DerivationRegistry,
     DerivationReport,
     PassCursor,
-    PendingReason,
     converge,
 )
 from polylogue.daemon.status import raw_failure_info_for_root
@@ -34,6 +35,7 @@ from polylogue.operations.raw_observation_derivation import (
     raw_observation_frame,
 )
 from polylogue.storage.derived.raw import RawObservationDerivation
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -194,16 +196,9 @@ def test_prepared_retained_replay_slices_fresh_and_same_raw_fork_prefix(tmp_path
         provider=Provider.CODEX,
         payload=_codex_fork_bytes("retained-child", "retained-parent", shared),
     )
+    # The committed source census re-prepares the fork within the same pass.
     first = _derive(tmp_path)
-    assert first.failed == 0 and first.pending == 1, first.outcomes
-    assert first.outcomes[0].reason is PendingReason.BINDING_MOVED
-    for _ in range(4):
-        retry = _derive(tmp_path)
-        assert retry.failed == 0, retry.outcomes
-        if retry.pending == 0 and _inspect(tmp_path, child_id) == "valid":
-            break
-    else:
-        pytest.fail("retained fork did not converge after its committed source census")
+    assert first.failed == first.pending == 0, first.outcomes
     assert _inspect(tmp_path, child_id) == "valid"
     with sqlite3.connect(tmp_path / "index.db") as conn:
         child_row = conn.execute(
@@ -251,7 +246,8 @@ def test_canonical_replay_cleans_orphaned_messages_before_replacement(tmp_path: 
         payload=_codex_conversation_bytes("orphaned-current-cohort"),
     )
     assert _derive(tmp_path).failed == 0
-    with sqlite3.connect(tmp_path / "index.db") as conn:
+    # The fixture Index writer requires the production measured creator.
+    with closing(connect_measured(tmp_path / "index.db")) as conn:
         target_id = str(conn.execute("SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0])
         conn.execute("PRAGMA foreign_keys = OFF")
         foreign_id = write_fixture_index_session(
@@ -816,6 +812,7 @@ def test_canonical_replay_refreshes_only_the_touched_derived_component(
             DerivationRegistry((RawObservationDerivation(tmp_path, compute_adapter=compute),)),
             raw_observation_frame(tmp_path, raw_ids=(touched_raw_id,)),
             budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
+            publisher=admit_stage_write,
         ),
     )
     assert targeted.failed == 0
@@ -901,6 +898,7 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
             DerivationRegistry((adapter,)),
             raw_observation_frame(tmp_path),
             budget=Budget(page=3, discovery=3, inspection=6, compute=3, publication=3, deadline_s=1.0),
+            publisher=admit_stage_write,
         )
 
     bounded = run_on_convergence_owner(tmp_path, "test.raw.deadline", exercise)
