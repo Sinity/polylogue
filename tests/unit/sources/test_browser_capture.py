@@ -531,7 +531,8 @@ def test_compact_bridge_projection_is_refused_as_retired_capture_evidence() -> N
     ``BrowserCaptureEnvelope.coerce_raw_provider_payload`` and both payloads
     validate.
     """
-    for mapping in (None, {}):
+    mappings: tuple[dict[str, object] | None, ...] = (None, {})
+    for mapping in mappings:
         with pytest.raises(pydantic.ValidationError, match="capture_retired_projection"):
             BrowserCaptureEnvelope.model_validate(_compact_capture_payload(mapping=mapping))
 
