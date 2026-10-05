@@ -384,25 +384,27 @@ def test_direct_status_certifies_a_healthy_archive_without_the_exact_probe(tmp_p
     per-component assertions say which one moved.
     """
 
-    import json
+    import asyncio
 
-    from polylogue.sources.parsers.codex import parse
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.core.enums import Provider
     from tests.infra.convergence_harness import converge_session_profiles
+    from tests.infra.retained_replay import publish_retained_payload
 
     bootstrap_archive_root(tmp_path)
     # The subject is a populated archive with retained acquisition evidence,
     # parsed index rows, and derived profiles rather than an index-only seed.
     source = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
     payload_bytes = source.read_bytes()
-    session = parse([json.loads(line) for line in payload_bytes.splitlines()], fallback_id="status-subject")
-    with ArchiveStore(tmp_path) as archive:
-        archive.write_raw_and_parsed_result(
-            session,
+    _raw_id, written = asyncio.run(
+        publish_retained_payload(
+            tmp_path,
+            provider=Provider.CODEX,
             payload=payload_bytes,
             source_path="relative/status-subject.jsonl",
             acquired_at_ms=1_700_000_000_000,
         )
+    )
+    assert written, "the retained subject must publish its parsed session"
     converge_session_profiles(tmp_path / "index.db", tmp_path, None, now=lambda: 0.0)
     prepare_operation_journals(tmp_path)
     with open_operation_read(tmp_path) as pinned:

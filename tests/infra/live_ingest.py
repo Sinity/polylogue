@@ -139,8 +139,8 @@ def write_index_session(
 ) -> str:
     """Seed an index-only fixture through the canonical row writer.
 
-    These fixtures intentionally have no raw acquisition to admit. Production
-    ingest must use ``write_raw_and_parsed_result`` instead.
+    These fixtures intentionally have no raw acquisition to admit. Fixtures that
+    need retained evidence use ``retained_replay.publish_retained_payload``.
     """
     db_path = getattr(archive, "index_db_path", None)
     if not isinstance(db_path, Path):

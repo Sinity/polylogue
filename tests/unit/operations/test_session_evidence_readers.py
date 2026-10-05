@@ -29,6 +29,7 @@ import pytest
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedFileEdit, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 _NATIVE_ID = "evidence-readers"
 _SESSION_ID = f"claude-code-session:{_NATIVE_ID}"
@@ -36,7 +37,8 @@ _SESSION_ID = f"claude-code-session:{_NATIVE_ID}"
 
 def _seed(archive_root: Path) -> None:
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id=_NATIVE_ID,
@@ -91,9 +93,6 @@ def _seed(archive_root: Path) -> None:
                     for index in range(2)
                 ],
             ),
-            payload=b'{"raw": "claude payload"}',
-            source_path="/tmp/evidence-readers.jsonl",
-            acquired_at_ms=1735689600000,
         )
 
 
@@ -166,7 +165,8 @@ def _seed_events(archive_root: Path, count: int) -> str:
     from polylogue.sources.parsers.base import ParsedSessionEvent
 
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="ext-evidence-window",
@@ -176,9 +176,6 @@ def _seed_events(archive_root: Path, count: int) -> str:
                     ParsedSessionEvent(event_type="world_state", payload={"n": index}) for index in range(count)
                 ],
             ),
-            payload=b'{"raw": "evidence window payload"}',
-            source_path="/tmp/evidence-window.jsonl",
-            acquired_at_ms=1735689600000,
         )
     return "claude-code-session:ext-evidence-window"
 
@@ -271,7 +268,8 @@ def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes
     """
     payload = "x" * original_file_bytes
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_raw_and_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="ext-large-file-edits",
@@ -316,9 +314,6 @@ def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes
                     for index in range(rows)
                 ],
             ),
-            payload=b'{"raw": "large file edit payload"}',
-            source_path="/tmp/large-file-edits.jsonl",
-            acquired_at_ms=1735689600000,
         )
     return "claude-code-session:ext-large-file-edits"
 

@@ -7,10 +7,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from polylogue.core.enums import Provider
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGeneration
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
@@ -91,3 +94,32 @@ def replay_retained_components(
 
     receipts: tuple[PreparedRevisionReplayResult | RevisionCensusResult, ...] = tuple(asyncio.run(run()))
     return RetainedReplayRun(receipts)
+
+
+async def publish_retained_payload(
+    archive_root: Path,
+    *,
+    provider: Provider,
+    payload: bytes,
+    source_path: str,
+    acquired_at_ms: int,
+) -> tuple[str, tuple[str, ...]]:
+    """Acquire real provider bytes, then publish them through the canonical owner.
+
+    Returns the acquired raw ID and the session IDs its retained replay wrote.
+    This replaces seeding a raw row beside an independently supplied parse: the
+    indexed session is whatever the retained bytes actually parse to.
+    """
+
+    def acquire() -> str:
+        bootstrap_archive_root(archive_root)
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=provider, payload=payload, source_path=source_path, acquired_at_ms=acquired_at_ms
+            )
+
+    raw_id = await run_archive_fixture_write(archive_root, acquire)
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        receipts = await owner.replay_retained_raw_ids((raw_id,))
+    written = tuple(sorted({key for receipt in receipts for key in receipt.written_session_ids}))
+    return raw_id, written
