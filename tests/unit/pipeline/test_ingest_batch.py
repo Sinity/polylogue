@@ -72,7 +72,7 @@ from polylogue.storage.sqlite.archive_tiers.write import _attachment_id
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.index_writer import (
     fixture_index_mutation_scope,
     write_fixture_index_session,
@@ -3499,7 +3499,7 @@ async def test_persist_batch_raw_state_updates_persists_terminal_worker_disposit
     tmp_path: Path,
 ) -> None:
     """The ordinary batch boundary retains typed terminal evidence at the raw coordinate."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3592,7 +3592,7 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
     tmp_path: Path,
 ) -> None:
     """The async batch success route revokes stale CAS replay authority."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3667,7 +3667,7 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
 @pytest.mark.asyncio
 async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp_path: Path) -> None:
     """A later untyped parser failure cannot inherit an older terminal cause."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3751,7 +3751,7 @@ async def test_persist_batch_corrupt_input_remains_terminal_in_lifecycle(
     diagnostic: str,
 ) -> None:
     """Worker validation failure plus typed corrupt evidence is explainable."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3812,7 +3812,7 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A source-tier carrier failure rolls back the paired raw-state mutation."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3958,7 +3958,7 @@ async def test_process_ingest_batch_requires_its_retained_owner(tmp_path: Path) 
     supplied would publish outside the canonical owner and this refusal
     would disappear.
     """
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CODEX_SESSION, source_path="no-owner.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
     )
@@ -3991,7 +3991,7 @@ async def test_process_ingest_batch_refuses_sinex_publication_before_the_retaine
     """
     from polylogue.sinex.material_adapter import PublicationEncodingError
 
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CODEX_SESSION, source_path="sinex.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
     )
@@ -4032,7 +4032,7 @@ async def test_process_ingest_batch_publishes_and_invalidates_search_cache(
     a session must advance it. Anti-vacuity: drop the invalidation and the
     cached empty result is served after publication.
     """
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CODEX_SESSION, source_path="search.jsonl", payload=_CANONICAL_CODEX_PAYLOAD
     )
@@ -4056,7 +4056,7 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The public batch route supersedes deferred CAS evidence after publication."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CHATGPT_EXPORT, source_path="public-batch.json", payload=payload
@@ -4148,7 +4148,7 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
     diagnostic: str,
 ) -> None:
     """The canonical route makes corrupt input terminal and status-readable."""
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     raw_id = _seed_retained_raw(
         tmp_path, origin=Origin.CODEX_SESSION, source_path="public-corrupt.jsonl", payload=payload
     )
