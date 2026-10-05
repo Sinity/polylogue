@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.fts import completed_fts_readiness
@@ -26,7 +27,7 @@ def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:
     """
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
     try:
         session = ParsedSession(
             source_name=Provider.CODEX,
@@ -230,7 +231,7 @@ def test_unbound_archive_fallback_measures_every_count_in_one_snapshot(
 
     index = tmp_path / "index.db"
     initialize_archive_database(index, ArchiveTier.INDEX)
-    writer = sqlite3.connect(index)
+    writer = connect_measured(index)
     try:
         assert str(writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
         write_fixture_index_session(writer, _text_session("snapshot-first", "first committed text"))

@@ -117,7 +117,13 @@ def test_convergence_plan_reads_its_declared_probe_set(tmp_path: Path) -> None:
 
     workload = replace(generated_convergence_workload(), probe_terms=("shared",))
     plan = build_convergence_run_plan(workload)
-    archive = build_converged_archive(tmp_path / "archive", workload.sources)
+    from polylogue.storage.sqlite.write_lease import write_lease
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    # Fixture ingest publishes blobs and Source rows; writes require the lease.
+    with write_lease("test.codex-debt-fixture", archive_root=root):
+        archive = build_converged_archive(root, workload.sources)
     execute_convergence_plan(plan, (archive.root,), law=ConvergenceLaw.PERMUTATION)
 
 

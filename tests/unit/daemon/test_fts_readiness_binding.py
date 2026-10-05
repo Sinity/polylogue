@@ -31,6 +31,7 @@ from polylogue.storage.fts.fts_lifecycle import (
     restore_message_fts_triggers_sync,
     suspend_message_fts_triggers_sync,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.index_writer import write_fixture_index_session
@@ -58,7 +59,7 @@ def _session(native_id: str, *, blocks: int) -> ParsedSession:
 def seeded(tmp_path: Path) -> Iterator[tuple[Path, sqlite3.Connection]]:
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
     try:
         write_fixture_index_session(conn, _session("bind-1", blocks=4))
         conn.commit()
@@ -345,7 +346,7 @@ def test_binding_stage_publishes_then_converges(tmp_path: Path) -> None:
     archive_root.mkdir()
     db = archive_root / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
     try:
         write_fixture_index_session(conn, _session("stage-1", blocks=3))
         conn.commit()
