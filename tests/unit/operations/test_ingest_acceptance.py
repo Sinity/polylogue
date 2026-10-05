@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -35,6 +36,12 @@ from tests.infra.frozen_clock import FrozenClock
 from tests.infra.source_builders import prepared_ingest_manifest
 
 
+def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> SealedSourceManifestRef:
+    """Prepare the staged manifest under the archive's writer lease, as production does."""
+    with write_lease("test.ingest-manifest", archive_root=archive_root):
+        return prepared_ingest_manifest(archive_root, *args, **kwargs)
+
+
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
     return OperationExecutor(now_ms=lambda: plan.prepared_at_ms).authorize_bound(
         runtime_operation_binding(actuator), MutationPreview(f"preview:{plan.plan_hash}", plan), principal
@@ -49,7 +56,7 @@ def test_new_acceptance_streams_manifest_beyond_former_input_cap(tmp_path: Path)
         publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "large-acceptance",
         "d" * 64,
@@ -93,7 +100,7 @@ def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, ph
         publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "source-generation:test",
         "d" * 64,
@@ -252,7 +259,7 @@ def test_malformed_runtime_authority_never_prepares_source_manifest(tmp_path: Pa
         publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:bad",
         "d" * 64,
@@ -293,7 +300,7 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
         publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:good",
         "d" * 64,
@@ -385,7 +392,7 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
         publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:normal",
         "d" * 64,
@@ -447,7 +454,7 @@ def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp
         publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "source-generation:wedge",
         "d" * 64,
