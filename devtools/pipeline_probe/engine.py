@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -10,12 +11,15 @@ import shutil
 import sqlite3
 import subprocess
 import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 
 from devtools.pipeline_probe.request import (
     _INPUT_MODES,
@@ -712,6 +716,41 @@ async def _probe_index_stage(
         )
 
 
+@asynccontextmanager
+async def _probe_raw_owner(
+    archive_root: Path, *, parse_workers: int | None
+) -> AsyncIterator[RawObservationConvergenceOwner]:
+    """Own the canonical retained Raw preparation route for one probe run.
+
+    Ingest publication goes through the daemon's raw-observation owner; the
+    probe supplies it the way the one-shot ingest operation does and settles
+    its writer before the compute kernel shuts down.
+    """
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+    from polylogue.operations.canonical_archive_ingest import one_shot_compute_owner
+
+    async with one_shot_compute_owner(parse_workers=parse_workers) as compute:
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        try:
+            yield RawObservationConvergenceOwner(
+                archive_root,
+                compute_adapter=compute,
+                write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+                write_coordinator=coordinator,
+            )
+        finally:
+            if not await coordinator.shutdown(timeout=float("inf")):
+                raise RuntimeError("probe writer coordinator did not settle")
+
+
+async def _bootstrap_probe_archive(archive_root: Path) -> None:
+    """Create the active tiers off the event loop, as their write lease requires."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    await asyncio.to_thread(initialize_active_archive_root, archive_root)
+
+
 async def _run_probe_pipeline(
     *,
     config: Config,
@@ -731,33 +770,36 @@ async def _run_probe_pipeline(
     index_error: str | None = None
 
     try:
+        await _bootstrap_probe_archive(config.archive_root)
         selected_sources = [
             source for source in config.sources if source_names is None or source.name in set(source_names)
         ]
-        parser = ParsingService(
-            repository=active_repository,
-            archive_root=config.archive_root,
-            config=config,
-            raw_batch_size=request.raw_batch_size or 50,
-            ingest_workers=request.ingest_workers,
-            measure_ingest_result_size=request.measure_ingest_result_size,
-        )
-        ingest_stage = metrics.start_stage("ingest")
-        if selected_sources:
-            ingest_result = await parser.ingest_sources(
-                sources=selected_sources,
-                stage="all",
-                parse_records=True,
+        async with _probe_raw_owner(config.archive_root, parse_workers=request.ingest_workers) as owner:
+            parser = ParsingService(
+                repository=active_repository,
+                archive_root=config.archive_root,
+                config=config,
+                raw_batch_size=request.raw_batch_size or 50,
+                ingest_workers=request.ingest_workers,
+                measure_ingest_result_size=request.measure_ingest_result_size,
+                retained_runner=owner.ingest_retained_raw_ids,
             )
-            parse_result = ingest_result.parse_result
-            ingest_stage.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
-            ingest_stage.details.update(cast(JSONDocument, ingest_result.diagnostics))
-            ingest_stage.stop(items=len(ingest_result.parse_raw_ids))
-        else:
-            parse_started = time.perf_counter()
-            parse_result = await parser.parse_from_raw()
-            ingest_stage.sub_timings["parse_s"] = time.perf_counter() - parse_started
-            ingest_stage.stop(items=len(parse_result.processed_ids))
+            ingest_stage = metrics.start_stage("ingest")
+            if selected_sources:
+                ingest_result = await parser.ingest_sources(
+                    sources=selected_sources,
+                    stage="all",
+                    parse_records=True,
+                )
+                parse_result = ingest_result.parse_result
+                ingest_stage.sub_timings.update({f"{k}_s": v for k, v in ingest_result.timings.items()})
+                ingest_stage.details.update(cast(JSONDocument, ingest_result.diagnostics))
+                ingest_stage.stop(items=len(ingest_result.parse_raw_ids))
+            else:
+                parse_started = time.perf_counter()
+                parse_result = await parser.parse_from_raw()
+                ingest_stage.sub_timings["parse_s"] = time.perf_counter() - parse_started
+                ingest_stage.stop(items=len(parse_result.processed_ids))
 
         if stage_sequence is not None and "materialize" in stage_sequence:
             materialize_stage = metrics.start_stage("materialize")
@@ -972,6 +1014,7 @@ async def run_probe(request: PipelineProbeRequest) -> ProbeSummary:
         )
         with _isolated_env(workspace):
             db_path_val = config.db_path
+            await _bootstrap_probe_archive(archive_root)
             backend = create_backend(db_path=db_path_val)
             repository = SessionRepository(backend=backend)
             try:
