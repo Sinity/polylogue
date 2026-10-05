@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from builtins import BaseExceptionGroup
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -257,25 +258,32 @@ def publish_raw_observation_once(
         prepaid_blob_inputs=prepaid_blob_inputs,
     )
     frame = raw_observation_frame(archive_root, raw_ids=(raw_id,), index_db_path=index_path)
-    replacement = adapter.compute(frame, raw_id)
-    retained_replacements.append(replacement)
+    # A committed census, classification or byte restoration is this raw's
+    # own phase, not a moved input: prepare the next phase against it, up to
+    # the adapter's declared phase count, exactly as the derivation kernel does.
+    for _phase in range(adapter.publication_phases):
+        replacement = adapter.compute(frame, raw_id)
+        retained_replacements.append(replacement)
 
-    def close() -> None:
-        replacement.close()
-        retained_replacements.remove(replacement)
+        def close(replacement: RawObservationReplacement = replacement) -> None:
+            replacement.close()
+            retained_replacements.remove(replacement)
 
-    try:
-        check_compute_cancelled()
-        result = admit_stage_write("watcher.live_ingest.append.publish", lambda: adapter.publish(frame, replacement))
-    except BaseException as primary:
         try:
-            close()
-        except BaseException as cleanup:
-            raise BaseExceptionGroup("raw append publication and cleanup failed", [primary, cleanup]) from primary
-        raise
-    else:
+            check_compute_cancelled()
+            result = admit_stage_write(
+                "watcher.live_ingest.append.publish", partial(adapter.publish, frame, replacement)
+            )
+        except BaseException as primary:
+            try:
+                close()
+            except BaseException as cleanup:
+                raise BaseExceptionGroup("raw append publication and cleanup failed", [primary, cleanup]) from primary
+            raise
         close()
-        return result
+        if result or not adapter.publication_advanced(replacement):
+            return result
+    return False
 
 
 if TYPE_CHECKING:

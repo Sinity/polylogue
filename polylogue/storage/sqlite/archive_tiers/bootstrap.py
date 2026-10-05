@@ -789,13 +789,12 @@ def initialize_archive_database(
                 found=current_version,
                 remedy="initialize the canonical archive root before runtime tier opens",
             )
-        if tier is ArchiveTier.SOURCE:
-            # Database mode belongs to fresh source-tier initialization, not
-            # each later writer open: the latter may run while a publication
-            # or GC transaction owns source.db's mode-transition lock.
-            from polylogue.storage.sqlite.connection_profile import initialize_source_tier_database_mode
+        # Database mode belongs to tier initialization, not each later writer
+        # open: a mode pragma needs the tier's mode-transition lock and
+        # rewrites the header under any reference seal prepared against it.
+        from polylogue.storage.sqlite.connection_profile import initialize_tier_database_mode
 
-            initialize_source_tier_database_mode(conn)
+        initialize_tier_database_mode(conn)
         initialize_archive_tier(conn, tier)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
