@@ -66,14 +66,15 @@ def import_annotations_command(
     metadata_json: str,
     output_format: str,
 ) -> None:
-    """Import bounded JSONL labels as candidate assertions.
+    """Import JSONL labels and return the committed batch/count summary.
 
     ``user.db`` is the archive's one irreplaceable tier and the daemon is its
     sole writer, so this lowers to the declared
     ``mutation.annotation.import_batch`` operation instead of driving
     ``OperationExecutor`` against ``user.db`` from the CLI process
     (polylogue-gjwto / polylogue-r29bv). With no daemon the command refuses
-    rather than becoming a second writer.
+    rather than becoming a second writer. Resolve the returned batch ref with
+    read limit/offset to page exact assertions and validation errors.
     """
 
     try:

@@ -556,7 +556,12 @@ def test_accept_then_durable_batch_import_requires_label_judgment_for_active_que
         )
     )
     assert imported.valid_count == 1
-    assertion_ref = next(row.assertion_ref for row in imported.rows if row.status == "imported")
+    from polylogue.storage.sqlite.archive_tiers.user_annotations import read_annotation_batch
+
+    with connect_user_db(user_db) as conn:
+        persisted_batch = read_annotation_batch(conn, batch_request.batch_id)
+    assert persisted_batch is not None
+    assertion_ref = persisted_batch.assertion_refs[0]
     assert assertion_ref is not None
 
     # The governed schema exists, but an agent batch is still candidate-only.

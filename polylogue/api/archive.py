@@ -2290,12 +2290,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         registry: AnnotationSchemaRegistry | None = None,
     ) -> AnnotationBatchImportResult:
-        """Import bounded, provenance-stamped annotation candidates.
+        """Import annotation candidates and return the committed batch summary.
 
         This is the library binding for the shared annotation-import product
         operation used by the CLI and MCP surfaces. ``registry`` lets callers
         use a deliberately constructed schema registry without bypassing the
-        facade.
+        facade. Exact assertions and validation errors are paged by resolving
+        the returned batch_ref with limit/offset. A readback failure does not
+        undo the completed import.
         """
         from polylogue.annotations.importer import AnnotationBatchImportResult
         from polylogue.annotations.schema import ANNOTATION_SCHEMA_REGISTRY

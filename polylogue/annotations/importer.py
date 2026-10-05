@@ -102,19 +102,18 @@ class AnnotationBatchImportRequest(BaseModel):
 
 
 class AnnotationImportRowOutcome(BaseModel):
-    """Bounded per-line outcome returned by every surface."""
+    """Validation failure retained in the original batch authority."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     line: int = Field(ge=1)
     row_key: str | None = None
-    status: Literal["imported", "invalid"]
-    assertion_ref: str | None = None
+    status: Literal["invalid"]
     errors: tuple[str, ...] = ()
 
 
 class AnnotationBatchImportResult(BaseModel):
-    """Shared CLI/MCP/Python result for a completed atomic import."""
+    """Committed batch summary; exact evidence is read through ``batch_ref``."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -126,7 +125,6 @@ class AnnotationBatchImportResult(BaseModel):
     valid_count: int = Field(ge=0)
     invalid_count: int = Field(ge=0)
     abstained_count: int = Field(ge=0)
-    rows: tuple[AnnotationImportRowOutcome, ...]
 
 
 RefResolver = Callable[[str], Awaitable[bool]]
@@ -145,7 +143,6 @@ class AnnotationBatchImportArgs:
     request: AnnotationBatchImportRequest
     valid_rows: tuple[AnnotationImportRowData, ...]
     failure_documents: tuple[JSONDocument, ...]
-    outcomes: tuple[AnnotationImportRowOutcome, ...]
     abstained_count: int
     created_at_ms: int
 
@@ -178,17 +175,16 @@ def _annotation_batch_provenance_digest(batch: AnnotationBatch) -> str:
 def _persist_annotation_batch(
     args: AnnotationBatchImportArgs,
     batch: AnnotationBatch,
-) -> tuple[AnnotationImportRowOutcome, ...]:
+) -> None:
     """Apply the complete user-tier batch write under one SQLite transaction."""
 
     conn = open_connection(args.user_db_path, archive_root=args.user_db_path.parent)
     conn.row_factory = sqlite3.Row
-    imported_outcomes: list[AnnotationImportRowOutcome] = []
     try:
         conn.execute("BEGIN IMMEDIATE")
         persist_annotation_schema(conn, args.schema, registered_at_ms=batch.created_at_ms)
         persist_annotation_batch(conn, batch)
-        for line_number, row, assertion_id, confidence in args.valid_rows:
+        for _line_number, row, assertion_id, confidence in args.valid_rows:
             envelope = upsert_annotation_assertion(
                 conn,
                 schema=args.schema,
@@ -206,21 +202,12 @@ def _persist_annotation_batch(
             )
             if envelope.assertion_id != assertion_id:
                 raise RuntimeError("annotation assertion identity drifted after batch admission")
-            imported_outcomes.append(
-                AnnotationImportRowOutcome(
-                    line=line_number,
-                    row_key=row.row_key,
-                    status="imported",
-                    assertion_ref=f"assertion:{assertion_id}",
-                )
-            )
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    return tuple(imported_outcomes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,7 +241,7 @@ class AnnotationBatchImportActuator:
         expected_digest = str(plan.context["provenance_sha256"])
         if _annotation_batch_provenance_digest(batch) != expected_digest:
             raise RuntimeError("annotation batch provenance changed after authorization")
-        imported_outcomes = _persist_annotation_batch(args, batch)
+        _persist_annotation_batch(args, batch)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
@@ -264,7 +251,7 @@ class AnnotationBatchImportActuator:
             detail=None,
             receipt_ref=batch.batch_ref,
             applied_at=plan.prepared_at,
-            domain_receipt={"batch": batch, "imported_outcomes": imported_outcomes},
+            domain_receipt={"batch": batch},
         )
 
     def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
@@ -497,7 +484,7 @@ async def import_annotation_batch(
         valid_rows.append((line_number, row, assertion_id, confidence))
 
     outcomes.sort(key=lambda item: item.line)
-    failure_documents = tuple(_failure_document(item) for item in outcomes if item.status == "invalid")
+    failure_documents = tuple(_failure_document(item) for item in outcomes)
     abstained_count = sum(
         row.value.get(schema.abstain_field) is True for _, row, _, _ in valid_rows if schema.abstain_field is not None
     )
@@ -519,7 +506,6 @@ async def import_annotation_batch(
         request=request,
         valid_rows=tuple(valid_rows),
         failure_documents=failure_documents,
-        outcomes=tuple(outcomes),
         abstained_count=abstained_count,
         created_at_ms=created_at_ms,
     )
@@ -538,11 +524,6 @@ async def import_annotation_batch(
     authorization = executor.authorize_bound(binding, preview, principal)
     receipt = executor.execute_bound(binding, preview, authorization, args)
     batch = cast(AnnotationBatch, receipt.domain_receipt["batch"])
-    imported_outcomes = cast(
-        tuple[AnnotationImportRowOutcome, ...],
-        receipt.domain_receipt["imported_outcomes"],
-    )
-    all_outcomes = tuple(sorted((*args.outcomes, *imported_outcomes), key=lambda item: item.line))
     return AnnotationBatchImportResult(
         status="partial" if batch.invalid_count else "ok",
         batch_ref=batch.batch_ref,
@@ -552,7 +533,6 @@ async def import_annotation_batch(
         valid_count=batch.valid_count,
         invalid_count=batch.invalid_count,
         abstained_count=batch.abstained_count,
-        rows=all_outcomes,
     )
 
 

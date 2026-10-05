@@ -2519,3 +2519,95 @@ def test_keyless_text_read_skips_vector_snapshot_admission(
         assert result["failed_lanes"] == [], envelope
     admit.assert_not_called()
     acquire.assert_not_called()
+
+
+def test_annotation_import_commits_summary_and_pages_all_amplified_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A post-write result-size refusal must not erase the original commit verdict."""
+    import asyncio
+
+    from polylogue.api import Polylogue
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    def seed(root: Path) -> None:
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-amplification",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    jsonl = "\n".join(
+        json.dumps(
+            {
+                "row_key": f"row-{index}",
+                "value": {"activity": "debugging", "confidence": 0.9},
+                "evidence_refs": [""] * 10_000,
+            }
+        )
+        for index in range(20)
+    )
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        envelope = stack.runtime.call(
+            DaemonOperationRequest(
+                "mutation.annotation.import_batch",
+                {
+                    "jsonl": jsonl,
+                    "batch_id": "amplified-errors",
+                    "schema_id": "seed.activity",
+                    "schema_version": 2,
+                    "target_ref": "session:codex-session:annotation-amplification",
+                    "source_result_ref": "result-set:amplification",
+                    "actor_ref": "agent:labeler",
+                    "model_ref": "agent:model",
+                    "prompt_ref": "block:prompt:0",
+                    "metadata": {},
+                },
+                request_id="amplified-annotation-import",
+                archive_root=str(stack.archive_root),
+                deadline_ms=60_000,
+            ),
+            _all_capabilities_principal(),
+        )
+        assert envelope["outcome"] == "completed"
+        operation_result = cast(dict[str, Any], envelope["result"])
+        assert operation_result["effect"] == "committed"
+        summary = cast(dict[str, Any], operation_result["result"])
+        assert summary["status"] == "partial"
+        assert summary["invalid_count"] == summary["total_count"] == 20
+        assert summary["valid_count"] == 0
+        assert "rows" not in summary
+        assert len(json.dumps(envelope).encode()) < 16_000
+
+        def reject_full_batch(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError("paged ref read hydrated the complete failure document")
+
+        monkeypatch.setattr(ArchiveStore, "get_annotation_batch", reject_full_batch)
+
+        async def read_pages() -> None:
+            async with Polylogue(archive_root=stack.archive_root, db_path=stack.archive_root / "index.db") as poly:
+                for offset in (0, 9_999, 10_000, 199_999, 200_000):
+                    resolved = await poly.resolve_ref(summary["batch_ref"], limit=1, offset=offset)
+                    assert resolved.resolved and resolved.payload is not None
+                    page = resolved.payload
+                    assert page["total"] == 200_000
+                    if offset == 200_000:
+                        assert page["items"] == [] and page["next_offset"] is None
+                        continue
+                    item = page["items"][0]
+                    assert item["failure_ordinal"] == offset // 10_000
+                    assert item["error_ordinal"] == offset % 10_000
+                    assert item["failure"] == {"line": offset // 10_000 + 1, "row_key": f"row-{offset // 10_000}"}
+                    assert item["error"] == "evidence_ref '' does not resolve in the live archive"
+                    assert page["next_offset"] == (offset + 1 if offset < 199_999 else None)
+
+        asyncio.run(read_pages())
