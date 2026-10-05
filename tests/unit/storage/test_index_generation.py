@@ -1812,7 +1812,7 @@ def test_proof_snapshot_failure_rolls_back_once_and_preserves_both_errors(
 
     def user_references(connection: sqlite3.Connection) -> Generator[reference_seal._ReferenceAnchor]:
         fail(connection)
-        yield reference_seal._ReferenceAnchor("unreachable", False)
+        yield reference_seal._ReferenceAnchor("unreachable")
 
     def resolve(connection: sqlite3.Connection, ref: reference_seal._ResolvedReference) -> bool:
         fail(connection)
