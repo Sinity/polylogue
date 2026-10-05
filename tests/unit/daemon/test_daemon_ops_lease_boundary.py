@@ -48,11 +48,12 @@ from polylogue.storage.sqlite.write_lease import (
     require_write_lease,
     write_lease,
 )
+from tests.infra.archive_templates import run_off_event_loop
 
 
 def _bootstrapped_root(tmp_path: Path) -> Path:
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    run_off_event_loop(lambda: initialize_active_archive_root(root))
     return root
 
 

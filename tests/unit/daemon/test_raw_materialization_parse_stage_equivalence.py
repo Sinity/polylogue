@@ -67,15 +67,24 @@ async def test_raw_materialization_hands_current_output_to_the_canonical_session
     """
     archive_root = tmp_path / "archive"
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=_codex_session("raw-profile-handoff", (("user", "question"), ("assistant", "answer"))),
-            source_path="raw-profile-handoff.jsonl",
-            acquired_at_ms=1,
-        )
 
-    result = converge_raw_observations(archive_root, source_roots=(), limit=1, compute_adapter=bounded_compute_adapter)
+    def acquire() -> str:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session("raw-profile-handoff", (("user", "question"), ("assistant", "answer"))),
+                source_path="raw-profile-handoff.jsonl",
+                acquired_at_ms=1,
+            )
+
+    raw_id = await asyncio.to_thread(acquire)
+    result = await asyncio.to_thread(
+        converge_raw_observations,
+        archive_root,
+        source_roots=(),
+        limit=1,
+        compute_adapter=bounded_compute_adapter,
+    )
     assert result.done == 1 and result.failed == 0
     session_ids = daemon_cli._raw_materialized_session_ids(archive_root, raw_id)
     assert session_ids == ("codex-session:raw-profile-handoff",)
