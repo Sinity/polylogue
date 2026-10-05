@@ -1894,7 +1894,10 @@ def apply_prepared_revision_replay(
                         )
 
                         if not applied_raw_ids and tip_raw_id in refused_publication_raw_ids:
-                            adoption_deferred += len(plan.accepted_raw_ids)
+                            # Writer precedence refused the output: the Source
+                            # acknowledgements stand as this key's terminal
+                            # outcome and the stored session keeps its head.
+                            actual_terminal_raw_ids.update(revision_replay_terminal_raw_ids(plan))
                             settled_byte_keys.add(logical_key)
                             continue
                         if applied_raw_ids != revision_replay_terminal_raw_ids(plan):
