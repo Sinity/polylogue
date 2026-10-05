@@ -38,6 +38,7 @@ from polylogue.archive.ingest_flags import (
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
+    SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
     RawRevisionAuthority,
     RawRevisionKind,
     canonical_authority_logical_key,
@@ -296,6 +297,16 @@ class _RevisionCensusState:
 
 class RetainedPreparationRetryableError(RuntimeError):
     """A supplied retained parse cannot be trusted; retry without quarantining bytes."""
+
+
+class RetainedPreparationNoProgressError(RuntimeError):
+    """A preparatory Source phase committed without changing its durable inputs.
+
+    Preparing again would read the same state and commit the same phase, so
+    this is a terminal outcome for the component, never a reason to retry.
+    """
+
+    code = "retained_phase_no_progress"
 
 
 class UnsupportedRetainedJsonShapeError(ValueError):
@@ -3109,6 +3120,35 @@ def _sealed_retained_sessions(
         ) from exc
 
 
+def _superseded_full_revision_identity(
+    seal: PreparedIndexMutation,
+    evidence_reader: PreparedSessionSourceRead,
+    raw_id: str,
+    revision_kind: RawRevisionKind,
+    sessions: Sequence[ParsedSession],
+) -> bool:
+    """Whether a quarantined full revision is typed under an identity it no longer parses to.
+
+    Byte-proven revisions keep their byte authority; only an unproven full
+    revision may move, and only when the current parser derives exactly one
+    identity that differs from the stored one.
+    """
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import prepared_raw_typed_logical_key
+
+    if revision_kind is not RawRevisionKind.FULL or len(sessions) != 1:
+        return False
+    if evidence_reader.raw_revision_authority(raw_id) == RawRevisionAuthority.BYTE_PROVEN.value:
+        return False
+    stored = prepared_raw_typed_logical_key(seal, raw_id)
+    if stored is None:
+        return False
+    parsed = canonical_authority_logical_key(f"{sessions[0].source_name.value}:{sessions[0].provider_session_id}")
+    try:
+        return canonical_authority_logical_key(stored) != parsed
+    except ValueError:
+        return True
+
+
 def prepare_revision_source_census(
     seal: PreparedIndexMutation,
     evidence_reader: PreparedSessionSourceRead,
@@ -3289,6 +3329,27 @@ def prepare_revision_source_census(
                 parser_fingerprint=raw_authority_parser_fingerprint(),
                 censused_at_ms=0,
                 revision_authority=None,
+            )
+            for session in sessions:
+                logical_key = canonical_authority_logical_key(
+                    f"{session.source_name.value}:{session.provider_session_id}"
+                )
+                state.membership_candidates.setdefault(logical_key, set()).add(raw_id)
+        elif _superseded_full_revision_identity(seal, evidence_reader, raw_id, revision_kind, sessions):
+            # The stored key came from a parser that no longer derives it. A
+            # receipt here could never agree with that key, so every pass would
+            # re-census it unchanged. Retire it to membership governance under
+            # the identity the current parser derives, beside any raw already
+            # typed under that identity, so the cohort is arbitrated jointly.
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                sessions,
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=SUPERSEDED_IDENTITY_GOVERNANCE_DETAIL,
+                retire_full_revision_governance=True,
+                revision_authority=RawRevisionAuthority.QUARANTINED,
             )
             for session in sessions:
                 logical_key = canonical_authority_logical_key(
