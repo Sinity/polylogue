@@ -41,8 +41,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.archive.message.roles import Role
+from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.sources import origin_from_provider
 from polylogue.maintenance.archive_verification import ArchiveVerificationCheck, verify_archive
 from polylogue.maintenance.parent_session_accounting import (
     ParentSessionAccountingReport,
@@ -51,6 +53,7 @@ from polylogue.maintenance.parent_session_accounting import (
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_blob_hash
 from polylogue.storage.sqlite.reference_seal import IndexMutationScope, PreparedIndexMutation
 from tests.infra.index_writer import write_fixture_index_session
 
@@ -88,12 +91,22 @@ def _acquire_and_index(archive: ArchiveStore, tmp_path: Path, session: ParsedSes
     native_id = session.provider_session_id
     payload = f"transcript bytes for {native_id}".encode()
     path = _export_file(tmp_path, native_id, payload)
+    provider = Provider.from_string(session.source_name)
+    # A first observation of its logical source is a FULL/ASSERTED baseline,
+    # exactly as canonical raw admission records it.
     raw_id = archive.write_raw_payload(
-        provider=Provider.from_string(session.source_name),
+        provider=provider,
         payload=payload,
         source_path=str(path),
         native_id=native_id,
         acquired_at_ms=_ACQUIRED_AT_MS + order,
+        revision=RawRevisionEnvelope(
+            logical_source_key=f"{origin_from_provider(provider).value}:{native_id}",
+            kind=RawRevisionKind.FULL,
+            source_revision=deterministic_blob_hash(payload).hex(),
+            acquisition_generation=0,
+            authority=RawRevisionAuthority.ASSERTED,
+        ),
     )
     root = archive.archive_root
 

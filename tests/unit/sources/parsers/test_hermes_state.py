@@ -23,6 +23,7 @@ from polylogue.core.enums import BlockType, TitleSource
 from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db, parse_state_db_payload
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks
@@ -488,7 +489,8 @@ def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None
 
     db = tmp_path / "index.db"
     initialize_archive_database(db, ArchiveTier.INDEX)
-    conn = sqlite3.connect(db)
+    conn = connect_measured(db)
+    conn.row_factory = sqlite3.Row
     try:
         write_fixture_index_session(conn, session)
         conn.commit()

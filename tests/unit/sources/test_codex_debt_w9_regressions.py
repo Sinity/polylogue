@@ -32,6 +32,7 @@ from polylogue.sources.parsers import local_agent
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _TIMESTAMP = "2026-06-02T00:00:00Z"
 
@@ -111,20 +112,28 @@ def test_w9_retained_unknown_project_is_detected_beyond_prefix() -> None:
     assert provider is Provider.CLAUDE_AI
 
 
-@pytest.mark.parametrize("wrapper_depth", [0, 1, 2])
-def test_w9_drive_lowering_preserves_gemini_source_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    wrapper_depth: int,
-) -> None:
-    """W9-90-16: the production Gemini parser receives None before the fix."""
-    payload: Any = {
+def _w9_gemini_cli_document() -> dict[str, Any]:
+    return {
         "sessionId": "w9-gemini",
         "projectHash": "w9-project",
         "startTime": _TIMESTAMP,
         "lastUpdated": _TIMESTAMP,
         "messages": [{"id": "m", "type": "user", "content": "hello"}],
     }
+
+
+@pytest.mark.parametrize("wrapper_depth", [0, 1])
+def test_w9_gemini_cli_parser_receives_its_source_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wrapper_depth: int,
+) -> None:
+    """W9-90-16: the production Gemini CLI parser received None before the fix.
+
+    A Gemini CLI document (or its one-level document array) at its own
+    location reaches ``parse_gemini_cli`` with the recorded source path.
+    """
+    payload: Any = _w9_gemini_cli_document()
     for _ in range(wrapper_depth):
         payload = [payload]
     source_path = str(tmp_path / "chats" / "session.json")
@@ -136,9 +145,25 @@ def test_w9_drive_lowering_preserves_gemini_source_path(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(local_agent, "parse_gemini_cli", record_path)
-    sessions = dispatch.parse_payload(Provider.GEMINI, payload, "fallback", source_path=source_path)
+    sessions = dispatch.parse_payload(Provider.GEMINI_CLI, payload, "fallback", source_path=source_path)
     assert sessions
     assert seen == [source_path]
+
+
+@pytest.mark.parametrize("wrapper_depth", [0, 1, 2])
+def test_w9_drive_gemini_location_refuses_gemini_cli_documents(tmp_path: Path, wrapper_depth: int) -> None:
+    """The Drive-backed Gemini location admits only its own origin.
+
+    Replaces the retired W9-90-16 Drive-lowering premise: a Gemini CLI document
+    at any wrapper depth is a foreign-origin refusal there, never parsed.
+    """
+    payload: Any = _w9_gemini_cli_document()
+    for _ in range(wrapper_depth):
+        payload = [payload]
+    with pytest.raises(dispatch.ForeignOriginContentError):
+        dispatch.parse_payload(
+            Provider.GEMINI, payload, "fallback", source_path=str(tmp_path / "chats" / "session.json")
+        )
 
 
 class _DriveClient:
@@ -290,7 +315,9 @@ def test_w9_completed_ingest_repeats_materialized_count(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(processor._cursor, "update_ingest_attempt", drop_cursor_progress)
-    metrics = asyncio.run(processor.ingest_files([source], emit_event=False, whole_archive_convergence=False))
+    metrics = asyncio.run(
+        ingest_files_with_owners(processor, [source], emit_event=False, whole_archive_convergence=False)
+    )
     assert metrics.succeeded_file_count == 1
     assert dropped
     with sqlite3.connect(archive_root / "ops.db") as connection:
@@ -321,11 +348,14 @@ def test_w9_source_only_protobuf_does_not_invoke_converter(
     set_degraded(DegradedReason(code="schema_version_mismatch", message="derived tier unavailable", derived_only=True))
     try:
         # A protobuf trajectory is not a SQLite state path; it has no capture.
-        result = processor._ingest_full_paths_sync([source], source_name="antigravity", captured_sqlite_by_path={})
+        # The pass runs with the daemon's canonical owners (writer admission).
+        metrics = asyncio.run(
+            ingest_files_with_owners(processor, [source], emit_event=False, whole_archive_convergence=False)
+        )
     finally:
         clear_degraded()
-    assert result.succeeded == [source]
-    assert result.failed == []
+    assert metrics.succeeded_file_count == 1
+    assert metrics.failed_file_count == 0
     with sqlite3.connect(archive_root / "source.db") as connection:
         assert connection.execute("SELECT lower(hex(blob_hash)), parsed_at_ms FROM raw_sessions").fetchall() == [
             (sha256(payload).hexdigest(), None),

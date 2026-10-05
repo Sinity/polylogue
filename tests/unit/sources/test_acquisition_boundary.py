@@ -139,7 +139,8 @@ def test_validator_admits_own_origin_material_of_any_size() -> None:
     _validate("malformed.jsonl", b'{"type": "user", "broken\n' + _jsonl(_CLAUDE))
     # Unbound (inbox), raw-only and non-JSON material is not validated.
     BoundRecordValidator("a.jsonl", Provider.UNKNOWN).feed(_jsonl(_CODEX))
-    assert not BoundRecordValidator("history.jsonl", Provider.CLAUDE_CODE).active
+    # The declared prompt-history log lives at ``~/.claude/history.jsonl``.
+    assert not BoundRecordValidator("/home/user/.claude/history.jsonl", Provider.CLAUDE_CODE).active
     assert not BoundRecordValidator("notes.md", Provider.CLAUDE_CODE).active
 
 
@@ -393,6 +394,8 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ),
     ("polylogue/sources/acquisition_boundary.py", "open_bound_member"): "the boundary itself",
     ("polylogue/sources/acquisition_boundary.py", "capture_bound_stream"): "the boundary itself",
+    ("polylogue/sources/acquisition_boundary.py", "capture_bound_path"): "the boundary itself",
+    ("polylogue/sources/acquisition_boundary.py", "open_bound_container"): "the boundary itself",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_path"): "blob store implementation",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_fileobj"): "blob store implementation",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_writer"): "blob store implementation",
@@ -412,17 +415,27 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ("polylogue/sources/sqlite_snapshot.py", "snapshot_sqlite_to_blob"): (
         "retains a declared database's logical export; the declaration is refused by refuse_declared_foreign"
     ),
-    ("polylogue/sources/assembly_chatgpt.py", "_read_json_zip_member"): "export sidecar read, not session records",
     ("polylogue/sources/assembly_chatgpt.py", "_read_chatgpt_zip_sidecars"): "export asset attachments",
     ("polylogue/sources/assembly_chatgpt.py", "_acquire_asset_blobs_from_directory"): "export asset attachments",
-    (
-        "polylogue/sources/decoder_zip.py",
-        "zip_entry_session_artifact",
-    ): "classification probe; parse reads via boundary",
-    ("polylogue/sources/source_acquisition_components.py", "sniff_zip_provider"): "unbound provider sniff",
-    ("polylogue/sources/import_explain.py", "_explain_zip"): "read-only diagnostics",
     ("polylogue/sources/import_preflight.py", "_preflight_zip"): "read-only diagnostics",
     ("polylogue/schemas/source_inference.py", "_collect_zip_candidate"): "schema inference tooling",
+    ("polylogue/sources/decoder_zip.py", "prepare_zip_entry"): (
+        "copies the exact member for the streamed parser, whose records are validated by the boundary"
+    ),
+    ("polylogue/sources/import_explain.py", "_explain_zip_entry"): "read-only diagnostics",
+    ("polylogue/sources/live/batch.py", "LiveBatchProcessor._extract_source_only_zip_member_records"): (
+        "verifies a zero-length member is empty; admitted member bytes are captured through the boundary"
+    ),
+    ("polylogue/sources/retained_acquisition.py", "iter_retained_source_records"): (
+        "verifies a zero-length retained member is empty; records decode through the boundary"
+    ),
+    ("polylogue/sources/prepared_jsonl.py", "_prepare_attachment_publications"): (
+        "re-prepares an already-retained attachment blob by its exact hash, not session records"
+    ),
+    ("polylogue/sources/source_acquisition_components.py", "_zip_entry_detected_provider"): (
+        "provider sniff of a CRC-validated entry; records are acquired through the boundary"
+    ),
+    ("polylogue/storage/materials.py", "prepare_material"): "retains declared non-session material documents",
 }
 
 
