@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import os
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -16,6 +17,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.config import Source
 from polylogue.core.enums import Origin, Provider
+from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_gc import MIN_AGE_S, BlobGCResult, run_blob_gc_report
@@ -32,8 +34,9 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.frozen_clock import FrozenClock
-from tests.infra.live_ingest import write_index_session
+from tests.infra.live_ingest import prepared_live_convergence_owner, write_index_session
 
 
 @pytest.mark.asyncio
@@ -87,7 +90,13 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     monkeypatch.setattr(BlobStore, "prepare_from_fileobj", measured_prepare)
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", measured_flush)
     try:
-        result = await AcquisitionService(backend).acquire_sources([Source(name="chatgpt", path=source_root)])
+        # Acquisition publishes raw rows and blobs through the daemon's admitted
+        # writer, exactly as configured-source catch-up does.
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            result = await AcquisitionService(backend, execution=execution).acquire_sources(
+                [Source(name="chatgpt", path=source_root)]
+            )
     finally:
         await backend.close()
 
@@ -102,6 +111,22 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     assert final_gc.deleted_count == 0
     assert final_gc.skipped_reserved == 0
     assert final_gc.skipped_referenced >= 1
+
+
+def _flush(publisher: ArchiveBlobPublisher, archive_root: Path) -> tuple[BlobPublicationReceipt, ...]:
+    """Flush under the archive writer lease publication requires."""
+    with write_lease("test.blob-publication", archive_root=archive_root):
+        return publisher.flush()
+
+
+def _leased_flush(publisher: ArchiveBlobPublisher, archive_root: Path) -> Callable[[], object]:
+    """A flush that takes its own writer lease on the worker thread that runs it."""
+
+    def run() -> object:
+        with write_lease("test.blob-publication-worker", archive_root=archive_root):
+            return publisher.flush()
+
+    return run
 
 
 def test_consume_blob_publication_receipt_is_idempotent(tmp_path: Path) -> None:
@@ -120,13 +145,13 @@ def test_consume_blob_publication_receipt_is_idempotent(tmp_path: Path) -> None:
     blob_hash, _ = publisher.write_from_bytes(payload)
     receipt_id = publisher.receipt_id(blob_hash)
     assert receipt_id is not None
-    publisher.flush()
+    _flush(publisher, archive_root)
 
     other_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
     other_blob_hash, _ = other_publisher.write_from_bytes(payload)
     other_receipt_id = other_publisher.receipt_id(other_blob_hash)
     assert other_receipt_id is not None
-    other_publisher.flush()
+    _flush(other_publisher, archive_root)
 
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert (
@@ -166,8 +191,8 @@ def test_two_same_hash_publishers_consume_only_their_own_receipt(tmp_path: Path)
     second_hash, _ = second.write_from_bytes(payload)
     first_receipt = first.receipt_id(blob_hash)
     second_receipt = second.receipt_id(second_hash)
-    first.flush()
-    second.flush()
+    _flush(first, archive_root)
+    _flush(second, archive_root)
     assert first_receipt and second_receipt and first_receipt != second_receipt
 
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -225,7 +250,7 @@ def test_live_publisher_missing_path_receipt_is_retained_by_reconciliation(tmp_p
     publisher = ArchiveBlobPublisher(archive_root / "source.db", store.root, store=store)
     blob_hash, _ = publisher.write_from_bytes(b"paused before final path")
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(publisher.flush)
+        future = executor.submit(_leased_flush(publisher, archive_root))
         assert publish_entered.wait(timeout=2)
         outcome = reconcile_blob_publication_reservations(archive_root / "source.db", store.root)
         assert outcome.cleared_missing == 0
@@ -246,7 +271,7 @@ def test_reconciliation_with_writer_exclusion_clears_only_missing_receipts(tmp_p
     missing_hash, missing_size = publisher.write_from_bytes(b"missing terminal publication")
     referenced_hash, referenced_size = publisher.write_from_bytes(b"referenced terminal publication")
     unresolved_hash, _ = publisher.write_from_bytes(b"unresolved live-looking publication")
-    publisher.flush()
+    _flush(publisher, archive_root)
     store.blob_path(missing_hash).unlink()
     with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
@@ -317,7 +342,7 @@ def test_publisher_batches_reservations_before_publication(
     monkeypatch.setattr(BlobPublicationReservationStore, "reserve_many", observe)
     for index in range(200):
         publisher.write_from_bytes(f"payload-{index}".encode())
-    receipts = publisher.flush()
+    receipts = _flush(publisher, archive_root)
     assert calls == [200]
     assert len(receipts) == 200
 
@@ -348,7 +373,7 @@ def test_gc_dry_run_does_not_block_concurrent_reservation(
         assert enumeration_entered.wait(timeout=2)
         publisher = ArchiveBlobPublisher(archive_root / "source.db", store.root)
         publisher.write_from_bytes(b"concurrent publisher")
-        publish_future = executor.submit(publisher.flush)
+        publish_future = executor.submit(_leased_flush(publisher, archive_root))
         assert publish_future.result(timeout=1)
         allow_enumeration.set()
         assert gc_future.result(timeout=2).dry_run
@@ -382,7 +407,7 @@ def test_destructive_gc_serializes_final_recheck_and_unlink(
     with ThreadPoolExecutor(max_workers=2) as executor:
         gc_future = executor.submit(run_blob_gc_report, archive_root / "source.db", store.root, 10)
         assert recheck_entered.wait(timeout=2)
-        publish_future = executor.submit(publisher.flush)
+        publish_future = executor.submit(_leased_flush(publisher, archive_root))
         assert not publish_future.done()
         allow_recheck.set()
         assert gc_future.result(timeout=2).deleted_count == 1
@@ -407,7 +432,10 @@ def test_index_only_attachment_consumes_receipt_after_index_commit(tmp_path: Pat
             )
         ],
     )
-    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+    with (
+        write_lease("test.index-only-attachment", archive_root=archive_root),
+        ArchiveStore.open_existing(archive_root, read_only=False) as archive,
+    ):
         write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).digest()
