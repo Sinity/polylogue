@@ -751,8 +751,8 @@ def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None
     root.mkdir()
     session = root / "one.jsonl"
     session.write_bytes(_codex_session("kept-session", "kept"))
-    sidecar = root / "meta-only.jsonl"
-    sidecar.write_bytes(b'{"type":"session_meta","payload":{"id":"meta-only","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    sidecar = root / "no-session.jsonl"
+    sidecar.write_bytes(b'{"x":1}\n')
     generation = ColdBuildGeneration.begin(tmp_path, reason="test", sources=(WatchSource("codex", root),))
     register_cold_build_generation(generation)
     try:
