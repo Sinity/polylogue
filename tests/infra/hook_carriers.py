@@ -20,8 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from tests.infra.archive_templates import run_off_event_loop
-
 if TYPE_CHECKING:
     from polylogue.sources.live.watcher import WatchSource
 
@@ -128,7 +126,7 @@ async def _acquire(archive_root: Path, spool_root: Path) -> int:
             watcher.stop()
 
 
-def _acquire_hook_carriers_on_writer(archive_root: Path, *, spool_root: Path | None = None) -> int:
+def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:
     """Admit every carrier under the spool root; return the items admitted."""
 
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -136,11 +134,6 @@ def _acquire_hook_carriers_on_writer(archive_root: Path, *, spool_root: Path | N
     with _pinned_archive_root(archive_root):
         initialize_active_archive_root(archive_root)
         return _run(_acquire(archive_root, spool_root or archive_root / "hooks"))
-
-
-def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:
-    """Run the synchronous seed off any running event loop."""
-    return run_off_event_loop(lambda: _acquire_hook_carriers_on_writer(archive_root, spool_root=spool_root))
 
 
 def hook_event_count(archive_root: Path) -> int:
