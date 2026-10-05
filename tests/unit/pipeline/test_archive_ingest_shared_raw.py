@@ -238,7 +238,12 @@ async def test_archive_ingest_ordinary_session_records_current_parser_receipt(
 async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     tmp_path: Path, one_shot_workspace_env: dict[str, Path]
 ) -> None:
-    """A journal with no decodable session evidence remains a typed artifact."""
+    """A journal whose complete record does not decode is typed corrupt evidence.
+
+    A ``fact`` path rule is decided by decoded records, so a complete JSONL
+    record that does not decode is terminal corrupt input, the raw retained,
+    exactly as the ZIP member route below records it.
+    """
     archive_root = one_shot_workspace_env["archive_root"]
     journal = _write_session_shaped_workflow_journal(tmp_path / "sessions", malformed=True)
     expected_mtime_ms = 1_735_689_600_123
@@ -254,10 +259,9 @@ async def test_archive_ingest_malformed_workflow_journal_remains_typed_evidence(
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         assert conn.execute("SELECT file_mtime_ms FROM raw_sessions").fetchone() == (expected_mtime_ms,)
-        assert conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone() == (
-            "workflow_journal",
-            0,
-        )
+        assert conn.execute("SELECT artifact_kind, parse_as_session, support_status FROM raw_artifacts").fetchall() == [
+            ("terminal_corrupt_input", 0, "decode_failed")
+        ]
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
@@ -307,8 +311,7 @@ async def test_archive_ingest_malformed_zip_workflow_journal_remains_typed_evide
         # The ZIP route decodes the member strictly to scan it for delayed
         # session evidence, and a complete JSONL record that does not decode
         # is terminal corrupt input for every provider, the raw retained
-        # (#5823, ez5b9 F039). The loose-file test above still reads the
-        # lenient retained decode that polylogue-3p8p7 makes strict.
+        # (#5823, ez5b9 F039), as on the loose-file route above.
         assert conn.execute("SELECT artifact_kind, parse_as_session, support_status FROM raw_artifacts").fetchall() == [
             ("terminal_corrupt_input", 0, "decode_failed")
         ]
