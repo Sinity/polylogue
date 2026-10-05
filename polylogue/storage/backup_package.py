@@ -344,7 +344,11 @@ def _readable_sqlite_index(path: Path) -> bool:
     with path.open("rb") as stream:
         if stream.read(16) != b"SQLite format 3\x00":
             return False
-    _sqlite_user_version(path)
+    # A live candidate in WAL mode may hold committed state the main file does
+    # not; an ordinary read-only open reads it, where an immutable one refuses.
+    # The copy itself is still taken from a checkpointed, write-locked snapshot.
+    with closing(_open_backup_readonly_connection(path, immutable=False, timeout_class="offline-bulk")):
+        pass
     return True
 
 
