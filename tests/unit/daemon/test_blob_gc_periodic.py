@@ -21,6 +21,7 @@ from polylogue.daemon.blob_gc_periodic import run_blob_gc_once
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.write_lease import write_lease
 
 
 def _make_source_db(path: Path) -> None:
@@ -209,7 +210,8 @@ def _make_publication_reconciliation_fixture(tmp_path: Path) -> tuple[Path, str]
     missing_hash, _ = publisher.write_from_bytes(b"periodic-missing-terminal")
     referenced_hash, referenced_size = publisher.write_from_bytes(b"periodic-referenced-terminal")
     unresolved_hash, _ = publisher.write_from_bytes(b"periodic-unresolved")
-    publisher.flush()
+    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
+        publisher.flush()
     store.blob_path(missing_hash).unlink()
     with sqlite3.connect(source_db) as conn:
         write_source_raw_session_blob_ref(
@@ -293,7 +295,8 @@ def test_periodic_publication_reconciliation_pages_past_unresolved_rows(
     unresolved_b, _ = publisher.write_from_bytes(b"bounded-unresolved-b")
     missing_hash, _ = publisher.write_from_bytes(b"bounded-missing")
     referenced_hash, referenced_size = publisher.write_from_bytes(b"bounded-referenced")
-    receipts = publisher.flush()
+    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
+        receipts = publisher.flush()
     deterministic_ids = {
         unresolved_a: "publication-a",
         unresolved_b: "publication-b",
@@ -375,7 +378,8 @@ def test_blob_publication_reconciliation_reads_attachment_refs_from_active_index
     store = BlobStore(archive_root / "blob")
     publisher = ArchiveBlobPublisher(source_db, store.root)
     blob_hash, size = publisher.write_from_bytes(b"active-generation-attachment")
-    publisher.flush()
+    with write_lease("test.fixture.blob_publication", archive_root=archive_root):
+        publisher.flush()
 
     active_index = archive_root / ".index-generations" / "gen-active" / "index.db"
     active_index.parent.mkdir(parents=True)

@@ -45,10 +45,17 @@ def _make_index_sibling(db_path: str | Path) -> Path:
 
 
 def _make_db(path: str | Path | None = None) -> sqlite3.Connection:
-    """Create an in-memory or file-based production source-tier fixture."""
+    """Create an in-memory or file-based production source-tier fixture.
+
+    A ``source.db``/``index.db`` path is a split archive: its root is built by
+    the canonical bootstrap, so the Source tier carries every admitted durable
+    migration that GC's read connections require.
+    """
     target = str(path) if path else ":memory:"
-    if path is not None and Path(path).name == "index.db":
-        initialize_archive_database(Path(path), ArchiveTier.INDEX)
+    if path is not None and Path(path).name in {"source.db", "index.db"}:
+        root = Path(path).parent
+        if not (root / "source.db").exists():
+            bootstrap_archive_root(root)
         conn = sqlite3.connect(target)
         conn.row_factory = sqlite3.Row
         return conn
