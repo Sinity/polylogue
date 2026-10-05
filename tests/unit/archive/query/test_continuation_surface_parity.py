@@ -418,7 +418,7 @@ def _write_window_session(*args: Any, **kwargs: Any) -> str:
     return run_off_event_loop(lambda: _write_window_session_sync(*args, **kwargs))
 
 
-def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
+def _cli_messages_json_sync(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
@@ -434,6 +434,11 @@ def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) 
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise result.exception
     return result.exit_code, result.output
+
+
+def _cli_messages_json(archive_root: Path, session_id: str, *, args: list[str]) -> tuple[int, str]:
+    """Run the CLI round trip off the event loop: its daemon stack bootstraps under a sync lease."""
+    return run_off_event_loop(lambda: _cli_messages_json_sync(archive_root, session_id, args=args))
 
 
 async def test_transcript_window_continuation_resumes_identically_across_surfaces(
