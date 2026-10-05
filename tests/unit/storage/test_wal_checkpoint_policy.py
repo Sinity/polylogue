@@ -40,6 +40,22 @@ def _autocheckpoint(statements: tuple[str, ...]) -> int:
     return int(declared[0].rsplit("=", 1)[1])
 
 
+def _stamp_index_tier(db: Path) -> None:
+    """Materialize ``db`` as a real, stamped Index tier through the bootstrap.
+
+    The checkpoint route opens each tier through its version and identity gate,
+    so a WAL law's Index must be a bootstrapped tier, not a bare file holding
+    only the payload table. Only this tier is created: the sweep's
+    missing-tier behaviour stays observable.
+    """
+    from polylogue.storage.io_phase_metrics import connect_measured
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    with closing(connect_measured(db)) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.commit()
+
+
 @pytest.fixture
 def seed_wal() -> Iterator[Callable[..., sqlite3.Connection]]:
     """Seed a WAL and leave a connection holding it open.
@@ -58,6 +74,8 @@ def seed_wal() -> Iterator[Callable[..., sqlite3.Connection]]:
     held: list[sqlite3.Connection] = []
 
     def _seed(db: Path, *, rows: int) -> sqlite3.Connection:
+        if db.name == "index.db":
+            _stamp_index_tier(db)
         conn = sqlite3.connect(db)
         held.append(conn)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -296,6 +314,7 @@ def test_restart_from_a_large_wal_recovers_the_committed_rows(tmp_path: Path) ->
     than a data-loss trade.
     """
     db = tmp_path / "index.db"
+    _stamp_index_tier(db)
     with arm_recurring_checkpoint_owner():
         conn = connection_profile.open_connection(db, validate_schema=False)
         conn.execute("CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)")
@@ -360,6 +379,7 @@ def test_a_killed_owned_writer_recovers_through_the_recurring_sweep(tmp_path: Pa
     import sys
 
     db = tmp_path / "index.db"
+    _stamp_index_tier(db)
     completed = subprocess.run(
         [sys.executable, "-c", _CRASHING_WRITER, str(db)], capture_output=True, text=True, timeout=120
     )
