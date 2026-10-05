@@ -616,7 +616,9 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
         assert exclusion is not None and exclusion.held
         assert not operation.future.done() and adapter.snapshot().active_units == 1
         assert replacement.scratch_directory is not None
-        assert replacement.scratch_directory.exists() == (failed_resource == "payload")
+        # The prepared artifact stays on disk while any of its native owners
+        # (the payload carrier or a seal child cursor) remains unsettled.
+        assert replacement.scratch_directory.exists()
         probe = os.open(exclusion.path, os.O_RDWR)
         with pytest.raises(BlockingIOError):
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -624,7 +626,12 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
         for cursor in cursors:
             cursor.allow_cleanup.set()
         operation.retry_sql_settlement()
-        with pytest.raises((BaseExceptionGroup, NativeConnectionSettlementError)):
+        # A lone failed payload close surfaces as itself; an unsettled native
+        # child surfaces as the settlement error or its group.
+        expected_failure: tuple[type[BaseException], ...] = (
+            (OSError,) if failed_resource == "payload" else (BaseExceptionGroup, NativeConnectionSettlementError)
+        )
+        with pytest.raises(expected_failure):
             await asyncio.wrap_future(operation.future)
         assert adapter.snapshot().active_units == 0
         assert adapter.retained_sql_settlements() == ()
