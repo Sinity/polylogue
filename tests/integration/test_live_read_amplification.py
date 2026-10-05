@@ -183,7 +183,7 @@ def _mock_live_ingest(
             raw_byte_sizes={path: path.stat().st_size for path in paths},
         )
 
-    def fake_append_ingest(plans: list[Any]) -> _AppendResult:
+    async def fake_append_ingest(_processor: Any, plans: list[Any]) -> _AppendResult:
         return _AppendResult(succeeded=plans, failed=[], worker_count=1)
 
     def fake_existing_provider_session_id(path: Path, *, expected_origin: str) -> str | None:
@@ -192,7 +192,7 @@ def _mock_live_ingest(
 
     with (
         patch.object(proc, "_ingest_full_paths", fake_full_ingest),
-        patch.object(proc, "_ingest_append_plans", fake_append_ingest),
+        patch.object(proc, "_append_runner", fake_append_ingest),
         patch.object(proc, "_existing_provider_session_id", fake_existing_provider_session_id),
     ):
         yield existing_ids

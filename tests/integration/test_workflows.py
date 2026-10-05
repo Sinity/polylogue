@@ -28,7 +28,9 @@ from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.repository import SessionRepository
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import run_off_event_loop
 
 pytestmark = pytest.mark.slow
 
@@ -73,8 +75,9 @@ async def temp_config_and_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
         sources=[],
     )
 
-    # Create backend and repositories. SQLiteBackend bootstraps the full split
-    # archive (source/index/embeddings/user/ops) under archive_root.
+    # Bootstrap every archive tier through the canonical owner (off the event
+    # loop: the bootstrap writer lease is synchronous), then open the backend.
+    run_off_event_loop(lambda: initialize_active_archive_root(archive_root))
     backend = SQLiteBackend(db_path=db_path)
     storage_repo = SessionRepository(backend=backend)
     conv_repo = SessionRepository(backend=backend)
