@@ -2125,6 +2125,10 @@ class PreparedIndexMutation:
         self._excision_embeddings_requested = _excision_embeddings
         # Depth of row operations whose entry gate verified the namespace.
         self._namespace_verified_depth = 0
+        # Literal cells are append-only on the witness; a rolled-back insert
+        # can return its cell_id to a later one, so any witness rollback or
+        # failed statement clears this memo.
+        self._literal_cell_memo: dict[int, tuple[str, int, bytes | None]] = {}
         self._excision_embeddings_intent_ready = False
         self._excision_embeddings_intent_sha256 = ""
         self._excision_source_command_sha256: str | None = None
@@ -2488,7 +2492,8 @@ class PreparedIndexMutation:
 
     def _observer_identity(self, name: str) -> tuple[int, int, int, int]:
         self._require_capability(name)
-        self._assert_configured_namespace()
+        if not self._namespace_verified_depth:
+            self._assert_configured_namespace()
         metadata = self._observer_leaves[name].identity_metadata()
         return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -3858,6 +3863,8 @@ class PreparedIndexMutation:
         parameters: tuple[object, ...] = (),
     ) -> Iterator[sqlite3.Cursor]:
         """Retain each finite statement before execution on its original owner."""
+        if connection is self._owned_scratch_connection and sql.lstrip()[:8].upper() == "ROLLBACK":
+            self._literal_cell_memo.clear()
         cursor = connection.cursor()
         primary: BaseException | None = None
         try:
@@ -3865,6 +3872,8 @@ class PreparedIndexMutation:
             yield cursor
         except BaseException as failure:
             primary = failure
+            if connection is self._owned_scratch_connection:
+                self._literal_cell_memo.clear()
             raise
         finally:
             try:
@@ -5220,6 +5229,9 @@ class PreparedIndexMutation:
     def _literal_cell_metadata(self, cell: KnownTierCell) -> tuple[str, int, bytes | None]:
         if cell._seal is not self:
             raise ReferenceSealError("literal cell belongs to another original witness")
+        memo = self._literal_cell_memo.get(cell._cell_id)
+        if memo is not None:
+            return memo
         with self._owned_cursor(
             self._scratch,
             "SELECT storage_class,byte_length,fixed_blob FROM known_tier_literal_cells WHERE cell_id=?",
@@ -5228,7 +5240,9 @@ class PreparedIndexMutation:
             row = cursor.fetchone()
         if row is None:
             raise ReferenceSealError("literal cell locator has no retained original image")
-        return str(row[0]), int(row[1]), row[2]
+        metadata = (str(row[0]), int(row[1]), row[2])
+        self._literal_cell_memo[cell._cell_id] = metadata
+        return metadata
 
     def _literal_cell_chunks(self, cell: KnownTierCell, *, settlement: bool = False) -> Generator[bytes, None, None]:
         kind, size, fixed = self._literal_cell_metadata(cell)
@@ -5280,15 +5294,16 @@ class PreparedIndexMutation:
 
     def validate_observers_current(self) -> None:
         """Point-check every retained observer immediately after gate admission."""
-        self._require_new_work()
-        for name, _path in self._paths.items():
-            observer = self._require_unpinned_observer(name)
-            if self._observer_identity(name) != self._identities[name]:
-                raise ReferenceSealStaleError(f"the {name}.db file incarnation changed after preparation")
-            with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
-                current = int(cursor.fetchone()[0])
-            if current != self._versions[name]:
-                raise ReferenceSealStaleError(f"{name}.db changed after preparation")
+        # One namespace walk covers every observer's identity check below.
+        with self.verified_namespace():
+            for name, _path in self._paths.items():
+                observer = self._require_unpinned_observer(name)
+                if self._observer_identity(name) != self._identities[name]:
+                    raise ReferenceSealStaleError(f"the {name}.db file incarnation changed after preparation")
+                with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
+                    current = int(cursor.fetchone()[0])
+                if current != self._versions[name]:
+                    raise ReferenceSealStaleError(f"{name}.db changed after preparation")
 
     @staticmethod
     def _candidate_schema_identity(observer: sqlite3.Connection) -> tuple[int, str | None]:
