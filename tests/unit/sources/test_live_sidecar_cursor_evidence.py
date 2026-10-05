@@ -20,16 +20,16 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
-from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
-from polylogue.sources.live.cursor import CursorStore
-from tests.infra.raw_owner_routes import ingest_files_with_owners
+from tests.infra.live_batch import prepared_live_batch_processor
 
 _SESSION_ID = "de99ba60-ccc4-43a7-b882-1dd1f2672db7"
 
@@ -111,16 +111,15 @@ def _build_session_tree(root: Path, *, sidecar_names: tuple[str, ...]) -> tuple[
     return owner, subagents, sidecars
 
 
-def _make_processor(workspace_env: dict[str, Path], root: Path) -> tuple[Polylogue, CursorStore, LiveBatchProcessor]:
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["archive_root"] / "index.db")
-    processor = LiveBatchProcessor(
-        archive,
+@asynccontextmanager
+async def _processor(workspace_env: dict[str, Path], root: Path) -> AsyncIterator[LiveBatchProcessor]:
+    """The production live batch: its Source bodies run on the daemon writer."""
+    async with prepared_live_batch_processor(
+        workspace_env["archive_root"],
         (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        cursor=cursor,
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
-    )
-    return archive, cursor, processor
+    ) as processor:
+        yield processor
 
 
 def _query_source_paths(archive_root: Path, sql: str) -> set[str]:
@@ -140,16 +139,18 @@ async def test_sidecar_cursor_advances_only_beside_its_own_source_row(
     root.mkdir(parents=True)
     owner, subagents, sidecars = _build_session_tree(root, sidecar_names=("bsq814i68.txt",))
     sidecar = sidecars[0]
-    archive, cursor, processor = _make_processor(workspace_env, root)
-    try:
-        await ingest_files_with_owners(processor, [sidecar, owner, *subagents], emit_event=False)
+    async with _processor(workspace_env, root) as processor:
+        cursor = processor._cursor
+        await processor.ingest_files([sidecar, owner, *subagents], emit_event=False)
 
-        # The owner-side transcripts are the batch's parse failures.
-        failed_owner_paths = _query_source_paths(
+        # The owner-side subagent transcripts settle in the same batch as
+        # typed no-session observations: their census found no session.
+        no_session_owner_paths = _query_source_paths(
             workspace_env["archive_root"],
-            "SELECT source_path FROM raw_sessions WHERE parse_error IS NOT NULL",
+            "SELECT r.source_path FROM raw_sessions r JOIN raw_membership_census m ON m.raw_id = r.raw_id "
+            "WHERE m.status = 'non_session'",
         )
-        assert failed_owner_paths == {str(subagent) for subagent in subagents}
+        assert no_session_owner_paths == {str(subagent) for subagent in subagents}
 
         # The sidecar kept its own source-tier row, so its cursor may advance.
         assert str(sidecar) in _query_source_paths(
@@ -161,8 +162,6 @@ async def test_sidecar_cursor_advances_only_beside_its_own_source_row(
         record = cursor.get_record(sidecar)
         assert record is not None
         assert record.byte_offset == sidecar.stat().st_size
-    finally:
-        await archive.close()
 
 
 @pytest.mark.asyncio
@@ -174,11 +173,11 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
     root.mkdir(parents=True)
     owner, subagents, sidecars = _build_session_tree(root, sidecar_names=("bsq814i68.txt", "b0br6ndl9.txt"))
     retained, unretained = sidecars
-    archive, cursor, processor = _make_processor(workspace_env, root)
-    try:
+    async with _processor(workspace_env, root) as processor:
+        cursor = processor._cursor
         # Ingest everything except ``unretained``: source.db ends up with a
         # row for every path in the session tree but that one.
-        await ingest_files_with_owners(processor, [retained, owner, *subagents], emit_event=False)
+        await processor.ingest_files([retained, owner, *subagents], emit_event=False)
         assert str(unretained) not in _query_source_paths(
             workspace_env["archive_root"], "SELECT source_path FROM raw_sessions"
         )
@@ -202,7 +201,7 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
         # ``raw_sessions`` row) rediscovers it. Prove that retryability
         # end-to-end rather than asserting the retired bookkeeping: ingesting
         # the same path again still retains it.
-        await ingest_files_with_owners(processor, [unretained], emit_event=False)
+        await processor.ingest_files([unretained], emit_event=False)
         assert str(unretained) in _query_source_paths(
             workspace_env["archive_root"], "SELECT source_path FROM raw_sessions"
         )
@@ -214,5 +213,3 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
         retained_record = cursor.get_record(retained)
         assert retained_record is not None
         assert retained_record.byte_offset == retained.stat().st_size
-    finally:
-        await archive.close()

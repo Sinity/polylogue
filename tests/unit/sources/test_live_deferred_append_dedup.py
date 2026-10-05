@@ -36,9 +36,10 @@ from polylogue.sources.live.batch_support import (
     decode_claude_semantic_frontier,
     encode_cursor_hash_authority,
 )
-from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.raw_owner_routes import ingest_append_with_owner
 
 
@@ -116,6 +117,7 @@ def _seed_quarantine_prone_append(tmp_path: Path, *, session_id: str) -> Path:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     return source
 
@@ -142,6 +144,7 @@ def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> N
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
 
     record_deferred_append_cursor(
@@ -183,8 +186,7 @@ def test_deferred_cursor_keeps_canonical_path_and_profile_authority(tmp_path: Pa
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
-        canonical_source_path=str(source.resolve()),
-        captured_profile_key="profile-key0",
+        authority=CursorPathAuthority(str(source.resolve()), "profile-key0"),
     )
 
     record_deferred_append_cursor(
@@ -241,6 +243,7 @@ def test_deferred_claude_cursor_refuses_frontier_over_rewritten_prefix(tmp_path:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     recorded = cursor.get_record(source)
     assert recorded is not None
@@ -284,6 +287,7 @@ def test_deferred_legacy_claude_cursor_keeps_unverified_prefix_nonsemantic(tmp_p
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     source.write_bytes(header + rewritten_body + b'{"partial":')
 
@@ -324,6 +328,7 @@ def test_deferred_claude_cursor_rebases_frontier_after_header_rewrite(tmp_path: 
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
 
     record_deferred_append_cursor(

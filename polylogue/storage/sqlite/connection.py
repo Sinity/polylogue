@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.connection_profile import (
     _attach_sibling_tiers,
     _close_failed_native_construction,
     configured_archive_root,
+    execute_pragma_statement,
     open_readonly_connection,
     write_connection_pragma_statements,
 )
@@ -42,7 +43,7 @@ logger = get_logger(__name__)
 
 def _apply_pragma_statements(conn: sqlite3.Connection, statements: Sequence[str]) -> None:
     for statement in statements:
-        conn.execute(statement)
+        execute_pragma_statement(conn, statement)
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:

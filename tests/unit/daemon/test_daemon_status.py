@@ -68,6 +68,7 @@ def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest
     assert _daemon_status_fingerprint(index) != before
 
 
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
@@ -597,7 +598,7 @@ def test_build_daemon_status_reports_failed_live_cursor_files(tmp_path: Path) ->
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -900,7 +901,7 @@ def test_daemon_status_payload_and_plain_output_include_failed_files(tmp_path: P
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -941,7 +942,7 @@ def test_daemon_status_failing_files_listing_labels_excluded_rows_with_age(tmp_p
     excluded.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
     for _ in range(5):
-        cursor.mark_failed(excluded)
+        cursor.mark_failed(excluded, authority=fixture_cursor_authority(excluded))
     record = cursor.get_record(excluded)
     assert record is not None and record.excluded
 
@@ -1251,7 +1252,7 @@ def test_daemon_status_prefers_archive_ops_live_cursor(tmp_path: Path) -> None:
     failed = tmp_path / "failed.jsonl"
     failed.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -1295,7 +1296,7 @@ def test_daemon_status_caps_failed_file_samples(tmp_path: Path) -> None:
     for index in range(55):
         failed = tmp_path / f"failed-{index:02d}.jsonl"
         failed.write_text('{"bad":true}\n')
-        cursor.mark_failed(failed)
+        cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),
@@ -2854,8 +2855,8 @@ def test_daemon_status_summarizes_retry_due_and_excluded_live_cursor_files(tmp_p
     excluded = tmp_path / "excluded.jsonl"
     excluded.write_text('{"skip":true}\n')
     cursor = CursorStore(db)
-    cursor.mark_failed(failed)
-    cursor.set(excluded, excluded.stat().st_size)
+    cursor.mark_failed(failed, authority=fixture_cursor_authority(failed))
+    cursor.set(excluded, excluded.stat().st_size, authority=fixture_cursor_authority(excluded))
     cursor.mark_excluded(excluded)
 
     with sqlite3.connect(db.with_name("ops.db")) as conn:
@@ -2898,7 +2899,7 @@ def test_daemon_status_never_reports_excluded_cursor_as_retry_due(tmp_path: Path
     poison.write_text('{"bad":true}\n')
     cursor = CursorStore(db)
     for _ in range(6):
-        cursor.mark_failed(poison)
+        cursor.mark_failed(poison, authority=fixture_cursor_authority(poison))
 
     with (
         patch("polylogue.daemon.status.archive_root", return_value=db.parent),

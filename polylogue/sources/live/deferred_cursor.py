@@ -11,7 +11,7 @@ from polylogue.sources.live.batch_support import (
     encode_cursor_hash_authority,
     tail_hash_from_path,
 )
-from polylogue.sources.live.cursor import CursorRecord, CursorStore
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, CursorStore
 
 #: A Claude header is a single JSON record; bound the read rather than
 #: trusting an arbitrary on-disk file to contain a newline.
@@ -125,8 +125,7 @@ def record_deferred_append_cursor(
         # A deferral records no new acquisition authority: keep the accepted
         # canonical path and captured profile, or the frontier gate refuses
         # the cursor as one written without canonical path authority.
-        canonical_source_path=cursor.canonical_source_path,
-        captured_profile_key=cursor.captured_profile_key,
+        authority=CursorPathAuthority.of_record(cursor) or CursorPathAuthority.observe(path),
         allow_backward=True,
         deferred_end_offset=deferred_end_offset,
     )
