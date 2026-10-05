@@ -1426,7 +1426,7 @@ def _connect_archive_writer(
                 ):
                     return sqlite3.SQLITE_DENY
                 if custody is not None:
-                    if custody.archive_root.resolve() != root.resolve():
+                    if custody.archive_root != root and custody.archive_root.resolve() != root.resolve():
                         return sqlite3.SQLITE_DENY
                     custody.assert_namespace()
                     permit = custody.known_tier_authority
