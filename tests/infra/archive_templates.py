@@ -50,7 +50,7 @@ def bootstrap_archive_root(root: Path) -> Path:
     """Construct each empty fixture through the canonical baseline and train owner."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-    initialize_active_archive_root(root)
+    run_off_event_loop(lambda: initialize_active_archive_root(root))
     return root
 
 

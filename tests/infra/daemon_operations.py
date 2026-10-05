@@ -34,6 +34,7 @@ from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import run_off_event_loop
 
 if TYPE_CHECKING:
     from polylogue.operations.mutation_transaction import (
@@ -141,9 +142,11 @@ def running_daemon_operations(
     """
 
     archive_root = archive_root.resolve()
-    initialize_active_archive_root(archive_root)
+    # Async fixtures enter this stack inside their event loop; the synchronous
+    # bootstrap and seed writer leases run on a loop-free thread instead.
+    run_off_event_loop(lambda: initialize_active_archive_root(archive_root))
     if seed_archive is not None:
-        seed_archive(archive_root)
+        run_off_event_loop(lambda: seed_archive(archive_root))
     socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
