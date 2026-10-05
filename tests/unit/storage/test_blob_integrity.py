@@ -836,7 +836,7 @@ def test_zip_source_permission_failure_retains_original_exception_and_is_unavail
     def denied(*args: object, **kwargs: object) -> None:
         raise failure
 
-    monkeypatch.setattr(source_zip_replay.zipfile, "ZipFile", denied)
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", denied)
     observed: list[Exception] = []
     candidate, _ = source_zip_replay.zip_reacquired_unit(
         evidence,
@@ -858,7 +858,6 @@ def test_zip_source_permission_failure_retains_original_exception_and_is_unavail
 def test_debt_distinguishes_unavailable_recorded_zip_from_no_source_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.storage import source_zip_replay
 
     evidence = _captured_zip_evidence(tmp_path / "export.zip")
     with closing(_make_db(tmp_path)) as conn, conn:
@@ -885,7 +884,7 @@ def test_debt_distinguishes_unavailable_recorded_zip_from_no_source_path(
     def denied(*args: object, **kwargs: object) -> None:
         raise failure
 
-    monkeypatch.setattr(source_zip_replay.zipfile, "ZipFile", denied)
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", denied)
     report = classify_blob_reference_debt(tmp_path / "source.db", store=BlobStore(tmp_path / "blob"))
     assert report.missing_source_path_presence == {"source_path_unavailable": 1, "no_source_path_recorded": 1}
     recorded = next(sample for sample in report.samples if sample.sample_ref_id == "recorded")
@@ -896,7 +895,6 @@ def test_debt_distinguishes_unavailable_recorded_zip_from_no_source_path(
 
 def test_zip_source_cancellation_preserves_original_primary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.core.compute import DaemonOperationCancelled
-    from polylogue.storage import source_zip_replay
 
     evidence = _captured_zip_evidence(tmp_path / "export.zip")
     failure = DaemonOperationCancelled("neutral cancelled")
@@ -904,7 +902,7 @@ def test_zip_source_cancellation_preserves_original_primary(tmp_path: Path, monk
     def cancelled(*args: object, **kwargs: object) -> None:
         raise failure
 
-    monkeypatch.setattr(source_zip_replay.zipfile, "ZipFile", cancelled)
+    monkeypatch.setattr("polylogue.storage.source_zip_replay.zipfile.ZipFile", cancelled)
     with pytest.raises(DaemonOperationCancelled) as raised:
         blob_integrity._source_path_availability(
             str(evidence["source_path"]),

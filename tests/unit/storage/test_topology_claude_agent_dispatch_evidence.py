@@ -459,13 +459,18 @@ def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_av
         )
         replay = child.model_copy(update={"parent_session_provider_id": _OTHER_PARENT})
         replay_source = source if source_available else None
-        assert prepared_lineage_bindings(index, replay, source_read=ConnectionSessionSourceRead(replay_source)) == (
+        assert prepared_lineage_bindings(
+            index, replay, source_read=None if replay_source is None else ConnectionSessionSourceRead(replay_source)
+        ) == (
             _PARENT,
             f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}",
         )
         if route == "prepared":
             prepared = prepare_session_write(
-                index, replay, merge_append=False, source_read=ConnectionSessionSourceRead(replay_source)
+                index,
+                replay,
+                merge_append=False,
+                source_read=None if replay_source is None else ConnectionSessionSourceRead(replay_source),
             )
             try:
                 write_fixture_index_session(

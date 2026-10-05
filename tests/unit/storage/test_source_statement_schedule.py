@@ -996,6 +996,7 @@ def test_prepared_cas_input_charges_actual_claim_before_read_and_reuses_original
     from polylogue.core.storage_faults import ArchiveStorageFaultError
     from polylogue.storage.blob_publication import (
         ArchiveBlobPublisher,
+        BlobPublicationSourceRead,
         PreparedBlobPublicationClaim,
         consume_blob_publication_receipt,
     )
@@ -1029,13 +1030,13 @@ def test_prepared_cas_input_charges_actual_claim_before_read_and_reuses_original
                 checked_fields: list[dict[str, int]] = []
 
                 def validate_after_field_charge(
-                    connection: sqlite3.Connection,
+                    source: BlobPublicationSourceRead,
                     selected_claim: PreparedBlobPublicationClaim,
                     *,
                     source_path: str,
-                ) -> None:
+                ) -> tuple[str, int]:
                     with seal._owned_cursor(
-                        connection,
+                        seal.observer("source"),
                         "SELECT rowid FROM blob_publication_reservations WHERE publication_id=?",
                         (selected_claim.receipt.publication_id,),
                     ) as cursor:
@@ -1054,7 +1055,7 @@ def test_prepared_cas_input_charges_actual_claim_before_read_and_reuses_original
                         "publisher_id": len(selected_claim.receipt.publisher_id.encode()),
                     }
                     checked_fields.append(fields)
-                    original_validate(connection, selected_claim, source_path=source_path)
+                    return original_validate(source, selected_claim, source_path=source_path)
 
                 with monkeypatch.context() as scope:
                     scope.setattr(publisher, "validate_published_claim", validate_after_field_charge)

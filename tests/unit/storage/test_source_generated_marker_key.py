@@ -13,8 +13,10 @@ from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
-def _statement(seal, *, identity="a" * 64):
-    values = {
+def _statement(
+    seal: PreparedIndexMutation, *, identity: str = "a" * 64
+) -> tuple[str, tuple[object, ...], dict[str, KnownTierCell]]:
+    values: dict[str, None | int | float | str | bytes] = {
         "identity": identity,
         "raw_id": "synthetic-raw",
         "payload": b"Neutral",
@@ -22,7 +24,8 @@ def _statement(seal, *, identity="a" * 64):
         "payload_sha256": "b" * 64,
     }
     cells = {name: seal.retain_literal_scalar(value) for name, value in values.items()}
-    expressions, bindings = [], [None]
+    expressions: list[str] = []
+    bindings: list[object] = [None]
     for cell in cells.values():
         expression, operands = seal.source_literal_expression(cell)
         expressions.append(expression)
@@ -35,7 +38,7 @@ def _statement(seal, *, identity="a" * 64):
 
 
 @pytest.mark.parametrize("prior_sequence", [0, 4096])
-def test_generated_marker_key_is_actual_monotonic_retained_root(tmp_path: Path, prior_sequence: int):
+def test_generated_marker_key_is_actual_monotonic_retained_root(tmp_path: Path, prior_sequence: int) -> None:
     with write_lease("test.generated-marker", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         if prior_sequence:
@@ -100,7 +103,7 @@ def test_generated_marker_key_is_actual_monotonic_retained_root(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("defect", ["table", "key", "cells", "upsert", "update"])
-def test_generated_marker_role_refuses_noncanonical_statement(tmp_path: Path, defect: str):
+def test_generated_marker_role_refuses_noncanonical_statement(tmp_path: Path, defect: str) -> None:
     with write_lease("test.generated-marker-refusal", archive_root=tmp_path):
         bootstrap_archive_root(tmp_path)
         with PreparedIndexMutation.source_only(archive_root=tmp_path) as seal:
@@ -131,7 +134,7 @@ def test_generated_marker_role_refuses_noncanonical_statement(tmp_path: Path, de
                         pytest.fail("noncanonical generated root acquired authority")
 
 
-def test_generated_marker_statement_rollback_discards_exact_root(tmp_path: Path):
+def test_generated_marker_statement_rollback_discards_exact_root(tmp_path: Path) -> None:
     class InjectedRollbackError(Exception):
         pass
 

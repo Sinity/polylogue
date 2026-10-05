@@ -7,6 +7,7 @@ import threading
 import time
 from io import BytesIO
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -728,7 +729,7 @@ def test_nested_prepared_blob_producer_failure_preserves_primary_and_cleans(tmp_
     child.mkdir(mode=0o700)
     failure = RuntimeError("synthetic producer failure")
 
-    def fail(writer):
+    def fail(writer: IO[bytes]) -> None:
         writer.write(b"partial attachment")
         raise failure
 
