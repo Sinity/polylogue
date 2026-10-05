@@ -701,6 +701,11 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
 ) -> None:
     """Repeated unmatched uses probe outcome bounds instead of rescanning owners.
 
+    A lone use is the one use its tool ID names, so the agreeing sidecars bind
+    to it and it takes their ``error``. Several uses sharing that tool ID
+    leave every sidecar unbound to a specific use: each use is a deliberate
+    ``unknown``, none is singled out and no ``error`` is invented.
+
     Anti-vacuity: removing the `(tool_id, outcome)` index and scanning/grouping
     every same-ID sidecar per use makes the large-cohort delta grow with the
     number of record owners.
@@ -745,9 +750,10 @@ def test_unmatched_sidecar_fallback_work_does_not_grow_with_owner_cohort(
             with monkeypatch.context() as patch:
                 patch.setattr(sqlite3, "connect", traced_connect)
                 session_id = write_fixture_index_session(conn, session)
+            expected = ToolOutcome.ERROR if uses == 1 else ToolOutcome.UNKNOWN
             rows = conn.execute(
                 "SELECT COUNT(*), SUM(tool_outcome = ?) FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
-                (ToolOutcome.ERROR.value, session_id),
+                (expected.value, session_id),
             ).fetchone()
             assert rows is not None
             assert tuple(rows) == (uses, uses)
