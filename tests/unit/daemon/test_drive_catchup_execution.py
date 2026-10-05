@@ -19,7 +19,6 @@ from polylogue.config import Config, Source
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.pipeline.services.ingest_batch import _core as ingest
-from polylogue.pipeline.services.ingest_batch._models import _PreparedIngestUnit
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources import DriveFile
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -27,8 +26,13 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, current_write_lease, require_write_lease
-from tests.infra.archive_templates import bootstrap_archive_root
+from polylogue.storage.sqlite.write_lease import (
+    arm_write_lease_enforcement,
+    current_write_lease,
+    require_write_lease,
+    write_lease,
+)
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 
 pytestmark = pytest.mark.uses_real_clock("Thread settlement and archive acquisition timestamps are observed.")
 
@@ -266,50 +270,57 @@ async def test_drive_stale_preparation_never_marks_success(
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: DriveClient())
     acquired = await parser.ingest_sources(sources=[source], parse_records=False)
     raw_id = acquired.acquire_result.raw_ids[0]
-    execution = parser.execution
-    assert execution is not None
-    original = execution.prepare
+    from polylogue.storage.derived.raw import RawObservationDerivation
+
+    original_publish = RawObservationDerivation.publish
     moved = False
 
-    async def prepare(operation: Callable[[], _PreparedIngestUnit | None]) -> _PreparedIngestUnit | None:
+    def publish_after_mutation(self: RawObservationDerivation, frame: Any, replacement: Any, **kwargs: Any) -> bool:
+        # Parser work is complete (``compute`` prepared the replacement); the
+        # input, authority, policy or generation moves before publication.
         nonlocal moved
-        prepared = await original(operation)
-        assert prepared is not None
-        if moved:
-            return prepared
-        moved = True
-
-        def mutate() -> None:
-            if mutation == "policy":
-                with sqlite3.connect(tmp_path / "user.db") as conn:
-                    conn.execute("UPDATE query_unit_frame_state SET epoch=epoch+1")
-            elif mutation == "generation":
-                index = tmp_path / "index.db"
-                replacement = tmp_path / "replacement.db"
-                with sqlite3.connect(index) as old, sqlite3.connect(replacement) as new:
-                    old.backup(new)
-                replacement.replace(index)
+        if not moved and not replacement.already_valid:
+            moved = True
+            if current_write_lease() is not None:
+                mutate()
             else:
-                with sqlite3.connect(tmp_path / "source.db") as conn:
-                    if mutation == "raw":
-                        conn.execute("UPDATE raw_sessions SET file_mtime_ms=file_mtime_ms+1 WHERE raw_id=?", (raw_id,))
-                    elif mutation == "delete":
-                        conn.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_id,))
-                    elif mutation == "authority":
-                        conn.execute("UPDATE raw_sessions SET revision_authority='asserted' WHERE raw_id=?", (raw_id,))
-                    else:
-                        # A new cohort member must invalidate the negative sibling comparison.
-                        key = prepared.logical_keys[0]
-                        columns = [row[1] for row in conn.execute("PRAGMA table_info(raw_sessions)")]
-                        row = list(conn.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone())
-                        row[columns.index("raw_id")] = "sibling"
-                        row[columns.index("logical_source_key")] = key
-                        conn.execute(f"INSERT INTO raw_sessions VALUES ({','.join('?' for _ in row)})", row)
+                run_off_event_loop(mutate_under_lease)
+        return original_publish(self, frame, replacement, **kwargs)
 
-        await coordinator.run_sync("test.mutate", mutate)
-        return prepared
+    def mutate_under_lease() -> None:
+        with write_lease("test.mutate", archive_root=tmp_path):
+            mutate()
 
-    monkeypatch.setattr(execution, "prepare", prepare)
+    def mutate() -> None:
+        if mutation == "policy":
+            with sqlite3.connect(tmp_path / "user.db") as conn:
+                conn.execute("UPDATE query_unit_frame_state SET epoch=epoch+1")
+        elif mutation == "generation":
+            index = tmp_path / "index.db"
+            replacement = tmp_path / "replacement.db"
+            with sqlite3.connect(index) as old, sqlite3.connect(replacement) as new:
+                old.backup(new)
+            replacement.replace(index)
+        else:
+            with sqlite3.connect(tmp_path / "source.db") as conn:
+                if mutation == "raw":
+                    conn.execute("UPDATE raw_sessions SET file_mtime_ms=file_mtime_ms+1 WHERE raw_id=?", (raw_id,))
+                elif mutation == "delete":
+                    conn.execute("DELETE FROM raw_sessions WHERE raw_id=?", (raw_id,))
+                elif mutation == "authority":
+                    conn.execute("UPDATE raw_sessions SET revision_authority='asserted' WHERE raw_id=?", (raw_id,))
+                else:
+                    # A new cohort member must invalidate the negative sibling comparison.
+                    key = conn.execute(
+                        "SELECT logical_source_key FROM raw_sessions WHERE raw_id=?", (raw_id,)
+                    ).fetchone()[0]
+                    columns = [row[1] for row in conn.execute("PRAGMA table_info(raw_sessions)")]
+                    row = list(conn.execute("SELECT * FROM raw_sessions WHERE raw_id=?", (raw_id,)).fetchone())
+                    row[columns.index("raw_id")] = "sibling"
+                    row[columns.index("logical_source_key")] = key
+                    conn.execute(f"INSERT INTO raw_sessions VALUES ({','.join('?' for _ in row)})", row)
+
+    monkeypatch.setattr(RawObservationDerivation, "publish", publish_after_mutation)
     with arm_write_lease_enforcement(process_wide=True):
         result = await parser.parse_from_raw(raw_ids=[raw_id])
     assert not result.processed_ids
@@ -424,7 +435,7 @@ async def test_drive_phased_matches_ordinary_document_growth(
                 "SELECT rowid FROM messages_fts WHERE messages_fts MATCH 'Neutral' ORDER BY rowid"
             ).fetchall()
         assert len(raw) == 2
-        assert any(row[4] == "asserted" and row[5] for row in raw)
+        assert any(row[4] == "asserted" and row[5] for row in raw), (phased, raw)
         snapshots.append((raw, sessions, messages, attachments, fts))
         assert source.path is not None
         (source.path / "neutral.json").unlink()

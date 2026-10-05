@@ -167,6 +167,8 @@ def _run_dispatcher_ingest(
         retried = 0
         deferred = 0
         passes = 0
+        # The writer's lease names an existing archive root; bootstrap fills it.
+        archive_root.mkdir(parents=True, exist_ok=True)
         coordinator = DaemonWriteCoordinator(
             observer=writer_events.append if observe_writer_holds else None, archive_root=archive_root
         )
