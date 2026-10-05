@@ -762,7 +762,8 @@ def test_failed_receipt_publication_preserves_the_previous_generation_and_retry(
     assert set(staging.iterdir()) == initial_entries
     with single_staged_binding(first) as binding:
         assert binding.source_path == original
-        assert sqlite_snapshot.member_export_scope(binding.source_path).tables == ("threads", "thread_spawn_edges")
+        scope = sqlite_snapshot.member_export_scope(binding.source_path)
+        assert (scope.member, scope.origin) == ("state_5.sqlite", "codex-session")
     monkeypatch.setattr(os, "replace", replace)
     second = source_staging.stage_source_input(replacement, staging, check_stop=lambda: None)
     with single_staged_binding(second) as binding:
