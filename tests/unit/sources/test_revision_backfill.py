@@ -43,12 +43,12 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection_profile import StaleContinuationError
 from polylogue.storage.sqlite.write_lease import write_lease
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.raw_owner_routes import seed_parser_census
 from tests.infra.retained_parser_payloads import (
     _chatgpt_session,
 )
-from tests.infra.retained_replay import replay_retained_components
+from tests.infra.retained_replay import replay_retained_components, replay_retained_components_async
 from tests.infra.revision_backfill_benchmark import (
     REVISION_CHAIN_SHAPE,
     build_independent_raw_corpus,
@@ -526,20 +526,23 @@ def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -> None:
     """Detected provider evidence must survive an empty retained replay."""
-    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.UNKNOWN,
-            payload=(
-                b'{"type":"file-history-snapshot","messageId":"history-message",'
-                b'"sessionId":"history-only-session","snapshot":{"trackedFileBackups":{}}}\n'
-            ),
-            source_path=source_path,
-            acquired_at_ms=1,
-        )
 
-    replay_retained_components(tmp_path)
+    def acquire() -> str:
+        bootstrap_archive_root(tmp_path)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            return archive.write_raw_payload(
+                provider=Provider.UNKNOWN,
+                payload=(
+                    b'{"type":"file-history-snapshot","messageId":"history-message",'
+                    b'"sessionId":"history-only-session","snapshot":{"trackedFileBackups":{}}}\n'
+                ),
+                source_path=source_path,
+                acquired_at_ms=1,
+            )
+
+    raw_id = run_off_event_loop(acquire)
+    await replay_retained_components_async(tmp_path)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute(
