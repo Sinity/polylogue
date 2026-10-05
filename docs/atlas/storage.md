@@ -238,3 +238,10 @@ produced candidate can be validated and explicitly promoted through
 `EmbeddingGenerationStore.replace`; this admission does not automatically
 build or switch generations (`storage/embeddings/generations.py`;
 `storage/embeddings/materialization.py`; `storage/embeddings/derivation.py`).
+
+Embedding status measures coverage from Index and the canonical Embeddings tier.
+Its separately guarded Ops history reader returns nullable catchup history when
+the disposable tier is missing or unreadable; that absence does not abort
+otherwise measurable coverage. Supplied pinned connections keep their original
+attached snapshot authority. Owned diagnostic readers close even when an
+Embeddings attachment refuses (`storage/embeddings/status_payload.py`).

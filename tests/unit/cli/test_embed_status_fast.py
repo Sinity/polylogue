@@ -1093,6 +1093,57 @@ def test_status_json_reports_manual_backfill_when_config_disabled_but_partial(tm
     }
 
 
+@pytest.mark.parametrize("ops_state", ["missing", "corrupt", "empty"])
+@pytest.mark.parametrize("detail", [False, True])
+def test_status_preserves_embedding_coverage_without_readable_catchup_history(
+    tmp_path: Path, ops_state: str, detail: bool
+) -> None:
+    """Disposable history cannot abort the original embedding coverage reader."""
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    ops_db = tmp_path / "ops.db"
+    if ops_state == "corrupt":
+        ops_db.write_bytes(b"synthetic non-SQLite history")
+    elif ops_state == "empty":
+        initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+    payload = _run_status(
+        index_db,
+        *(("--detail",) if detail else ()),
+        cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"),
+    )
+
+    assert payload["total_sessions"] == 2
+    assert payload["embedded_sessions"] == 1
+    assert payload["latest_catchup_run"] is None
+    assert payload["latest_material_catchup_run"] is None
+
+
+def test_status_closes_owned_connection_when_embedding_attachment_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unavailable purchased tier still refuses, without leaking its reader."""
+    index_db = tmp_path / "index.db"
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    (tmp_path / "embeddings.db").write_bytes(b"synthetic non-SQLite embeddings")
+    opened: list[sqlite3.Connection] = []
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    original_open = open_readonly_connection
+
+    def record_open(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn = original_open(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(status_payload_mod, "open_readonly_connection", record_open)
+    with pytest.raises(sqlite3.DatabaseError):
+        _run_status(index_db, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
+
+
 def test_status_json_reads_latest_catchup_from_ops_db(tmp_path: Path) -> None:
     db_anchor = tmp_path / "index.db"
     archive_db = tmp_path / "index.db"
