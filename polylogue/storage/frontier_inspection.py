@@ -50,6 +50,10 @@ class FrontierJournalState:
                 raise ValueError("frontier journal coverage is invalid")
 
 
+#: Broken-head samples a findings document keeps; its counts stay exact.
+_FINDINGS_SAMPLE_LIMIT = 10
+
+
 @dataclass(frozen=True, slots=True)
 class FrontierInspectionMark:
     authority_identity: str
@@ -57,6 +61,8 @@ class FrontierInspectionMark:
     index_watermark: int
     cursor_watermark: int
     state: str
+    #: The pass's recorded findings document (:class:`FrontierInspectionFindings`).
+    findings_document: str | None = None
 
 
 def read_frontier_inspection_mark(conn: sqlite3.Connection, *, schema: str = "main") -> FrontierInspectionMark | None:
@@ -66,14 +72,16 @@ def read_frontier_inspection_mark(conn: sqlite3.Connection, *, schema: str = "ma
     # rather than translating it to an empty healthy frontier.
     with closing(
         conn.execute(
-            "SELECT authority_identity,source_watermark,index_watermark,cursor_watermark,state "
+            "SELECT authority_identity,source_watermark,index_watermark,cursor_watermark,state,detail "
             f"FROM {schema}.raw_frontier_inspection WHERE singleton=1"
         )
     ) as cursor:
         row = cursor.fetchone()
     if row is None:
         return None
-    return FrontierInspectionMark(str(row[0]), int(row[1]), int(row[2]), int(row[3]), str(row[4]))
+    return FrontierInspectionMark(
+        str(row[0]), int(row[1]), int(row[2]), int(row[3]), str(row[4]), None if row[5] is None else str(row[5])
+    )
 
 
 def frontier_inspection_mode(
@@ -1302,7 +1310,24 @@ def frontier_inspection_projection_from_connections(
             )
         )
     )
-    return {"available": True, "current": current, "healthy": current and mark.state == "healthy", "state": mark.state}
+    coverage: dict[str, object] = {
+        "available": True,
+        "current": current,
+        "healthy": current and mark.state == "healthy",
+        "state": mark.state,
+    }
+    if current:
+        from polylogue.storage.raw_retention import FrontierInspectionFindings
+
+        # The certificate's own categories. A document that does not decode
+        # leaves the categories unknown; it never reads as healthy.
+        try:
+            if mark.findings_document is None:
+                raise ValueError("frontier inspection recorded no findings")
+            coverage["findings"] = FrontierInspectionFindings.from_document(mark.findings_document)
+        except ValueError as failure:
+            coverage["detail"] = f"frontier inspection findings unreadable: {failure}"
+    return coverage
 
 
 def publish_frontier_inspection_mark(
@@ -1521,8 +1546,11 @@ def inspect_prepared_raw_authority_frontier(
                 state,
                 None if check_physical_dependencies else mark,
             )
+            from polylogue.storage.raw_retention import BrokenAppendHeadSample, FrontierInspectionFindings
+
             head_count = blocking_count = broken_count = cursor_count = ahead_count = gap_count = 0
-            missing_refs = 0
+            ahead_comparisons = missing_refs = 0
+            broken_samples: list[BrokenAppendHeadSample] = []
             if mode != "current":
                 for item, chain in _iter_selected_frontier_proofs(
                     source,
@@ -1534,10 +1562,15 @@ def inspect_prepared_raw_authority_frontier(
                     frame.selection.retain_proof(item)
                     head_count += 1
                     blocking_count += int(item.state in _OBLIGATION_STATES)
-                    broken_count += int(chain[0] != "healthy")
+                    if chain[0] != "healthy":
+                        broken_count += 1
+                        # A bounded sample for the operator; the count stays exact.
+                        if len(broken_samples) < _FINDINGS_SAMPLE_LIMIT:
+                            broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
                 for _cursor, comparison, _retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
                     cursor_count += 1
                     ahead_count += int(comparison.ahead_count > 0)
+                    ahead_comparisons += comparison.ahead_count
                     gap_count += int(comparison.gap)
                 if mode == "full":
                     missing_refs = _missing_session_raw_references(source)
@@ -1595,18 +1628,18 @@ def inspect_prepared_raw_authority_frontier(
                 accepted_source_watermark=accepted_source_high,
                 healthy=healthy,
                 observed_at_ms=observed_at_ms,
-                detail=json.dumps(
-                    {
-                        "head_checks": head_count,
-                        "blocking_heads": blocking_count,
-                        "broken_head_checks": broken_count,
-                        "cursor_checks": cursor_count,
-                        "cursor_ahead": ahead_count,
-                        "cursor_gaps": gap_count,
-                        "missing_session_raws": missing_refs,
-                    },
-                    sort_keys=True,
-                ),
+                detail=FrontierInspectionFindings(
+                    mode=mode,
+                    head_checks=head_count,
+                    blocking_heads=blocking_count,
+                    broken_heads=broken_count,
+                    broken_head_samples=tuple(broken_samples),
+                    cursor_checks=cursor_count,
+                    cursor_ahead=ahead_count,
+                    cursor_ahead_comparisons=ahead_comparisons,
+                    cursor_gaps=gap_count,
+                    missing_session_raws=missing_refs,
+                ).to_document(),
             )
     except BaseException as primary:
         _settle_frontier_inspection_frame(frame, exclusion, lifetime_bound=lifetime_bound, primary=primary)

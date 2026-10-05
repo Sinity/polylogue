@@ -754,6 +754,118 @@ class BrokenAppendHeadSample:
     reason: str
 
 
+def broken_head_reason(broken_count: int) -> str:
+    """The operator reason for active raw seeds whose predecessor chain failed."""
+    if broken_count == 0:
+        return ""
+    return f"{broken_count} active index raw seed(s) have a broken predecessor chain or invalid source binding"
+
+
+def cursor_ahead_reason(ahead_count: int, ahead_comparison_count: int, gap_count: int, deferred_count: int) -> str:
+    """The operator reason for cursor rows ahead of, or incomparable with, accepted raw."""
+    reasons: list[str] = []
+    if ahead_count:
+        reasons.append(
+            f"{ahead_count} ingest cursor row(s) committed past accepted raw material "
+            f"across {ahead_comparison_count} cursor/head comparison(s)"
+        )
+    if gap_count:
+        reasons.append(f"{gap_count} cursor/head authority row(s) could not be compared")
+    if deferred_count:
+        reasons.append(f"{deferred_count} ingest cursor(s) deferred awaiting the quiet window")
+    return "; ".join(reasons)
+
+
+_FINDINGS_COUNTS = (
+    "head_checks",
+    "blocking_heads",
+    "broken_heads",
+    "cursor_checks",
+    "cursor_ahead",
+    "cursor_ahead_comparisons",
+    "cursor_gaps",
+    "missing_session_raws",
+)
+_FINDINGS_SAMPLE_FIELDS = frozenset({"logical_source_key", "accepted_raw_id", "reason"})
+
+
+@dataclass(frozen=True)
+class FrontierInspectionFindings:
+    """Per-category results of one completed frontier inspection pass.
+
+    The inspection records this document in its Ops mark, so status renders
+    the certificate's categories instead of repeating the corpus inspection.
+    ``mode`` says what the pass covered: a ``delta`` pass starts from a
+    healthy certificate, so its violation counts and samples are complete
+    while its checked counts cover only the changed keys.
+    """
+
+    mode: str
+    head_checks: int
+    blocking_heads: int
+    broken_heads: int
+    broken_head_samples: tuple[BrokenAppendHeadSample, ...]
+    cursor_checks: int
+    cursor_ahead: int
+    cursor_ahead_comparisons: int
+    cursor_gaps: int
+    missing_session_raws: int
+
+    def to_document(self) -> str:
+        import json
+
+        payload: dict[str, object] = {name: getattr(self, name) for name in _FINDINGS_COUNTS}
+        payload["mode"] = self.mode
+        payload["broken_head_samples"] = [
+            {
+                "logical_source_key": sample.logical_source_key,
+                "accepted_raw_id": sample.accepted_raw_id,
+                "reason": sample.reason,
+            }
+            for sample in self.broken_head_samples
+        ]
+        return json.dumps(payload, sort_keys=True)
+
+    @classmethod
+    def from_document(cls, document: str) -> FrontierInspectionFindings:
+        """Decode exactly the recorded shape; anything else is a ``ValueError``."""
+        import json
+
+        payload = json.loads(document)
+        if not isinstance(payload, dict) or set(payload) != {*_FINDINGS_COUNTS, "mode", "broken_head_samples"}:
+            raise ValueError("frontier inspection findings have an undeclared shape")
+        counts: dict[str, int] = {}
+        for name in _FINDINGS_COUNTS:
+            value = payload[name]
+            if type(value) is not int or value < 0:
+                raise ValueError(f"frontier inspection finding {name} is not a nonnegative count")
+            counts[name] = value
+        mode = payload["mode"]
+        if mode not in {"full", "delta"}:
+            raise ValueError("frontier inspection findings name an undeclared mode")
+        raw_samples = payload["broken_head_samples"]
+        if not isinstance(raw_samples, list):
+            raise ValueError("frontier inspection broken-head samples are not a list")
+        samples: list[BrokenAppendHeadSample] = []
+        for raw in raw_samples:
+            if (
+                not isinstance(raw, dict)
+                or set(raw) != _FINDINGS_SAMPLE_FIELDS
+                or not all(isinstance(raw[field], str) for field in _FINDINGS_SAMPLE_FIELDS)
+            ):
+                raise ValueError("frontier inspection broken-head sample has an undeclared shape")
+            samples.append(
+                BrokenAppendHeadSample(
+                    logical_source_key=raw["logical_source_key"],
+                    accepted_raw_id=raw["accepted_raw_id"],
+                    reason=raw["reason"],
+                )
+            )
+        if len(samples) > counts["broken_heads"]:
+            raise ValueError("frontier inspection records more broken-head samples than broken heads")
+        return cls(mode=mode, broken_head_samples=tuple(samples), **counts)
+
+
 @dataclass(frozen=True)
 class CursorAheadSample:
     """One cursor with at least one accepted byte head behind its frontier."""
@@ -997,6 +1109,14 @@ def _raw_frontier_integrity_from_coverage(
     current = bool(coverage.get("current"))
     healthy = current and bool(coverage.get("healthy"))
     blocked = current and coverage.get("state") == "blocked"
+    findings = coverage.get("findings")
+    if current and isinstance(findings, FrontierInspectionFindings):
+        return _raw_frontier_integrity_from_findings(
+            findings,
+            blocked=blocked,
+            missing=(missing_status, missing_count, missing_samples, missing_reason),
+            available=bool(coverage.get("available")),
+        )
     reason = (
         ""
         if healthy
@@ -1030,6 +1150,51 @@ def _raw_frontier_integrity_from_coverage(
         cursor_authority_gap_samples=(),
         cursor_authority_deferred_count=0,
         cursor_ahead_reason=reason,
+    )
+
+
+def _raw_frontier_integrity_from_findings(
+    findings: FrontierInspectionFindings,
+    *,
+    blocked: bool,
+    missing: tuple[RawFrontierIntegrityStatus, int, tuple[Mapping[str, object], ...], str],
+    available: bool,
+) -> RawFrontierIntegrityProjection:
+    """Render each category of a current certificate from its recorded findings."""
+    missing_status, missing_count, missing_samples, missing_reason = missing
+    broken_status: RawFrontierIntegrityStatus = "violated" if findings.broken_heads else "healthy"
+    cursor_status: RawFrontierIntegrityStatus = (
+        "violated" if findings.cursor_ahead else "unknown" if findings.cursor_gaps else "healthy"
+    )
+    # A blocked certificate is a violation even when its cause (a blocking
+    # obligation, a lost session raw) has no category of its own here.
+    overall: RawFrontierIntegrityStatus = (
+        "violated" if blocked else combine_raw_frontier_integrity_statuses(broken_status, missing_status, cursor_status)
+    )
+    return RawFrontierIntegrityProjection(
+        available=available,
+        overall_status=overall,
+        broken_head_status=broken_status,
+        broken_head_count=findings.broken_heads,
+        broken_head_checked_count=findings.head_checks,
+        broken_head_samples=findings.broken_head_samples,
+        broken_head_reason=broken_head_reason(findings.broken_heads),
+        missing_source_raw_status=missing_status,
+        missing_source_raw_count=missing_count,
+        missing_source_raw_samples=missing_samples,
+        missing_source_raw_reason=missing_reason,
+        cursor_ahead_status=cursor_status,
+        cursor_ahead_count=findings.cursor_ahead,
+        cursor_ahead_checked_count=findings.cursor_checks,
+        cursor_head_comparison_count=findings.cursor_checks,
+        cursor_ahead_comparison_count=findings.cursor_ahead_comparisons,
+        cursor_ahead_samples=(),
+        cursor_authority_gap_count=findings.cursor_gaps,
+        cursor_authority_gap_samples=(),
+        cursor_authority_deferred_count=0,
+        cursor_ahead_reason=cursor_ahead_reason(
+            findings.cursor_ahead, findings.cursor_ahead_comparisons, findings.cursor_gaps, 0
+        ),
     )
 
 
@@ -2377,12 +2542,7 @@ def _check_broken_active_chain_inputs(
                     )
                 )
     status: RawFrontierIntegrityStatus = "violated" if broken_count else "healthy"
-    reason = (
-        ""
-        if broken_count == 0
-        else f"{broken_count} active index raw seed(s) have a broken predecessor chain or invalid source binding"
-    )
-    return status, broken_count, checked_count, tuple(samples), reason
+    return status, broken_count, checked_count, tuple(samples), broken_head_reason(broken_count)
 
 
 def _classify_cursor_frontier_input(
@@ -2525,16 +2685,6 @@ def _compare_cursor_frontier_inputs(
             )
 
     status: RawFrontierIntegrityStatus = "violated" if ahead_count else "unknown" if gap_count else "healthy"
-    reasons: list[str] = []
-    if ahead_count:
-        reasons.append(
-            f"{ahead_count} ingest cursor row(s) committed past accepted raw material "
-            f"across {ahead_comparison_count} cursor/head comparison(s)"
-        )
-    if gap_count:
-        reasons.append(f"{gap_count} cursor/head authority row(s) could not be compared")
-    if deferred_count:
-        reasons.append(f"{deferred_count} ingest cursor(s) deferred awaiting the quiet window")
     return (
         status,
         ahead_count,
@@ -2545,7 +2695,7 @@ def _compare_cursor_frontier_inputs(
         gap_count,
         tuple(gaps),
         deferred_count,
-        "; ".join(reasons),
+        cursor_ahead_reason(ahead_count, ahead_comparison_count, gap_count, deferred_count),
     )
 
 
