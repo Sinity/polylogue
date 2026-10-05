@@ -122,6 +122,11 @@ def record_deferred_append_cursor(
         failure_count=cursor.failure_count,
         next_retry_at=cursor.next_retry_at,
         excluded=bool(cursor.excluded),
+        # A deferral records no new acquisition authority: keep the accepted
+        # canonical path and captured profile, or the frontier gate refuses
+        # the cursor as one written without canonical path authority.
+        canonical_source_path=cursor.canonical_source_path,
+        captured_profile_key=cursor.captured_profile_key,
         allow_backward=True,
         deferred_end_offset=deferred_end_offset,
     )
