@@ -35,18 +35,18 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    bootstrap_archive_root(Path(path).parent)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 

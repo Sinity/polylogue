@@ -59,13 +59,13 @@ from polylogue.logging import capture
 from polylogue.sources.codex_state_projection import write_thread_state_projection
 from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.write import (
     ConnectionSessionSourceRead,
     prepare_session_write,
     raw_source_path,
 )
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
 
@@ -75,18 +75,18 @@ _PARSER_PARENT = "parser-parent-thread"
 
 
 def _index_conn(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    bootstrap_archive_root(Path(path).parent)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
 
 
 def _source_conn(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    bootstrap_archive_root(Path(path).parent)
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, ArchiveTier.SOURCE)
     return conn
 
 
