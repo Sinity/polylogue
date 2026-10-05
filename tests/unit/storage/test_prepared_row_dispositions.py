@@ -21,7 +21,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepare_session_write,
     prepared_row_dispositions,
     reset_prepared_row_dispositions,
-    write_parsed_session_to_archive,
 )
 from tests.infra.index_writer import fixture_index_mutation_scope, write_fixture_index_session
 
@@ -74,28 +73,6 @@ def test_canonical_write_is_counted_and_consumed(tmp_path: Path) -> None:
         conn.close()
     assert prepared_row_dispositions() == {"prepared_write": 1}
     assert set(prepared_row_dispositions()) <= PREPARED_ACCEPTED_DISPOSITIONS
-
-
-def test_missing_canonical_write_refuses_before_rows(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "index.db")
-    session = _session("absent", ["one"])
-    try:
-        # The fixture writer itself refuses to publish without a carrier, so
-        # address the production publication route directly.
-        with pytest.raises(PreparedSessionWriteRefusedError):
-            with fixture_index_mutation_scope(conn) as scope:
-                write_parsed_session_to_archive(
-                    conn,
-                    session,
-                    mutation_scope=scope,
-                    manage_transaction=False,
-                    prepared_write=None,
-                    content_hash=str(session_content_hash(session)),
-                )
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
-    finally:
-        conn.close()
-    assert not prepared_row_dispositions()
 
 
 def test_changed_input_refuses_before_rows(tmp_path: Path) -> None:

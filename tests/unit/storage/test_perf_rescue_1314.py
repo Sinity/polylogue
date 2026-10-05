@@ -58,11 +58,9 @@ def _capture_aiosqlite_sql() -> Iterator[list[str]]:
         statements.append(sql)
         return original(self, sql, *args, **kwargs)
 
-    aiosqlite.Connection.execute = _spy  # type: ignore[method-assign,assignment]
-    try:
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(aiosqlite.Connection, "execute", _spy)
         yield statements
-    finally:
-        aiosqlite.Connection.execute = original  # type: ignore[method-assign]
 
 
 # ---------------------------------------------------------------------------
