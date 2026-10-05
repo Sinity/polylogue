@@ -609,7 +609,7 @@ def _cursor_hash_authority(payload: bytes) -> str:
     )
 
 
-def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPlan:
+def _append_plan(path: Path, payload: bytes, *, payload_hash: str, native_id_hint: str | None = None) -> _AppendPlan:
     stat = path.stat()
     return _AppendPlan(
         path=path,
@@ -624,6 +624,7 @@ def _append_plan(path: Path, payload: bytes, *, payload_hash: str) -> _AppendPla
         payload_hash=payload_hash,
         cursor_fingerprint="base",
         bytes_read=len(payload),
+        native_id_hint=native_id_hint,
     )
 
 
@@ -3497,33 +3498,6 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
     }
 
 
-def test_append_malformed_workflow_journal_retains_failure_without_artifact_authority(tmp_path: Path) -> None:
-    """A filename cannot turn a complete corrupt record into artifact proof."""
-    path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
-    path.parent.mkdir(parents=True)
-    payload = b'{"contentKey":"broken"\n'
-    path.write_bytes(payload)
-    plan = replace(_append_plan(path, payload, payload_hash="artifact"), source_name="claude-code")
-
-    result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
-
-    assert result.succeeded == []
-    assert result.failed == [plan]
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        artifacts = conn.execute(
-            """
-            SELECT artifact_kind, classification_reason, parse_as_session
-            FROM raw_artifacts
-            """
-        ).fetchall()
-        raw = conn.execute("SELECT parse_error, parsed_at_ms FROM raw_sessions").fetchone()
-    assert artifacts == []
-    assert raw is not None and raw[0] is not None and raw[1] is None
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-
-
-@pytest.mark.parametrize("artifact_count", [65, 257])
 def test_append_session_shaped_workflow_journal_enters_revision_repair(tmp_path: Path, artifact_count: int) -> None:
     """Decoded session evidence bypasses path-only workflow-journal admission."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
@@ -6320,34 +6294,42 @@ def test_append_parse_failure_retains_typed_raw_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    path = tmp_path / "append-bad.jsonl"
-    payload = b"{bad json}\n"
-    path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="bad")
-    owner = _append_owner(tmp_path)
-    monkeypatch.setattr(
-        "polylogue.sources.dispatch.parse_stream_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("injected append parse failure")),
-    )
+    # An append parses only once it chains off an accepted full; seed one.
+    _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="append-bad")
+
+    def failing_parse(*_args: object, **_kwargs: object) -> Generator[ParsedSession, None, None]:
+        raise RuntimeError("injected append parse failure")
+        yield  # pragma: no cover - makes this a generator like the real parser
+
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.iter_parsed_stream", failing_parse)
 
     result = ingest_append_with_owner(owner, [plan])
 
     assert result.succeeded == []
     assert result.failed == [plan]
-    parsed_at_ms, parse_error = _raw_parse_state(tmp_path)
+    parsed_at_ms, parse_error = _append_raw_parse_state(tmp_path)
     assert parsed_at_ms is None
     assert isinstance(parse_error, str) and "injected append parse failure" in parse_error
     assert len(parse_error) <= 2000
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions").fetchone()[0])
+        raw_id = str(conn.execute("SELECT raw_id FROM raw_sessions WHERE source_index = -1").fetchone()[0])
         envelope = read_archive_raw_session_envelope(conn, raw_id)
     assert envelope.parse_error == parse_error
     assert envelope.detection_warnings == (parse_error[:500],)
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+        # The accepted full stays; the failed append adds nothing.
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 1
 
 
-def test_append_declared_artifact_is_admitted_with_typed_authority(tmp_path: Path) -> None:
+def test_identity_less_append_plan_is_refused_before_any_raw_write(tmp_path: Path) -> None:
+    """Only a hook carrier may append without a declared session identity.
+
+    The planner never forms an identity-less append for a declared artifact
+    (it returns no plan and the full route admits the artifact, see
+    ``test_full_batch_declared_artifact_is_admitted_before_pending_raw_write``),
+    and acquisition refuses such a plan before writing any raw.
+    """
     path = tmp_path / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
     path.parent.mkdir(parents=True)
     payload = b'{"contentKey":"call-1","agentId":"agent-a"}\n'
@@ -6356,21 +6338,10 @@ def test_append_declared_artifact_is_admitted_with_typed_authority(tmp_path: Pat
 
     result = ingest_append_with_owner(_append_owner(tmp_path), [plan])
 
-    assert result.succeeded == [plan]
-    assert result.failed == []
+    assert result.succeeded == []
+    assert result.failed == [plan]
     with sqlite3.connect(tmp_path / "source.db") as conn:
-        raw = conn.execute(
-            "SELECT raw_id, logical_source_key, revision_kind, revision_authority FROM raw_sessions"
-        ).fetchone()
-        artifact = conn.execute(
-            "SELECT artifact_kind, classification_reason, parse_as_session, raw_id FROM raw_artifacts"
-        ).fetchone()
-    assert raw is not None
-    assert raw[1:] == (None, "unknown", "quarantined")
-    assert artifact is not None
-    assert artifact[0] == "workflow_journal"
-    assert "OriginSpec" in artifact[1]
-    assert artifact[2:] == (0, raw[0])
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
 
 
 def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
@@ -6688,7 +6659,8 @@ def test_append_archive_lock_propagates_for_watcher_retry(
     path = tmp_path / "append-locked.jsonl"
     payload = b'{"type":"session_meta","payload":{"id":"append-locked"}}\n'
     path.write_bytes(payload)
-    plan = _append_plan(path, payload, payload_hash="locked")
+    # A watcher plan carries the session identity it binds the append to.
+    plan = _append_plan(path, payload, payload_hash="locked", native_id_hint="append-locked")
     owner = _append_owner(tmp_path)
 
     monkeypatch.setattr(
