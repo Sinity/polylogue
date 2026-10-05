@@ -258,6 +258,7 @@ def test_interactive_accept_forwards_digest_and_refuses_failed_receipt() -> None
             obj=env,
         )
 
+    assert issued, (invocation.output, invocation.exception)
     review = _reviews(issued)[0]
     assert review["expected_evidence_digest"] == "evidence-current"
     assert invocation.exit_code != 0
