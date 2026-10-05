@@ -10,7 +10,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
-from typing import IO
+from typing import Any
 
 import pytest
 
@@ -29,7 +29,7 @@ from polylogue.storage.blob_publication import (
     exclude_archive_blob_publishers,
     reconcile_blob_publication_reservations,
 )
-from polylogue.storage.blob_store import BlobStore, PreparedBlob
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
@@ -58,25 +58,21 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     (source_root / "01-slow.json").write_text('{"title":"slow","mapping":{}}')
 
     initial_time = frozen_clock.time()
-    # Acquisition retains each file through the acquisition boundary, which
-    # streams the validated bytes into ``prepare_from_fileobj``.
-    original_prepare = BlobStore.prepare_from_fileobj
+    # Acquisition retains each file through the acquisition boundary's bound
+    # capture, which streams the validated bytes into a private blob writer.
+    from polylogue.sources.acquisition_boundary import capture_bound_path as original_capture
+
     original_flush = ArchiveBlobPublisher.flush
     gc_report: BlobGCResult | None = None
     measured_window_s = 0.0
 
-    def measured_prepare(
-        store: BlobStore,
-        source: IO[bytes],
-        *,
-        heartbeat: object | None = None,
-    ) -> PreparedBlob:
+    def measured_capture(blob_store: BlobStore, path: Path | str, *args: Any, **kwargs: Any) -> Any:
         nonlocal measured_window_s
-        prepared = original_prepare(store, source, heartbeat=heartbeat)  # type: ignore[arg-type]
-        if Path(str(getattr(source, "name", ""))).name == "01-slow.json":
+        captured = original_capture(blob_store, path, *args, **kwargs)
+        if Path(path).name == "01-slow.json":
             frozen_clock.advance(MIN_AGE_S + 1)
             measured_window_s = frozen_clock.time() - initial_time
-        return prepared
+        return captured
 
     def measured_flush(publisher: ArchiveBlobPublisher) -> tuple[BlobPublicationReceipt, ...]:
         nonlocal gc_report
@@ -87,7 +83,7 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
             gc_report = run_blob_gc_report(archive_root / "source.db", archive_root / "blob", max_batch=10)
         return receipts
 
-    monkeypatch.setattr(BlobStore, "prepare_from_fileobj", measured_prepare)
+    monkeypatch.setattr("polylogue.sources.source_acquisition_components.capture_bound_path", measured_capture)
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", measured_flush)
     try:
         # Acquisition publishes raw rows and blobs through the daemon's admitted
@@ -285,7 +281,11 @@ def test_reconciliation_with_writer_exclusion_clears_only_missing_receipts(tmp_p
             raw_id="referenced-publication",
         )
 
-    with exclude_archive_blob_publishers(source_db) as exclusion:
+    # Excluded reconciliation deletes Source rows, as the archive writer does.
+    with (
+        write_lease("test.blob.reconcile", archive_root=archive_root),
+        exclude_archive_blob_publishers(source_db) as exclusion,
+    ):
         outcome = reconcile_blob_publication_reservations(
             source_db,
             store.root,
@@ -405,7 +405,13 @@ def test_destructive_gc_serializes_final_recheck_and_unlink(
     publisher = ArchiveBlobPublisher(archive_root / "source.db", store.root)
     publisher.write_from_bytes(payload)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        gc_future = executor.submit(run_blob_gc_report, archive_root / "source.db", store.root, 10)
+
+        def leased_gc() -> BlobGCResult:
+            # Destructive GC deletes under the archive writer, on its own thread.
+            with write_lease("test.blob.gc", archive_root=archive_root):
+                return run_blob_gc_report(archive_root / "source.db", store.root, 10)
+
+        gc_future = executor.submit(leased_gc)
         assert recheck_entered.wait(timeout=2)
         publish_future = executor.submit(_leased_flush(publisher, archive_root))
         assert not publish_future.done()
@@ -432,6 +438,7 @@ def test_index_only_attachment_consumes_receipt_after_index_commit(tmp_path: Pat
             )
         ],
     )
+    initialize_active_archive_root(archive_root)
     with (
         write_lease("test.index-only-attachment", archive_root=archive_root),
         ArchiveStore.open_existing(archive_root, read_only=False) as archive,
