@@ -2777,21 +2777,15 @@ def test_session_profile_debt_measures_derivation_lag_only(tmp_path: Path) -> No
 def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_path: Path) -> None:
     """The invariant that licenses deleting the orphan half of the debt scan.
 
-    Two independent guards, both production routes:
-
-    * every write profile that reaches ``index.db`` sets ``foreign_keys = ON``,
-      so an orphan insert is refused and a session delete cascades;
-    * the one route that deliberately suspends enforcement -- the bulk ingest
-      window in ``pipeline/services/ingest_batch/_core.py`` -- derives its
-      pre-commit ``_foreign_key_violations_for_sessions`` probe plan from the
-      live schema, and ``session_profiles`` is in it, scoped by session.
+    Every write profile that reaches ``index.db`` sets ``foreign_keys = ON``,
+    so an orphan insert is refused and a session delete cascades. No ingest
+    route suspends enforcement.
 
     Anti-vacuity: drop ``ON DELETE CASCADE``/``REFERENCES sessions`` from
-    ``SESSION_PROFILES_SPEC`` and the insert/cascade assertions go red and the
-    probe plan loses its entry; set ``foreign_keys=False`` on
-    ``WRITE_CONNECTION_PROFILE`` and the refusal assertion goes red.
+    ``SESSION_PROFILES_SPEC`` and the insert/cascade assertions go red; set
+    ``foreign_keys=False`` on ``WRITE_CONNECTION_PROFILE`` and the refusal
+    assertion goes red.
     """
-    from polylogue.pipeline.services.ingest_batch._core import _foreign_key_check_plan
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
@@ -2807,8 +2801,3 @@ def test_orphan_session_profile_is_unreachable_through_production_writes(tmp_pat
         facade._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         facade._conn.commit()
         assert facade._conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 0
-
-        scoped, unscoped = _foreign_key_check_plan(facade._conn)
-    probed = {(check.table, check.parent, check.scope_column) for check in scoped if check.table == "session_profiles"}
-    assert probed == {("session_profiles", "sessions", "session_id")}
-    assert "session_profiles" not in unscoped
