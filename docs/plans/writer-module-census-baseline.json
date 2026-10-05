@@ -58,6 +58,11 @@
     "tiers": []
   },
   {
+    "file": "polylogue/browser_capture/native_preparation.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/context/scheduler.py",
     "tiers": [
       "ops"
@@ -198,12 +203,6 @@
     "authority": "scratch"
   },
   {
-    "file": "polylogue/sources/codex_state_evidence.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/sources/codex_state_projection.py",
     "tiers": [],
     "authority": "scratch"
@@ -261,6 +260,16 @@
     "authority": "scratch"
   },
   {
+    "file": "polylogue/sources/parsers/grok.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/hermes_spans.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/sources/parsers/hermes_state.py",
     "tiers": [],
     "authority": "scratch"
@@ -287,6 +296,11 @@
   },
   {
     "file": "polylogue/sources/prepared_message_sink.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/retained_title_index.py",
     "tiers": [],
     "authority": "scratch"
   },
@@ -388,10 +402,9 @@
     ]
   },
   {
-    "file": "polylogue/storage/frontier_existence.py",
+    "file": "polylogue/storage/frontier_inspection.py",
     "tiers": [
-      "index",
-      "source"
+      "ops"
     ]
   },
   {
@@ -407,19 +420,7 @@
     ]
   },
   {
-    "file": "polylogue/storage/raw_authority.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
     "file": "polylogue/storage/raw_authority_verdict_cache.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
-    "file": "polylogue/storage/raw_reconciler.py",
     "tiers": [
       "source"
     ]

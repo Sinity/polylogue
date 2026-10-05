@@ -7,6 +7,16 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
+  - file: "polylogue/sources/codex_state_projection.py"
+    function: "prepare_thread_state_projection"
+    table: "codex_projection_produced_edges"
+    disposition: disposable_scratch
+    reason: "Created on the thread-state graph's private scratch owner (graph.owner) under the supplied preparation directory; it maps produced work-evidence edge rowids to their source refs for one projection publication and holds no archive rows."
+  - file: "polylogue/sources/codex_state_projection.py"
+    function: "prepare_thread_state_cohort"
+    table: "codex_projection_cohort_scopes"
+    disposition: disposable_scratch
+    reason: "Created on the cohort's private scratch connection; the written flag tracks which source scopes this preparation published, and the native owner retires the scratch with the cohort."
   - file: "polylogue/storage/frontier_inspection.py"
     function: "_FrontierSelection.__init__"
     table: "selected_raws"
@@ -660,13 +670,6 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "publication obligation status machine (pending -> publishing -> confirmed/rejected/durable_debt): the lease and redrive statements name the admissible prior statuses in the WHERE and never list 'confirmed', and the two upserts elevate mode only mirror->primary through an explicit CASE that otherwise re-writes the stored value"
-  - file: "polylogue/sources/codex_state_evidence.py"
-    function: "_upsert_codex_material"
-    table: "material_observations"
-    kind: "update"
-    tier: "source"
-    classification: lifecycle_transition
-    reason: "a Codex state observation whose content-keyed material_id changed marks strictly the previous observation acquisition_state = 'superseded' by material_id; the prior row and its bytes are retained and only its declared acquisition state advances"
   - file: "polylogue/storage/blob_gc.py"
     function: "_abandon_pending_gc_generation"
     table: "gc_generation_members"
@@ -871,7 +874,7 @@ writes:
     classification: lifecycle_transition
     reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
-    function: "replace_raw_membership_census"
+    function: "record_prepared_membership_census_receipt"
     table: "raw_membership_census"
     kind: "upsert_do_update"
     tier: "source"

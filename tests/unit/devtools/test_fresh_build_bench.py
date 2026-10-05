@@ -585,38 +585,6 @@ def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
     assert "home/.gemini/tmp/hash1/tool-outputs/session-x/shell_1.txt" in paths
 
 
-def test_parse_component_uses_the_production_stream_predicate_and_times_only_the_worker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: an exact ``.jsonl`` comparison parses ``rollout.JSONL``
-    as a document; timing the count loop charges its 0.3 s to the worker."""
-    import time
-    from types import SimpleNamespace
-
-    from devtools.fresh_build_bench import components
-
-    corpus = tmp_path / "corpus"
-    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.JSONL"
-    transcript.parent.mkdir(parents=True)
-    transcript.write_text("{}\n", encoding="utf-8")
-    seal(corpus, kind="sample", parameters={})
-    seen: list[bool] = []
-
-    def slow_sessions() -> list[object]:
-        time.sleep(0.3)
-        return [SimpleNamespace(messages=[1, 2])]
-
-    def worker(_provider: str, _path: str, _stem: str, *, is_stream: bool, **_kwargs: object) -> object:
-        seen.append(is_stream)
-        return SimpleNamespace(error=None, iter_sessions=slow_sessions)
-
-    monkeypatch.setattr("polylogue.sources.live.parse_prefetch.live_parse_path_worker", worker)
-    result = components.bench_parse(corpus, tmp_path / "scratch", workers=1, origins=None, limit=None)
-    assert seen == [True]
-    assert result["counts"] == {"sessions": 1, "messages": 2}
-    assert result["by_origin"]["codex"]["seconds"] < 0.2
-
-
 def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> None:
     """Anti-vacuity: keeping the recorded CPU leaves a value cut at the old
     promotion time beside the new one."""
@@ -739,17 +707,15 @@ def _sidecar_corpus(tmp_path: Path) -> Path:
     return corpus
 
 
-def test_blob_component_stores_sidecars_and_parse_skips_them(tmp_path: Path) -> None:
-    """Anti-vacuity (Codex P2, #5678): share the parse filter with the blob
-    component and the sidecar the acquisition route stores is never timed."""
+def test_blob_component_stores_sidecars(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): dropping retained sidecars omits real
+    acquisition work from the blob timing."""
     from devtools.fresh_build_bench import components
 
     corpus = _sidecar_corpus(tmp_path)
     manifest = load_manifest(corpus)
-    blob_files = components._corpus_files(corpus, manifest, None, None, sessions_only=False)
-    parse_files = components._corpus_files(corpus, manifest, None, None, sessions_only=True)
+    blob_files = components._corpus_files(corpus, manifest, None, None)
     assert sorted(path.name for path, _origin, _size in blob_files) == ["s1.jsonl", "toolu_1.txt"]
-    assert [path.name for path, _origin, _size in parse_files] == ["s1.jsonl"]
 
 
 def test_an_empty_component_selection_fails(tmp_path: Path) -> None:

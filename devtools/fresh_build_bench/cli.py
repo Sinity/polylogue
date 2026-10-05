@@ -7,7 +7,7 @@ Subcommands::
     run --corpus DIR --work DIR [--profile]         one measured daemon build
         [--max-rss-mib N] [--max-promotion-s N]     asserted budgets; exit 1 unless qualified
     report RECEIPT [--refresh]                      render one receipt
-    components parse|blob ...               time one production stage
+    components blob ...                     time one production stage
     compare BEFORE AFTER                            deltas and output equivalence
     profile SAMPLES [--thread PREFIX]               stack-sample tables
 

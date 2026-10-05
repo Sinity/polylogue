@@ -3865,7 +3865,13 @@ class LiveBatchProcessor:
         for path in paths:
             if path not in accounted:
                 excluded_paths[path] = "dropped without a recorded outcome"
-                logger.warning("live.watcher: planned path left the ingest pass with no recorded outcome: %s", path)
+                emit(
+                    "live.ingest.planned_path_unrecorded",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="no_recorded_outcome",
+                    path=str(path),
+                )
         result = _full_ingest_result_from_summary(
             succeeded=succeeded_paths,
             failed=failed,

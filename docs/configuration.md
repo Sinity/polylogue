@@ -329,9 +329,6 @@ A few keys not shown in the full example above, with their TOML path:
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
-| `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
-| `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
-| `live_watcher_parse_stage_stall_report_seconds` | `watcher.parse_stage_stall_report_seconds` | Seconds without forward progress before a watcher preparation reports `live.parse_prefetch.preparation_stalled`. Not a deadline: the warm keeps waiting. Unset/`<=0` uses the 60s default. |
 | `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
 | `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
 | `judgment_automation_batch_limit` | `judgment_automation.batch_limit` | Maximum candidates judged per judgment-automation sweep (default 200). |
@@ -381,9 +378,6 @@ Common runtime overrides:
 | `NO_COLOR` | `no_color` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain. |
 | `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS` | `live_watcher_parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight source-byte budget for watcher path preparation. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS` | `live_watcher_parse_stage_stall_report_seconds` | Stall-report interval for a watcher preparation. |
 
 `POLYLOGUE_SESSION_REF` is deliberately not a layered config key. It is
 launcher/harness-injected correlation metadata for one process invocation,
