@@ -22,6 +22,7 @@ from polylogue.browser_capture.receiver import (
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 
 
 def _envelope(instance_id: str, *, backfill_job_id: str) -> BrowserCaptureEnvelope:
@@ -124,6 +125,9 @@ async def test_concurrent_extension_instances_deduplicate_without_corrupting_spo
     }
     assert not list(tmp_path.rglob(".*.tmp"))
 
+    # Source-only acquisition refuses an archive without its durable Source
+    # tier; bootstrap it off the event loop, where a synchronous lease may block.
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path / "archive"))
     archive = Polylogue(archive_root=tmp_path / "archive")
     processor = LiveBatchProcessor(
         archive,

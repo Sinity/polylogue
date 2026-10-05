@@ -26,6 +26,7 @@ from polylogue.daemon.convergence_stages import make_default_convergence_stages
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.compute_owner import owned_compute_adapter
 
 
@@ -94,6 +95,8 @@ def test_convergence_produces_consistent_final_archive_state(
         _write_claude_code_session(p, session_id, n_msgs)
         files.append(p)
 
+    # Source-only acquisition refuses an archive without its durable Source tier.
+    bootstrap_archive_root(tmp_path)
     with owned_compute_adapter() as compute:
         converger = DaemonConverger(stages=make_default_convergence_stages(db_path, compute_adapter=compute))
         polylogue = _MinimalPolylogue(tmp_path, db_path)

@@ -3397,7 +3397,7 @@ def test_raw_observation_owner_preserves_source_frontier_refusal(
             return {raw_id: "/archive/refused.jsonl"}
 
     monkeypatch.setattr(
-        "polylogue.operations.raw_observation_derivation.make_raw_observation_derivation",
+        "polylogue.operations.raw_observation_owner.make_raw_observation_derivation",
         lambda *_args, **_kwargs: Derivation(),
     )
     owner = RawObservationConvergenceOwner(
@@ -4426,6 +4426,8 @@ _DECLARED_UNSUPERVISED_TASK_PREFIXES: dict[str, str] = {
     "polylogue-managed:": "DaemonWriteCoordinator: one tracked post-write effect",
     "polylogue-drive-catchup:": "DriveCatchupExecution: one settled catch-up step",
     "polylogue-ingest-redrive:": "DaemonOperationRuntime: the ingest owner's accepted-ingest re-drive",
+    "polylogue-prepared-writer:": "DaemonWriteCoordinator: one prepared writer-worker body",
+    "polylogue-writer-custody:": "async_write_lease: archive custody acquisition and settlement wait",
 }
 
 

@@ -31,6 +31,7 @@ from polylogue.daemon.cursor_lag_status import (
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier, _check_cursor_lag_medium
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 
 # Pin ``datetime.now`` everywhere the cursor-lag stack reads it so the
@@ -264,8 +265,13 @@ async def test_default_periodic_health_schedule_runs_medium_probes_and_records_c
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     db = _isolated_archive(tmp_path, monkeypatch)
-    with ArchiveStore(db.parent):
-        pass
+
+    def initialize() -> None:
+        with ArchiveStore(db.parent):
+            pass
+
+    # Archive initialization takes a synchronous lease; run it off the loop.
+    run_off_event_loop(initialize)
     now = frozen_clock.now()
     _seed_live_cursor(
         db,

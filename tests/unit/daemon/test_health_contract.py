@@ -224,11 +224,15 @@ class TestTierInventoryContract:
         assert not extra, f"FAST tier has undocumented checks: {sorted(extra)}"
 
     def test_medium_tier_inventory_pinned(self) -> None:
-        names = frozenset(alert.check_name for alert in _run_medium_checks())
+        alerts = _run_medium_checks()
+        names = frozenset(alert.check_name for alert in alerts)
         missing = EXPECTED_MEDIUM_CHECKS - names
         extra = names - EXPECTED_MEDIUM_CHECKS
         assert not missing, f"MEDIUM tier missing checks: {sorted(missing)}"
-        assert not extra, f"MEDIUM tier has undocumented checks: {sorted(extra)}"
+        assert not extra, (
+            f"MEDIUM tier has undocumented checks: {sorted(extra)}",
+            [(alert.check_name, alert.message) for alert in alerts if alert.check_name in extra],
+        )
 
     @pytest.mark.slow
     def test_expensive_tier_inventory_pinned(self) -> None:
