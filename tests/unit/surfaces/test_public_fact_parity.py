@@ -158,7 +158,7 @@ async def test_session_profile_fact_survives_repository_facade_cli_and_daemon_ht
 
     repository = RepositorySurface(db_path)
     facade = FacadeSurface(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cli = CLISurface(db_path=db_path)
+    cli = CLISurface(archive_root=workspace_env["archive_root"], db_path=db_path)
     daemon = DaemonHTTPSurface(db_path=db_path)
     try:
         repository_insight = await repository.session_profile_insight(selected.native_session_id)
