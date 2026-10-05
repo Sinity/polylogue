@@ -12,7 +12,7 @@ import asyncio
 import sqlite3
 import sys
 from builtins import BaseExceptionGroup
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,12 +24,14 @@ from polylogue.sources.live.cold_build import (
     clear_cold_build_generation,
     register_cold_build_generation,
 )
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 if TYPE_CHECKING:
     from polylogue.archive.revision_authority import RawRevisionAuthority
     from polylogue.core.compute import BoundedComputeAdapter
+    from polylogue.daemon.derivation import DerivationReport
     from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
     from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
     from polylogue.sources.live.batch import LiveBatchProcessor
@@ -283,7 +285,63 @@ def seed_membership_census(
     )
 
 
+def _lease_writer(root: Path) -> Callable[[str, Callable[[], bool]], bool]:
+    def writer(actor: str, work: Callable[[], bool]) -> bool:
+        with write_lease(actor, archive_root=root):
+            return work()
+
+    return writer
+
+
+def converge_raw_observations_with_owner(
+    archive_root: Path, *, source_roots: Sequence[Path], limit: int, passes: int = 1
+) -> DerivationReport:
+    """Run canonical raw-observation convergence ``passes`` times on the raw owner; return the last report."""
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+
+    def converge(compute_adapter: BoundedComputeAdapter) -> DerivationReport:
+        with stage_write_admission(_lease_writer(archive_root)):
+            return converge_raw_observations(
+                archive_root, source_roots=source_roots, compute_adapter=compute_adapter, limit=limit
+            )
+
+    async def run() -> DerivationReport:
+        report: DerivationReport | None = None
+        async with prepared_live_convergence_owner(archive_root) as raw_owner:
+            for _ in range(passes):
+                report = await raw_owner.run_convergence_sync(
+                    "test.raw-observation.converge", converge, raw_owner._compute_adapter
+                )
+        assert report is not None
+        return report
+
+    return asyncio.run(run())
+
+
+def inspect_raw_observations(
+    archive_root: Path, raw_ids: Sequence[str], *, source_roots: Sequence[Path]
+) -> Mapping[str, str]:
+    """Inspect retained raws through the canonical adapter on the raw owner's creator."""
+    from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
+
+    def inspect(compute_adapter: BoundedComputeAdapter) -> Mapping[str, str]:
+        return make_raw_observation_derivation(archive_root, compute_adapter=compute_adapter).inspect(
+            raw_observation_frame(archive_root, source_roots=source_roots), list(raw_ids)
+        )
+
+    async def run() -> Mapping[str, str]:
+        async with prepared_live_convergence_owner(archive_root) as raw_owner:
+            return await raw_owner.run_convergence_sync(
+                "test.raw-observation.inspect", inspect, raw_owner._compute_adapter
+            )
+
+    return asyncio.run(run())
+
+
 __all__ = [
+    "converge_raw_observations_with_owner",
+    "inspect_raw_observations",
     "LiveOwnerSet",
     "cold_rebuilt_index",
     "ingest_files_with_owners",
