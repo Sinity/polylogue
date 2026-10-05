@@ -77,6 +77,7 @@ from polylogue.storage.sqlite.literal_cells import (
     LITERAL_CHUNK_BYTES,
     SQLiteLiteralCell,
     cell_projection,
+    inline_cell_projection,
     literal_metadata,
     owned_literal_stream,
     quote_identifier,
@@ -4771,7 +4772,13 @@ class PreparedIndexMutation:
             raise ReferenceSealError("physical row image omits canonical cells")
         native_address: int | bytes = logical_vector_key if logical_vector_key is not None else cast(int, image.rowid)
         alias, address = self._original_row_address(connection, image.table, image.columns, native_address)
-        projection = ",".join(cell_projection(quote_identifier(column)) for column in image.columns)
+        # Each cell's metadata, plus its bytes when they fit one literal chunk:
+        # a small cell compares exactly from this same row read, a larger one
+        # streams through its native Blob so no cell is materialized whole.
+        projection = ",".join(
+            f"{cell_projection(quote_identifier(column))}, {inline_cell_projection(quote_identifier(column))}"
+            for column in image.columns
+        )
         source_sql = f"FROM {quote_identifier(image.table)} WHERE {quote_identifier(alias)}=?"
         with self._owned_cursor(
             connection, f"SELECT {quote_identifier(alias)},{projection} {source_sql}", (address,)
@@ -4779,12 +4786,13 @@ class PreparedIndexMutation:
             row = cursor.fetchone()
         if row is None or row[0] != address:
             return False
-        owner = next(child for child in native_sql_children(self) if child.connection is connection)
-        incremental = self._incremental_cell_reads(connection, image.table)
+        owner: NativeSQLCustodyOwner | None = None
+        incremental: bool | None = None
         check: Callable[[], None] = (lambda: None) if settlement else _check_reference_cancellation
         for position, (column, expected) in enumerate(zip(image.columns, image.cells, strict=True)):
             check()
-            actual = literal_metadata(*row[1 + 3 * position : 1 + 3 * position + 3])
+            offset = 1 + 4 * position
+            actual = literal_metadata(*row[offset : offset + 3])
             kind, size, fixed = self._literal_cell_metadata(expected)
             if (actual.storage_class, actual.byte_length) != (kind, size):
                 return False
@@ -4792,6 +4800,19 @@ class PreparedIndexMutation:
                 if actual.fixed_bytes() != fixed:
                     return False
                 continue
+            inline = row[offset + 3]
+            if inline is not None:
+                if len(inline) != size:
+                    return False
+                if not self._literal_streams_equal(
+                    self._literal_cell_chunks(expected, settlement=settlement), (chunk for chunk in (bytes(inline),))
+                ):
+                    return False
+                continue
+            if owner is None:
+                owner = next(child for child in native_sql_children(self) if child.connection is connection)
+                incremental = self._incremental_cell_reads(connection, image.table)
+            assert incremental is not None
             literal = self._native_literal_chunks(
                 connection,
                 owner,
@@ -8599,6 +8620,9 @@ class PreparedIndexMutation:
             "ON known_tier_effects(tier,parent_effect_id,table_name)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_old ON known_tier_effects(tier,table_name,old_rowid,effect_id)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_new ON known_tier_effects(tier,table_name,new_rowid,effect_id)",
+            # Pending-capture probes name no table; without this they scan
+            # every effect of the tier on each Source statement.
+            "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_consumed ON known_tier_effects(tier,consumed)",
         )
         for statement in statements:
             _check_reference_cancellation()
@@ -9033,12 +9057,18 @@ class PreparedIndexMutation:
         ) as coordinates:
             for table, rowid in coordinates:
                 _check_reference_cancellation()
+                # The latest effect touching this coordinate, from two indexed
+                # probes: an OR over both rowids walked every effect of the
+                # table, making each verification quadratic in its effects.
                 with self._owned_cursor(
                     self._scratch,
-                    "SELECT new_rowid,new_image FROM temp.known_tier_effects "
-                    "WHERE tier=? AND table_name=? AND (old_rowid=? OR new_rowid=?) "
-                    "ORDER BY effect_id DESC LIMIT 1",
-                    (tier, table, rowid, rowid),
+                    "SELECT new_rowid,new_image FROM temp.known_tier_effects WHERE effect_id=("
+                    "SELECT max(effect_id) FROM ("
+                    "SELECT max(effect_id) AS effect_id FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND old_rowid=? "
+                    "UNION ALL SELECT max(effect_id) FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND new_rowid=?))",
+                    (tier, table, rowid, tier, table, rowid),
                 ) as cursor:
                     expected = cursor.fetchone()
                 assert expected is not None

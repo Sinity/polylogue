@@ -89,6 +89,15 @@ def cell_projection(expression: str) -> str:
     )
 
 
+def inline_cell_projection(expression: str) -> str:
+    """A text or blob cell's bytes when they fit one literal chunk, else NULL."""
+    return (
+        f"CASE WHEN typeof({expression}) IN ('text','blob') "
+        f"AND length(CAST({expression} AS BLOB)) <= {LITERAL_CHUNK_BYTES} "
+        f"THEN CAST({expression} AS BLOB) END"
+    )
+
+
 def stream_literal_blob(
     blob: sqlite3.Blob, length: int, check_cancel: Callable[[], None]
 ) -> Generator[bytes, None, None]:
