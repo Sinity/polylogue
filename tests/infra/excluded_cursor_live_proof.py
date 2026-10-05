@@ -26,6 +26,7 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.raw_owner_routes import live_owner_set
 
 
@@ -90,6 +91,7 @@ def _seed_excluded(cursor: CursorStore, path: Path, *, parser_fingerprint: str) 
         mtime_ns=stat.st_mtime_ns,
         failure_count=5,
         excluded=True,
+        authority=fixture_cursor_authority(path),
     )
 
 

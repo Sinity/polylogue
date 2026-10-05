@@ -46,6 +46,7 @@ from polylogue.sources.live.cursor_lifecycle import (
     CursorLifecycleViolationError,
     classify_cursor_lifecycle_state,
 )
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 _S = CursorLifecycleState
 
@@ -129,7 +130,7 @@ def test_soundness_sweep_mark_failed_from_absent_to_excluded(tmp_path: Path) -> 
 
     for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE + 1):
         before = store.get_record(path)
-        store.mark_failed(path)
+        store.mark_failed(path, authority=fixture_cursor_authority(path))
         after = store.get_record(path)
         _assert_declared(before, "mark_failed", after)
     final = store.get_record(path)
@@ -141,7 +142,7 @@ def test_soundness_sweep_defer_then_mark_failed_then_reset(tmp_path: Path) -> No
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size, content_fingerprint=None)
+    store.set(path, path.stat().st_size, content_fingerprint=None, authority=fixture_cursor_authority(path))
     assert classify_cursor_lifecycle_state(store.get_record(path)) is _S.ACTIVE
 
     before = store.get_record(path)
@@ -151,7 +152,7 @@ def test_soundness_sweep_defer_then_mark_failed_then_reset(tmp_path: Path) -> No
     assert classify_cursor_lifecycle_state(after) is _S.DEFERRED
 
     before = after
-    store.mark_failed(path)
+    store.mark_failed(path, authority=fixture_cursor_authority(path))
     after = store.get_record(path)
     _assert_declared(before, "mark_failed", after)
     assert classify_cursor_lifecycle_state(after) is _S.RETRY_PENDING
@@ -167,7 +168,7 @@ def test_soundness_sweep_exclude_then_revive_with_proved_identity_change(tmp_pat
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size, st_dev=1, st_ino=1, mtime_ns=1)
+    store.set(path, path.stat().st_size, st_dev=1, st_ino=1, mtime_ns=1, authority=fixture_cursor_authority(path))
 
     before = store.get_record(path)
     store.mark_excluded(path)
@@ -199,7 +200,15 @@ def test_soundness_sweep_exclude_then_revive_with_parser_fingerprint_change(tmp_
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size, st_dev=1, st_ino=1, mtime_ns=1, parser_fingerprint="parser-v1")
+    store.set(
+        path,
+        path.stat().st_size,
+        st_dev=1,
+        st_ino=1,
+        mtime_ns=1,
+        parser_fingerprint="parser-v1",
+        authority=fixture_cursor_authority(path),
+    )
 
     store.mark_excluded(path)
     excluded = store.get_record(path)
@@ -253,7 +262,7 @@ def test_defer_full_cursor_reconciliation_refuses_excluded_cursor(tmp_path: Path
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size)
+    store.set(path, path.stat().st_size, authority=fixture_cursor_authority(path))
     store.mark_excluded(path)
     assert classify_cursor_lifecycle_state(store.get_record(path)) is _S.EXCLUDED
 
@@ -287,7 +296,7 @@ def test_removing_a_declared_transition_makes_a_real_production_call_fail(
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size)
+    store.set(path, path.stat().st_size, authority=fixture_cursor_authority(path))
     store.mark_excluded(path)
     assert classify_cursor_lifecycle_state(store.get_record(path)) is _S.EXCLUDED
 
@@ -329,7 +338,7 @@ def test_breaking_the_reset_failures_actuator_is_caught_by_the_validator(
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size)
+    store.set(path, path.stat().st_size, authority=fixture_cursor_authority(path))
     store.mark_excluded(path)
     assert classify_cursor_lifecycle_state(store.get_record(path)) is _S.EXCLUDED
 
@@ -392,14 +401,14 @@ def _pausing_exit(self, exc_type, exc, traceback):
 
 io_phase_metrics._MeasuredConnection.__exit__ = _pausing_exit
 
-from polylogue.sources.live.cursor import CursorStore  # noqa: E402
+from polylogue.sources.live.cursor import CursorPathAuthority, CursorStore  # noqa: E402
 
 db_path = Path(sys.argv[1])
 source_path = Path(sys.argv[2])
 
 store = CursorStore(db_path)
 ARMED[0] = True
-store.mark_failed(source_path)
+store.mark_failed(source_path, authority=CursorPathAuthority(str(source_path.resolve()), None))
 print("UNREACHABLE")
 """
 
@@ -424,7 +433,7 @@ def test_sigkill_mid_transaction_leaves_no_torn_cursor_write(tmp_path: Path) -> 
     # Seed the pre-crash boundary state through the REAL (unpoisoned) actuator.
     seed_store = CursorStore(db_path)
     for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE - 1):
-        seed_store.mark_failed(source_path)
+        seed_store.mark_failed(source_path, authority=fixture_cursor_authority(source_path))
     pre_crash = seed_store.get_record(source_path)
     assert pre_crash is not None
     assert pre_crash.failure_count == _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE - 1
@@ -467,7 +476,7 @@ def test_sigkill_mid_transaction_leaves_no_torn_cursor_write(tmp_path: Path) -> 
 
     # Recovery actuator: a plain retry (no special crash-recovery code path)
     # converges to the correct terminal state with no double-count.
-    recovery_store.mark_failed(source_path)
+    recovery_store.mark_failed(source_path, authority=fixture_cursor_authority(source_path))
     converged = recovery_store.get_record(source_path)
     assert converged is not None
     assert converged.failure_count == _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE

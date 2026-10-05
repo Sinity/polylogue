@@ -99,28 +99,31 @@ async def _acquire(archive_root: Path, spool_root: Path) -> int:
     from tests.infra.raw_owner_routes import live_owner_set
 
     sources = _carrier_sources(spool_root)
-    # The daemon constructs its watcher with the live writer owners; without
-    # them every carrier batch is refused outside writer admission.
+    # Carrier acquisition writes the Source tier, so the watcher runs on the
+    # daemon's own writer and owners, exactly as ``polylogued run`` wires it.
     async with live_owner_set(archive_root) as owners:
         watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources, **owners.watcher_kwargs())
-        context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
-        dispatcher = FairIntakeDispatcher(
-            tuple(
-                IntakeClassSpec(
-                    name=f"hook_carrier:{source.name}",
-                    adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+        try:
+            context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+            dispatcher = FairIntakeDispatcher(
+                tuple(
+                    IntakeClassSpec(
+                        name=f"hook_carrier:{source.name}",
+                        adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+                    )
+                    for source in sources
                 )
-                for source in sources
             )
-        )
-        admitted = 0
-        for _pass in range(_MAX_PASSES):
-            report = await dispatcher.run_once()
-            moved = sum(int(entry.admitted) for entry in report.classes)
-            admitted += moved
-            if not moved:
-                break
-    return admitted
+            admitted = 0
+            for _pass in range(_MAX_PASSES):
+                report = await dispatcher.run_once()
+                moved = sum(int(entry.admitted) for entry in report.classes)
+                admitted += moved
+                if not moved:
+                    break
+            return admitted
+        finally:
+            watcher.stop()
 
 
 def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:

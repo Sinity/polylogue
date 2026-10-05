@@ -17,7 +17,6 @@ from tests.infra.archive_scenarios import (
     ScenarioMessage,
     seed_workspace_scenarios,
 )
-from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.oracles import (
     assert_archive_surfaces_agree,
     assert_provider_partition_exhaustive,
@@ -83,21 +82,17 @@ async def multi_provider_surfaces(
 async def multi_provider_adapter_surfaces(
     workspace_env: Mapping[str, Path],
     multi_provider_archive: tuple[Path, tuple[ArchiveScenario, ...]],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[ArchiveSurfaceSet]:
     db_path, _ = multi_provider_archive
-    # The CLI query verbs are served by ``polylogued run`` (#5805); the CLI
-    # surface reaches a real daemon over its socket, as an operator's does.
-    monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
-    with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
-        surfaces = build_adapter_surface_set(
-            db_path=db_path,
-            archive_root=workspace_env["archive_root"],
-        )
-        try:
-            yield surfaces
-        finally:
-            await surfaces.close()
+    # The CLI surface owns the resident daemon its read verbs require (#5805).
+    surfaces = build_adapter_surface_set(
+        db_path=db_path,
+        archive_root=workspace_env["archive_root"],
+    )
+    try:
+        yield surfaces
+    finally:
+        await surfaces.close()
 
 
 # ---------------------------------------------------------------------------

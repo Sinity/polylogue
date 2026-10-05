@@ -1169,7 +1169,7 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
             raise UnleasedWriteError(
                 f"{purpose} omitted archive identity for writer {lease.actor} bound to {lease.archive_root}"
             )
-        if archive_root is not None and lease.archive_root is not None:
+        if archive_root is not None and lease.archive_root is not None and Path(archive_root) != lease.archive_root:
             expected = Path(archive_root).resolve()
             actual = lease.archive_root.resolve()
             if expected != actual:
