@@ -16,7 +16,7 @@ import sqlite3
 from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
@@ -1091,13 +1091,11 @@ def test_async_execute_query_archive_keeps_stats_local(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
-            assert query == "needle"
-            return ("codex-session:native-1",)
-
-        def stats_by(self, group_by: str, **kwargs: object) -> dict[str, int]:
-            assert group_by == "origin"
-            assert kwargs["session_ids"] == ("codex-session:native-1",)
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> dict[str, int]:
+            assert mode == "stats_by"
+            assert kwargs["query"] == "needle"
+            assert kwargs["group_by"] == "origin"
+            assert kwargs["limit"] == 10
             return {"codex-session": 1}
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
@@ -1252,10 +1250,11 @@ def test_async_execute_query_archive_outputs_stats(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def stats(self, **kwargs: object) -> ArchiveStats:
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> ArchiveStats:
+            assert mode == "stats"
+            assert kwargs["query"] == ""
             assert kwargs["origins"] == ("codex-session",)
             assert kwargs["tags"] == ("archive",)
-            assert kwargs["session_ids"] == ()
             return ArchiveStats(
                 total_sessions=1,
                 total_messages=3,
@@ -1302,14 +1301,13 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def count_search_sessions(self, query: str, **kwargs: object) -> int:
-            assert query == "needle"
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> int:
+            assert mode == "count"
+            # The unsearched archive would be an empty query.
+            assert kwargs["query"] == "needle", "queried analyze --count must not count the unsearched archive"
             assert kwargs["origins"] == ("codex-session",)
             assert kwargs["tags"] == ("archive",)
             return 2
-
-        def count_sessions(self, **_kwargs: object) -> int:
-            raise AssertionError("queried analyze --count must not count the unsearched archive")
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
 
@@ -1349,7 +1347,8 @@ def test_async_execute_query_archive_analyze_id_keeps_exact_session_scope(
             assert token == "codex-session:one"
             return token
 
-        def count_sessions(self, **kwargs: object) -> int:
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> int:
+            assert mode == "count"
             assert kwargs["session_id"] == "codex-session:one"
             return 1
 
@@ -1386,10 +1385,9 @@ def test_async_execute_query_archive_count_applies_boolean_predicate(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def count_search_sessions(self, query: str, **kwargs: object) -> int:
-            raise AssertionError("boolean-only query must not take the FTS-search count path")
-
-        def count_sessions(self, **kwargs: object) -> int:
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> int:
+            assert mode == "count"
+            assert kwargs["query"] == "", "boolean-only query must not take the FTS-search count path"
             assert kwargs.get("boolean_predicate") is not None
             return 5
 
@@ -1424,13 +1422,10 @@ def test_async_execute_query_archive_search_stats_are_not_page_capped_by_default
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
-            assert query == "needle"
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> ArchiveStats:
+            assert mode == "stats"
+            assert kwargs["query"] == "needle"
             assert kwargs["limit"] is None
-            return ("codex-session:native-1", "codex-session:native-2")
-
-        def stats(self, **kwargs: object) -> ArchiveStats:
-            assert kwargs["session_ids"] == ("codex-session:native-1", "codex-session:native-2")
             return ArchiveStats(total_sessions=2, total_messages=5)
 
     # The fake store answers the stats; the archive root is an empty stand-in,
@@ -1470,17 +1465,14 @@ def test_async_execute_query_archive_outputs_grouped_search_stats(
     env = _make_env(repo=MagicMock(), config=config)
 
     class FakeArchiveStore(ArchiveStoreDouble):
-        def search_session_ids(self, query: str, **kwargs: object) -> tuple[str, ...]:
-            assert query == "needle"
-            assert kwargs["limit"] == 10
-            return ("codex-session:native-1",)
-
         def search_summaries(self, *_args: object, **_kwargs: object) -> list[ArchiveSessionSearchHit]:
             raise AssertionError("stats grouping must not consume paged search hits")
 
-        def stats_by(self, group_by: str, **kwargs: object) -> dict[str, int]:
-            assert group_by == "tool"
-            assert kwargs["session_ids"] == ("codex-session:native-1",)
+        def aggregate_sessions(self, mode: str, **kwargs: object) -> dict[str, int]:
+            assert mode == "stats_by"
+            assert kwargs["query"] == "needle"
+            assert kwargs["group_by"] == "tool"
+            assert kwargs["limit"] == 10
             return {"read": 1}
 
     install_archive_store_double(monkeypatch, FakeArchiveStore())
@@ -2921,7 +2913,7 @@ def test_async_execute_query_archive_adds_tags_to_session(
 
     def _capture(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         captured.append((operation, payload))
-        return {"status": "ok", "affected_count": 2}
+        return {"status": "ok", "tag_count": 2}
 
     with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_capture):
         asyncio.run(
@@ -2936,11 +2928,15 @@ def test_async_execute_query_archive_adds_tags_to_session(
             )
         )
 
-    assert [operation for operation, _payload in captured] == ["mutation.session.tag"]
-    assert captured[0][1] == {
-        "session_ids": ["codex-session:native-1"],
-        "tags": ["review", "ready"],
-    }
+    # One resident User intent: the daemon resolves the displayed window
+    # (``mode="page"``) of the exact-id selection and applies the tags.
+    assert [operation for operation, _payload in captured] == ["mutation.session.mark"]
+    payload = captured[0][1]
+    selection = cast(dict[str, Any], payload["selection"])
+    assert selection["mode"] == "page"
+    assert "codex-session:native-1" in json.dumps(selection["params"])
+    assert payload["tags"] == ["review", "ready"]
+    assert payload["pairs"] == []
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "add_tag",
@@ -3076,7 +3072,7 @@ def test_async_execute_query_archive_sets_session_metadata(
 
     def _capture(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         captured.append((operation, payload))
-        return {"status": "ok", "affected_count": 1}
+        return {"status": "ok", "applied_count": 1}
 
     with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_capture):
         asyncio.run(
@@ -3091,11 +3087,13 @@ def test_async_execute_query_archive_sets_session_metadata(
             )
         )
 
-    assert [operation for operation, _payload in captured] == ["mutation.session.metadata"]
-    assert captured[0][1] == {
-        "session_ids": ["codex-session:native-1"],
-        "pairs": [["priority", "high"]],
-    }
+    assert [operation for operation, _payload in captured] == ["mutation.session.mark"]
+    payload = captured[0][1]
+    selection = cast(dict[str, Any], payload["selection"])
+    assert selection["mode"] == "page"
+    assert "codex-session:native-1" in json.dumps(selection["params"])
+    assert payload["pairs"] == [["priority", "high"]]
+    assert payload["tags"] == []
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "set_meta",
