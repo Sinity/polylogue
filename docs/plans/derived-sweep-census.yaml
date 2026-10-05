@@ -136,13 +136,6 @@ sites:
     classification: unclassified
     reason: "newly visible to the census; route review is needed before classification"
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_delete_sessions_without_fk_cascade"
-    subject: "{}"
-    kind: "unresolved_rewrite_scope"
-    scope: "unresolved"
-    classification: unclassified
-    reason: "newly visible to the census; route review is needed before classification"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_ensure_ingest_index_incarnation"
     subject: "ingest_index_incarnation"
     kind: "state_selected_subject"

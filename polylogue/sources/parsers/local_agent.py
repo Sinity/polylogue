@@ -88,9 +88,8 @@ def gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
     them separates sibling chats while keeping every save of one chat on one
     identity, which ``lastUpdated`` would not.
 
-    Path coordinates stay unused -- ``Provider.GEMINI_CLI`` is declared
-    path-independent for revision dedup
-    (``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS``).
+    Path coordinates stay unused: the identity derives only from the
+    checkpoint's own fields, so a moved file keeps its chat identity.
     """
     kind = _string(payload.get("kind"))
     start_time = _string(payload.get("startTime"))

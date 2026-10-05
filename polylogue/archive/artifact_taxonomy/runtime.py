@@ -451,6 +451,7 @@ class _RecordArtifactEvidence:
     saw_checkpoint: bool = False
     checkpoint_disqualified: bool = False
     all_bare_codex_headers: bool = True
+    all_codex_session_meta: bool = True
 
     def observe(self, item: JSONDocument) -> None:
         from polylogue.sources.parsers.hermes_spans import looks_like_atof_payload
@@ -459,6 +460,7 @@ class _RecordArtifactEvidence:
             return
         self.document_count += 1
         self.all_bare_codex_headers &= len(item) == 1 and item == {"type": "session_meta"}
+        self.all_codex_session_meta &= item.get("type") == "session_meta"
         self.record_count += int(looks_like_record_entry(item))
         self.all_atof = self.all_atof and looks_like_atof_payload(item)
         self.all_hooks = self.all_hooks and looks_like_hook_event(item)
@@ -695,6 +697,24 @@ def _classify_artifact_records(
     explicit = strong_path_classification(source_path, provider=provider)
     if explicit is not None and not explicit.parse_as_session and not retained_session_recovery:
         return result(explicit, True)
+    if (
+        provider is Provider.CODEX
+        and evidence.document_count
+        and evidence.all_codex_session_meta
+        and not (evidence.document_count > 1 and evidence.all_bare_codex_headers)
+    ):
+        # A Codex stream of nothing but ``session_meta`` headers carries no
+        # conversation records, wherever it lives: it is not a session. The
+        # narrow repeated-bare-header recovery shape below stays admitted.
+        classification = ArtifactClassification(
+            provider,
+            ArtifactKind.METADATA_DOCUMENT,
+            False,
+            False,
+            0,
+            "Codex session-meta-only stream without conversation records",
+        )
+        return result(classification, True)
     if evidence.extracted and not evidence.provider_envelope:
         classification = ArtifactClassification(
             provider, ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS, False, False, 0, "extracted transcript corpus"
