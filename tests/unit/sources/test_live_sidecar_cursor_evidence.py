@@ -113,7 +113,7 @@ def _build_session_tree(root: Path, *, sidecar_names: tuple[str, ...]) -> tuple[
 
 def _make_processor(workspace_env: dict[str, Path], root: Path) -> tuple[Polylogue, CursorStore, LiveBatchProcessor]:
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
+    cursor = CursorStore(workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
