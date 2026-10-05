@@ -22,7 +22,7 @@ import pytest
 from polylogue.api import Polylogue
 from polylogue.core.user_state_targets import identity_key
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from tests.infra.daemon_operations import daemon_serving_archive
+from tests.infra.daemon_operations import async_daemon_serving_archive
 from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -105,7 +105,7 @@ async def test_add_mark_records_native_session_target(workspace_env: dict[str, P
     builder.save()
     session_id = builder.native_session_id()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "star") is True
 
@@ -133,7 +133,7 @@ async def test_list_marks_projects_session_vocabulary(workspace_env: dict[str, P
     builder.save()
     session_id = builder.native_session_id()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "star") is True
             rows = await poly.list_marks(session_id=None, mark_type="star")
@@ -161,7 +161,7 @@ async def test_message_user_state_projects_owner_for_opaque_session_native_ids(
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:message-native"
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert (
                 await poly.add_mark(
@@ -239,7 +239,7 @@ async def test_message_user_state_resolves_durable_alias_after_index_row_disappe
     }[alias_kind]
     message_id = f"{session_id}:n:message-native"
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "pin", target_type="message", message_id=message_id) is True
             assert (
@@ -277,7 +277,7 @@ async def test_durable_session_alias_matching_fails_closed_when_ambiguous(
         builder.save()
     session_ids = [builder.native_session_id() for builder in builders]
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             for session_id in session_ids:
                 assert await poly.add_mark(session_id, "pin") is True
@@ -308,7 +308,7 @@ async def test_marks_survive_session_delete_and_rebind_on_reimport(
     builder.save()
     session_id = builder.native_session_id()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "star") is True
             assert await poly.save_annotation("ann-1", session_id, "important") is True
@@ -361,7 +361,7 @@ async def test_message_target_marks_survive_reimport(workspace_env: dict[str, Pa
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:msg-id"
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert (
                 await poly.add_mark(
@@ -396,7 +396,7 @@ async def test_legacy_message_owner_reads_batch_index_lookup(workspace_env: dict
     builder.save()
     session_id = builder.native_session_id()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             for index in range(1, 4):
                 assert (
@@ -458,7 +458,7 @@ async def test_message_target_mark_survives_when_message_disappears(
     session_id = builder.native_session_id()
     message_id = f"{session_id}:n:msg-id"
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert (
                 await poly.add_mark(
@@ -498,7 +498,7 @@ async def test_reimport_is_idempotent_for_user_state(workspace_env: dict[str, Pa
     builder.save()
     session_id = builder.native_session_id()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "star") is True
 
@@ -540,7 +540,7 @@ async def test_user_state_does_not_affect_session_content_hash(
 
     before_hash = _session_hash()
 
-    with daemon_serving_archive(workspace_env["archive_root"]):
+    async with async_daemon_serving_archive(workspace_env["archive_root"]):
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
             assert await poly.add_mark(session_id, "star") is True
             assert await poly.save_annotation("ann-x", session_id, "note") is True

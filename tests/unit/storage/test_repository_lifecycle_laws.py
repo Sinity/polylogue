@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
-from tests.infra.daemon_operations import daemon_serving_archive
+from tests.infra.daemon_operations import async_daemon_serving_archive
 from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -49,7 +49,7 @@ class TestTagLifecycle:
     @pytest.mark.asyncio
     async def test_add_tag_is_visible_and_idempotent(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "tag-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 first = await poly.add_tag(session_id, "review")
                 assert first.outcome == "added"
@@ -60,7 +60,7 @@ class TestTagLifecycle:
     @pytest.mark.asyncio
     async def test_remove_tag_is_visible_and_idempotent(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "tag-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 await poly.add_tag(session_id, "review")
                 removed = await poly.remove_tag(session_id, "review")
@@ -73,7 +73,7 @@ class TestTagLifecycle:
     async def test_tags_do_not_leak_into_metadata(self, workspace_env: dict[str, Path]) -> None:
         """#1240: tags are M2M-only; add_tag must not write into the metadata JSON."""
         session_id = _seed_one(workspace_env, "tag-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 await poly.update_metadata(session_id, "summary", "after")
                 await poly.add_tag(session_id, "review")
@@ -92,7 +92,7 @@ class TestMetadataLifecycle:
     @pytest.mark.asyncio
     async def test_set_update_get_metadata(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "meta-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 assert await poly.update_metadata(session_id, "summary", "after") is True
                 set_result = await poly.set_metadata(session_id, "audit", "checked")
@@ -104,7 +104,7 @@ class TestMetadataLifecycle:
     @pytest.mark.asyncio
     async def test_delete_metadata_missing_key_is_explicit(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "meta-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 result = await poly.delete_metadata(session_id, "missing")
                 assert result.outcome == "not_found"
@@ -112,7 +112,7 @@ class TestMetadataLifecycle:
     @pytest.mark.asyncio
     async def test_delete_metadata_removes_present_key(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "meta-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 await poly.update_metadata(session_id, "summary", "after")
                 result = await poly.delete_metadata(session_id, "summary")
@@ -146,7 +146,7 @@ class TestNeighborIsolation:
         target_id = target.native_session_id()
         neighbor_id = neighbor.native_session_id()
 
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
                 await poly.add_tag(target_id, "review")
                 await poly.update_metadata(target_id, "summary", "reviewed")
@@ -171,7 +171,7 @@ class TestDeleteAndReingest:
     @pytest.mark.asyncio
     async def test_delete_removes_session_and_count_goes_to_zero(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "del-conv")
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
                 assert await delete_session_with_preview(poly, session_id) is True
                 assert await poly.list_sessions(limit=100) == []
@@ -191,7 +191,7 @@ class TestDeleteAndReingest:
         builder.save()  # identical re-ingest
         session_id = builder.native_session_id()
 
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
                 convos = await poly.list_sessions(limit=100)
                 assert [str(c.id) for c in convos] == [session_id]
@@ -219,7 +219,7 @@ class TestContentChangeReingest:
         first.save()
         session_id = first.native_session_id()
 
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
                 before = await poly.get_session(session_id)
                 assert before is not None
@@ -230,7 +230,7 @@ class TestContentChangeReingest:
             role="user", text="Run a command"
         ).add_message(role="assistant", text="Running it differently").save()
 
-        with daemon_serving_archive(workspace_env["archive_root"]):
+        async with async_daemon_serving_archive(workspace_env["archive_root"]):
             async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
                 convos = await poly.list_sessions(limit=100)
                 assert [str(c.id) for c in convos] == [session_id]

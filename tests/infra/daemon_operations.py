@@ -15,7 +15,7 @@ import socket
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -317,6 +317,27 @@ def daemon_serving_archive(archive_root: Path, *, session_derivation: bool = Fal
         ) as stack,
     ):
         yield stack
+
+
+@contextlib.asynccontextmanager
+async def async_daemon_serving_archive(
+    archive_root: Path, *, session_derivation: bool = False
+) -> AsyncIterator[DaemonOperationStack]:
+    """:func:`daemon_serving_archive` for an async test.
+
+    Starting the stack bootstraps the archive under a synchronous write lease,
+    which refuses to block a running event loop; entry and exit therefore run
+    on a worker thread while the test's loop keeps serving.
+    """
+    serving = daemon_serving_archive(archive_root, session_derivation=session_derivation)
+    stack = await asyncio.to_thread(serving.__enter__)
+    try:
+        yield stack
+    except BaseException as failure:
+        if not await asyncio.to_thread(serving.__exit__, type(failure), failure, failure.__traceback__):
+            raise
+    else:
+        await asyncio.to_thread(serving.__exit__, None, None, None)
 
 
 def accepted_operation_reference(
