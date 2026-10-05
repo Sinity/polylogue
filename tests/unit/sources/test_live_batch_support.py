@@ -91,7 +91,10 @@ def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source
 
     ``LiveBatchProcessor._ingest_full_paths`` seals declared Codex state
     databases through the capture stage before the writer runs and discards
-    them afterwards; other inputs are acquired by path inside the body.
+    them afterwards; other inputs are acquired by path inside the body. The
+    body runs on the daemon's admitted writer under its own ops scope, as
+    ``_ingest_full_paths_prepared`` dispatches it; the custody authorizer
+    refuses archive writes from any other creator.
     """
     import threading
 
@@ -118,8 +121,13 @@ def _full_paths_sync(processor: LiveBatchProcessor, paths: list[Path], *, source
             captures = LiveSQLiteCaptureStage(compute_adapter=compute).prepare_sqlite_paths(
                 state_paths, archive_root=archive_root, cancelled=threading.Event(), fallback_provider=provider
             )
-        return processor._ingest_full_paths_sync(
-            paths, source_name=source_name, captured_sqlite_by_path=captures, **kwargs
+        return asyncio.run(
+            run_archive_fixture_write(
+                archive_root,
+                lambda: processor._ingest_full_paths_sync_in_ops_scope(
+                    paths, source_name=source_name, captured_sqlite_by_path=captures, **kwargs
+                ),
+            )
         )
     finally:
         for capture in captures.values():
@@ -519,7 +527,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
@@ -1903,8 +1911,7 @@ def test_live_raw_compaction_holds_generation_lease_through_delete(
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", assert_promotion_excluded)
     monkeypatch.setattr(raw_retention, "compact_paths_superseded_raw_snapshots", assert_delete_excluded)
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     assert phases == ["authority", "delete"]
     with RebuildLease(tmp_path):
         pass
@@ -8360,8 +8367,7 @@ def test_live_raw_compaction_ignores_cursor_db_without_source_db(tmp_path: Path)
         parser_fingerprint="test-parser",
     )
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with cursor._connect() as conn:
         rows = conn.execute("SELECT raw_id FROM raw_sessions").fetchall()
     assert rows == [("raw-old",)]
@@ -8875,6 +8881,17 @@ def _seed_superseded_raw_snapshots(
     return raw_ids[:-1]
 
 
+def _compact_on_admitted_writer(processor: LiveBatchProcessor, paths: list[Path]) -> None:
+    """Run raw compaction on the daemon's admitted writer, as the live pass dispatches it.
+
+    ``LiveBatchProcessor`` hands ``_compact_superseded_raw_snapshots`` to its
+    writer runner; the custody authorizer refuses its Source deletions from
+    any other creator.
+    """
+    archive_root = Path(getattr(processor._polylogue, "archive_root", processor._cursor._db_path.parent))
+    asyncio.run(run_archive_fixture_write(archive_root, lambda: processor._compact_superseded_raw_snapshots(paths)))
+
+
 def _retention_processor(tmp_path: Path, root: Path) -> LiveBatchProcessor:
     return LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -8931,8 +8948,7 @@ def test_raw_retention_bound_is_retained_as_retryable_backlog(tmp_path: Path, mo
     superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=30)
     _grant_full_retention_authority(monkeypatch, superseded)
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
     # 31 rows seeded, 30 superseded, one bounded pass compacts 25.
@@ -8969,7 +8985,7 @@ def test_raw_retention_drains_its_due_backlog_and_clears_the_debt(
     superseded = _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", backlog_path, count=30)
     _grant_full_retention_authority(monkeypatch, superseded)
 
-    processor._compact_superseded_raw_snapshots([backlog_path])
+    _compact_on_admitted_writer(processor, [backlog_path])
     assert [item.subject_id for item in _retention_debt(processor._cursor)] == [str(backlog_path)]
 
     # The shared backoff put the row ~60 s out. Make it due, the way the clock
@@ -8982,8 +8998,7 @@ def test_raw_retention_drains_its_due_backlog_and_clears_the_debt(
         conn.commit()
 
     # A pass whose own subject is an unrelated path still drains the backlog.
-    processor._compact_superseded_raw_snapshots([other_path])
-
+    _compact_on_admitted_writer(processor, [other_path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         remaining = conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]
     assert remaining == 1
@@ -9014,8 +9029,7 @@ def test_raw_retention_refusal_is_recorded_not_only_logged(tmp_path: Path, monke
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", refuse)
 
-    processor._compact_superseded_raw_snapshots([path])
-
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
 
@@ -9044,7 +9058,7 @@ def test_raw_retention_waits_for_inactive_generation_promotion(tmp_path: Path, m
         raise AssertionError("active index authority was inspected before candidate promotion")
 
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", wrong_active_authority)
-    processor._compact_superseded_raw_snapshots([path])
+    _compact_on_admitted_writer(processor, [path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 3
     debt = _retention_debt(processor._cursor)
@@ -9059,7 +9073,7 @@ def test_raw_retention_waits_for_inactive_generation_promotion(tmp_path: Path, m
             ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
         )
         conn.commit()
-    processor._compact_superseded_raw_snapshots([])
+    _compact_on_admitted_writer(processor, [])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     assert _retention_debt(processor._cursor) == []
@@ -9080,7 +9094,7 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
     first = _retention_processor(tmp_path, root)
     superseded = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", path, count=2)
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
-    first._compact_superseded_raw_snapshots([path])
+    _compact_on_admitted_writer(first, [path])
     assert [(item.subject_id, item.status) for item in _retention_debt(first._cursor)] == [(str(path), "deferred")]
 
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
@@ -9093,19 +9107,35 @@ def test_raw_retention_retries_promoted_backlog_after_watcher_restart(
         conn.commit()
     restarted = _retention_processor(tmp_path, root)
     restarted._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
-    watcher = object.__new__(LiveWatcher)
-    watcher._batch_processor = restarted
-    watcher._ingest_lock = asyncio.Lock()
-
-    async def run_writer(_actor: str, function: Any, *args: Any) -> Any:
-        return function(*args)
-
-    monkeypatch.setattr(watcher, "_run_writer_sync", run_writer)
-    asyncio.run(watcher.retry_raw_retention_backlog())
+    _retry_retention_on_admitted_writer(tmp_path, restarted)
 
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
     assert _retention_debt(restarted._cursor) == []
+
+
+def _retry_retention_on_admitted_writer(archive_root: Path, processor: LiveBatchProcessor) -> None:
+    """Drive ``retry_raw_retention_backlog`` through a real daemon writer coordinator.
+
+    The custody authorizer refuses archive writes outside admission, so the
+    watcher is given the coordinator it holds in the daemon rather than an
+    inline stand-in that would run the writes on the event-loop thread.
+    """
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
+
+    async def run() -> None:
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root)
+        watcher = object.__new__(LiveWatcher)
+        watcher._batch_processor = processor
+        watcher._ingest_lock = asyncio.Lock()
+        watcher._write_coordinator = coordinator
+        try:
+            await watcher.retry_raw_retention_backlog()
+        finally:
+            if not await coordinator.shutdown(timeout=float("inf")):
+                raise RuntimeError("retention retry coordinator did not physically settle")
+
+    asyncio.run(run())
 
 
 def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -9132,7 +9162,7 @@ def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, m
         superseded.extend(
             _seed_superseded_raw_snapshots(processor, tmp_path / "source.db", path, count=1, prefix=10 * index)
         )
-    processor._compact_superseded_raw_snapshots(paths)
+    _compact_on_admitted_writer(processor, paths)
     assert len(_retention_debt(processor._cursor)) == 3
 
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
@@ -9144,15 +9174,7 @@ def test_raw_retention_retry_drains_more_than_one_bounded_pass(tmp_path: Path, m
             ("2000-01-01T00:00:00+00:00", RAW_RETENTION_STAGE),
         )
         conn.commit()
-    watcher = object.__new__(LiveWatcher)
-    watcher._batch_processor = processor
-    watcher._ingest_lock = asyncio.Lock()
-
-    async def run_writer(_actor: str, function: Any, *args: Any) -> Any:
-        return function(*args)
-
-    monkeypatch.setattr(watcher, "_run_writer_sync", run_writer)
-    asyncio.run(watcher.retry_raw_retention_backlog())
+    _retry_retention_on_admitted_writer(tmp_path, processor)
 
     assert _retention_debt(processor._cursor) == []
 
@@ -9175,7 +9197,7 @@ def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
     old_current = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", current_path, count=2, prefix=100)
     old_backlog = _seed_superseded_raw_snapshots(first, tmp_path / "source.db", backlog_path, count=2, prefix=200)
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: object())
-    first._compact_superseded_raw_snapshots([backlog_path])
+    _compact_on_admitted_writer(first, [backlog_path])
     monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root: None)
     _grant_full_retention_authority(monkeypatch, [*old_current, *old_backlog])
     with closing(sqlite3.connect(tmp_path / "ops.db")) as conn:
@@ -9186,8 +9208,7 @@ def test_raw_retention_backlog_does_not_widen_unrelated_batch_path(
         conn.commit()
     restarted = _retention_processor(tmp_path, root)
     restarted._raw_compaction_min_acquired_at = "9999-01-01T00:00:00+00:00"
-    restarted._compact_superseded_raw_snapshots([current_path])
-
+    _compact_on_admitted_writer(restarted, [current_path])
     with closing(sqlite3.connect(tmp_path / "source.db")) as conn:
         counts = dict(conn.execute("SELECT source_path, COUNT(*) FROM raw_sessions GROUP BY source_path"))
     assert counts == {str(current_path): 3, str(backlog_path): 1}

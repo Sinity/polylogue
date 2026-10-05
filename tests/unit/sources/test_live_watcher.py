@@ -1521,8 +1521,9 @@ def test_full_cursor_reused_digest_still_rejects_a_mutated_source(
 
 @pytest.mark.parametrize("sqlite_input", [False, True], ids=["jsonl", "sqlite"])
 @pytest.mark.parametrize("cursor_state", ["settled", "excluded", "deferred", "failed"])
+@pytest.mark.frozen_clock_modules("polylogue.sources.live.watcher")
 def test_hermes_profile_retarget_reopens_same_inode_cursor(
-    tmp_path: Path, sqlite_input: bool, cursor_state: str
+    tmp_path: Path, sqlite_input: bool, cursor_state: str, frozen_clock: FrozenClock
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.sources.acquisition_boundary import capture_bound_path
@@ -1542,8 +1543,10 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             connection.execute("CREATE TABLE state (value TEXT)")
             connection.execute("INSERT INTO state VALUES ('same accepted input')")
     else:
-        actual.write_text(
-            json.dumps({"session_id": "shared", "messages": [{"role": "user", "content": "same"}]}) + "\n"
+        # A genuine Hermes ATOF event stream: a session-shaped record from
+        # another harness at a Hermes location is refused as foreign origin.
+        actual.write_bytes(
+            (Path(__file__).parents[2] / "fixtures" / "origin-capability" / "hermes-session.jsonl").read_bytes()
         )
     alias = tmp_path / "profile"
     alias.symlink_to(first, target_is_directory=True)
@@ -1577,7 +1580,7 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             mtime_ns=original_stat.st_mtime_ns,
             excluded=cursor_state == "excluded",
             failure_count=int(cursor_state == "failed"),
-            next_retry_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+            next_retry_at=(frozen_clock.now(UTC) + timedelta(days=1)).isoformat(),
         )
 
     stamp(original_profile)
