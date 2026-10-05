@@ -90,6 +90,7 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     # is that every surface reports the same counts, not the status code, so
     # the payload assertions below are unchanged.
     assert status.exit_code == 1, status.output
+    assert status.stdout.strip(), status.output
     status_payload = _load_stdout_json(status.stdout)
     # ``status`` is served by the daemon (#5550). With none running it
     # reports the read as unavailable and must not fabricate materialization
