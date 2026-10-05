@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
+from tests.infra.archive_templates import run_off_event_loop, seeds_off_event_loop
 from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.live_ingest import write_index_session
 from tests.infra.session_profiles import write_session_profile
@@ -34,6 +36,7 @@ def _session_content_hash(index_db: Path, session_id: str) -> str:
     return str(row[0])
 
 
+@seeds_off_event_loop
 def _seed_user_state_session(
     archive_root: Path,
     *,
@@ -302,24 +305,29 @@ async def test_tags_and_metadata_are_assertion_backed_user_metadata(
 @pytest.mark.asyncio
 async def test_user_state_target_resolution_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    with ArchiveStore(archive_root) as archive:
-        session_id = write_index_session(
-            archive,
-            ParsedSession(
-                source_name=Provider.CODEX,
-                provider_session_id="user-state-v1-only",
-                title="User state archive only",
-                messages=[
-                    ParsedMessage(
-                        provider_message_id="m1",
-                        role=Role.USER,
-                        text="mark me",
-                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
-                    )
-                ],
-            ),
-        )
-        envelope = archive.read_session(session_id)
+
+    def _seed_0() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            session_id = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="user-state-v1-only",
+                    title="User state archive only",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m1",
+                            role=Role.USER,
+                            text="mark me",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
+                        )
+                    ],
+                ),
+            )
+            envelope = archive.read_session(session_id)
+        return envelope, session_id
+
+    envelope, session_id = run_off_event_loop(_seed_0)
     with sqlite3.connect(archive_root / "index.db") as conn:
         write_session_profile(conn, session_id)
         conn.commit()

@@ -32,7 +32,8 @@ from polylogue.storage.derived.session.threads import load_thread_profile_record
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from polylogue.storage.sqlite.connection import open_connection, open_read_connection
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.index_writer import write_fixture_index_session
 
 _CHILD_ID = "codex-session:child"
@@ -72,7 +73,7 @@ def _parent() -> ParsedSession:
 
 
 def _stored_profile_lineage(index_db: Path) -> tuple[str | None, bool | None]:
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         row = conn.execute(
             "SELECT evidence_payload_json FROM session_profiles WHERE session_id = ?",
             (_CHILD_ID,),
@@ -90,7 +91,7 @@ async def _materialize_child(index_db: Path) -> None:
 
 
 def _thread_lineage(index_db: Path, root_id: str) -> list[tuple[str, str | None, bool]]:
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         grouped = load_thread_profile_records_by_root_sync(conn, [root_id])
     return [
         (str(record.session_id), record.evidence_payload.parent_id, record.evidence_payload.is_continuation)
@@ -117,9 +118,12 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _subagent_child())
-        conn.commit()
+    def _seed_0() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_0)
     await _materialize_child(index_db)
     assert _stored_profile_lineage(index_db) == (None, False)
 
@@ -139,7 +143,7 @@ async def test_thread_read_reports_a_stale_profile_as_written_not_as_recovered(t
     assert _thread_lineage(index_db, root_id) == [(_CHILD_ID, None, False)]
 
     # ... and the drift is not lost: it is the converger's declared condition.
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         assert inspect_session_profiles(
             conn, [_CHILD_ID], materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION
         ) == {_CHILD_ID: "stale"}
@@ -162,9 +166,12 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
     await asyncio.to_thread(initialize_active_archive_root, archive_root)
     index_db = archive_root / "index.db"
 
-    with open_connection(index_db) as conn:
-        write_fixture_index_session(conn, _subagent_child())
-        conn.commit()
+    def _seed_1() -> None:
+        with open_connection(index_db) as conn:
+            write_fixture_index_session(conn, _subagent_child())
+            conn.commit()
+
+    run_off_event_loop(_seed_1)
     await _materialize_child(index_db)
     with open_connection(index_db) as conn:
         write_fixture_index_session(conn, _parent())
@@ -177,7 +184,7 @@ async def test_reconvergence_is_what_makes_the_profile_lineage_current(tmp_path:
 
     assert _stored_profile_lineage(index_db) == (_PARENT_ID, False)
     assert _thread_lineage(index_db, root_id) == [(_CHILD_ID, _PARENT_ID, False)]
-    with open_connection(index_db) as conn:
+    with open_read_connection(index_db) as conn:
         assert inspect_session_profiles(
             conn, [_CHILD_ID], materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION
         ) == {_CHILD_ID: "valid"}

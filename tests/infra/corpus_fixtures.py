@@ -29,6 +29,17 @@ def seeded_archive() -> Iterator[SeededArchiveArtifact]:
 
 
 @pytest.fixture(scope="session")
+def c03_seeded_artifact() -> Iterator[SeededArchiveArtifact]:
+    """The default c03 artifact, resolved once per worker from the shared cache.
+
+    Read-only and clone consumers take it directly; a test that mutates or
+    collects a cache takes a validated copy through ``copy_seeded_archive``.
+    """
+    with seeded_archive_cache_lease():
+        yield build_seeded_archive()
+
+
+@pytest.fixture(scope="session")
 def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArchiveArtifact:
     """Real production-route archive used by corpus acceptance gate tests."""
     return seeded_archive

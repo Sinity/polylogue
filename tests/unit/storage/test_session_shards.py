@@ -38,9 +38,10 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.sources import origin_from_provider
-from polylogue.pipeline.ids import session_content_hash
+from polylogue.pipeline.ids import MessageOwnerResolution, session_content_hash
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -62,11 +63,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 def _connect(path: Path) -> sqlite3.Connection:
     # ``uri=True`` matches the archive's own write connection: it is what
     # lets the shard be ATTACHed read-only.
-    conn = sqlite3.connect(path, uri=True)
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     return conn
+
+
+def _archive_index(root: Path) -> Path:
+    """Give each comparison archive its own root: a root owns one active Index."""
+    root.mkdir()
+    return root / "index.db"
 
 
 def _synthetic_sessions() -> list[ParsedSession]:
@@ -211,8 +218,8 @@ def _write_through_shard(conn: sqlite3.Connection, sessions: list[ParsedSession]
 
 def test_shard_and_inline_writes_produce_identical_rows(tmp_path: Path) -> None:
     sessions = _synthetic_sessions()
-    inline_conn = _connect(tmp_path / "inline.db")
-    shard_conn = _connect(tmp_path / "shard-written.db")
+    inline_conn = _connect(_archive_index(tmp_path / "inline"))
+    shard_conn = _connect(_archive_index(tmp_path / "shard-written"))
     try:
         _write_inline(inline_conn, sessions)
         _write_through_shard(shard_conn, sessions, tmp_path / "shards")
@@ -306,8 +313,8 @@ def test_sealed_message_sink_preserves_attachment_owner_projection(tmp_path: Pat
     sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
     publication = worker_session.model_copy(update={"messages": sealed})
 
-    inline = _connect(tmp_path / "inline-attachment.db")
-    streamed = _connect(tmp_path / "streamed-attachment.db")
+    inline = _connect(_archive_index(tmp_path / "inline-attachment"))
+    streamed = _connect(_archive_index(tmp_path / "streamed-attachment"))
     try:
         write_fixture_index_session(inline, session, content_hash=str(session_content_hash(session)))
         with attached_session_shard(streamed, shard) as schema:
@@ -449,8 +456,8 @@ def test_shared_prefix_prior_rows_demote_shard_and_preserve_finished_projection(
             ]
         }
     )
-    control = _connect(tmp_path / "inline-control.db")
-    witness = _connect(tmp_path / "shard-fallback-witness.db")
+    control = _connect(_archive_index(tmp_path / "inline-control"))
+    witness = _connect(_archive_index(tmp_path / "shard-fallback-witness"))
     try:
         _write_inline(control, [parent, child, rewritten])
         _write_inline(witness, [parent, child])
@@ -590,6 +597,9 @@ def test_an_unsealed_shard_is_refused(tmp_path: Path) -> None:
         open_session_shard(tmp_path / "unsealed.db")
 
 
+_EMPTY_OWNER_RESOLUTION = MessageOwnerResolution((), {}, frozenset(), {}, frozenset(), frozenset(), {}, frozenset())
+
+
 def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> None:
     builder = SessionShardBuilder(tmp_path / "many.db")
 
@@ -601,6 +611,7 @@ def test_many_small_sessions_keep_manifest_off_python_heap(tmp_path: Path) -> No
                 message_rows=(),
                 block_rows=(),
                 content_identities=(),
+                owner_resolution=_EMPTY_OWNER_RESOLUTION,
             )
         )
 

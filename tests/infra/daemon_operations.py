@@ -267,10 +267,21 @@ def cli_daemon_archive(
     at the developer's real home.
     """
 
+    from polylogue.daemon.cli import _acquire_pidfile
+
     archive_root = archive_root.resolve()
-    with running_daemon_operations(
-        archive_root, seed_archive=seed_archive, session_derivation=session_derivation
-    ) as stack:
+    with (
+        contextlib.ExitStack() as residency,
+        running_daemon_operations(
+            archive_root, seed_archive=seed_archive, session_derivation=session_derivation
+        ) as stack,
+    ):
+        # Claim residency exactly as ``polylogued run`` does, and release it
+        # only after the stack drains its writer. The CLI decides whether it is
+        # an offline writer from this lock; without it, an in-process CLI arms
+        # its process-wide offline-writer probe, which then takes archive
+        # custody on the daemon's own operation threads.
+        residency.callback(os.close, _acquire_pidfile(archive_root / "daemon.pid"))
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
