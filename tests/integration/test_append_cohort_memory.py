@@ -29,12 +29,10 @@ import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
-from polylogue.core.sources import origin_from_provider
 from polylogue.sources.live.batch_support import _AppendPlan
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from tests.infra.append_cohort_memory_counter import append_cohort_memory_counter
 from tests.infra.live_ingest import run_owned_append_plans
 
@@ -82,9 +80,8 @@ def _seed_cohort_and_append_plan(
         for index, payload in enumerate(snapshots):
             blob_hash, _blob_size = publisher.write_from_bytes(payload)
             publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
                 capture_mode=Provider.CODEX,
                 payload=payload,
                 source_path=str(source_path),
@@ -133,9 +130,8 @@ def _seed_partially_classified_cohort_and_append_plan(archive_root: Path) -> _Ap
         for index, payload in enumerate(snapshots):
             blob_hash, _blob_size = publisher.write_from_bytes(payload)
             publisher.flush()
-            write_source_raw_session(
-                archive._ensure_source_conn(),
-                origin=origin_from_provider(Provider.CODEX),
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
                 capture_mode=Provider.CODEX,
                 payload=payload,
                 source_path=str(source_path),
