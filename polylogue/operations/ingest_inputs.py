@@ -242,7 +242,7 @@ def preflight_ingest_input(
         )
         source_path = str(path) if declaration is None else declaration["source_path"]
 
-        def members() -> Iterator[tuple[SourceInputBinding, str]]:
+        def members() -> Generator[tuple[SourceInputBinding, str], None, None]:
             after = ""
             while True:
                 with spool_connection(spool, read_only=True) as conn:
@@ -371,6 +371,8 @@ def enumerate_ingest_input(
                 retained.member_count or 0,
             )
             continue
+        if retained.data is None:
+            raise ValueError("retained source record lacks its raw payload")
         record = make_raw_record(
             retained.data,
             "machine-ingest",

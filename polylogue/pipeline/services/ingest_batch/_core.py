@@ -53,7 +53,6 @@ from polylogue.markers.preparation import (
     retired_marker_assertion_ids,
 )
 from polylogue.pipeline.ids import (
-    bound_session_content_hash,
     message_content_identity,
     session_content_hash,
 )
@@ -1517,7 +1516,9 @@ def _write_session(
     prepared_write = payload.prepared_write
     if prepared_write is None:
         raise PreparedSessionWriteRefusedError("session has no canonical pre-admission prepared write")
-    if prepared_writes is not None and prepared_write is not None:
+    if source_conn is None:
+        raise PreparedSessionWriteRefusedError("prepared session publication requires its actual Source reader")
+    if prepared_writes is not None:
         # Register before the writer call so entry cleanup owns this carrier
         # even if publication raises before returning an outcome.
         prepared_writes.append(prepared_write)
@@ -1532,11 +1533,7 @@ def _write_session(
         # separately names what this call publishes -- the delta -- which is
         # the digest a prepared identity carrier must match (polylogue-3hfl7).
         content_hash=payload.content_hash,
-        pending_input_content_hash=(
-            prepared_write.input_content_hash.hex()
-            if prepared_write is not None
-            else (bound_session_content_hash(session_to_write) if merge_append else None)
-        ),
+        pending_input_content_hash=prepared_write.input_content_hash.hex(),
         prepared_write=prepared_write,
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
@@ -2945,7 +2942,7 @@ def _prepared_ingest_is_current(
 
 def _prepare_ingest_payloads(
     index: sqlite3.Connection,
-    source: sqlite3.Connection | None,
+    source: sqlite3.Connection,
     payloads: Sequence[SessionWritePayload],
 ) -> None:
     """Prepare the canonical session decisions before writer admission."""
@@ -3506,8 +3503,8 @@ def _process_ingest_batch_sync(
     archive_root_str = kwargs["archive_root_str"]
     archive_root = Path(archive_root_str)
     with PreparedIndexMutation(db_path, archive_root=archive_root) as seal:
-        prepared = kwargs.get("prepared_unit")
-        if isinstance(prepared, _PreparedIngestUnit) and not _prepared_ingest_is_current(
+        prepared = kwargs["prepared_unit"]
+        if not _prepared_ingest_is_current(
             prepared,
             db_path=db_path,
             archive_root=archive_root,
@@ -3519,7 +3516,7 @@ def _process_ingest_batch_sync(
             return _new_ingest_batch_summary(raw_artifacts, ingest_workers=kwargs["ingest_workers"])
         with write_lease("offline.ingest.index", archive_root=archive_root):
             seal.validate_observers_current()
-            if isinstance(prepared, _PreparedIngestUnit) and prepared.drive_revision_updates:
+            if prepared.drive_revision_updates:
                 _publish_prepared_drive_revision_updates(prepared, archive_root, seal)
             return _process_ingest_batch_sync_owned(
                 raw_artifacts,
