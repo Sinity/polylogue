@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import hashlib
 import json
 import os
@@ -17,7 +18,7 @@ from contextlib import AbstractContextManager, closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.core.compute import (
@@ -102,6 +103,12 @@ _STAGED_OPERATIONS = frozenset(
         "mutation.session.mark",
     }
 )
+
+
+#: Request-body bytes of the staged exchange whose task is running. A staged
+#: operation's compute phases reserve them, as the scheduled route does for its
+#: one submission, so a queued staged exchange is not admitted as weightless.
+_STAGED_REQUEST_BYTES: contextvars.ContextVar[int] = contextvars.ContextVar("polylogue_staged_request_bytes", default=0)
 
 
 #: Name prefix of the ingest owner's re-drive task on its owner loop.
@@ -323,7 +330,9 @@ class DaemonOperationRuntime:
         # The kernel's pool outlives every bind, so its threads carry no
         # correlation context of their own (verified: a bare submit sees an
         # empty context where a propagate()d one does not).
-        submitted = self._kernel.submit(propagate(work), admission_class="control")
+        submitted = self._kernel.submit(
+            propagate(work), admission_class="control", estimated_bytes=_STAGED_REQUEST_BYTES.get()
+        )
         pending = asyncio.wrap_future(submitted.future)
         try:
             return await asyncio.shield(pending)
@@ -1156,7 +1165,13 @@ class DaemonOperationRuntime:
                             "maintenance.restore_verified_backup": execute_restore_verified_backup_operation,
                         }[request.operation]
 
-                        staged_task = StagedTask(self._owner_loop, lambda: staged(request, context))
+                        staged_body_bytes = request_body_bytes
+
+                        async def run_staged() -> Any:
+                            _STAGED_REQUEST_BYTES.set(staged_body_bytes)
+                            return await staged(request, context)
+
+                        staged_task = StagedTask(self._owner_loop, run_staged)
                         exchange.future = staged_task.future
 
                         def cancel_staged_before_acceptance() -> None:
