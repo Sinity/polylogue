@@ -12733,9 +12733,54 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 # happens to equal a parent block is never dropped.
 
 
+def _prefix_alignment_signature(role: str, blocks: Iterable[tuple[str, str, str, str]]) -> str:
+    """Digest what a replayed prefix copies: the role and each block's content.
+
+    A child that replays its parent's prefix (a fork, a resume, a compaction
+    continuation) re-emits those messages under new provider ids, timestamps,
+    parent links and provenance classification, all of which the complete
+    semantic address hashes. Alignment therefore compares this replay-
+    invariant projection; the branch point itself stays guarded by the
+    parent's stored complete content address (``branch_point_content_address``).
+    """
+    digest = hashlib.sha256(b"polylogue-prefix-alignment-v1\0")
+    for part in (role, *(value for block in blocks for value in block)):
+        encoded = part.encode("utf-8", "surrogatepass")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
 def _parsed_message_signature(message: ParsedMessage) -> str:
-    """Align prefixes with the same complete witness that authorizes inheritance."""
-    return _message_content_address(message).hex()
+    """The prefix alignment signature of a parsed message (see above)."""
+    return _prefix_alignment_signature(
+        _enum_value(message.role) or "",
+        (
+            (
+                _block_type(block).value,
+                _sqlite_text(block.text) or "",
+                _sqlite_text(block.tool_name) or "",
+                _json_dumps(block.tool_input) if block.tool_input is not None else "",
+            )
+            for block in _message_blocks(message)
+        ),
+    )
+
+
+def _signatures_from_block_rows(rows: Iterable[Sequence[object]]) -> Iterator[tuple[str, str]]:
+    """Group ``(message_id, role, block_type, text, tool_name, tool_input)`` rows per message."""
+    current_id: str | None = None
+    current_role = ""
+    blocks: list[tuple[str, str, str, str]] = []
+    for message_id, role, block_type, text, tool_name, tool_input in rows:
+        if message_id != current_id:
+            if current_id is not None:
+                yield current_id, _prefix_alignment_signature(current_role, blocks)
+            current_id, current_role, blocks = str(message_id), str(role or ""), []
+        if block_type is not None:
+            blocks.append((str(block_type), str(text or ""), str(tool_name or ""), str(tool_input or "")))
+    if current_id is not None:
+        yield current_id, _prefix_alignment_signature(current_role, blocks)
 
 
 def _is_acompact_native_id(native_id: str) -> bool:
@@ -12846,20 +12891,32 @@ def _db_claude_acompact_branch_type(conn: sqlite3.Connection, session_id: str) -
 def _own_db_signatures(
     conn: sqlite3.Connection, session_id: str, before_input: BeforeIndexInput | None = None
 ) -> list[tuple[str, str]]:
-    """Return complete semantic witnesses for this session's own stored rows."""
+    """Return prefix alignment signatures for this session's own stored rows."""
     if before_input is not None:
         before_input(
             "messages",
-            ("message_id", "content_address"),
+            ("message_id", "role", "position", "variant_index"),
             "SELECT rowid FROM messages WHERE session_id=? ORDER BY position,variant_index",
+            (session_id,),
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "block_type", "text", "tool_name", "tool_input"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
             (session_id,),
         )
     with connection_cursor(
         conn,
-        "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position,variant_index",
+        """
+        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        WHERE m.session_id = ?
+        ORDER BY m.position, m.variant_index, b.position
+        """,
         (session_id,),
     ) as cursor:
-        return [(str(message_id), bytes(address).hex()) for message_id, address in cursor]
+        return list(_signatures_from_block_rows(cursor))
 
 
 def _iter_own_db_signatures(
@@ -12867,39 +12924,41 @@ def _iter_own_db_signatures(
     segment: _TranscriptSegment,
     before_input: BeforeIndexInput | None = None,
 ) -> Generator[tuple[str, str], None, None]:
+    segment_parameters = (
+        segment.session_id,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_position,
+        segment.upto_variant_index,
+    )
     if before_input is not None:
         before_input(
             "messages",
-            ("message_id", "content_address"),
+            ("message_id", "role", "position", "variant_index"),
             "SELECT rowid FROM messages WHERE session_id=? "
             "AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?)) "
             "ORDER BY position,variant_index",
-            (
-                segment.session_id,
-                segment.upto_position,
-                segment.upto_position,
-                segment.upto_position,
-                segment.upto_variant_index,
-            ),
+            segment_parameters,
+        )
+        before_input(
+            "blocks",
+            ("message_id", "position", "block_type", "text", "tool_name", "tool_input"),
+            "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
+            (segment.session_id,),
         )
     with connection_cursor(
         conn,
         """
-        SELECT message_id, content_address FROM messages
-        WHERE session_id = ?
-          AND (? IS NULL OR position < ? OR (position = ? AND variant_index <= ?))
-        ORDER BY position, variant_index
+        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
+        FROM messages m
+        LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
+        WHERE m.session_id = ?
+          AND (? IS NULL OR m.position < ? OR (m.position = ? AND m.variant_index <= ?))
+        ORDER BY m.position, m.variant_index, b.position
         """,
-        (
-            segment.session_id,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_position,
-            segment.upto_variant_index,
-        ),
+        segment_parameters,
     ) as cursor:
-        for message_id, address in cursor:
-            yield str(message_id), bytes(address).hex()
+        yield from _signatures_from_block_rows(cursor)
 
 
 class _DiskSignatureSequence(Sequence[tuple[str, str]]):
