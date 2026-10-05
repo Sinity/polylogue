@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
+from builtins import BaseExceptionGroup
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
+from polylogue.storage.fts import fts_lifecycle
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_content_block, make_message, make_session, save_session_to_archive
@@ -98,8 +105,12 @@ class TestIndexService:
         result = await service.rebuild_index()
         assert result is True
 
-    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend: SQLiteBackend) -> None:
-        """Full rebuild skips the action phase when no action repair is needed."""
+    @pytest.mark.parametrize("terminal", ["complete", "callback_error", "cancel"])
+    async def test_rebuild_index_reports_chunk_progress(
+        self, sqlite_backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch, terminal: str
+    ) -> None:
+        """The actual full route reports settled pages and retains worker custody."""
+        monkeypatch.setattr(fts_lifecycle, "FTS_REBUILD_SESSION_PAGE_SIZE", 1)
 
         for index in range(3):
             session_id = f"conv-progress-{index}"
@@ -125,16 +136,54 @@ class TestIndexService:
         service = IndexService(_config(), backend=sqlite_backend)
         progress_events: list[tuple[int, str | None]] = []
 
+        observer_error = RuntimeError("synthetic progress observer refusal")
+
         def capture(amount: int, desc: str | None = None) -> None:
             progress_events.append((amount, desc))
+            if desc == "Indexing: full-text search 1/3":
+                if terminal == "callback_error":
+                    raise observer_error
+                if terminal == "cancel":
+                    rebuild.cancel()
 
-        result = await service.rebuild_index(progress_callback=capture)
+        rebuild = asyncio.create_task(service.rebuild_index(progress_callback=capture))
+        if terminal == "complete":
+            assert await rebuild is True
+            assert progress_events == [
+                (0, "Indexing: full-text search 0/3"),
+                (1, "Indexing: full-text search 1/3"),
+                (1, "Indexing: full-text search 2/3"),
+                (1, "Indexing: full-text search 3/3"),
+            ]
+        else:
+            error = RuntimeError if terminal == "callback_error" else asyncio.CancelledError
+            with pytest.raises(error) as caught:
+                await rebuild
+            if terminal == "callback_error":
+                assert caught.value is observer_error
+            assert progress_events == [
+                (0, "Indexing: full-text search 0/3"),
+                (1, "Indexing: full-text search 1/3"),
+            ]
+            await asyncio.sleep(0)
+            assert len(progress_events) == 2
+        async with sqlite_backend.connection() as conn:
+            async with conn.execute("SELECT COUNT(*) FROM messages_fts_docsize") as cursor:
+                row = await cursor.fetchone()
+                assert row is not None and row[0] == 3
+            async with conn.execute("SELECT COUNT(*) FROM messages_fts_identity") as cursor:
+                row = await cursor.fetchone()
+                assert row is not None and row[0] == 3
 
-        assert result is True
-        assert progress_events
-        descriptions = [desc for _, desc in progress_events if desc is not None]
-        assert descriptions[0] == "Indexing: full-text search 0/3"
-        assert descriptions[-1] == "Indexing: full-text search 3/3"
+    async def test_rebuild_index_reports_empty_completion(self, sqlite_backend: SQLiteBackend) -> None:
+        events: list[tuple[int, str | None]] = []
+        assert (
+            await IndexService(_config(), backend=sqlite_backend).rebuild_index(
+                progress_callback=lambda amount, desc=None: events.append((amount, desc))
+            )
+            is True
+        )
+        assert events == [(0, "Indexing: full-text search 0/0")]
 
     async def test_rebuild_index_skips_action_phase_for_tool_use_blocks(
         self,
@@ -326,3 +375,64 @@ class TestIndexServiceErrors:
             result = await service.update_index([])
             assert result is True
             mock_update.assert_called_once_with([], mock_backend)
+
+
+@pytest.mark.uses_real_clock
+@pytest.mark.parametrize("distinct_failure", [False, True])
+async def test_borrowed_full_rebuild_settles_cancelled_worker_and_preserves_distinct_failure(
+    sqlite_backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch, distinct_failure: bool
+) -> None:
+    """Cancellation waits for native exit and retains the actual observer failure."""
+    stopping = threading.Event()
+    allow_exit = threading.Event()
+    exited = threading.Event()
+    original_rebuild = fts_lifecycle.rebuild_fts_index_sync
+    observer_error = RuntimeError("synthetic observer failure racing cancellation")
+    callback_threads: list[int] = []
+    loop_thread = threading.get_ident()
+    cancel_token = "synthetic full rebuild cancellation"
+
+    def retained_rebuild(conn: sqlite3.Connection, **kwargs: Any) -> None:
+        try:
+            original_rebuild(conn, **kwargs)
+        finally:
+            stopping.set()
+            try:
+                assert allow_exit.wait(5)
+            finally:
+                exited.set()
+
+    monkeypatch.setattr(fts_lifecycle, "rebuild_fts_index_sync", retained_rebuild)
+
+    def observe(amount: int, desc: str | None = None) -> None:
+        callback_threads.append(threading.get_ident())
+        rebuild.cancel(cancel_token)
+        if distinct_failure:
+            raise observer_error
+
+    async with sqlite_backend.connection() as conn:
+        rebuild = asyncio.create_task(fts_lifecycle.rebuild_fts_index_async(conn, progress_callback=observe))
+        failure: BaseException | None = None
+        try:
+            assert await asyncio.to_thread(stopping.wait, 5)
+            assert not rebuild.done(), "logical completion released a physically retained worker"
+        finally:
+            allow_exit.set()
+            try:
+                await rebuild
+            except BaseException as caught:
+                failure = caught
+        assert exited.is_set()
+        assert callback_threads == [loop_thread]
+        if distinct_failure:
+            assert isinstance(failure, BaseExceptionGroup)
+            cancellation, actual_failure = failure.exceptions
+            assert isinstance(cancellation, asyncio.CancelledError)
+            assert cancellation.args == (cancel_token,)
+            assert actual_failure is observer_error
+        else:
+            assert isinstance(failure, asyncio.CancelledError)
+            assert failure.args == (cancel_token,)
+        async with conn.execute("SELECT 1") as cursor:
+            row = await cursor.fetchone()
+            assert row is not None and row[0] == 1

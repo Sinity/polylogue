@@ -345,7 +345,11 @@ def live_connection_cursors(connection: sqlite3.Connection) -> tuple[sqlite3.Cur
 
 
 def close_connection_cursor(connection: sqlite3.Connection, cursor: sqlite3.Cursor) -> None:
-    cast(_MeasuredConnection, connection).close_cursor(cursor)
+    if isinstance(connection, _MeasuredConnection):
+        connection.close_cursor(cursor)
+    else:
+        # Plain SQLite callers own their explicit connection context.
+        cursor.close()
 
 
 def connect_measured(database: str | Path, /, **kwargs: Any) -> sqlite3.Connection:

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from builtins import BaseExceptionGroup
 from collections.abc import Callable
+from typing import Any
 
 import pytest
 
+from polylogue.storage.fts import fts_lifecycle
 from polylogue.storage.fts.derivation import (
     GLOBAL_PARTITION,
     FtsDerivationAdapter,
@@ -28,7 +31,9 @@ from polylogue.storage.fts.sql import (
     insert_missing_message_rows_range_sql,
     insert_session_rows_sql,
 )
+from polylogue.storage.io_phase_metrics import close_connection_cursor, live_connection_cursors
 from tests.infra.identity import archive_message_id
+from tests.infra.sqlite_cursor_settlement import ControlledCursor
 
 
 def _seed_text_block(conn: sqlite3.Connection, *, native_session_id: str, native_message_id: str, text: str) -> str:
@@ -691,3 +696,99 @@ def test_partition_page_interrupt_rolls_back_the_owned_batch(test_conn: sqlite3.
     assert not test_conn.in_transaction
     assert tuple(test_conn.execute("SELECT * FROM messages_fts_identity ORDER BY rowid")) == before
     assert all(FtsDerivationAdapter().inspect_partition(test_conn, session_id).valid for session_id in session_ids)
+
+
+@pytest.mark.parametrize("observer_refuses", [False, True])
+def test_full_fts_rebuild_pages_preserve_pairing_and_caller_transaction(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch, observer_refuses: bool
+) -> None:
+    """A page is complete only after both projections; no page commits caller work."""
+    monkeypatch.setattr(fts_lifecycle, "FTS_REBUILD_SESSION_PAGE_SIZE", 1)
+    for index in range(3):
+        _seed_text_block(test_conn, native_session_id=f"page-{index}", native_message_id="m", text="canonical needle")
+    test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (-100, 'orphan needle')")
+    test_conn.execute(
+        "INSERT INTO messages_fts_identity(rowid, block_id, recipe_id) VALUES (-100, 'orphan', ?)",
+        (FtsDerivationAdapter.recipe_id,),
+    )
+    test_conn.commit()
+    test_conn.execute("BEGIN")
+    test_conn.execute("UPDATE sessions SET title = 'caller pending title'")
+    events: list[tuple[int, int, int]] = []
+
+    observer_error = RuntimeError("synthetic observer refusal")
+
+    def observe(amount: int, processed: int, total: int) -> None:
+        events.append((amount, processed, total))
+        assert test_conn.in_transaction
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == processed
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == processed
+        if observer_refuses and processed == 1:
+            raise observer_error
+
+    if observer_refuses:
+        with pytest.raises(RuntimeError) as caught:
+            rebuild_fts_index_sync(test_conn, progress_callback=observe)
+        assert caught.value is observer_error
+        assert events == [(0, 0, 3), (1, 1, 3)]
+    else:
+        rebuild_fts_index_sync(test_conn, progress_callback=observe)
+        assert events == [(0, 0, 3), (1, 1, 3), (1, 2, 3), (1, 3, 3)]
+    test_conn.rollback()
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 4
+    assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 4
+    assert test_conn.execute("SELECT DISTINCT title FROM sessions").fetchone()[0] == "Message repair"
+
+
+def test_empty_full_fts_rebuild_reports_completion_after_both_orphan_resets(test_conn: sqlite3.Connection) -> None:
+    test_conn.execute("INSERT INTO messages_fts(rowid, text) VALUES (-100, 'orphan needle')")
+    test_conn.execute(
+        "INSERT INTO messages_fts_identity(rowid, block_id, recipe_id) VALUES (-100, 'orphan', ?)",
+        (FtsDerivationAdapter.recipe_id,),
+    )
+    events: list[tuple[int, int, int]] = []
+
+    def observe(amount: int, processed: int, total: int) -> None:
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 0
+        assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_identity").fetchone()[0] == 0
+        events.append((amount, processed, total))
+
+    rebuild_fts_index_sync(test_conn, progress_callback=observe)
+    assert events == [(0, 0, 0)]
+
+
+def test_full_fts_rebuild_preserves_primary_observer_and_cursor_cleanup_failures(
+    test_conn: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_text_block(test_conn, native_session_id="failure-pair", native_message_id="m", text="canonical needle")
+    test_conn.commit()
+    original_execute = test_conn.execute
+    opened: list[ControlledCursor] = []
+    primary = RuntimeError("synthetic primary observer failure")
+
+    def execute(sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        if sql == "SELECT session_id FROM sessions ORDER BY session_id":
+            cursor = test_conn.cursor(factory=ControlledCursor)
+            assert isinstance(cursor, ControlledCursor)
+            cursor.allow_cleanup.clear()
+            opened.append(cursor)
+            return cursor.execute(sql, *args, **kwargs)
+        return original_execute(sql, *args, **kwargs)
+
+    def observe(amount: int, processed: int, total: int) -> None:
+        if processed:
+            raise primary
+
+    monkeypatch.setattr(test_conn, "execute", execute)
+    try:
+        with pytest.raises(BaseExceptionGroup) as caught:
+            rebuild_fts_index_sync(test_conn, progress_callback=observe)
+        assert len(opened) == 1
+        cursor = opened[0]
+        assert caught.value.exceptions == (primary, cursor.cleanup_failure)
+        assert cursor in live_connection_cursors(test_conn)
+    finally:
+        for cursor in opened:
+            cursor.allow_cleanup.set()
+            close_connection_cursor(test_conn, cursor)
+        test_conn.rollback()
