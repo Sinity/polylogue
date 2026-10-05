@@ -610,6 +610,8 @@ def test_bound_verification_preview_preserves_python_grouping_under_native_nocas
             conn.execute(f"INSERT INTO {table} SELECT * FROM {original}")
             conn.execute(f"DROP TABLE {original}")
         conn.execute("UPDATE verification_events SET session_id = CASE WHEN id=1 THEN 'ABC' ELSE 'abc' END")
+        # State is unique per (session, root): keep one state row per root for 'abc'.
+        conn.execute("DELETE FROM verification_state WHERE session_id = 'verify-session-redacted-2'")
         conn.execute("UPDATE verification_state SET session_id = 'abc'")
     sessions = hermes_verification.parse_verification_evidence_db(path, profile_root=profile_root_for_artifact(path))
     payload = explain_import_path(path)

@@ -469,15 +469,21 @@ def select_retained_claude_sidecar_owner_raw_ids(
         check_compute_cancelled()
         root_path = (session_dir.parent / f"{session_dir.name}.jsonl").as_posix()
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
+        candidates: list[str] = []
         with reader.retained_sibling_rows(root_path, low, high) as rows:
             for row in rows:
                 check_compute_cancelled()
                 source_path, raw_id = str(row[0]), str(row[6])
-                if source_path != root_path and not source_path.endswith(".jsonl"):
-                    continue
-                provider, _hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
-                if provider is Provider.CLAUDE_CODE:
-                    owners.setdefault(raw_id, None)
+                if source_path == root_path or source_path.endswith(".jsonl"):
+                    candidates.append(raw_id)
+        # Reading a descriptor retains its original blob input (a seal write),
+        # which the seal refuses while a Source row read is open; read them
+        # once the sibling cursor has settled.
+        for raw_id in candidates:
+            check_compute_cancelled()
+            provider, _hash, _path, _kind, _size = reader.raw_revision_descriptor(raw_id)
+            if provider is Provider.CLAUDE_CODE:
+                owners.setdefault(raw_id, None)
     return tuple(owners)
 
 

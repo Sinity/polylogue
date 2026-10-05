@@ -346,16 +346,16 @@ def preflight_import_bindings(
         if is_sqlite_path(binding.source_path):
             _preflight_sqlite(binding.source, acc, label=label, source_binding=binding, check_stop=check_stop)
             continue
-        result = _decode_bound_preflight(
-            preflight_bound_bytes(binding, label=label, check_stop=check_stop), binding.source_path
-        )
+        result = _decode_bound_preflight(preflight_bound_bytes(binding, check_stop=check_stop), binding.source_path)
         for name in ("candidate_count", "supported_count", "unsupported_count", "malformed_count", "ignored_count"):
             setattr(acc, name, getattr(acc, name) + getattr(result, name))
         acc.providers.update(result.providers)
+        # The bound preflight already labels its evidence with the member's
+        # semantic source path; prefixing the binding label again doubles it.
         for caveat in result.caveats:
-            acc._caveat(f"{label}: {caveat}")
+            acc._caveat(caveat)
         for sample in result.samples:
-            acc._sample(f"{label}: {sample}")
+            acc._sample(sample)
     if not seen or not acc.candidate_count:
         acc.unsupported(source_path, "directory contains no JSON, JSONL, or ZIP import candidates")
     return acc.result()

@@ -195,14 +195,8 @@ class TestResetCommandSubprocess:
         in-process reset writer and both commands start succeeding offline,
         turning these red.
         """
-        from tests.infra.source_builders import GenericSessionBuilder
-
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
-        inbox = workspace["paths"]["inbox"]
-
-        (GenericSessionBuilder("to-delete").add_user("will be deleted").write_to(inbox / "test.json"))
-        run_cli(["--plain", "run", "parse"], env=env)
 
         archive_db = Path(workspace["paths"]["archive_root"]) / "index.db"
         assert archive_db.exists()

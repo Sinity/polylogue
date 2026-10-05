@@ -14,6 +14,7 @@ import time
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -31,6 +32,7 @@ from polylogue.sources.hooks import (
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.sources.parsers.hermes_lifecycle import DURABLE_FINALIZE, PER_TURN_END
 from tests.infra.hook_carriers import acquire_hook_carriers, hook_event_count, materialize_hook_carriers
+from tests.infra.raw_owner_routes import live_owner_set
 
 _TIMESTAMP = "2026-09-16T00:00:00Z"
 
@@ -341,11 +343,17 @@ def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypat
         source_id="primary-hook-spool:codex",
         role="primary-writable",
     )
-    watcher = LiveWatcher(
-        SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
-        (source,),
-    )
-    metrics = asyncio.run(watcher._ingest_files([carrier]))
+
+    async def grow() -> Any:
+        async with live_owner_set(archive_root) as owners:
+            watcher = LiveWatcher(
+                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+                (source,),
+                **owners.watcher_kwargs(),
+            )
+            return await watcher._ingest_files([carrier])
+
+    metrics = asyncio.run(grow())
     assert (metrics.append_file_count, metrics.full_file_count) == (1, 0)
 
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -363,7 +371,7 @@ def test_grown_carrier_retains_only_an_append_revision(tmp_path: Path, monkeypat
     assert rows == [
         ("codex-session", str(carrier), initial_size, "full", None, None),
         ("codex-session", str(carrier), grown_size - initial_size, "append", initial_size, grown_size),
-    ]
+    ], rows
 
 
 def test_carrier_coordinates_are_byte_offsets_not_ordinals(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

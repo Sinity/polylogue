@@ -28,8 +28,9 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
     ParsedSessionEvent,
 )
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import close_fixture_index_connection, write_fixture_index_session
 from tests.infra.live_ingest import ingest_session
 
 
@@ -520,7 +521,7 @@ def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
             conn.close()
 
     def append(session: ParsedSession) -> None:
-        conn = sqlite3.connect(str(test_db))
+        conn = connect_measured(test_db)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA foreign_keys = ON")
@@ -532,7 +533,7 @@ def test_agent_policy_interval_survives_a_merge_append(test_db: Path) -> None:
             )
             conn.commit()
         finally:
-            conn.close()
+            close_fixture_index_connection(conn)
 
     write_session_sync(test_db, chunk("a", approval="on-request", sandbox="read-only", network="restricted"))
     first = policy_rows()
@@ -838,7 +839,7 @@ def test_merge_append_duplicate_message_coordinates_also_guarded(test_db: Path) 
         }
     )
 
-    conn = sqlite3.connect(str(test_db))
+    conn = connect_measured(test_db)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -850,7 +851,7 @@ def test_merge_append_duplicate_message_coordinates_also_guarded(test_db: Path) 
                 merge_append=True,
             )
     finally:
-        conn.close()
+        close_fixture_index_connection(conn)
 
     assert not isinstance(exc_info.value, sqlite3.IntegrityError)
     message = str(exc_info.value)

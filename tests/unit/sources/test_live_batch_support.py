@@ -520,6 +520,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
@@ -3533,6 +3534,7 @@ def test_append_plan_chunks_large_tail_without_full_ingest(tmp_path: Path) -> No
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     plan = processor._append_plan(path)
@@ -3580,6 +3582,7 @@ def test_append_cursor_survives_source_disappearing_after_admission(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     plan = processor._append_plan(path)
     assert isinstance(plan, _AppendPlan)
@@ -3619,6 +3622,7 @@ def test_append_plan_defers_when_tail_has_no_complete_line(tmp_path: Path) -> No
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     assert processor._append_plan(path) is _DEFER_APPEND
@@ -4047,6 +4051,7 @@ def test_jsonl_stream_retains_append_plan(tmp_path: Path) -> None:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=db_path))),
@@ -4087,6 +4092,7 @@ def test_incomplete_append_is_requeued_not_full_ingested(tmp_path: Path) -> None
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     metrics = run_ingest_files(processor, [path], emit_event=False)
@@ -4160,6 +4166,7 @@ def test_codex_append_plan_uses_append_only_session_identity(tmp_path: Path) -> 
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     plan = processor._append_plan(path)
@@ -4238,6 +4245,7 @@ def test_codex_append_plan_reads_archive_file_set_session_identity(tmp_path: Pat
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
     plan = processor._append_plan(path)
@@ -4908,6 +4916,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         st_dev=captured_stat.st_dev,
         st_ino=captured_stat.st_ino,
         mtime_ns=captured_stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         polylogue,
@@ -5224,6 +5233,7 @@ def test_rejected_full_cursor_frontier_requires_reauthorization(tmp_path: Path) 
         st_ino=captured_stat.st_ino,
         mtime_ns=captured_stat.st_mtime_ns,
         failure_count=2,
+        authority=fixture_cursor_authority(path),
     )
     with path.open("ab") as handle:
         handle.write(growth)
@@ -5280,6 +5290,7 @@ def test_cursor_invalidation_lock_exhaustion_is_observable(
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
         failure_count=2,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -5320,6 +5331,7 @@ def test_append_plan_rejects_malformed_hash_authority(tmp_path: Path) -> None:
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -5844,6 +5856,7 @@ def test_raw_failure_cursor_guard_uses_root_source_tier_for_pointer_index(tmp_pa
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=index_db))),
@@ -6091,7 +6104,7 @@ def test_append_persistence_failure_preserves_frontier_for_next_tick(
         cursor=cursor,
     )
     assert watcher._needs_work(path)
-    cursor.mark_failed(path)
+    cursor.mark_failed(path, authority=fixture_cursor_authority(path))
     pending_retry = cursor.get_record(path)
     assert pending_retry is not None
     assert pending_retry.failure_count == 1
@@ -9150,6 +9163,7 @@ def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
     before = store.get_record(path)
     assert before is not None

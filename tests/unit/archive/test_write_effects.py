@@ -197,6 +197,10 @@ def test_abort_failure_policy_propagates(tmp_path: Path, monkeypatch: pytest.Mon
         conn.execute("BEGIN IMMEDIATE")
         with pytest.raises(RuntimeError, match="simulated effect failure"):
             commit_archive_write_effects(conn, WriteOperation.INGEST, {"changed_session_ids": ()})
+        # The caller owns the connection lifecycle: an aborted effect leaves its
+        # transaction open, and the owner settles it before close.
+        assert conn.in_transaction
+        conn.rollback()
 
 
 def test_tolerated_effect_failure_has_failed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

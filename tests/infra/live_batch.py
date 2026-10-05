@@ -6,12 +6,13 @@ import asyncio
 import sys
 import traceback
 from builtins import BaseExceptionGroup
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from polylogue import Polylogue
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
@@ -34,15 +35,21 @@ async def prepared_live_batch_processor(
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     stage = LiveSQLiteCaptureStage(compute_adapter=compute)
+    # Archive custody admits only an existing root directory.
+    root.mkdir(parents=True, exist_ok=True)
     try:
         await coordinator.run_sync("fixture.live.bootstrap", lambda: bootstrap_archive_root(root))
         async with prepared_live_convergence_owner(
             root, compute_adapter=compute, write_coordinator=coordinator
         ) as owner:
 
-            async def retained_runner(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+            async def retained_runner(
+                raw_ids: Sequence[str],
+                *,
+                on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+            ) -> tuple[PreparedRevisionReplayResult, ...]:
                 try:
-                    return await owner.ingest_retained_raw_ids(raw_ids)
+                    return await owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)
                 except BaseException as failure:
                     if failure_details is not None:
                         failure_details.append("".join(traceback.format_exception(failure)))

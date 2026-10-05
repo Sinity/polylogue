@@ -15,10 +15,18 @@ from polylogue.sources.retained_acquisition import SourceInputRecord
 from tests.infra.frozen_clock import FrozenClock
 
 
-async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
+async def test_iter_raw_record_stream_refuses_an_invalid_raw_record(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An invalid raw record fails the stream instead of being skipped.
+
+    Acquisition fails closed: a record ``make_raw_record`` rejects is surfaced
+    to the caller, which records the failure against its source, rather than
+    being dropped with a log line. Anti-vacuity: restore the former
+    log-and-skip handler and the stream yields nothing without raising.
+    """
+
     async def _raw_stream(*args: object, **kwargs: object) -> AsyncIterator[SourceInputRecord]:
         del args, kwargs
         yield SourceInputRecord(
@@ -34,28 +42,11 @@ async def test_iter_raw_record_stream_logs_make_raw_record_value_errors(
         del args, kwargs
         raise ValueError("boom")
 
-    warnings: list[tuple[str, dict[str, object]]] = []
-
-    def _record_warning(event: str, **kwargs: object) -> None:
-        warnings.append((event, kwargs))
-
     monkeypatch.setattr(acquisition_streams, "iter_source_raw_stream", _raw_stream)
     monkeypatch.setattr(acquisition_streams, "make_raw_record", _raise)
-    monkeypatch.setattr(acquisition_streams.logger, "warning", _record_warning)
 
-    items = [item async for item in acquisition_streams.iter_raw_record_stream(Source(name="chatgpt", path=tmp_path))]
-
-    assert items == []
-    assert warnings == [
-        (
-            "Skipping raw payload",
-            {
-                "source": "chatgpt",
-                "path": str(tmp_path / "broken.json"),
-                "error": "boom",
-            },
-        )
-    ]
+    with pytest.raises(ValueError, match="boom"):
+        _ = [item async for item in acquisition_streams.iter_raw_record_stream(Source(name="chatgpt", path=tmp_path))]
 
 
 @pytest.mark.asyncio
@@ -144,6 +135,7 @@ async def test_iter_raw_record_stream_forwards_drive_progress_and_observations(
 
 
 @pytest.mark.asyncio
+@pytest.mark.frozen_clock_modules("polylogue.pipeline.services.acquisition_streams")
 async def test_ordinary_zip_reobservation_proves_exact_membership_without_clock_order(
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -200,36 +192,43 @@ async def test_ordinary_zip_reobservation_proves_exact_membership_without_clock_
                 )
             )
 
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
     backend = SQLiteBackend(db_path=archive_root / "source.db")
-    service = AcquisitionService(backend)
     try:
-        write_revision("first")
-        first = await service.acquire_sources([Source(name="codex", path=bundle)])
-        assert first.errors == 0
-        original = membership()
-        assert len(original) == 2
-        write_revision("changed")
-        changed = await service.acquire_sources([Source(name="codex", path=bundle)])
-        assert changed.errors == 0
-        assert len(membership()) == 4
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            rank = raw_receipt_order_sql("r")
-            before = dict(conn.execute(f"SELECT r.raw_id, {rank} FROM raw_sessions r"))
-        write_revision("first")
-        returned = await service.acquire_sources([Source(name="codex", path=bundle)])
-        assert returned.errors == 0
-        assert set(original) <= set(membership())
-        assert len(membership()) == 4
-        with sqlite3.connect(archive_root / "source.db") as conn:
-            assert conn.execute(
-                "SELECT enumerated_record_count, enumerated_member_count FROM source_items "
-                "ORDER BY source_generation_id"
-            ).fetchall() == [(2, 3), (2, 3)]
-            rank = raw_receipt_order_sql("r")
-            after = dict(conn.execute(f"SELECT r.raw_id, {rank} FROM raw_sessions r"))
-            assert all(after[raw_id] > before[raw_id] for _group, raw_id, _entry, _split in original)
-            assert conn.execute("SELECT DISTINCT acquired_at_ms FROM raw_sessions").fetchall() == [
-                (int(frozen_clock.time() * 1000),)
-            ]
+        # Acquisition publishes through the daemon's admitted writer, exactly
+        # as configured-source catch-up does.
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            service = AcquisitionService(backend, execution=execution)
+            write_revision("first")
+            first = await service.acquire_sources([Source(name="codex", path=bundle)])
+            assert first.errors == 0
+            original = membership()
+            assert len(original) == 2
+            write_revision("changed")
+            changed = await service.acquire_sources([Source(name="codex", path=bundle)])
+            assert changed.errors == 0
+            assert len(membership()) == 4
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                rank = raw_receipt_order_sql("r")
+                before = dict(conn.execute(f"SELECT r.raw_id, {rank} FROM raw_sessions r"))
+            write_revision("first")
+            returned = await service.acquire_sources([Source(name="codex", path=bundle)])
+            assert returned.errors == 0
+            assert set(original) <= set(membership())
+            assert len(membership()) == 4
+            with sqlite3.connect(archive_root / "source.db") as conn:
+                assert conn.execute(
+                    "SELECT enumerated_record_count, enumerated_member_count FROM source_items "
+                    "ORDER BY source_generation_id"
+                ).fetchall() == [(2, 3), (2, 3)]
+                rank = raw_receipt_order_sql("r")
+                after = dict(conn.execute(f"SELECT r.raw_id, {rank} FROM raw_sessions r"))
+                assert all(after[raw_id] > before[raw_id] for _group, raw_id, _entry, _split in original)
+                assert conn.execute("SELECT DISTINCT acquired_at_ms FROM raw_sessions").fetchall() == [
+                    (int(frozen_clock.time() * 1000),)
+                ]
     finally:
         await backend.close()

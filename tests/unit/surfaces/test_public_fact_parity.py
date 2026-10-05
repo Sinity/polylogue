@@ -8,6 +8,7 @@ module exercises the current daemon HTTP substrate, not an obsolete renderer.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime
 from http import HTTPStatus
@@ -148,17 +149,19 @@ async def test_session_profile_fact_survives_repository_facade_cli_and_daemon_ht
     # sealed machine owned by ``polylogued run``. This test needs materialized
     # rows to compare across surfaces, so it calls the same materializer both
     # sanctioned owners reach.
-    rebuild = materialize_session_insights(db_path)
+    # Synchronous archive writes take the write lease, which refuses to
+    # block this test's event loop; run them on a worker thread.
+    rebuild = await asyncio.to_thread(materialize_session_insights, db_path)
     assert rebuild.profiles == 2
 
     # This session exists in the archive but was deliberately planted after
     # the one rebuild. It is the independent q-missing fact, not a fabricated
     # daemon response or a deleted profile row.
-    missing.seed(db_path)
+    await asyncio.to_thread(missing.seed, db_path)
 
     repository = RepositorySurface(db_path)
     facade = FacadeSurface(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cli = CLISurface(db_path=db_path)
+    cli = CLISurface(archive_root=workspace_env["archive_root"], db_path=db_path)
     daemon = DaemonHTTPSurface(db_path=db_path)
     try:
         repository_insight = await repository.session_profile_insight(selected.native_session_id)

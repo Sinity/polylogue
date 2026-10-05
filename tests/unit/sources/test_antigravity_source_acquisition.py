@@ -27,6 +27,8 @@ from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import AntigravityBinaryUnavailableError
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
 from polylogue.sources.source_walk import census_source_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 
 def _write_brain_sidecar(root: Path) -> Path:
@@ -385,19 +387,20 @@ async def test_trajectory_sqlite_wal_reaches_the_daemon_owned_public_read_route(
     root.mkdir(parents=True)
     source_path = root / "unpredictable-name.sqlite"
     writer = _write_trajectory_store(source_path)
-    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "cursor.db")
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="antigravity", root=root, suffixes=(".sqlite", ".db")),),
-        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.ingested_session_count == 1
 
-        replay = await processor.ingest_files([source_path], emit_event=False)
+        replay = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert replay.failed_file_count == 0
         assert replay.ingested_session_count == 1
 
@@ -465,17 +468,16 @@ async def test_inbox_staged_trajectory_is_admitted_without_a_provider_label(
     root.mkdir(parents=True)
     source_path = root / "staged-trajectory.db"
     writer = _write_trajectory_store(source_path)
-    archive = Polylogue(
-        archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "inbox-cursor.db"
-    )
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["archive_root"] / "index.db")
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="inbox", root=root, suffixes=(".sqlite", ".db")),),
-        cursor=CursorStore(workspace_env["data_root"] / "inbox-cursor.db"),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
         parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     try:
-        metrics = await processor.ingest_files([source_path], emit_event=False)
+        metrics = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert metrics.failed_file_count == 0
         assert metrics.excluded_file_count == 0
         assert metrics.ingested_session_count == 1

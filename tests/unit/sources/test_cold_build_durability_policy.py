@@ -27,6 +27,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CONNECTION_PROFILE,
     write_connection_pragma_statements,
 )
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 _SYNCHRONOUS_LEVELS = {"OFF": 0, "NORMAL": 1, "FULL": 2, "EXTRA": 3}
 
@@ -55,7 +56,9 @@ def _expected_synchronous() -> int:
 
 def _ops_write(archive_root: Path, name: str) -> None:
     """One ordinary one-shot ``ops.db`` write through the production route."""
-    CursorStore(archive_root / "index.db").set(archive_root / name, 1)
+    CursorStore(archive_root / "index.db").set(
+        archive_root / name, 1, authority=fixture_cursor_authority(archive_root / name)
+    )
 
 
 def _ops_wal(archive_root: Path) -> Path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -1281,7 +1282,9 @@ def test_run_cli_honors_explicit_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyP
     kwargs = mock_run.call_args.kwargs
 
     assert kwargs["cwd"] == tmp_path
-    assert command[:4] == ["uv", "run", "--project", str(Path(__file__).parents[3])]
+    # The provisioned environment's console script, never a package manager
+    # that could rebuild into the checkout.
+    assert command == [str(Path(sys.executable).parent / "polylogue"), "--help"]
 
 
 def test_run_cli_defaults_cwd_to_project_root(monkeypatch: pytest.MonkeyPatch) -> None:
