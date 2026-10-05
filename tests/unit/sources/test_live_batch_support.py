@@ -1912,7 +1912,10 @@ def test_live_raw_compaction_holds_generation_lease_through_delete(
     monkeypatch.setattr(raw_retention, "active_raw_retention_authority", assert_promotion_excluded)
     monkeypatch.setattr(raw_retention, "compact_paths_superseded_raw_snapshots", assert_delete_excluded)
 
-    _compact_on_admitted_writer(processor, [path])
+    # Both destructive steps are replaced by lease probes, so no archive write
+    # needs admission; inside the writer the probe would contend with the
+    # coordinator's own hold instead of observing the compaction lease.
+    processor._compact_superseded_raw_snapshots([path])
     assert phases == ["authority", "delete"]
     with RebuildLease(tmp_path):
         pass
