@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.prepared_replay import (
     apply_prepared_revision_replay,
+    publish_membership_census,
     publish_prepared_source,
     run_on_convergence_owner,
 )
@@ -561,7 +562,8 @@ def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path)
             acquired_at_ms=1,
             post_parse=True,
         )
-        archive.replace_raw_membership_census(
+        publish_membership_census(
+            archive,
             raw_id,
             [session],
             parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -622,8 +624,8 @@ def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: P
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
-            archive.replace_raw_membership_census(
-                raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
+            publish_membership_census(
+                archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, projection)
 
@@ -716,8 +718,8 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
                 acquired_at_ms=1,
                 raw_id=raw_id,
             )
-            archive.replace_raw_membership_census(
-                raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
+            publish_membership_census(
+                archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
             )
             return MembershipRevision(raw_id, session_revision_projection(session))
 
@@ -1052,7 +1054,8 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
         # baseline_raw_id column durably points at it -- a real dependent,
         # not a false one.
         with pytest.raises(archive_revision_governance.ActiveByteRevisionChainError):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 baseline,
                 [],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -1255,7 +1258,8 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
             (raw_a, parsed_solo("s1", "base", "left")),
             (raw_b, parsed_solo("s1", "base", "right")),
         ):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [session],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -1469,7 +1473,8 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
         raw_a, raw_b = raws
 
         with pytest.raises(ValueError, match="recognized governance marker"):
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_a,
                 [parsed_solo("s1", "base", "left")],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -1493,7 +1498,8 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
 
         # A census that leaves no membership row has no logical identity to be
         # ambiguous about, so its detail stays free explanatory prose.
-        archive.replace_raw_membership_census(
+        publish_membership_census(
+            archive,
             raw_a,
             [],
             parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -1518,7 +1524,8 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
                     "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
                 ),
             )
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [parsed_solo("s1", "base", tail)],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -1586,7 +1593,8 @@ def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path
                     "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
                 ),
             )
-            archive.replace_raw_membership_census(
+            publish_membership_census(
+                archive,
                 raw_id,
                 [parsed_solo(tail)],
                 parser_fingerprint=raw_authority_parser_fingerprint(),
@@ -2315,8 +2323,8 @@ def _write_quarantined_member(archive: ArchiveStore, label: str, session: Parsed
         source_path=f"{label}.json",
         acquired_at_ms=1,
     )
-    archive.replace_raw_membership_census(
-        raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
+    publish_membership_census(
+        archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
     )
     return raw_id
 
@@ -3286,8 +3294,8 @@ def _headless_ambiguous_cohort(
             acquired_at_ms=1,
             raw_id=raw_id,
         )
-        archive.replace_raw_membership_census(
-            raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
+        publish_membership_census(
+            archive, raw_id, [session], parser_fingerprint="test-parser", censused_at_ms=1, revision_authority=None
         )
         return MembershipRevision(raw_id, session_revision_projection(session))
 

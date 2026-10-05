@@ -173,3 +173,15 @@ def ingest_append_plans_on_owner(root: Path, append_owner: Any, plans: list[Any]
             return await owner.ingest_append_plans(append_owner, plans)
 
     return asyncio.run(run())
+
+
+def publish_membership_census(archive: ArchiveStore, raw_id: str, sessions: Any, **census: Any) -> None:
+    """Commit the open store, then publish a membership census on its original Source seal."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import replace_raw_membership_census
+
+    archive.commit()
+    publish_prepared_source(
+        archive.archive_root,
+        "test.membership-census",
+        lambda seal: replace_raw_membership_census(seal, raw_id, sessions, **census),
+    )
