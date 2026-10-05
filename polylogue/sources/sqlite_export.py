@@ -792,6 +792,17 @@ def _run_source_worker(
         result = _exchange_source_worker(request, _ProgressSink(heartbeat) if heartbeat is not None else handle)
         if _identity(os.fstat(directory)) != parent_identity or _named_identity(directory, source.name) != main:
             raise OSError(errno.ESTALE, "SQLite source coordinate changed", str(source))
+        # The worker request names the database by path, and SQLite resolves
+        # its sidecars by that name. A matching main inode cannot prove the
+        # read stayed under the accepted directory: an ancestor substituted
+        # with a link to a hard link of the same file passes every descriptor
+        # check, so the named parent must still be the anchored directory.
+        try:
+            named_parent = os.stat(parent)
+        except OSError as exc:
+            raise OSError(errno.ESTALE, "SQLite source parent path disappeared", str(source)) from exc
+        if _identity(named_parent) != parent_identity:
+            raise OSError(errno.ESTALE, "SQLite source parent path names another directory", str(source))
         _verify_staging_metadata_name(source_binding.metadata_anchor, source_binding.provenance)
         return result
     finally:
