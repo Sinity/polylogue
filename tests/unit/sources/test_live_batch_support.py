@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import os
 import sqlite3
@@ -4635,20 +4636,28 @@ def test_live_append_chain_survives_post_ingest_compaction(
         parser_fingerprint="test-parser",
     )
     original_publish = ArchiveBlobPublisher.write_from_bytes
-    original_stream_publish = ArchiveBlobPublisher.write_from_fileobj
+    original_writer_publish = ArchiveBlobPublisher.write_from_writer
     published_payloads: list[bytes] = []
 
     def counted_publish(publisher: ArchiveBlobPublisher, raw: bytes) -> tuple[str, int]:
         published_payloads.append(raw)
         return original_publish(publisher, raw)
 
-    def counted_stream_publish(publisher: ArchiveBlobPublisher, source: IO[bytes], **kwargs: object) -> tuple[str, int]:
-        # Full captures stream through the acquisition boundary.
-        published_payloads.append(Path(source.raw.name).read_bytes())  # type: ignore[attr-defined]
-        return original_stream_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
+    def counted_writer_publish(
+        publisher: ArchiveBlobPublisher, write: Callable[[IO[bytes]], None], **kwargs: Any
+    ) -> tuple[str, int]:
+        # Full captures stream through the acquisition boundary's writer.
+        captured = io.BytesIO()
+        write(captured)
+        published_payloads.append(captured.getvalue())
+
+        def replay(sink: IO[bytes]) -> None:
+            sink.write(captured.getvalue())
+
+        return original_writer_publish(publisher, replay, **kwargs)
 
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", counted_stream_publish)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_writer", counted_writer_publish)
     if not protect_chain:
         from polylogue.storage.raw_retention import RawRetentionAuthority
 
