@@ -3081,6 +3081,7 @@ def write_parsed_session_to_archive(
                     duplicate_native_ids=duplicate_message_native_ids,
                     content_identities=content_identities,
                     inherited_message_ids=inherited_source_message_ids,
+                    stored_parents=merge_append,
                 )
                 add_timing("index.parent_links", t0)
                 t0 = time.perf_counter()
@@ -7631,6 +7632,45 @@ def _write_paste_spans(
             )
 
 
+class _StoredSessionParents(Mapping[str, str]):
+    """Native parent ids resolved to this session's stored native rows.
+
+    Only a parent id that names exactly one stored native row resolves: a
+    stored duplicate has a content-derived id and so no ``:n:`` row, and a
+    value the appended batch itself repeats stays ambiguous.
+    """
+
+    def __init__(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        inherited: Mapping[str, str],
+        duplicate_native_ids: frozenset[str],
+    ) -> None:
+        self._conn = conn
+        self._session_id = session_id
+        self._inherited = inherited
+        self._duplicates = duplicate_native_ids
+
+    def __getitem__(self, key: str) -> str:
+        inherited = self._inherited.get(key)
+        if inherited is not None:
+            return inherited
+        native_id = _sqlite_text(key.strip())
+        if not native_id or native_id in self._duplicates:
+            raise KeyError(key)
+        candidate = archive_message_id(self._session_id, native_id)
+        if self._conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (candidate,)).fetchone() is None:
+            raise KeyError(key)
+        return candidate
+
+    def __iter__(self) -> Iterator[str]:
+        raise TypeError("stored session parents are resolved by key only")
+
+    def __len__(self) -> int:
+        raise TypeError("stored session parents are resolved by key only")
+
+
 def _write_parent_links(
     conn: sqlite3.Connection,
     session_id: str,
@@ -7640,6 +7680,7 @@ def _write_parent_links(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     inherited_message_ids: Mapping[str, str] | None = None,
+    stored_parents: bool = False,
 ) -> None:
     """Resolve each written message's declared parent to a stored row.
 
@@ -7647,10 +7688,21 @@ def _write_parent_links(
     parent is the last inherited message resolves through
     ``inherited_message_ids`` (provider id -> the inherited row), keeping the
     tree connected across the boundary instead of leaving it NULL.
+
+    A merge-append (``stored_parents``) writes only the new records of the
+    same session, so a new record whose declared native parent is an
+    earlier stored record resolves to that row. Without the edge, a later
+    tool reply chained under an earlier one cannot be paired with the
+    invocation both answer.
     """
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     updates = _ParentLinkUpdates(conn)
-    inherited = inherited_message_ids or {}
+    batch_inherited = inherited_message_ids or {}
+    inherited: Mapping[str, str] = (
+        _StoredSessionParents(conn, session_id, batch_inherited, duplicate_native_ids)
+        if stored_parents
+        else batch_inherited
+    )
     if isinstance(source, SqliteMessageSink):
         disk_index = _DiskMessageEventIndex(source.path.parent)
         try:
