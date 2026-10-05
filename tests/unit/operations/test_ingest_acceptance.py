@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -19,7 +20,6 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     OperationExecutor,
 )
-from polylogue.pipeline.services.ingest_batch._core import _delete_sessions_without_fk_cascade
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
@@ -30,36 +30,16 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     seal_prepared_source_manifest,
 )
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.source_builders import prepared_ingest_manifest
 
 
-def test_bulk_session_cleanup_deletes_compound_message_owner_rows() -> None:
-    """Manual FK-off cleanup follows message ownership through the session.
-
-    Anti-vacuity: omit the transitive message-owner cleanup and the row remains
-    orphaned; the final foreign-key check also reports the violation.
-    """
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        PRAGMA foreign_keys=OFF;
-        CREATE TABLE sessions(session_id TEXT PRIMARY KEY);
-        CREATE TABLE messages(message_id TEXT UNIQUE, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE, UNIQUE(message_id, session_id));
-        CREATE TABLE attachment_refs(message_id TEXT NOT NULL, session_id TEXT NOT NULL,
-          FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE);
-        INSERT INTO sessions VALUES ('stale');
-        INSERT INTO messages VALUES ('m1', 'stale');
-        INSERT INTO attachment_refs VALUES ('m1', 'stale');
-        """
-    )
-
-    _delete_sessions_without_fk_cascade(conn, ("stale",))
-
-    assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone() == (0,)
-    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
-    conn.close()
+def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> SealedSourceManifestRef:
+    """Prepare the staged manifest under the archive's writer lease, as production does."""
+    with write_lease("test.ingest-manifest", archive_root=archive_root):
+        return prepared_ingest_manifest(archive_root, *args, **kwargs)
 
 
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
@@ -72,10 +52,11 @@ def test_new_acceptance_streams_manifest_beyond_former_input_cap(tmp_path: Path)
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic shared input")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "large-acceptance",
         "d" * 64,
@@ -115,10 +96,11 @@ def test_ingest_acceptance_replays_identity_without_acquiring(tmp_path: Path, ph
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "source-generation:test",
         "d" * 64,
@@ -162,7 +144,8 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
     first_hash, _ = publisher.write_from_bytes(b"first page")
     first_receipt = publisher.receipt_id(first_hash)
     assert first_receipt is not None
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -184,7 +167,8 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
         source.commit()
     # The next page's publication can commit before its member batch does.
     publisher.write_from_bytes(b"unattached second page")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
 
     recover_interrupted_operations(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
@@ -205,7 +189,8 @@ def test_sealed_manifest_acceptance_promotes_every_member_atomically(tmp_path: P
         receipt_id = publisher.receipt_id(blob_hash)
         assert receipt_id is not None
         inputs.append(FrozenSourceInput(f"input:{ordinal}", f"/synthetic/{ordinal}", blob_hash, receipt_id))
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     with sqlite3.connect(tmp_path / "source.db") as source:
         source.execute("BEGIN IMMEDIATE")
         begin_prepared_source_manifest(
@@ -270,10 +255,11 @@ def test_malformed_runtime_authority_never_prepares_source_manifest(tmp_path: Pa
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:bad",
         "d" * 64,
@@ -310,10 +296,11 @@ def test_runtime_authority_replay_preserves_frozen_ids_and_machine_part(
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:good",
         "d" * 64,
@@ -401,10 +388,11 @@ def test_runtime_authority_normal_accept_commits_linked_run(tmp_path: Path, froz
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "generation:normal",
         "d" * 64,
@@ -462,10 +450,11 @@ def test_deterministically_failed_accept_ingest_leaves_a_recoverable_archive(tmp
     bootstrap_archive_root(tmp_path)
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     blob_hash, _ = publisher.write_from_bytes(b"synthetic export")
-    publisher.flush()
+    with write_lease("test.ingest-acceptance", archive_root=tmp_path):
+        publisher.flush()
     publication_id = publisher.receipt_id(blob_hash)
     assert publication_id is not None
-    manifest = prepared_ingest_manifest(
+    manifest = _leased_ingest_manifest(
         tmp_path,
         "source-generation:wedge",
         "d" * 64,
