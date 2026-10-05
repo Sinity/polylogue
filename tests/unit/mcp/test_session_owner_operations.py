@@ -652,7 +652,8 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
     import sqlite3
     from contextlib import closing
 
-    from polylogue.core.errors import SchemaVersionMismatchError
+    from polylogue.core.errors import SchemaSkewError
+    from polylogue.daemon.derived_degradation import schema_refusal_lifecycle_action
     from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
 
     index_version = SCHEMA_VERSION + index_version_offset
@@ -672,10 +673,13 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
     ]
     async with Polylogue(archive_root=root) as api:
         for request in requests:
-            with pytest.raises(SchemaVersionMismatchError) as failure:
+            # SchemaSkew is the shipped typed mismatch; it declares the
+            # lifecycle route the read surfaces translate.
+            with pytest.raises(SchemaSkewError) as failure:
                 await execute_session_operation(api, request)
-            assert failure.value.current_version == index_version
-            assert failure.value.lifecycle_action == lifecycle_action
+            assert failure.value.tier == "index"
+            assert failure.value.found == index_version
+            assert schema_refusal_lifecycle_action(failure.value) == lifecycle_action
         raw = await execute_session_operation(
             api, RawSearch(origin="codex-session", query="needle"), raw_sources=sources
         )
