@@ -197,7 +197,7 @@ def test_the_first_run_refusal_names_only_commands_that_exist() -> None:
     from polylogue.cli.click_app import cli
     from polylogue.config import config_inventory_by_key
     from polylogue.core.errors import FIRST_RUN_INDEX_GUIDANCE
-    from polylogue.daemon.cli import main as daemon_main
+    from polylogue.daemon.commands import main as daemon_main
 
     roots: dict[str, click.Group] = {"polylogue": cli, "polylogued": daemon_main}
     commands = re.findall(r"`([^`]+)`", FIRST_RUN_INDEX_GUIDANCE)

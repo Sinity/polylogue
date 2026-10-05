@@ -15,7 +15,7 @@ import polylogue.logging as plog
 from polylogue.browser_capture.receiver import BrowserCaptureReceiverConfig
 from polylogue.core.json import JSONDocument
 from polylogue.daemon import status as status_module
-from polylogue.daemon.cli import status_command as daemon_status_command
+from polylogue.daemon.commands import status_command as daemon_status_command
 from polylogue.daemon.fts_status import FTSReadiness
 from polylogue.daemon.health import DaemonHealth, HealthAlert, HealthSeverity, HealthTier
 from polylogue.daemon.status import (
@@ -361,9 +361,8 @@ def test_daemon_status_plain_output_reports_judgment_scheduler_receipt() -> None
 def test_daemon_status_command_exit_matches_json_health_claim(payload_ok: bool, expected_exit: int) -> None:
     """``polylogued status`` exposes JSON and shell status consistently."""
     with (
-        patch("polylogue.daemon.cli.configure_logging"),
         patch(
-            "polylogue.daemon.cli._live_daemon_status_payload",
+            "polylogue.daemon.commands._live_daemon_status_payload",
             return_value={"ok": payload_ok, "raw_failure_lifecycle_state": "healthy" if payload_ok else "blocked"},
         ),
     ):

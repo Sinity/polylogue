@@ -235,7 +235,7 @@ def _start_daemon(
     command = [
         sys.executable,
         "-c",
-        "from polylogue.daemon.cli import main; main()",
+        "from polylogue.daemon.commands import main; main()",
         "run",
         "--api-port",
         "0",

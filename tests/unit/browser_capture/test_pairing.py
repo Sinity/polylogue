@@ -37,7 +37,7 @@ from polylogue.browser_capture.pairing import (
 )
 from polylogue.browser_capture.receiver import load_or_mint_receiver_token
 from polylogue.browser_capture.server import make_server
-from polylogue.daemon.cli import main as daemon_cli
+from polylogue.daemon.commands import main as daemon_cli
 
 _EXTENSION_ORIGIN = "chrome-extension://polylogue-test"
 _CHATGPT_ORIGIN = "https://chatgpt.com"

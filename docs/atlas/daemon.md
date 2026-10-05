@@ -161,3 +161,10 @@ orphan-row checks, together with profile-input coverage. Read failures leave
 the derived readiness unchecked; a readable empty eligible scope is ready.
 Planner row estimates are display evidence only. These checks do not certify
 value freshness or replace the materializer's partition inspection.
+
+The `polylogued` command registry lives in `daemon/commands.py`. Root help and
+version do not initialize service implementations. Selected service commands
+retain their original runtime callbacks and options. Status makes one resident
+operation request and reports typed absence or refusal instead of recomputing a
+local view. The guided path keeps `polylogued run` in another terminal before
+issuing its resident transcript read.

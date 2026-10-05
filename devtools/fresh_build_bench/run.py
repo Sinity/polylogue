@@ -607,7 +607,7 @@ def _daemon_command(config: RunConfig) -> list[str]:
         "import os, runpy\n"
         "sampler = os.environ.get('POLYLOGUE_BENCH_SAMPLER')\n"
         "if sampler: runpy.run_path(sampler)['start_from_environment']()\n"
-        "from polylogue.daemon.cli import main\n"
+        "from polylogue.daemon.commands import main\n"
         "main()"
     )
     return [
