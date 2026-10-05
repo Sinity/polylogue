@@ -70,6 +70,9 @@ def _connect(path: Path) -> sqlite3.Connection:
     # Shard transport attaches a read-only ``file:`` URI, as production's
     # archive write connection does. Keeping this fixture URI-capable makes
     # the combined fresh-shard path exercise SQLite's actual attachment mode.
+    # Each Index is its archive root's active index.db; compared builds
+    # each get their own root.
+    path.parent.mkdir(parents=True, exist_ok=True)
     conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -352,13 +355,13 @@ def test_bulk_build_readiness_repopulate_matches_trickle_mode(tmp_path: Path) ->
     """THE key equivalence proof: a bulk-build corpus, repopulated once at
     readiness, must be byte-identical to the same corpus built entirely in
     today's per-session trickle mode."""
-    conn_trickle = _connect(tmp_path / "trickle.db")
+    conn_trickle = _connect(tmp_path / "trickle" / "index.db")
     _build_corpus(conn_trickle, bulk_build=False)
     fts_trickle = _fts_rows(conn_trickle)
     action_pairs_trickle = _action_pair_rows(conn_trickle)
     conn_trickle.close()
 
-    conn_bulk = _connect(tmp_path / "bulk.db")
+    conn_bulk = _connect(tmp_path / "bulk" / "index.db")
     _build_corpus(conn_bulk, bulk_build=True)
     # Confirm the empty-throughout invariant actually held for this corpus
     # before repopulating -- otherwise the parity check below could pass
@@ -590,7 +593,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
 
     def complete_retained() -> FinishedBuildMeasurement:
         (sessions, conn), construction_seconds = _measure(
-            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "retained.db"))
+            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "retained" / "index.db"))
         )
         boundaries = record_boundaries(conn)
         try:
@@ -630,7 +633,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
 
     def complete_deferred() -> FinishedBuildMeasurement:
         (sessions, conn), construction_seconds = _measure(
-            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "deferred.db"))
+            lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "deferred" / "index.db"))
         )
         seen: set[str] = set()
         boundaries = record_boundaries(conn)
@@ -682,7 +685,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
     def complete_shard() -> FinishedBuildMeasurement:
         def construct_shard() -> tuple[list[ParsedSession], sqlite3.Connection, SessionShard]:
             sessions = build_large_parent_shared_prefix_sessions()
-            conn = _connect(tmp_path / "shard.db")
+            conn = _connect(tmp_path / "shard" / "index.db")
             return sessions, conn, prepare_session_shard(tmp_path / "shards", sessions)
 
         (sessions, conn, shard), construction_seconds = _measure(construct_shard)
@@ -756,12 +759,12 @@ def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> N
     """Skip the messages_fts half of the readiness repopulate and show the
     equivalence proof then fails -- confirming the parity test above is
     actually exercising ``rebuild_fts_index_sync``, not passing by accident."""
-    conn_trickle = _connect(tmp_path / "trickle.db")
+    conn_trickle = _connect(tmp_path / "trickle" / "index.db")
     _build_corpus(conn_trickle, bulk_build=False)
     fts_trickle = _fts_rows(conn_trickle)
     conn_trickle.close()
 
-    conn_bulk = _connect(tmp_path / "bulk.db")
+    conn_bulk = _connect(tmp_path / "bulk" / "index.db")
     _build_corpus(conn_bulk, bulk_build=True)
     # Deliberately DO NOT call rebuild_fts_index_sync here.
     rebuild_all_action_pairs_sync(conn_bulk)
@@ -803,7 +806,7 @@ def test_a_first_save_issues_no_replace_prelude_deletes(tmp_path: Path, fresh: b
     Anti-vacuity: run the replace prelude unconditionally (the predecessor)
     and every first save deletes from each of these tables.
     """
-    conn = _connect(tmp_path / "prelude.db")
+    conn = _connect(tmp_path / "prelude" / "index.db")
     statements: list[str] = []
     conn.set_trace_callback(statements.append)
     seen: set[str] = set()
