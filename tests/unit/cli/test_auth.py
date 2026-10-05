@@ -200,7 +200,7 @@ class TestAuthCommand:
         workspace = setup_isolated_workspace(tmp_path)
         result = run_cli(["ops", "auth", "--revoke"], env=workspace["env"])
         output_lower = result.output.lower()
-        assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower
+        assert result.exit_code == 0 or "no token" in output_lower or "not found" in output_lower, result.output
 
     def test_auth_missing_credentials(self, tmp_path: Path) -> None:
         from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace

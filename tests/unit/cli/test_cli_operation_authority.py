@@ -125,13 +125,13 @@ def _run_machine(
 @pytest.mark.parametrize(
     ("verb_args", "operation"),
     [
-        # Query resolution is itself daemon-owned.  With no daemon, these
-        # composed forms refuse at ``cli.query`` before the mark branch can
-        # submit its mutation; the direct mutation routes are covered below.
-        (("mark", "--star"), "cli.query"),
-        (("mark", "--tag-add", "X"), "cli.query"),
-        (("mark", "--tag-remove", "X"), "cli.query"),
-        (("mark", "--note", "n"), "cli.query"),
+        # ``mark`` lowers its query selection into the one resident
+        # ``mutation.session.mark`` operation; with no daemon that operation
+        # is what each composed branch names in its refusal.
+        (("mark", "--star"), "mutation.session.mark"),
+        (("mark", "--tag-add", "X"), "mutation.session.mark"),
+        (("mark", "--tag-remove", "X"), "mutation.session.mark"),
+        (("mark", "--note", "n"), "mutation.session.mark"),
     ],
 )
 def test_mark_mutation_refuses_without_a_daemon(
@@ -312,6 +312,9 @@ _MATRIX_EXEMPT: Mapping[str, str] = {
     ),
     "mutation.facade.context_ledger": (
         "a best-effort receipt the `read context` views submit after a read the daemon already served"
+    ),
+    "operation.result": (
+        "pages the retained receipt of an `ops excise` the daemon already accepted; it reruns and writes nothing"
     ),
 }
 
