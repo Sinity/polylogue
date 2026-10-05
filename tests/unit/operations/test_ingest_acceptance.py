@@ -42,6 +42,24 @@ def _leased_ingest_manifest(archive_root: Path, *args: Any, **kwargs: Any) -> Se
         return prepared_ingest_manifest(archive_root, *args, **kwargs)
 
 
+def _recover_on_admitted_owner(archive_root: Path) -> None:
+    """Run startup recovery as the daemon does, with its original input admission."""
+    import asyncio
+
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async def run() -> None:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            await owner.run_convergence_sync(
+                "fixture.ingest.startup-recovery",
+                recover_interrupted_operations,
+                archive_root,
+                input_demand=owner._compute_adapter.amend_current_input_demand,
+            )
+
+    asyncio.run(run())
+
+
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:
     return OperationExecutor(now_ms=lambda: plan.prepared_at_ms).authorize_bound(
         runtime_operation_binding(actuator), MutationPreview(f"preview:{plan.plan_hash}", plan), principal
@@ -170,7 +188,10 @@ def test_startup_reclaims_interrupted_preaccept_pages_and_unattached_reservation
     with write_lease("test.ingest-acceptance", archive_root=tmp_path):
         publisher.flush()
 
-    recover_interrupted_operations(tmp_path)
+    # Startup recovery runs on the daemon's admitted preparation owner, which
+    # charges the original Source rows the cleanup reads; a bare call has no
+    # input admission and is refused before any row is read.
+    _recover_on_admitted_owner(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifests").fetchone() == (0,)
         assert source.execute("SELECT COUNT(*) FROM prepared_source_manifest_members").fetchone() == (0,)
