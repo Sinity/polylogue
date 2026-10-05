@@ -2945,7 +2945,6 @@ def write_parsed_session_to_archive(
                         prepared_union=applicable_union,
                         content_identities=content_identities,
                     )
-                    _refresh_stable_branch_point_witnesses(conn, session_id)
                     add_timing("index.full_replace", t0)
                 if merge_append:
                     t0 = time.perf_counter()
@@ -14977,34 +14976,6 @@ def _repair_stale_prefix_branch_points_db(
         tuple(params),
     ).fetchall()
     repaired = 0
-    stable_rows = conn.execute(
-        f"""
-        SELECT l.src_session_id, l.resolved_dst_session_id, l.branch_point_message_id,
-               m.content_address
-        FROM session_links AS l
-        JOIN messages AS m ON m.message_id = l.branch_point_message_id
-        WHERE l.inheritance = 'prefix-sharing'
-          AND l.resolved_dst_session_id IS NOT NULL
-          AND l.branch_point_message_id IS NOT NULL
-          AND m.native_id IS NOT NULL
-          AND l.branch_point_content_address IS NOT NULL
-          AND l.branch_point_content_address IS NOT m.content_address
-          AND {topology_status_composes_sql("l.status")}
-          {scope_clause}
-        """,
-        tuple(params),
-    ).fetchall()
-    for src_session_id, parent_session_id, branch_point_message_id, content_address in stable_rows:
-        conn.execute(
-            """
-            UPDATE session_links
-            SET branch_point_content_address = ?
-            WHERE src_session_id = ? AND resolved_dst_session_id = ?
-              AND branch_point_message_id = ? AND inheritance = 'prefix-sharing'
-            """,
-            (content_address, str(src_session_id), str(parent_session_id), str(branch_point_message_id)),
-        )
-        repaired += 1
     local_composed_cache: dict[str, list[tuple[str, str]]] = composed_cache if composed_cache is not None else {}
     for src_session_id, parent_session_id, branch_point_message_id, witness in rows:
         parent_id = str(parent_session_id)
@@ -16204,30 +16175,6 @@ def _message_content_address_for_id(
     with connection_cursor(conn, "SELECT content_address FROM messages WHERE message_id = ?", (message_id,)) as cursor:
         row = cursor.fetchone()
     return None if row is None or row[0] is None else bytes(row[0])
-
-
-def _refresh_stable_branch_point_witnesses(conn: sqlite3.Connection, parent_session_id: str) -> int:
-    cursor = conn.execute(
-        """
-        UPDATE session_links
-        SET branch_point_content_address = (
-            SELECT m.content_address FROM messages AS m
-            WHERE m.message_id = session_links.branch_point_message_id
-        )
-        WHERE resolved_dst_session_id = ?
-          AND inheritance = 'prefix-sharing'
-          AND branch_point_message_id IS NOT NULL
-          AND branch_point_content_address IS NOT NULL
-          AND EXISTS (
-              SELECT 1 FROM messages AS m
-              WHERE m.message_id = session_links.branch_point_message_id
-                AND m.session_id = ?
-                AND m.native_id IS NOT NULL
-          )
-        """,
-        (parent_session_id, parent_session_id),
-    )
-    return max(cursor.rowcount, 0)
 
 
 def _active_leaf_message_id(
