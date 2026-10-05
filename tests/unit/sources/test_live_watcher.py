@@ -52,7 +52,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorPathAuthority, CursorRecord, CursorStore
 from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, LiveBatchMetrics
-from polylogue.sources.live.watcher import WriteCoordinator
+from polylogue.sources.live.watcher import WriteCoordinator, default_sources
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
@@ -1607,7 +1607,9 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
     alias = tmp_path / "profile"
     alias.symlink_to(first, target_is_directory=True)
     path = alias / "sessions" / name
-    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    # The production Hermes source admits its SQLite ledgers as well as JSONL.
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
     store = BlobStore(tmp_path / "blobs")
 
     def acquire() -> tuple[str, str]:
@@ -1621,6 +1623,15 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
 
     original_stat = path.stat()
     blob_hash, original_profile = acquire()
+    if sqlite_input:
+        accepted_tail = sqlite_source_revision(path)
+    else:
+        # A settled JSONL cursor carries the prefix/tail hash authority of
+        # the exact observation it accepted, including its ctime.
+        accepted_prefix = sha256(path.read_bytes()).hexdigest()
+        accepted_tail = encode_cursor_hash_authority(
+            accepted_prefix, accepted_prefix, ctime_ns=original_stat.st_ctime_ns
+        )
 
     def stamp(profile: str) -> None:
         watcher._cursor.set(
@@ -1630,7 +1641,7 @@ def test_hermes_profile_retarget_reopens_same_inode_cursor(
             authority=CursorPathAuthority(str(path.resolve()), profile),
             parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
             content_fingerprint=None if cursor_state == "deferred" else blob_hash,
-            tail_hash=sqlite_source_revision(path),
+            tail_hash=accepted_tail,
             st_dev=original_stat.st_dev,
             st_ino=original_stat.st_ino,
             mtime_ns=original_stat.st_mtime_ns,
@@ -1681,7 +1692,8 @@ def test_hermes_sqlite_profile_retarget_between_probe_and_bound_gate_requires_ac
     alias = tmp_path / "profile"
     alias.symlink_to(profiles[0], target_is_directory=True)
     declared = alias / "sessions" / "state.db"
-    watcher, _ = _make_watcher(tmp_path, alias, sources=(WatchSource(name="hermes", root=alias),))
+    hermes = next(source for source in default_sources(hermes_root=alias) if source.name == "hermes")
+    watcher, _ = _make_watcher(tmp_path, alias, sources=(hermes,))
     store = BlobStore(tmp_path / "blobs")
     accepted = snapshot_sqlite_to_blob(declared, store)
     before = declared.stat()
@@ -1776,7 +1788,8 @@ def test_hermes_file_alias_wal_commit_reopens_actual_acquired_cursor(tmp_path: P
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("PRAGMA wal_autocheckpoint=0")
         writer.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        watcher, _ = _make_watcher(tmp_path, root, sources=(WatchSource(name="hermes", root=root),))
+        hermes = next(source for source in default_sources(hermes_root=root) if source.name == "hermes")
+        watcher, _ = _make_watcher(tmp_path, root, sources=(hermes,))
         accepted = snapshot_sqlite_to_blob(declared, BlobStore(tmp_path / "blobs"))
         before = declared.stat()
         watcher._cursor.set(
