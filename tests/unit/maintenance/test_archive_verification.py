@@ -51,7 +51,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
-from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -2794,7 +2794,6 @@ def test_full_rebuild_candidate_profile_covers_cross_tier_acceptance_and_canary_
 
 
 def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     conn = _connect(tmp_path / "index.db")
     try:
@@ -2853,20 +2852,21 @@ _CLOSURE_PAYLOAD = {
 }
 
 
-def _closure_tier_conn(path: Path, tier: ArchiveTier) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+def _closure_tier_conn(path: Path) -> sqlite3.Connection:
+    conn = connect_measured(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    initialize_archive_tier(conn, tier)
     return conn
 
 
 def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.Connection]:
     """An archive whose acquired attachment blob has lost its ``attachment_refs`` row."""
     root = tmp_path
+    # The canonical bootstrap writes the format marker the fixture writer requires.
+    bootstrap_archive_root(root)
     blob_store = BlobStore(root / "blob")
-    source = _closure_tier_conn(root / "source.db", ArchiveTier.SOURCE)
-    index = _closure_tier_conn(root / "index.db", ArchiveTier.INDEX)
+    source = _closure_tier_conn(root / "source.db")
+    index = _closure_tier_conn(root / "index.db")
     payload = json.dumps(_CLOSURE_PAYLOAD).encode()
     blob_hash, blob_size = blob_store.write_from_bytes(payload)
     source.execute(
