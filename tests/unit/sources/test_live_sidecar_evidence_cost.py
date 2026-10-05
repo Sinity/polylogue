@@ -30,6 +30,7 @@ from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _SESSION_ID = "6f0a1c2d-4e5b-4a7c-9d1e-2b3c4d5e6f70"
 
@@ -137,7 +138,7 @@ async def test_cursor_page_opens_no_per_path_source_read(
     try:
         counts = _count_per_path_openers(processor, monkeypatch)
 
-        await processor.ingest_files([*sidecars, owner], emit_event=False)
+        await ingest_files_with_owners(processor, [*sidecars, owner], emit_event=False)
 
         assert counts.total == 0, (
             f"cursor commit opened {counts.latest_raw_fingerprint} raw-fingerprint and "
@@ -170,7 +171,7 @@ async def test_pinned_evidence_agrees_with_the_per_path_read(
     unretained = sidecars[2]
     archive, _cursor, processor = _make_processor(workspace_env, root)
     try:
-        await processor.ingest_files([*retained, owner], emit_event=False)
+        await ingest_files_with_owners(processor, [*retained, owner], emit_event=False)
 
         unpinned = {
             str(path): (
@@ -207,7 +208,7 @@ async def test_unpinned_callers_still_read_source_db_themselves(
     owner, sidecars = _build_tree(root, sidecar_count=2)
     archive, _cursor, processor = _make_processor(workspace_env, root)
     try:
-        await processor.ingest_files([*sidecars, owner], emit_event=False)
+        await ingest_files_with_owners(processor, [*sidecars, owner], emit_event=False)
         assert processor._pinned_raw_fingerprints is None
         assert processor._pinned_history_sidecars is None
 
@@ -237,7 +238,7 @@ async def test_unreadable_source_tier_refuses_rather_than_answering(
     owner, sidecars = _build_tree(root, sidecar_count=2)
     archive, _cursor, processor = _make_processor(workspace_env, root)
     try:
-        await processor.ingest_files([*sidecars, owner], emit_event=False)
+        await ingest_files_with_owners(processor, [*sidecars, owner], emit_event=False)
 
         def refuse(*args: object, **kwargs: object) -> sqlite3.Connection:
             raise sqlite3.OperationalError("source tier unavailable")
@@ -319,7 +320,7 @@ async def test_cursor_evidence_is_pinned_after_writer_admission(
 
     monkeypatch.setattr(processor, "_run_ops_write", admit_with_intervening_excision)
     try:
-        await processor.ingest_files([owner, sidecar], emit_event=False)
+        await ingest_files_with_owners(processor, [owner, sidecar], emit_event=False)
         assert excised
         assert not processor._history_sidecar_retained(sidecar)
         record = cursor.get_record(sidecar)

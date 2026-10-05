@@ -29,6 +29,7 @@ from polylogue import Polylogue
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.raw_owner_routes import ingest_files_with_owners
 
 _SESSION_ID = "de99ba60-ccc4-43a7-b882-1dd1f2672db7"
 
@@ -141,7 +142,7 @@ async def test_sidecar_cursor_advances_only_beside_its_own_source_row(
     sidecar = sidecars[0]
     archive, cursor, processor = _make_processor(workspace_env, root)
     try:
-        await processor.ingest_files([sidecar, owner, *subagents], emit_event=False)
+        await ingest_files_with_owners(processor, [sidecar, owner, *subagents], emit_event=False)
 
         # The owner-side transcripts are the batch's parse failures.
         failed_owner_paths = _query_source_paths(
@@ -177,7 +178,7 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
     try:
         # Ingest everything except ``unretained``: source.db ends up with a
         # row for every path in the session tree but that one.
-        await processor.ingest_files([retained, owner, *subagents], emit_event=False)
+        await ingest_files_with_owners(processor, [retained, owner, *subagents], emit_event=False)
         assert str(unretained) not in _query_source_paths(
             workspace_env["archive_root"], "SELECT source_path FROM raw_sessions"
         )
@@ -201,7 +202,7 @@ async def test_sidecar_cursor_refuses_to_advance_without_source_tier_evidence(
         # ``raw_sessions`` row) rediscovers it. Prove that retryability
         # end-to-end rather than asserting the retired bookkeeping: ingesting
         # the same path again still retains it.
-        await processor.ingest_files([unretained], emit_event=False)
+        await ingest_files_with_owners(processor, [unretained], emit_event=False)
         assert str(unretained) in _query_source_paths(
             workspace_env["archive_root"], "SELECT source_path FROM raw_sessions"
         )
