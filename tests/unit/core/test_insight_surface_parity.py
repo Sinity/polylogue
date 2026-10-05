@@ -29,6 +29,8 @@ from click.testing import CliRunner
 from polylogue.analysis.registry import INSIGHT_REGISTRY, InsightType, fetch_insights_async, insight_items_payload
 from polylogue.api import Polylogue
 from polylogue.cli.click_app import cli
+from tests.infra.archive_templates import run_off_event_loop
+from tests.infra.daemon_operations import cli_daemon_archive
 from tests.infra.json_contracts import extract_json_result
 from tests.infra.storage_records import SessionBuilder, materialize_session_insights
 
@@ -128,21 +130,24 @@ def _cli_payload(insight_type: InsightType) -> Mapping[str, object] | None:
 
 
 @pytest.mark.asyncio
-async def test_cli_mcp_and_api_insight_lists_are_identical(cli_workspace: dict[str, Path]) -> None:
+async def test_cli_mcp_and_api_insight_lists_are_identical(
+    cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
     db_path = cli_workspace["db_path"]
+    archive_root = cli_workspace["archive_root"]
     _seed(db_path)
-    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    archive = Polylogue(archive_root=archive_root, db_path=db_path)
     try:
         # ``Polylogue.rebuild_insights`` refuses in-process execution; this
         # test needs materialized rows to compare across surfaces, not sweep
         # authority, so it calls the materializer both sanctioned owners reach.
         materialize_session_insights(db_path)
 
-        compared: list[str] = []
-        populated: list[str] = []
-        for insight_type in _parity_insight_types():
+        insight_types = list(_parity_insight_types())
+        api_payloads: dict[str, Mapping[str, object]] = {}
+        for insight_type in insight_types:
             api_items = await fetch_insights_async(insight_type, archive)
-            api_payload = insight_items_payload(api_items, insight_type)
+            api_payloads[insight_type.name] = insight_items_payload(api_items, insight_type)
 
             # The MCP tool derives its own (limit, offset) defaults from the
             # registry; routing them back through the same product route is what
@@ -150,14 +155,33 @@ async def test_cli_mcp_and_api_insight_lists_are_identical(cli_workspace: dict[s
             mcp_kwargs: dict[str, object] = {"limit": insight_type.mcp_default_limit, "offset": 0}
             mcp_items = await fetch_insights_async(insight_type, archive, **mcp_kwargs)
             mcp_payload = insight_items_payload(mcp_items, insight_type)
-
-            cli_payload = _cli_payload(insight_type)
-
-            assert _canonical(mcp_payload) == _canonical(api_payload), (
+            assert _canonical(mcp_payload) == _canonical(api_payloads[insight_type.name]), (
                 f"{insight_type.name}: MCP and API insight lists diverged"
             )
+
+        # CLI insight lists are served by the resident daemon; the harness
+        # bootstraps synchronously, so the CLI half runs off the event loop.
+        def cli_payloads() -> dict[str, Mapping[str, object] | None]:
+            with cli_daemon_archive(archive_root, monkeypatch):
+                return {insight_type.name: _cli_payload(insight_type) for insight_type in insight_types}
+
+        cli_by_type = run_off_event_loop(cli_payloads)
+
+        compared: list[str] = []
+        populated: list[str] = []
+        for insight_type in insight_types:
+            api_payload = api_payloads[insight_type.name]
+            cli_payload = cli_by_type[insight_type.name]
             if cli_payload is not None:
-                assert _canonical(cli_payload) == _canonical(api_payload), (
+                # The resident CLI route also declares the operation's terminal
+                # outcome; the rows and the remaining envelope must match.
+                cli_rows = dict(cli_payload)
+                outcome = cli_rows.pop("outcome", None)
+                expected_state = "ok" if api_payload["total"] else "empty"
+                assert isinstance(outcome, Mapping) and outcome.get("state") == expected_state, (
+                    f"{insight_type.name}: CLI insight list declared {outcome!r}, expected {expected_state}"
+                )
+                assert _canonical(cli_rows) == _canonical(api_payload), (
                     f"{insight_type.name}: CLI and API insight lists diverged"
                 )
                 compared.append(insight_type.name)

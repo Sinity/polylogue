@@ -97,6 +97,18 @@ SCHEMA_SUBJECTS: Final[tuple[SchemaSubjectSpec, ...]] = (
         ),
     ),
     SchemaSubjectSpec(
+        "opentelemetry",
+        "opentelemetry",
+        "opentelemetry",
+        ("otel-genai",),
+        requires_package=False,
+        package_not_required_reason=(
+            "No admitted OpenTelemetry GenAI evidence package is committed. The accepted wire format is the "
+            "published OTLP-JSON trace export with GenAI semantic-convention attributes "
+            "(polylogue.sources.origin_specs.SEMCONV_SCHEMA_URL); regenerate from real exports to add a package."
+        ),
+    ),
+    SchemaSubjectSpec(
         "browser-capture",
         "browser-capture",
         None,

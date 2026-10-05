@@ -39,6 +39,7 @@ from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, WireFormat
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 from polylogue.sources.dispatch import parse_payload
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
@@ -459,7 +460,7 @@ def test_profile_generated_tool_pair_reaches_production_action_view(tmp_path: Pa
     sessions = parse_payload("codex", records, "fallback")
     parsed_at = time.perf_counter()
 
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     session_id = write_fixture_index_session(conn, sessions[0])
@@ -559,7 +560,7 @@ def test_profile_generated_lineage_replays_through_production_write_and_read(tmp
     ]
     parsed_at = time.perf_counter()
 
-    conn = sqlite3.connect(tmp_path / "index.db")
+    conn = connect_measured(tmp_path / "index.db")
     conn.row_factory = sqlite3.Row
     initialize_archive_tier(conn, ArchiveTier.INDEX)
     parent_id = write_fixture_index_session(conn, parsed[0])

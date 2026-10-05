@@ -40,6 +40,7 @@ def test_origin_values_match_archive_issue_contract() -> None:
         "claude-ai-export",
         "claude-design-session",
         "aistudio-drive",
+        "otel-genai",
         "unknown-export",
     )
 
