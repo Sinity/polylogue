@@ -479,7 +479,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench fresh-build run --corpus /realm/tmp/work/fb/corpus --work /realm/tmp/work/fb/run-a",
             "devtools bench fresh-build compare /realm/tmp/work/fb/run-a/receipt.json "
             "/realm/tmp/work/fb/run-b/receipt.json",
-            "devtools bench fresh-build components parse --corpus /realm/tmp/work/fb/corpus "
+            "devtools bench fresh-build components blob --corpus /realm/tmp/work/fb/corpus "
             "--scratch /realm/tmp/work/fb/c --workers 8",
         ),
     ),

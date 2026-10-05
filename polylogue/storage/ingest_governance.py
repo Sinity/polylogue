@@ -10,7 +10,7 @@ describes its current source and index state.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -23,7 +23,6 @@ from polylogue.archive.ingest_flags import (
 )
 from polylogue.archive.revision_authority import (
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-    RawRevisionAuthority,
     RawRevisionKind,
 )
 from polylogue.archive.session_revision_membership import (
@@ -46,7 +45,6 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_descriptor,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
 from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows
 
 if TYPE_CHECKING:
@@ -164,27 +162,6 @@ class PreparedIngestCohort:
     affected_session_ids: tuple[str, ...]
     acquired_at_ms: int
     source_generation_id: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CensusPublication:
-    """Source-census publication outcome; it never means terminal parsing."""
-
-    published: bool
-    reprepare_required: bool
-    reason: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class CohortPublication:
-    """Membership publication outcome, including a typed reprepare signal."""
-
-    published: bool
-    reprepare_required: bool
-    session_id: str | None = None
-    retired_raw_ids: tuple[str, ...] = ()
-    reprepare_logical_source_keys: tuple[str, ...] = ()
-    reason: str | None = None
 
 
 def _logical_key(session: ParsedSession) -> str:
@@ -384,25 +361,6 @@ def prepare_raw_census(
         censused_at_ms=censused_at_ms,
         detail=detail,
     )
-
-
-def publish_raw_census(writer_archive: Any, prepared: PreparedRawCensus) -> CensusPublication:
-    """Publish a prepared source census only if its retained input is unchanged."""
-    if _raw_binding(writer_archive, prepared.raw_id) != prepared.descriptor:
-        return CensusPublication(False, True, "raw descriptor or prior census changed")
-    writer_archive.replace_raw_membership_census(
-        prepared.raw_id,
-        None if prepared.sessions is None else list(prepared.sessions),
-        parser_fingerprint=prepared.parser_fingerprint,
-        censused_at_ms=prepared.censused_at_ms,
-        detail=prepared.detail,
-        # A FAILED/None census has no sessions for projections to align with;
-        # passing the empty tuple instead of None trips the writer's alignment
-        # check, which is why the FAILED arm could never be published.
-        projections=None if prepared.sessions is None else prepared.projections,
-        revision_authority=None,
-    )
-    return CensusPublication(True, False)
 
 
 def _selector_raw_ids(
@@ -672,97 +630,6 @@ def prepare_ingest_cohort(
         raise
 
 
-def _cohort_still_current(writer_archive: Any, prepared: PreparedIngestCohort) -> str | None:
-    if str(writer_archive.archive_root / "blob") != prepared.blob_root:
-        return "prepared attachment blob root changed"
-    if (
-        tuple(writer_archive.convertible_full_revision_raw_ids(prepared.logical_source_key))
-        != prepared.convertible_full_raw_ids
-    ):
-        return "convertible full-revision route changed"
-    if (
-        _selector_raw_ids(
-            writer_archive,
-            prepared.logical_source_key,
-            prepared.request_owned_complete_raw_ids,
-            prepared.source_generation_id,
-        )
-        != prepared.selector_raw_ids
-    ):
-        return "eligible membership selector changed"
-    if _head_binding(writer_archive, prepared.logical_source_key) != prepared.existing_head:
-        return "accepted head or persisted session frontier changed"
-    if _append_frontier(writer_archive, prepared.logical_source_key) != prepared.append_frontier:
-        return "byte append frontier changed"
-    current_bindings = tuple(
-        _raw_binding(writer_archive, binding.raw_id, logical_source_key=prepared.logical_source_key)
-        for binding in prepared.member_bindings
-    )
-    if current_bindings != prepared.member_bindings:
-        return "raw descriptor, membership, or census changed"
-    for census in prepared.retirement_censuses:
-        if _raw_binding(writer_archive, census.raw_id) != census.descriptor:
-            return "convertible full-revision descriptor or census changed"
-    return None
-
-
-def _retirement_has_active_byte_descendant(writer_archive: Any, raw_ids: Sequence[str]) -> bool:
-    """Check every proposed retirement before changing any source census row."""
-    if not raw_ids:
-        return False
-    placeholders = ", ".join("?" for _ in raw_ids)
-    row = (
-        writer_archive._ensure_source_conn()
-        .execute(
-            f"""
-        SELECT 1
-        FROM raw_sessions
-        WHERE raw_id NOT IN ({placeholders})
-          AND (predecessor_raw_id IN ({placeholders}) OR baseline_raw_id IN ({placeholders}))
-        LIMIT 1
-        """,
-            (*raw_ids, *raw_ids, *raw_ids),
-        )
-        .fetchone()
-    )
-    return row is not None
-
-
-def _retirement_order(writer_archive: Any, raw_ids: Sequence[str]) -> tuple[str, ...]:
-    """Retire a contained full-revision chain from descendants to baselines."""
-    if not raw_ids:
-        return ()
-    placeholders = ", ".join("?" for _ in raw_ids)
-    rows = (
-        writer_archive._ensure_source_conn()
-        .execute(
-            f"""
-        SELECT raw_id, predecessor_raw_id, baseline_raw_id
-        FROM raw_sessions WHERE raw_id IN ({placeholders})
-        """,
-            tuple(raw_ids),
-        )
-        .fetchall()
-    )
-    pending = {str(row[0]) for row in rows}
-    predecessors = {
-        str(row[0]): {str(value) for value in row[1:] if value is not None and str(value) in pending} for row in rows
-    }
-    ordered: list[str] = []
-    while pending:
-        # A predecessor relation only constrains a child that remains pending.
-        # Once a descendant has been retired, its retained relation must not
-        # keep its baseline from becoming the next leaf.
-        leaves = sorted(raw_id for raw_id in pending if not any(raw_id in predecessors[child] for child in pending))
-        if not leaves:
-            raise RuntimeError("convertible full-revision retirement contains a byte-lineage cycle")
-        ordered.extend(leaves)
-        pending.difference_update(leaves)
-        for parents in predecessors.values():
-            parents.difference_update(leaves)
-    return tuple(ordered)
-
-
 def discard_prepared_ingest_cohort(prepared: PreparedIngestCohort) -> None:
     """Retire the canonical artifact after physical preparation/publication drains."""
     failures: list[BaseException] = []
@@ -782,116 +649,9 @@ def discard_prepared_ingest_cohort(prepared: PreparedIngestCohort) -> None:
         raise BaseExceptionGroup("membership preparation cleanup failed", failures)
 
 
-def _writer_preacquired_attachments(
-    writer_archive: Any,
-    prepared: PreparedIngestCohort,
-) -> tuple[Mapping[object, tuple[bytes | None, int, str]], Callable[[], Iterable[ArchiveSourceBlobRef]]]:
-    """Publish the same sealed claims before opening the cohort Source transaction."""
-    if prepared.classification is None or not prepared.classification.accepted_raw_ids:
-        return {}, lambda: ()
-    artifact = prepared.prepared_artifact
-    if artifact is None:
-        raise RuntimeError("membership publication requires its canonical prepared artifact")
-    if str(writer_archive.archive_root / "blob") != prepared.blob_root:
-        raise RuntimeError("prepared attachment blob root does not match the writer archive")
-    from polylogue.storage.blob_publication import ConnectionBlobPublicationRead
-
-    source_conn = writer_archive._ensure_source_conn()
-    publication_read = ConnectionBlobPublicationRead(source_conn)
-    if source_conn.in_transaction:
-        raise RuntimeError("prepared attachment publication requires no pending Source transaction")
-    artifact.publish_blobs()
-    accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
-    binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
-    return artifact.attachment_blobs(
-        source_read=publication_read,
-        session_id=str(
-            make_session_id(
-                prepared.parsed_by_raw_id[accepted_raw_id].source_name,
-                prepared.parsed_by_raw_id[accepted_raw_id].provider_session_id,
-            )
-        ),
-    ), lambda: artifact.iter_attachment_refs(
-        source_path=binding.source_path,
-        acquired_at_ms=prepared.acquired_at_ms,
-        source_read=publication_read,
-    )
-
-
-def publish_ingest_cohort(
-    writer_archive: Any,
-    prepared: PreparedIngestCohort,
-    *,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "membership_replay",
-    manage_transaction: bool = True,
-    bulk_fts: bool = False,
-    bulk_build: bool = False,
-) -> CohortPublication:
-    """Publish only a still-current cohort; never reparse or reopen attachments."""
-    reason = _cohort_still_current(writer_archive, prepared)
-    if reason is not None:
-        discard_prepared_ingest_cohort(prepared)
-        return CohortPublication(False, True, reason=reason)
-    if prepared.retirement_censuses:
-        retirement_raw_ids = tuple(census.raw_id for census in prepared.retirement_censuses)
-        if _retirement_has_active_byte_descendant(writer_archive, retirement_raw_ids):
-            discard_prepared_ingest_cohort(prepared)
-            return CohortPublication(False, True, reason="convertible full revision has an active byte descendant")
-        # One source transaction makes the all-or-nothing retirement boundary
-        # explicit.  It remains a source-only action; the next preparation
-        # must still classify and commit its own index/head receipt.
-        with writer_archive._ensure_source_conn():
-            censuses_by_raw_id = {census.raw_id: census for census in prepared.retirement_censuses}
-            for raw_id in _retirement_order(writer_archive, retirement_raw_ids):
-                census = censuses_by_raw_id[raw_id]
-                writer_archive.replace_raw_membership_census(
-                    census.raw_id,
-                    list(census.sessions or ()),
-                    parser_fingerprint=census.parser_fingerprint,
-                    censused_at_ms=census.censused_at_ms,
-                    detail=census.detail,
-                    retire_full_revision_governance=True,
-                    projections=census.projections,
-                    manage_transaction=False,
-                    revision_authority=RawRevisionAuthority.QUARANTINED,
-                )
-        return CohortPublication(
-            False,
-            True,
-            retired_raw_ids=retirement_raw_ids,
-            reprepare_logical_source_keys=tuple(
-                sorted({key for census in prepared.retirement_censuses for key in census.logical_keys})
-            ),
-            reason="full revisions retired; reprepare membership cohort",
-        )
-    if prepared.classification is None:
-        discard_prepared_ingest_cohort(prepared)
-        return CohortPublication(False, True, reason="no eligible membership members")
-    attachments, attachment_refs = _writer_preacquired_attachments(writer_archive, prepared)
-    session_id = writer_archive.apply_raw_membership_classification(
-        prepared.logical_source_key,
-        prepared.classification,
-        prepared.parsed_by_raw_id,
-        prepared.projections_by_raw_id,
-        acquired_at_ms=prepared.acquired_at_ms,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        bulk_fts=bulk_fts,
-        bulk_build=bulk_build,
-        preacquired_attachment_blobs=attachments,
-        preacquired_attachment_refs=attachment_refs,
-        prepared_by_raw_id=prepared.prepared_rows_by_raw_id,
-    )
-    return CohortPublication(True, False, session_id=session_id)
-
-
 __all__ = [
     "AcceptedHeadBinding",
     "AppendFrontierBinding",
-    "CensusPublication",
-    "CohortPublication",
     "ParseRetainedRaw",
     "PreparedIngestCohort",
     "PreparedRawCensus",
@@ -901,6 +661,4 @@ __all__ = [
     "discard_prepared_ingest_cohort",
     "prepare_ingest_cohort",
     "prepare_raw_census",
-    "publish_ingest_cohort",
-    "publish_raw_census",
 ]
