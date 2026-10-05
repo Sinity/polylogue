@@ -12,6 +12,7 @@ import pytest
 from polylogue.core.compute import BoundedComputeAdapter
 from polylogue.core.enums import Provider
 from polylogue.core.write_lease import coordinator_write_lease_active
+from polylogue.daemon.derivation import Outcome, PendingReason
 from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
@@ -80,8 +81,12 @@ async def test_exact_raw_admission_uses_canonical_derivation_not_legacy_authorit
     raw_id = await run_archive_fixture_write(tmp_path, lambda: _admit(tmp_path))
     owner, compute, coordinator = await _owner(tmp_path)
     try:
+        census = await owner.converge_raw_id(raw_id)
+        # A fresh raw first publishes its preparatory Source census phase.
+        assert (census.counts[Outcome.PENDING], census.failed) == (1, 0), census.outcomes
+        assert census.outcomes[0].reason is PendingReason.BINDING_MOVED, census.outcomes
         report = await owner.converge_raw_id(raw_id)
-        assert report.done == 1
+        assert report.done == 1, (report.counts, report.outcomes)
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
             assert archive.raw_payload_sizes((raw_id,))[raw_id] > 0
     finally:
@@ -125,8 +130,12 @@ async def test_retained_jsonl_converges_from_sealed_carrier(tmp_path: Path, monk
 
     monkeypatch.setattr("polylogue.sources.dispatch.merge_parsed_session_chunks", no_singleton_merge)
     try:
+        census = await owner.converge_raw_id(raw_id)
+        # A fresh raw first publishes its preparatory Source census phase.
+        assert (census.counts[Outcome.PENDING], census.failed) == (1, 0), census.outcomes
+        assert census.outcomes[0].reason is PendingReason.BINDING_MOVED, census.outcomes
         report = await owner.converge_raw_id(raw_id)
-        assert report.done == 1 and report.failed == report.pending == 0
+        assert report.done == 1 and report.failed == report.pending == 0, (report.counts, report.outcomes)
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
             assert archive.index_connection is not None
             assert (
@@ -156,8 +165,12 @@ async def test_owner_refuses_a_preheld_writer_lease_before_preparation(tmp_path:
 
     try:
         await coordinator.run("raw-observation-test", nested)
+        census = await owner.converge_raw_id(raw_id)
+        # A fresh raw first publishes its preparatory Source census phase.
+        assert (census.counts[Outcome.PENDING], census.failed) == (1, 0), census.outcomes
+        assert census.outcomes[0].reason is PendingReason.BINDING_MOVED, census.outcomes
         report = await owner.converge_raw_id(raw_id)
-        assert report.done == 1
+        assert report.done == 1, (report.counts, report.outcomes)
     finally:
         await _shutdown(compute, coordinator)
 
@@ -446,12 +459,16 @@ async def test_raw_parse_reserves_its_retained_payload_bytes(tmp_path: Path, mon
         reserved.append(int(kwargs.get("estimated_bytes", 0)))  # type: ignore[call-overload]
         return real_submit(function, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(compute, "submit", recording_submit)
     try:
-        await owner.converge_raw_id(raw_id)
+        census = await owner.converge_raw_id(raw_id)
+        # The preparatory Source census phase reads no retained payload; the
+        # reservation law applies to the parse that publishes the session.
+        assert census.counts[Outcome.PENDING] == 1, census.outcomes
+        monkeypatch.setattr(compute, "submit", recording_submit)
+        report = await owner.converge_raw_id(raw_id)
         with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
             size = archive.raw_payload_sizes((raw_id,))[raw_id]
         assert size > 0
-        assert reserved == [size]
+        assert reserved == [size], (reserved, size, report.counts, report.outcomes)
     finally:
         await _shutdown(compute, coordinator)
