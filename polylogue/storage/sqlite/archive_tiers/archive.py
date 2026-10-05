@@ -152,7 +152,6 @@ from polylogue.storage.fts.sql import (
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.raw.models import RawSessionStateUpdate
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.archive_tiers import archive_query_reads as _archive_query_reads
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import (
@@ -8640,7 +8639,7 @@ def _archive_provenance(
 ) -> ArchiveInsightProvenance:
     if provenance is None:
         return ArchiveInsightProvenance(
-            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+            materializer_version=None,
             materialized_at=None,
             input_high_water_mark=input_high_water_mark,
             input_high_water_mark_source=input_high_water_mark_source,
