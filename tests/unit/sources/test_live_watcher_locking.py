@@ -10,7 +10,7 @@ import sqlite3
 import subprocess
 import sys
 import textwrap
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -18,6 +18,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
@@ -27,6 +28,7 @@ from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
 from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
 from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
@@ -319,6 +321,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     source.write_bytes(complete + b'{"role":"assistant"')
     watcher_queued = asyncio.Event()
@@ -426,10 +429,14 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
             # sources; pausing it holds the page between acquisition and its
             # archive publication. Every wait below is on the event it means;
             # pytest-timeout bounds a hang.
-            async def paused_retained(raw_ids: Sequence[str]) -> Sequence[PreparedRevisionReplayResult]:
+            async def paused_retained(
+                raw_ids: Sequence[str],
+                *,
+                on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+            ) -> Sequence[PreparedRevisionReplayResult]:
                 preparation_started.set()
                 await release_preparation.wait()
-                return await raw_owner.ingest_retained_raw_ids(raw_ids)
+                return await raw_owner.ingest_retained_raw_ids(raw_ids, on_terminal_refusal=on_terminal_refusal)
 
             watcher = LiveWatcher(
                 polylogue,

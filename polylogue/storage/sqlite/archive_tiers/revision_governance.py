@@ -5085,10 +5085,11 @@ def _load_parser_census_source_inputs(seal: PreparedIndexMutation, raw_id: str) 
         ) as original_rows:
             for row in original_rows:
                 check_compute_cancelled()
-                image = seal.retain_tier_row("source", table, int(row[0]))
-                if image is None:
-                    raise RuntimeError("pinned parser census input disappeared")
-                seal.load_source_row(image)
+                with seal.verified_namespace():
+                    image = seal.retain_tier_row("source", table, int(row[0]))
+                    if image is None:
+                        raise RuntimeError("pinned parser census input disappeared")
+                    seal.load_source_row(image)
 
 
 def _prepared_membership_identity_keys(seal: PreparedIndexMutation, raw_id: str) -> Iterator[str]:
@@ -5421,12 +5422,13 @@ class _PreparedSourceProducer:
             for row in original_rows:
                 check_compute_cancelled()
                 rowid = int(row[0])
-                if self.seal.source_row_is_touched(table, rowid):
-                    continue
-                image = self.seal.retain_tier_row("source", table, rowid)
-                if image is None:
-                    raise RuntimeError("pinned artifact input disappeared")
-                self.seal.load_source_row(image)
+                with self.seal.verified_namespace():
+                    if self.seal.source_row_is_touched(table, rowid):
+                        continue
+                    image = self.seal.retain_tier_row("source", table, rowid)
+                    if image is None:
+                        raise RuntimeError("pinned artifact input disappeared")
+                    self.seal.load_source_row(image)
 
     def artifact_coordinate_rows(
         self,
@@ -6193,7 +6195,10 @@ def revision_replay_terminal_raw_ids(plan: RevisionReplayPlan) -> tuple[str, ...
             ApplicationDecision.SUPERSEDED,
         }
     }
-    return tuple(raw_id for raw_id in plan.accepted_raw_ids if raw_id in terminal)
+    # A superseded full is decided by this replay without being accepted; the
+    # Index records its application, so its parse is acknowledged with the rest.
+    ordered = (*plan.accepted_raw_ids, *(application.raw_id for application in plan.applications))
+    return tuple(dict.fromkeys(raw_id for raw_id in ordered if raw_id in terminal))
 
 
 def prepare_revision_replay_outcome(

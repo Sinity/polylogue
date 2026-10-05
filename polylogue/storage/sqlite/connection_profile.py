@@ -447,6 +447,45 @@ class NativeSQLCustodyOwner:
             if all(retained is not dependency for retained in self._lifetime_dependencies):
                 self._lifetime_dependencies.append(dependency)
 
+    def idle_handoff_ready(self, borrowed: tuple[object, ...]) -> bool:
+        """Whether only ``borrowed`` lifetimes stand between this idle handle and handoff.
+
+        Checked before :meth:`handoff`, whose refusal of a live obligation
+        closes the handle; a borrower returning an unowned caller connection
+        must never close it.
+        """
+        if self.pid != os.getpid() or self.thread is not threading.current_thread():
+            return False
+        if self.task is not _native_owner_task() and (self.task is None or not self.task.done()):
+            return False
+        connection = self.connection
+        return (
+            connection is not None
+            and not self._settled
+            and not self.close_required
+            and not self._parent_cleanup_requested
+            and self._terminal_parent is None
+            and self.scratch_directory is None
+            and not self._settlement_callbacks
+            and not self._incremental_blobs
+            and not self.anchored_descriptors
+            and self.leaf is None
+            and self.frame is None
+            and self.cache_entry is None
+            and not connection.in_transaction
+            and all(any(dependency is item for item in borrowed) for dependency in self._lifetime_dependencies)
+        )
+
+    def release_lifetime(self, dependency: object) -> None:
+        """Drop one artifact retained by :meth:`retain_lifetime` once it settled."""
+        self._require_owner()
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            if all(retained is not dependency for retained in self._lifetime_dependencies):
+                raise RuntimeError("native owner does not retain this artifact")
+            self._lifetime_dependencies[:] = [
+                retained for retained in self._lifetime_dependencies if retained is not dependency
+            ]
+
     def retain_incremental_blob(self, blob: sqlite3.Blob) -> None:
         """Retain the actual readonly incremental handle on its SQL creator."""
         self._require_owner()
@@ -1259,6 +1298,24 @@ def write_connection_pragma_statements(profile: SQLiteConnectionProfile) -> tupl
     return replace(profile, wal_autocheckpoint_pages=OWNED_WAL_AUTOCHECKPOINT_PAGES).pragma_statements
 
 
+def execute_pragma_statement(conn: sqlite3.Connection, statement: str) -> None:
+    """Run one profile pragma, leaving an already-matching database mode alone.
+
+    ``PRAGMA journal_mode=<mode>`` rewrites the database header even when the
+    mode does not change, which moves the file's size and mtime under any
+    reference seal prepared against it. Bootstrap establishes each tier's
+    mode; an open only changes a mode that genuinely differs (a bulk build's
+    MEMORY profile). Every other pragma is connection-local and runs as is.
+    """
+    if statement.startswith("PRAGMA journal_mode="):
+        desired = statement.split("=", 1)[1].strip().lower()
+        with closing(conn.execute("PRAGMA journal_mode")) as cursor:
+            current = str(cursor.fetchone()[0]).lower()
+        if current == desired:
+            return
+    conn.execute(statement)
+
+
 def write_connection_local_pragma_statements(profile: SQLiteConnectionProfile) -> tuple[str, ...]:
     """Return a writer profile without database-mode initialization.
 
@@ -1274,19 +1331,20 @@ def write_connection_local_pragma_statements(profile: SQLiteConnectionProfile) -
     )
 
 
-def initialize_source_tier_database_mode(conn: sqlite3.Connection) -> None:
-    """Set source.db's shared WAL mode while its fresh bootstrap owns the file.
+def initialize_tier_database_mode(conn: sqlite3.Connection) -> None:
+    """Set a tier's shared writer journal mode while its bootstrap owns the file.
 
-    This is deliberately separate from :func:`open_source_tier_write_connection`.
-    ``source.db`` is authoritative material: its normal writer profile uses
-    WAL/NORMAL with replay from retained input after a process crash, while a
-    power-loss guarantee remains the durable publication/cursor boundary, not
-    a claim made by this connection-local setting.
+    This is deliberately separate from every writer open: a later open may
+    run while a publication or GC transaction owns the tier's mode-transition
+    lock, and a mode pragma rewrites the header under a prepared seal. Every
+    tier is created in the writer profile's mode (WAL/NORMAL; source.db's
+    power-loss guarantee remains the durable publication/cursor boundary), so
+    an ordinary open never has a mode to change.
     """
     journal_mode = WRITE_CONNECTION_PROFILE.journal_mode
     if journal_mode is None:
-        raise RuntimeError("the source-tier writer profile must declare a journal mode")
-    conn.execute(f"PRAGMA journal_mode={journal_mode}")
+        raise RuntimeError("the tier writer profile must declare a journal mode")
+    execute_pragma_statement(conn, f"PRAGMA journal_mode={journal_mode}")
 
 
 def _connect_archive_writer(
@@ -1387,7 +1445,7 @@ def _connect_archive_writer(
                 ):
                     return sqlite3.SQLITE_DENY
                 if custody is not None:
-                    if custody.archive_root.resolve() != root.resolve():
+                    if custody.archive_root != root and custody.archive_root.resolve() != root.resolve():
                         return sqlite3.SQLITE_DENY
                     custody.assert_namespace()
                     permit = custody.known_tier_authority
@@ -1891,7 +1949,7 @@ def open_connection(
             _assert_schema_supported(conn, path, tier)
         for stmt in write_connection_pragma_statements(profile):
             if stmt.startswith("PRAGMA journal_mode"):
-                conn.execute(stmt)
+                execute_pragma_statement(conn, stmt)
         _attach_sibling_tiers(conn, archive_root=root)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
@@ -1929,7 +1987,7 @@ def open_daemon_connection(
             _assert_schema_supported(conn, path, tier)
         for stmt in write_connection_pragma_statements(profile):
             if stmt.startswith("PRAGMA journal_mode"):
-                conn.execute(stmt)
+                execute_pragma_statement(conn, stmt)
         _attach_sibling_tiers(conn, archive_root=root)
     except BaseException as primary:
         _close_failed_native_construction(owner, primary)
@@ -2458,7 +2516,7 @@ def open_isolated_write_connection(
         if mutation_permit is None:
             for statement in statements:
                 if statement.startswith("PRAGMA journal_mode"):
-                    conn.execute(statement)
+                    execute_pragma_statement(conn, statement)
         else:
             mutation_permit.configure_mutation_connection(
                 conn, (*statements, "PRAGMA foreign_keys = ON", "PRAGMA recursive_triggers = ON")
@@ -3136,7 +3194,8 @@ __all__ = [
     "recurring_checkpoint_owner_armed",
     "write_connection_pragma_statements",
     "write_connection_local_pragma_statements",
-    "initialize_source_tier_database_mode",
+    "execute_pragma_statement",
+    "initialize_tier_database_mode",
     "open_source_tier_write_connection",
     "SQLiteConnectionProfile",
     "TIMEOUT_CLASSES",

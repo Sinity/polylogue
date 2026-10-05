@@ -61,9 +61,12 @@ from polylogue.core.raw_coordinates import (
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
+    PARTIAL_TRUNCATED_TAIL,
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     PartialAdmission,
+    RawFailureEvidenceKind,
+    RetainedRawDecodeRefusalError,
 )
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.stage_admission import admit_stage_write
@@ -111,6 +114,7 @@ from polylogue.sources.live.batch_support import (
     _STREAMING_FULL_INGEST_BYTES,
     JsonlBoundary,
     JsonlFrontier,
+    LiveRetainedRunner,
     RetryableSourceReadError,
     _accumulate_stage_timings,
     _append_plan_group_ready,
@@ -161,6 +165,7 @@ from polylogue.sources.live.cursor import (
     ConvergenceDebtBatchEntry,
     ConvergenceDebtSettlement,
     ConvergenceDebtWrite,
+    CursorPathAuthority,
     CursorRecord,
     CursorStore,
 )
@@ -190,7 +195,6 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.pickle_spool import PickleSpool
 from polylogue.sources.retained_acquisition import SourceInputRecord
 from polylogue.sources.revision_backfill import (
-    PreparedRevisionReplayResult,
     RetainedPreparationRetryableError,
 )
 from polylogue.sources.source_acquisition_components import (
@@ -209,6 +213,7 @@ from polylogue.sources.sqlite_snapshot import (
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -235,6 +240,7 @@ from polylogue.storage.sqlite.connection_profile import (
     open_readonly_connection,
     open_source_tier_write_connection,
 )
+from polylogue.storage.sqlite.write_lease import UnleasedWriteError
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -322,6 +328,27 @@ def scoped_cursor_authority_authorization(
 
 def _file_observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
     return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+def _stable_truncated_tail_admission(record: RawSessionRecord) -> PartialAdmission | None:
+    """The typed partial for a stable capture whose final record is truncated."""
+    prefix = record.complete_prefix_size
+    if prefix is None or not 0 < prefix < record.blob_size:
+        return None
+    try:
+        stable = _file_observation(Path(record.source_path).stat()) == record.captured_file_observation
+    except OSError:
+        return None
+    if not stable:
+        return None
+    if record.complete_prefix_record_count is None:
+        raise AssertionError("a stable partial JSONL admission has no off-writer record count")
+    return PartialAdmission(
+        reason=PARTIAL_TRUNCATED_TAIL,
+        complete_record_count=record.complete_prefix_record_count,
+        complete_prefix_bytes=prefix,
+        source_bytes=record.blob_size,
+    )
 
 
 def _hot_capture_prefix_is_proven(
@@ -854,7 +881,7 @@ class LiveBatchProcessor:
         sync_runner: LiveBatchSyncRunner | None = None,
         convergence_runner: LiveBatchSyncRunner | None = None,
         append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
-        retained_runner: Callable[[Sequence[str]], Awaitable[Sequence[PreparedRevisionReplayResult]]] | None = None,
+        retained_runner: LiveRetainedRunner | None = None,
         sqlite_capture_stage: LiveSQLiteCaptureStage | None = None,
     ) -> None:
         self._refused_paths: frozenset[Path] = frozenset()
@@ -1642,6 +1669,10 @@ class LiveBatchProcessor:
                     )
                     break
                 except Exception as exc:
+                    if isinstance(exc, UnleasedWriteError):
+                        # A missing writer is a configuration refusal, not a
+                        # property of these files: never count them failed.
+                        raise
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Archive contention is infrastructure state, not a
                         # poison payload. Let LiveWatcher requeue the source
@@ -1873,7 +1904,7 @@ class LiveBatchProcessor:
             and (succeeded_paths or self._raw_retention_backlog_paths(exclude=set()))
         ):
             compaction_started = time.perf_counter()
-            await self._run_sync(
+            await self._run_source_writer(
                 "watcher.live_ingest.raw_compaction",
                 self._compact_superseded_raw_snapshots,
                 sorted(succeeded_paths),
@@ -2278,9 +2309,10 @@ class LiveBatchProcessor:
             return 0
         try:
             stat = path.stat()
+            authority = CursorPathAuthority.observe(path)
         except FileNotFoundError:
             try:
-                self._cursor.mark_failed(path)
+                self._cursor.mark_failed(path, authority=None)
             except sqlite3.OperationalError as exc:
                 if not is_transient_sqlite_lock(exc):
                     raise
@@ -2296,11 +2328,12 @@ class LiveBatchProcessor:
                 try:
                     tail_hash, _tail_bytes = tail_hash_from_path(path, stat.st_size)
                 except FileNotFoundError:
-                    self._cursor.mark_failed(path)
+                    self._cursor.mark_failed(path, authority=None)
                     return 0
                 self._cursor.set(
                     path,
                     stat.st_size,
+                    authority=authority,
                     byte_offset=0,
                     last_complete_newline=0,
                     parser_fingerprint=self._current_parser_fingerprint(),
@@ -2311,7 +2344,7 @@ class LiveBatchProcessor:
                     st_ino=stat.st_ino,
                     mtime_ns=stat.st_mtime_ns,
                 )
-            self._cursor.mark_failed(path, failed_stat=stat)
+            self._cursor.mark_failed(path, authority=authority, failed_stat=stat)
         except sqlite3.OperationalError as exc:
             if not is_transient_sqlite_lock(exc):
                 raise
@@ -2424,7 +2457,6 @@ class LiveBatchProcessor:
                 else source_revision
             )
             last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
-            tail_hash = source_fingerprint or sqlite_source_revision(path)
             if captured_content_hash is not None:
                 bounded_tail_hash, tail_bytes = tail_hash_from_path(path, byte_size)
                 tail_hash = encode_cursor_hash_authority(
@@ -2433,6 +2465,10 @@ class LiveBatchProcessor:
                     ctime_ns=stat.st_ctime_ns,
                 )
                 bytes_read += tail_bytes
+            else:
+                # Only a capture without a content hash keys its cursor on the
+                # bound file revision; binding opens a fresh reader process.
+                tail_hash = source_fingerprint or sqlite_source_revision(path)
         else:
             fp, last_nl, tail_hash, cursor_state_bytes = cursor_state_after_full_ingest(
                 path,
@@ -2507,8 +2543,11 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
+            authority=(
+                CursorPathAuthority(canonical_source_path, captured_profile_key)
+                if canonical_source_path is not None
+                else CursorPathAuthority.observe(path)
+            ),
             byte_offset=last_nl,
             last_complete_newline=last_nl,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -2660,6 +2699,7 @@ class LiveBatchProcessor:
         updated = self._cursor.set(
             path,
             byte_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -3105,7 +3145,7 @@ class LiveBatchProcessor:
         paths = _enrichment_evidence_first(
             paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         )
-        result = await self._run_sync(
+        result = await self._run_source_writer(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,
             paths,
@@ -3122,17 +3162,82 @@ class LiveBatchProcessor:
             raise RetainedPreparationRetryableError("Live retained publication requires its supplied owner")
         # Acquisition's writer has physically returned before the same long-lived
         # owner opens the original preparation window and publishes its outcome.
-        outcomes = await self._retained_runner(result.acquired_raw_ids)
+        terminal_refusals: dict[str, RetainedRawDecodeRefusalError] = {}
+
+        def settle_terminal_refusal(_keys: tuple[str, ...], refusal: RetainedRawDecodeRefusalError) -> None:
+            terminal_refusals[refusal.raw_id] = refusal
+
+        outcomes = await self._retained_runner(result.acquired_raw_ids, on_terminal_refusal=settle_terminal_refusal)
         written = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.written_session_ids))
         changed = tuple(dict.fromkeys(sid for outcome in outcomes for sid in outcome.changed_session_ids))
         return replace(
             result,
+            settled_exclusions={
+                **result.settled_exclusions,
+                **self._retained_settled_exclusions(result, terminal_refusals),
+            },
             worker_count=1,
             ingested_session_count=len(written),
             ingested_message_count=sum(outcome.written_message_count for outcome in outcomes),
             changed_session_count=len(changed),
             changed_session_ids=changed,
         )
+
+    def _retained_settled_exclusions(
+        self, result: _FullIngestResult, terminal_refusals: Mapping[str, RetainedRawDecodeRefusalError]
+    ) -> dict[Path, str]:
+        """Read each acquired raw's terminal outcome after its retained publication.
+
+        Acquisition no longer parses, so a path's exclusion comes from the
+        typed Source evidence its canonical publication settled: a terminal
+        decode refusal is corrupt input, and a current-parser census that
+        found no session is a settled no-session observation (xf8qp).
+        """
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        fingerprint = raw_authority_parser_fingerprint()
+        settled: dict[Path, str] = {}
+        with closing(open_readonly_connection(archive_root / "source.db")) as source:
+            for path, raw_id in result.raw_fingerprints.items():
+                if path not in result.succeeded:
+                    continue
+                corrupt = raw_id in terminal_refusals or (
+                    source.execute(
+                        "SELECT 1 FROM raw_artifacts WHERE raw_id = ? AND artifact_kind = ? LIMIT 1",
+                        (raw_id, RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value),
+                    ).fetchone()
+                    is not None
+                )
+                if corrupt:
+                    settled[path] = REFUSED_CORRUPT_INPUT
+                elif (
+                    source.execute(
+                        "SELECT 1 FROM raw_membership_census WHERE raw_id = ? AND parser_fingerprint = ? "
+                        "AND status = 'non_session'",
+                        (raw_id, fingerprint),
+                    ).fetchone()
+                    is not None
+                ):
+                    settled[path] = REFUSED_NO_SESSIONS
+        return settled
+
+    async def _run_source_writer(
+        self,
+        actor: str,
+        function: Callable[P, T],
+        /,
+        *args: P.args,
+        **kwargs: P.kwargs,
+    ) -> T:
+        """Run a body that writes the Source tier on the daemon's writer.
+
+        Source SQL refuses any write without a held writer lease, so a body
+        run on a bare worker thread would fail at its first durable statement
+        (a blob reservation, a raw row) after staging bytes. Without the
+        writer runner the route is refused before any work.
+        """
+        if self._sync_runner is None:
+            raise UnleasedWriteError(f"{actor} writes the Source tier and requires the daemon writer runner")
+        return cast(T, await self._sync_runner(actor, function, *args, **kwargs))
 
     async def _run_sync(
         self,
@@ -3378,353 +3483,372 @@ class LiveBatchProcessor:
                 )
                 raw_by_record[_full_record_key(raw_records[-1])] = path
                 ingested.append(path)
-        for path in (path for path in paths if path not in antigravity_pb_paths):
-            if not admit_acquisition(path):
-                continue
-            blob_hash: str | None = None
-            blob_publication_receipt_id: str | None = None
-            captured_sqlite = captured_sqlite_by_path.get(path)
-            if isinstance(captured_sqlite, Exception):
-                raise_if_storage_fault(captured_sqlite, kinds=_snapshot_fault_kinds(captured_sqlite))
-                failed.append(path)
-                continue
-            try:
-                observed_at_ns = captured_sqlite.observed_at_ns if captured_sqlite is not None else time.time_ns()
-                stat = captured_sqlite.source_stat if captured_sqlite is not None else path.stat()
-            except OSError:
-                failed.append(path)
-                continue
-            captured_file_observations[path] = _file_observation(stat)
-            captured_observation_times_ns[path] = observed_at_ns
-            try:
-                admission = (
-                    captured_sqlite.admission
-                    if captured_sqlite is not None
-                    else classify_pre_acquisition(
-                        path, fallback_provider=fallback_provider, source_only=True, size_bytes=stat.st_size
-                    )
-                )
-            except RetryableSourceReadError:
-                failed.append(path)
-                continue
-            if admission.refused:
-                assert admission.excluded_reason is not None
-                self._mark_refused_cursor(
-                    path,
-                    stat,
-                    source_name=fallback_provider.value,
-                    reason=admission.excluded_reason,
-                    excluded=excluded_paths,
-                )
-                continue
-            if admission.excluded_reason is not None:
-                if admission.detection_crash is not None:
-                    detection_fallbacks[path] = admission.detection_crash
-                logger.info(
-                    "live.source_candidate_not_admitted path=%s provider=%s reason=%s",
-                    path,
-                    fallback_provider.value,
-                    admission.excluded_reason,
-                )
-                self._mark_excluded_cursor(
-                    path,
-                    stat,
-                    source_name=(admission.detected_provider or fallback_provider).value,
-                    reason=admission.excluded_reason,
-                    excluded=excluded_paths,
-                )
-                continue
-            hermes_database_capability = database_capability_for_provider(Provider.HERMES)
-            hermes_member = (
-                hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
-            )
-            hermes_owned_sqlite_name = (
-                fallback_provider is Provider.HERMES
-                and hermes_member is not None
-                and (hermes_member.disposition != "out-of-scope")
-            )
-            if heartbeat is not None:
-                heartbeat("full_file_scan", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
-            if path.suffix.lower() == ".zip":
-                file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1000000000, UTC).isoformat()
-                source_only_zip = self._extract_source_only_zip_member_records(
-                    path,
-                    blob_store=blob_store,
-                    fallback_provider=fallback_provider,
-                    file_mtime=file_mtime,
-                    zip_inputs=zip_inputs,
-                )
-                if source_only_zip is None:
+        from polylogue.sources.sqlite_export import source_byte_page_sequence
+
+        # One reader process serves this page of inputs; a failed capture
+        # retires only its own reader. A reader per file made capture pay one
+        # interpreter start per input.
+        with source_byte_page_sequence() as byte_pages:
+            for path in (path for path in paths if path not in antigravity_pb_paths):
+                if not admit_acquisition(path):
+                    continue
+                blob_hash: str | None = None
+                blob_publication_receipt_id: str | None = None
+                captured_sqlite = captured_sqlite_by_path.get(path)
+                if isinstance(captured_sqlite, Exception):
+                    raise_if_storage_fault(captured_sqlite, kinds=_snapshot_fault_kinds(captured_sqlite))
                     failed.append(path)
                     continue
-                zip_records, zip_bytes = source_only_zip
-                captured_zip = zip_inputs.get(path)
-                if captured_zip is not None:
-                    input_identity = captured_zip.manifest.inputs[0].captured_identity
-                    if input_identity is None:
-                        raise ValueError("ZIP input lost its captured namespace")
-                    raw_canonical_source_paths[path] = input_identity.canonical_source_path
-                    raw_profile_keys[path] = input_identity.profile_key
-                    if captured_zip.file_observation is not None:
-                        captured_file_observations[path] = captured_zip.file_observation
-                if not zip_records:
-                    self._mark_excluded_cursor(
-                        path,
-                        stat,
-                        source_name=fallback_provider.value,
-                        reason="zip container held no admissible record",
-                        excluded=excluded_paths,
-                    )
-                    continue
-                for _member_raw_id, member_record in zip_records:
-                    raw_records.append(member_record)
-                    raw_by_record[_full_record_key(member_record)] = path
-                source_payload_read_bytes += zip_bytes
-                if heartbeat is not None:
-                    heartbeat("full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
-                ingested.append(path)
-                raw_byte_sizes[path] = stat.st_size
-                continue
-            codex_database_capability = database_capability_for_provider(Provider.CODEX)
-            codex_member = (
-                codex_database_capability.member(path.name) if codex_database_capability is not None else None
-            )
-            codex_owned_sqlite_name = (
-                fallback_provider is Provider.CODEX
-                and codex_member is not None
-                and (codex_member.disposition != "out-of-scope")
-            )
-            antigravity_trajectory = fallback_provider in {
-                Provider.ANTIGRAVITY,
-                Provider.UNKNOWN,
-            } and antigravity.looks_like_trajectory_db_path(path)
-            if antigravity_trajectory:
-                provider = Provider.ANTIGRAVITY
-                source_name = provider.value
                 try:
-                    if heartbeat is not None:
-                        heartbeat(
-                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
-                        )
-                    with sqlite_snapshot_failure_as_oserror():
-                        snapshot = snapshot_sqlite_to_blob(
-                            path,
-                            blob_store,
-                            heartbeat=_blob_copy_heartbeat(
-                                heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
-                            ),
-                        )
-                    blob_hash, blob_size = (snapshot.blob_hash, snapshot.blob_size)
-                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = snapshot.source_path
-                    raw_sqlite_source_paths[path] = source_path
-                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
-                    raw_id = antigravity.trajectory_raw_id(
-                        source_path, snapshot.source_revision, identity_path=snapshot.identity_path
-                    )
-                    raw_source_revisions[path] = snapshot.source_revision
-                    raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except Exception as error:
-                    if not antigravity._is_trajectory_storage_error(error):
-                        raise
-                    raise_if_storage_fault(error, kinds=_snapshot_fault_kinds(error))
-                    logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
+                    observed_at_ns = captured_sqlite.observed_at_ns if captured_sqlite is not None else time.time_ns()
+                    stat = captured_sqlite.source_stat if captured_sqlite is not None else path.stat()
+                except OSError:
                     failed.append(path)
                     continue
-                source_payload_read_bytes += blob_size
-                if heartbeat is not None:
-                    heartbeat("full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
-            elif hermes_owned_sqlite_name:
-                provider = Provider.HERMES
-                source_name = provider.value
+                captured_file_observations[path] = _file_observation(stat)
+                captured_observation_times_ns[path] = observed_at_ns
                 try:
-                    if heartbeat is not None:
-                        heartbeat(
-                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                    admission = (
+                        captured_sqlite.admission
+                        if captured_sqlite is not None
+                        else classify_pre_acquisition(
+                            path, fallback_provider=fallback_provider, source_only=True, size_bytes=stat.st_size
                         )
-                    with sqlite_snapshot_failure_as_oserror():
-                        snapshot = snapshot_sqlite_to_blob(
-                            path,
-                            blob_store,
-                            heartbeat=_blob_copy_heartbeat(
-                                heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
-                            ),
-                        )
-                    blob_hash, blob_size = (snapshot.blob_hash, snapshot.blob_size)
-                    blob_publication_receipt_id = snapshot.blob_publication_receipt_id
-                    source_path = snapshot.source_path
-                    raw_sqlite_source_paths[path] = source_path
-                    raw_canonical_source_paths[path] = str(snapshot.identity_path)
-                    raw_profile_keys[path] = snapshot.captured_profile_key
-                    raw_id = hermes_profile_raw_id(
-                        source_path,
-                        0,
-                        snapshot.source_revision,
-                        identity_path=snapshot.captured_profile_source_path,
-                        profile_identity=snapshot.captured_profile_key,
                     )
-                    raw_source_revisions[path] = snapshot.source_revision
-                    raw_source_fingerprints[path] = snapshot.source_fingerprint
-                except OSError as exc:
-                    raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
+                except RetryableSourceReadError:
                     failed.append(path)
                     continue
-                source_payload_read_bytes += blob_size
-                if heartbeat is not None:
-                    heartbeat("full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
-            elif captured_sqlite is not None:
-                captured_snapshot = captured_sqlite.snapshot
-                if captured_snapshot is None:
-                    raise RetainedPreparationRetryableError("accepted state capture has no logical export")
-                provider = Provider.CODEX
-                source_name = provider.value
-                blob_hash, blob_size = (captured_snapshot.blob_hash, captured_snapshot.blob_size)
-                blob_publication_receipt_id = captured_snapshot.blob_publication_receipt_id
-                source_path = captured_snapshot.source_path
-                raw_id = codex_state_raw_id(source_path, captured_snapshot.source_revision)
-                raw_canonical_source_paths[path] = str(captured_snapshot.identity_path)
-                raw_profile_keys[path] = captured_snapshot.captured_profile_key
-                if captured_snapshot.captured_profile_source_path is not None:
-                    raw_profile_source_paths[path] = captured_snapshot.captured_profile_source_path
-                captured_file_observations[path] = _file_observation(captured_sqlite.source_stat)
-                captured_observation_times_ns[path] = captured_sqlite.observed_at_ns
-                raw_source_revisions[path] = captured_snapshot.source_revision
-                raw_source_fingerprints[path] = captured_snapshot.source_fingerprint
-                source_payload_read_bytes += blob_size
-            elif codex_owned_sqlite_name or (
-                fallback_provider in (Provider.CODEX, Provider.UNKNOWN)
-                and codex_member is not None
-                and (codex_member.disposition != "out-of-scope")
-            ):
-                raise RetainedPreparationRetryableError("state acquisition requires pre-writer logical capture")
-            else:
-                if (
-                    _source_tier_acquisition_required()
-                    and _source_tier_acquisition_required()
-                    and (fallback_provider is Provider.ANTIGRAVITY)
-                    and path.name.endswith(".metadata.json")
-                ):
-                    failed.append(path)
-                    continue
-                provider = fallback_provider
-                source_name = provider.value
-                try:
-                    if heartbeat is not None:
-                        heartbeat(
-                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
-                        )
-                    capture = capture_bound_path(
-                        blob_store,
-                        path,
-                        fallback_provider,
-                        heartbeat=_blob_copy_heartbeat(
-                            heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
-                        ),
-                    )
-                    raw_id, blob_size = (capture.blob_hash, capture.blob_size)
-                    raw_canonical_source_paths[path] = capture.canonical_source_path
-                    captured_file_observations[path] = capture.file_observation
-                    if (
-                        source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
-                        and capture.captured_profile_key is not None
-                    ):
-                        raw_profile_keys[path] = capture.captured_profile_key
-                        if capture.captured_profile_source_path is not None:
-                            raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
-                    blob_publication_receipt_id = blob_store.receipt_id(raw_id)
-                except ForeignOriginContentError as exc:
+                if admission.refused:
+                    assert admission.excluded_reason is not None
                     self._mark_refused_cursor(
                         path,
                         stat,
                         source_name=fallback_provider.value,
-                        reason=foreign_origin_exclusion(exc),
+                        reason=admission.excluded_reason,
                         excluded=excluded_paths,
                     )
                     continue
-                except OSError as exc:
-                    raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
-                    failed.append(path)
-                    continue
-                source_payload_read_bytes += blob_size
-                if heartbeat is not None:
-                    heartbeat("full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
-            ingested.append(path)
-            acquired_via_sqlite_snapshot = path in raw_source_revisions
-            raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
-            jsonl_boundary: JsonlBoundary | JsonlFrontier | None = None
-            if is_jsonl_source_path(str(path)):
-                jsonl_boundary = (
-                    jsonl_complete_prefix(raw_payloads[raw_id])
-                    if raw_id in raw_payloads
-                    else jsonl_complete_prefix_path(blob_store.blob_path(raw_id))
-                )
-            if jsonl_boundary is not None:
-                raw_frontier_sizes[path] = jsonl_boundary.prefix_size
-            complete_prefix_record_count: int | None = None
-            if (
-                jsonl_boundary is not None
-                and jsonl_boundary.incomplete_tail
-                and (not jsonl_boundary.malformed_record)
-                and (0 < jsonl_boundary.prefix_size < blob_size)
-            ):
-                if isinstance(jsonl_boundary, JsonlBoundary):
-                    complete_prefix_record_count = jsonl_boundary.record_count
-                else:
-                    with blob_store.open(raw_id) as prefix_handle:
-                        complete_prefix_record_count = jsonl_prefix_record_count(
-                            prefix_handle, jsonl_boundary.prefix_size, stop=self._stop_requested
-                        )
-            raw_source_names[path] = source_name
-            if not acquired_via_sqlite_snapshot:
-                captured_content_hashes[path] = raw_id
-                if provider is Provider.HERMES:
-                    from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
-
-                    profile_identity = raw_profile_keys.get(path)
-                    profile_source_path = raw_profile_source_paths.get(path)
-                    if profile_identity is None or profile_source_path is None:
-                        raise MissingProfileIdentityError("Hermes capture has no bound profile namespace")
-                    blob_hash = raw_id
-                    raw_id = hermes_profile_raw_id(
-                        str(path), 0, blob_hash, identity_path=profile_source_path, profile_identity=profile_identity
+                if admission.excluded_reason is not None:
+                    if admission.detection_crash is not None:
+                        detection_fallbacks[path] = admission.detection_crash
+                    logger.info(
+                        "live.source_candidate_not_admitted path=%s provider=%s reason=%s",
+                        path,
+                        fallback_provider.value,
+                        admission.excluded_reason,
                     )
-                    if blob_hash in raw_payloads:
-                        raw_payloads[raw_id] = raw_payloads.pop(blob_hash)
-                    raw_source_revisions[path] = blob_hash
-            raw_records.append(
-                RawSessionRecord(
-                    raw_id=raw_id,
-                    blob_hash=blob_hash
-                    if (acquired_via_sqlite_snapshot or provider is Provider.HERMES) and blob_hash is not None
-                    else None,
-                    payload_provider=provider,
-                    capture_mode=acquisition_capture_mode,
-                    source_name=source_name,
-                    source_path=str(captured_sqlite.snapshot.source_path)
-                    if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                    else str(raw_sqlite_source_paths.get(path, path)),
-                    canonical_source_path=str(captured_sqlite.snapshot.identity_path)
-                    if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                    else raw_canonical_source_paths.get(path),
-                    captured_profile_key=captured_sqlite.snapshot.captured_profile_key
-                    if captured_sqlite is not None and captured_sqlite.snapshot is not None
-                    else raw_profile_keys.get(path),
-                    source_index=0,
-                    blob_size=blob_size,
-                    blob_publication_receipt_id=blob_publication_receipt_id,
-                    acquired_at=datetime.fromtimestamp(observed_at_ns / 1000000000, UTC).isoformat(),
-                    file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1000000000, UTC).isoformat(),
-                    captured_source_revision=raw_source_revisions.get(path, raw_id),
-                    requires_complete_record_boundary=is_jsonl_source_path(str(path)),
-                    complete_prefix_size=jsonl_boundary.prefix_size
-                    if jsonl_boundary is not None and (not jsonl_boundary.malformed_record)
-                    else None,
-                    complete_prefix_record_count=complete_prefix_record_count,
-                    captured_file_observation=captured_file_observations.get(path),
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=(admission.detected_provider or fallback_provider).value,
+                        reason=admission.excluded_reason,
+                        excluded=excluded_paths,
+                    )
+                    continue
+                hermes_database_capability = database_capability_for_provider(Provider.HERMES)
+                hermes_member = (
+                    hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
                 )
-            )
-            raw_source_revisions.setdefault(path, raw_id)
-            raw_by_record[_full_record_key(raw_records[-1])] = path
+                hermes_owned_sqlite_name = (
+                    fallback_provider is Provider.HERMES
+                    and hermes_member is not None
+                    and (hermes_member.disposition != "out-of-scope")
+                )
+                if heartbeat is not None:
+                    heartbeat("full_file_scan", current_path=path, source_payload_read_bytes=source_payload_read_bytes)
+                if path.suffix.lower() == ".zip":
+                    file_mtime = datetime.fromtimestamp(stat.st_mtime_ns / 1000000000, UTC).isoformat()
+                    source_only_zip = self._extract_source_only_zip_member_records(
+                        path,
+                        blob_store=blob_store,
+                        fallback_provider=fallback_provider,
+                        file_mtime=file_mtime,
+                        zip_inputs=zip_inputs,
+                    )
+                    if source_only_zip is None:
+                        failed.append(path)
+                        continue
+                    zip_records, zip_bytes = source_only_zip
+                    captured_zip = zip_inputs.get(path)
+                    if captured_zip is not None:
+                        input_identity = captured_zip.manifest.inputs[0].captured_identity
+                        if input_identity is None:
+                            raise ValueError("ZIP input lost its captured namespace")
+                        raw_canonical_source_paths[path] = input_identity.canonical_source_path
+                        raw_profile_keys[path] = input_identity.profile_key
+                        if captured_zip.file_observation is not None:
+                            captured_file_observations[path] = captured_zip.file_observation
+                    if not zip_records:
+                        self._mark_excluded_cursor(
+                            path,
+                            stat,
+                            source_name=fallback_provider.value,
+                            reason="zip container held no admissible record",
+                            excluded=excluded_paths,
+                        )
+                        continue
+                    for _member_raw_id, member_record in zip_records:
+                        raw_records.append(member_record)
+                        raw_by_record[_full_record_key(member_record)] = path
+                    source_payload_read_bytes += zip_bytes
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                        )
+                    ingested.append(path)
+                    raw_byte_sizes[path] = stat.st_size
+                    continue
+                codex_database_capability = database_capability_for_provider(Provider.CODEX)
+                codex_member = (
+                    codex_database_capability.member(path.name) if codex_database_capability is not None else None
+                )
+                codex_owned_sqlite_name = (
+                    fallback_provider is Provider.CODEX
+                    and codex_member is not None
+                    and (codex_member.disposition != "out-of-scope")
+                )
+                antigravity_trajectory = fallback_provider in {
+                    Provider.ANTIGRAVITY,
+                    Provider.UNKNOWN,
+                } and antigravity.looks_like_trajectory_db_path(path)
+                if antigravity_trajectory:
+                    provider = Provider.ANTIGRAVITY
+                    source_name = provider.value
+                    try:
+                        if heartbeat is not None:
+                            heartbeat(
+                                "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                            )
+                        with sqlite_snapshot_failure_as_oserror():
+                            snapshot = snapshot_sqlite_to_blob(
+                                path,
+                                blob_store,
+                                heartbeat=_blob_copy_heartbeat(
+                                    heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
+                                ),
+                            )
+                        blob_hash, blob_size = (snapshot.blob_hash, snapshot.blob_size)
+                        blob_publication_receipt_id = snapshot.blob_publication_receipt_id
+                        source_path = snapshot.source_path
+                        raw_sqlite_source_paths[path] = source_path
+                        raw_canonical_source_paths[path] = str(snapshot.identity_path)
+                        raw_id = antigravity.trajectory_raw_id(
+                            source_path, snapshot.source_revision, identity_path=snapshot.identity_path
+                        )
+                        raw_source_revisions[path] = snapshot.source_revision
+                        raw_source_fingerprints[path] = snapshot.source_fingerprint
+                    except Exception as error:
+                        if not antigravity._is_trajectory_storage_error(error):
+                            raise
+                        raise_if_storage_fault(error, kinds=_snapshot_fault_kinds(error))
+                        logger.exception("antigravity: trajectory SQLite acquisition failed: %s", path)
+                        failed.append(path)
+                        continue
+                    source_payload_read_bytes += blob_size
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                        )
+                elif hermes_owned_sqlite_name:
+                    provider = Provider.HERMES
+                    source_name = provider.value
+                    try:
+                        if heartbeat is not None:
+                            heartbeat(
+                                "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                            )
+                        with sqlite_snapshot_failure_as_oserror():
+                            snapshot = snapshot_sqlite_to_blob(
+                                path,
+                                blob_store,
+                                heartbeat=_blob_copy_heartbeat(
+                                    heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
+                                ),
+                            )
+                        blob_hash, blob_size = (snapshot.blob_hash, snapshot.blob_size)
+                        blob_publication_receipt_id = snapshot.blob_publication_receipt_id
+                        source_path = snapshot.source_path
+                        raw_sqlite_source_paths[path] = source_path
+                        raw_canonical_source_paths[path] = str(snapshot.identity_path)
+                        raw_profile_keys[path] = snapshot.captured_profile_key
+                        raw_id = hermes_profile_raw_id(
+                            source_path,
+                            0,
+                            snapshot.source_revision,
+                            identity_path=snapshot.captured_profile_source_path,
+                            profile_identity=snapshot.captured_profile_key,
+                        )
+                        raw_source_revisions[path] = snapshot.source_revision
+                        raw_source_fingerprints[path] = snapshot.source_fingerprint
+                    except OSError as exc:
+                        raise_if_storage_fault(exc, kinds=_snapshot_fault_kinds(exc))
+                        failed.append(path)
+                        continue
+                    source_payload_read_bytes += blob_size
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                        )
+                elif captured_sqlite is not None:
+                    captured_snapshot = captured_sqlite.snapshot
+                    if captured_snapshot is None:
+                        raise RetainedPreparationRetryableError("accepted state capture has no logical export")
+                    provider = Provider.CODEX
+                    source_name = provider.value
+                    blob_hash, blob_size = (captured_snapshot.blob_hash, captured_snapshot.blob_size)
+                    blob_publication_receipt_id = captured_snapshot.blob_publication_receipt_id
+                    source_path = captured_snapshot.source_path
+                    raw_id = codex_state_raw_id(source_path, captured_snapshot.source_revision)
+                    raw_canonical_source_paths[path] = str(captured_snapshot.identity_path)
+                    raw_profile_keys[path] = captured_snapshot.captured_profile_key
+                    if captured_snapshot.captured_profile_source_path is not None:
+                        raw_profile_source_paths[path] = captured_snapshot.captured_profile_source_path
+                    captured_file_observations[path] = _file_observation(captured_sqlite.source_stat)
+                    captured_observation_times_ns[path] = captured_sqlite.observed_at_ns
+                    raw_source_revisions[path] = captured_snapshot.source_revision
+                    raw_source_fingerprints[path] = captured_snapshot.source_fingerprint
+                    source_payload_read_bytes += blob_size
+                elif codex_owned_sqlite_name or (
+                    fallback_provider in (Provider.CODEX, Provider.UNKNOWN)
+                    and codex_member is not None
+                    and (codex_member.disposition != "out-of-scope")
+                ):
+                    raise RetainedPreparationRetryableError("state acquisition requires pre-writer logical capture")
+                else:
+                    if (
+                        _source_tier_acquisition_required()
+                        and _source_tier_acquisition_required()
+                        and (fallback_provider is Provider.ANTIGRAVITY)
+                        and path.name.endswith(".metadata.json")
+                    ):
+                        failed.append(path)
+                        continue
+                    provider = fallback_provider
+                    source_name = provider.value
+                    try:
+                        if heartbeat is not None:
+                            heartbeat(
+                                "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                            )
+                        capture = capture_bound_path(
+                            blob_store,
+                            path,
+                            fallback_provider,
+                            heartbeat=_blob_copy_heartbeat(
+                                heartbeat, path=path, source_payload_read_bytes=source_payload_read_bytes
+                            ),
+                            byte_page=byte_pages.page(),
+                        )
+                        raw_id, blob_size = (capture.blob_hash, capture.blob_size)
+                        raw_canonical_source_paths[path] = capture.canonical_source_path
+                        captured_file_observations[path] = capture.file_observation
+                        if (
+                            source_name in {Provider.HERMES.value, Provider.UNKNOWN.value}
+                            and capture.captured_profile_key is not None
+                        ):
+                            raw_profile_keys[path] = capture.captured_profile_key
+                            if capture.captured_profile_source_path is not None:
+                                raw_profile_source_paths[path] = Path(capture.captured_profile_source_path)
+                        blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                    except ForeignOriginContentError as exc:
+                        self._mark_refused_cursor(
+                            path,
+                            stat,
+                            source_name=fallback_provider.value,
+                            reason=foreign_origin_exclusion(exc),
+                            excluded=excluded_paths,
+                        )
+                        continue
+                    except OSError as exc:
+                        raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
+                        failed.append(path)
+                        continue
+                    source_payload_read_bytes += blob_size
+                    if heartbeat is not None:
+                        heartbeat(
+                            "full_blob_copy", current_path=path, source_payload_read_bytes=source_payload_read_bytes
+                        )
+                ingested.append(path)
+                acquired_via_sqlite_snapshot = path in raw_source_revisions
+                raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
+                jsonl_boundary: JsonlBoundary | JsonlFrontier | None = None
+                if is_jsonl_source_path(str(path)):
+                    jsonl_boundary = (
+                        jsonl_complete_prefix(raw_payloads[raw_id])
+                        if raw_id in raw_payloads
+                        else jsonl_complete_prefix_path(blob_store.blob_path(raw_id))
+                    )
+                if jsonl_boundary is not None:
+                    raw_frontier_sizes[path] = jsonl_boundary.prefix_size
+                complete_prefix_record_count: int | None = None
+                if (
+                    jsonl_boundary is not None
+                    and jsonl_boundary.incomplete_tail
+                    and (not jsonl_boundary.malformed_record)
+                    and (0 < jsonl_boundary.prefix_size < blob_size)
+                ):
+                    if isinstance(jsonl_boundary, JsonlBoundary):
+                        complete_prefix_record_count = jsonl_boundary.record_count
+                    else:
+                        with blob_store.open(raw_id) as prefix_handle:
+                            complete_prefix_record_count = jsonl_prefix_record_count(
+                                prefix_handle, jsonl_boundary.prefix_size, stop=self._stop_requested
+                            )
+                raw_source_names[path] = source_name
+                if not acquired_via_sqlite_snapshot:
+                    captured_content_hashes[path] = raw_id
+                    if provider is Provider.HERMES:
+                        from polylogue.core.raw_failure_evidence import MissingProfileIdentityError
+
+                        profile_identity = raw_profile_keys.get(path)
+                        profile_source_path = raw_profile_source_paths.get(path)
+                        if profile_identity is None or profile_source_path is None:
+                            raise MissingProfileIdentityError("Hermes capture has no bound profile namespace")
+                        blob_hash = raw_id
+                        raw_id = hermes_profile_raw_id(
+                            str(path),
+                            0,
+                            blob_hash,
+                            identity_path=profile_source_path,
+                            profile_identity=profile_identity,
+                        )
+                        if blob_hash in raw_payloads:
+                            raw_payloads[raw_id] = raw_payloads.pop(blob_hash)
+                        raw_source_revisions[path] = blob_hash
+                raw_records.append(
+                    RawSessionRecord(
+                        raw_id=raw_id,
+                        blob_hash=blob_hash
+                        if (acquired_via_sqlite_snapshot or provider is Provider.HERMES) and blob_hash is not None
+                        else None,
+                        payload_provider=provider,
+                        capture_mode=acquisition_capture_mode,
+                        source_name=source_name,
+                        source_path=str(captured_sqlite.snapshot.source_path)
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else str(raw_sqlite_source_paths.get(path, path)),
+                        canonical_source_path=str(captured_sqlite.snapshot.identity_path)
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else raw_canonical_source_paths.get(path),
+                        captured_profile_key=captured_sqlite.snapshot.captured_profile_key
+                        if captured_sqlite is not None and captured_sqlite.snapshot is not None
+                        else raw_profile_keys.get(path),
+                        source_index=0,
+                        blob_size=blob_size,
+                        blob_publication_receipt_id=blob_publication_receipt_id,
+                        acquired_at=datetime.fromtimestamp(observed_at_ns / 1000000000, UTC).isoformat(),
+                        file_mtime=datetime.fromtimestamp(stat.st_mtime_ns / 1000000000, UTC).isoformat(),
+                        captured_source_revision=raw_source_revisions.get(path, raw_id),
+                        requires_complete_record_boundary=is_jsonl_source_path(str(path)),
+                        complete_prefix_size=jsonl_boundary.prefix_size
+                        if jsonl_boundary is not None and (not jsonl_boundary.malformed_record)
+                        else None,
+                        complete_prefix_record_count=complete_prefix_record_count,
+                        captured_file_observation=captured_file_observations.get(path),
+                    )
+                )
+                raw_source_revisions.setdefault(path, raw_id)
+                raw_by_record[_full_record_key(raw_records[-1])] = path
         summary: _IngestBatchSummary | None = None
         archive_write: _ArchiveFullWriteResult | None = None
         raw_deferred_paths: list[Path] = []
@@ -4054,6 +4178,11 @@ class LiveBatchProcessor:
                     _accumulate_stage_timings(
                         result.stage_timings_s, {source_write_name: time.perf_counter() - started}
                     )
+                    partial = _stable_truncated_tail_admission(record)
+                    if partial is not None:
+                        # The full raw is conserved; its canonical parse admits
+                        # only the proven complete records. Say so (xf8qp).
+                        result.partial_admissions[_full_record_key(record)] = partial
                 except ContentExcisedError as exc:
                     # The archive can forget on purpose (polylogue-27m): this
                     # record's blob hash is durably excised, so acquire
@@ -4360,6 +4489,7 @@ class LiveBatchProcessor:
         self._cursor.set(
             path,
             st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=st_size,
             last_complete_newline=st_size,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -4431,6 +4561,7 @@ class LiveBatchProcessor:
         self._cursor.set(
             path,
             st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=self._current_parser_fingerprint(),
@@ -5799,10 +5930,14 @@ class LiveBatchProcessor:
             cursor_mtime_ns = proof_end.st_mtime_ns if proof_end.st_size == planned_size else plan.mtime_ns
         assert stored_tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
+        authority = CursorPathAuthority.observe(plan.path)
+        if plan.canonical_source_path is not None and authority.canonical_source_path != plan.canonical_source_path:
+            # The path now names another file than the one the plan captured.
+            return False
         updated = self._cursor.set(
             plan.path,
             cursor_stat_size,
-            canonical_source_path=plan.canonical_source_path,
+            authority=authority,
             byte_offset=publication_end,
             last_complete_newline=publication_end,
             parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),
