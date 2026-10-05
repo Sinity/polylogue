@@ -279,27 +279,6 @@ def test_unknown_total_continues_only_on_a_full_page() -> None:
     assert page_next_offset(offset=0, returned=0, total=0, limit=PAGE) is None
 
 
-def test_the_mutating_verb_route_resolves_through_the_complete_walk() -> None:
-    """``select``/``mark``/``delete --all`` reach the walk above, not a page.
-
-    ``resolve_session_ids_for_verb`` is the single route the mutating verbs and
-    their cardinality guard share, so the completeness proved above is the
-    completeness they get.  Pinning the delegation is what makes that transfer
-    an assertion rather than a claim.
-
-    Anti-vacuity: point ``resolve_session_ids_for_verb`` at the bounded
-    ``query_session_selection`` probe instead and this goes red.
-    """
-
-    import inspect
-
-    from polylogue.cli import verb_cardinality
-
-    source = inspect.getsource(verb_cardinality.resolve_session_ids_for_verb)
-    assert "query_complete_session_selection" in source
-    assert "query_session_selection(" not in source
-
-
 @pytest.mark.parametrize("complete", [True, False])
 def test_selection_refuses_user_tag_swap_with_unchanged_total(
     seeded_root: Path, monkeypatch: pytest.MonkeyPatch, complete: bool

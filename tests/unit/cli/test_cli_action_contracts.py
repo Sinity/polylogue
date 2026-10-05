@@ -418,8 +418,8 @@ def test_mark_contract_guard_requires_all_or_first_for_multi_match(
         result = CliRunner().invoke(cli, ["find", "needle", "then", "mark", "--tag-add", "reviewed"])
 
     assert result.exit_code != 0
-    assert "--all" in result.output
-    assert "--first" in result.output
+    assert "--all" in result.output, result.output
+    assert "--first" in result.output, result.output
     assert _active_tag_targets(archive_root, "reviewed") == set()
 
 
