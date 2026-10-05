@@ -30,8 +30,13 @@ async def prepared_live_batch_processor(
     *,
     parser_fingerprint: str,
     failure_details: list[str] | None = None,
+    converger: object | None = None,
 ) -> AsyncIterator[LiveBatchProcessor]:
-    """Keep one real kernel, coordinator, capture stage and Raw owner for the pass."""
+    """Keep one real kernel, coordinator, capture stage and Raw owner for the pass.
+
+    ``converger`` is handed to the processor unchanged, for a law that also
+    observes the per-file convergence stages after intake.
+    """
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator(archive_root=root)
     stage = LiveSQLiteCaptureStage(compute_adapter=compute)
@@ -69,6 +74,7 @@ async def prepared_live_batch_processor(
                     append_runner=owner.ingest_append_plans,
                     retained_runner=retained_runner,
                     convergence_runner=owner.run_convergence_sync,
+                    converger=converger,
                 )
             finally:
                 archive_primary = sys.exception()
