@@ -1393,6 +1393,15 @@ def _connect_archive_writer(
         source_path = selected.resolve()
         metadata = source_path.stat()
         incarnation = metadata.st_dev, metadata.st_ino
+        # Physical custody facts verified for one statement compile: the
+        # file incarnation, the current custody, its root and namespace, and
+        # (once a write is seen) the write lease. They cannot vary within one
+        # compile, so they are verified at its first callback; every
+        # action-dependent decision still runs per callback. Outside a
+        # measured execute (no epoch) every callback verifies everything.
+        verified_epoch: int | None = None
+        verified_custody: ArchiveWriteCustody | None = None
+        verified_lease = False
 
         def authorize(
             action: int, first: str | None, second: str | None, schema: str | None, trigger: str | None
@@ -1411,10 +1420,15 @@ def _connect_archive_writer(
                 ):
                     return sqlite3.SQLITE_DENY
                 return sqlite3.SQLITE_OK
+            nonlocal verified_epoch, verified_custody, verified_lease
+            epoch = getattr(connection, "_compile_epoch", None)
+            fresh = epoch is None or epoch != verified_epoch
             try:
-                current_metadata = source_path.stat()
-                if (current_metadata.st_dev, current_metadata.st_ino) != incarnation:
-                    return sqlite3.SQLITE_DENY
+                if fresh:
+                    verified_epoch = None
+                    current_metadata = source_path.stat()
+                    if (current_metadata.st_dev, current_metadata.st_ino) != incarnation:
+                        return sqlite3.SQLITE_DENY
                 # Context inheritance is not writer admission: a child task
                 # can carry its parent's lease while owning no physical custody.
                 writes = action not in {
@@ -1423,7 +1437,7 @@ def _connect_archive_writer(
                     sqlite3.SQLITE_FUNCTION,
                     sqlite3.SQLITE_RECURSIVE,
                 } and not (action == sqlite3.SQLITE_PRAGMA and second is None)
-                custody = current_sql_custody()
+                custody = current_sql_custody() if fresh else verified_custody
                 known = None if custody is None else custody.known_tier_authority
                 completion_write = (
                     first == "excision_embedding_completions"
@@ -1436,23 +1450,29 @@ def _connect_archive_writer(
                     and (known is None or known is not mutation_permit or not is_prepared_embeddings)
                 ):
                     return sqlite3.SQLITE_DENY
-                if (
-                    writes
-                    and (is_source or known is not None)
-                    and require_write_lease("durable tier SQL execution", archive_root=root) is None
-                ):
-                    return sqlite3.SQLITE_DENY
-                if custody is not None:
-                    if custody.archive_root != root and custody.archive_root.resolve() != root.resolve():
+                lease_needed = writes and (is_source or known is not None)
+                if lease_needed and (fresh or not verified_lease):
+                    if require_write_lease("durable tier SQL execution", archive_root=root) is None:
                         return sqlite3.SQLITE_DENY
-                    custody.assert_namespace()
+                    if not fresh:
+                        verified_lease = True
+                if custody is not None:
+                    if fresh:
+                        if custody.archive_root != root and custody.archive_root.resolve() != root.resolve():
+                            return sqlite3.SQLITE_DENY
+                        custody.assert_namespace()
                     permit = custody.known_tier_authority
                     if permit is not None and not permit.authorize_tier_sql(
                         connection, action, first, second, schema, trigger
                     ):
                         return sqlite3.SQLITE_DENY
             except (OSError, UnleasedWriteError):
+                verified_epoch = None
                 return sqlite3.SQLITE_DENY
+            if fresh and epoch is not None:
+                verified_epoch = epoch
+                verified_custody = custody
+                verified_lease = lease_needed
             return sqlite3.SQLITE_OK
 
         connection.set_authorizer(authorize)

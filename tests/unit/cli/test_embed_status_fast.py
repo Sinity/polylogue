@@ -77,6 +77,28 @@ def _index_path(db_path: Path) -> Path:
     return db_path if db_path.name == "index.db" else db_path.with_name("index.db")
 
 
+def _mirror_text_blocks(conn: sqlite3.Connection) -> None:
+    """Give a hand-built Index the ``blocks`` rows embedding prose reads.
+
+    Embeddable prose is the ordered concatenation of a message's text blocks;
+    ``messages`` has no prose of its own in the canonical schema. These
+    fixtures declare each message's prose as ``messages.text``, so it becomes
+    that message's single text block. A fixture without ``messages.text``
+    holds no prose and gets an empty ``blocks`` table.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS blocks ("
+        "session_id TEXT NOT NULL, message_id TEXT NOT NULL, position INTEGER NOT NULL, "
+        "block_type TEXT NOT NULL, text TEXT)"
+    )
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")}
+    if "text" in columns:
+        conn.execute(
+            "INSERT INTO blocks (session_id, message_id, position, block_type, text) "
+            "SELECT session_id, message_id, 0, 'text', text FROM messages WHERE text IS NOT NULL"
+        )
+
+
 def _seed_archive_without_embedding_ledgers(
     db_path: Path, *, vec_table: bool = False, at_index_tier: bool = True
 ) -> None:
@@ -113,6 +135,7 @@ def _seed_archive_without_embedding_ledgers(
             "INSERT INTO messages (message_id, session_id, content_hash) VALUES (?, ?, ?)",
             [("msg-1", "conv-1", "h1"), ("msg-2", "conv-2", "h2")],
         )
+        _mirror_text_blocks(conn)
         from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -217,6 +240,7 @@ def _seed_archive_file_set_from_archive_tiers(index_db: Path) -> None:
                 "INSERT INTO messages (message_id, session_id, text, content_hash) VALUES (?, ?, ?, ?)",
                 (message_id, session_id, text, _message_content_hash_stub(message_id)),
             )
+        _mirror_text_blocks(conn)
         conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
         conn.commit()
 
@@ -904,6 +928,7 @@ def test_status_json_refuses_to_certify_from_a_legacy_status_ledger(tmp_path: Pa
             VALUES ('codex-session:pending:m1', 'codex-session:pending', x'02');
             """
         )
+        _mirror_text_blocks(conn)
     with sqlite3.connect(embeddings_db) as conn:
         conn.executescript(
             """
@@ -1402,6 +1427,7 @@ def test_status_json_detail_matches_archive_embedding_text_floor(tmp_path: Path)
                 ('msg-short', 'conv-1', 'tiny', 'user', 'message', 'human_authored', 1, 'h2');
             """
         )
+        _mirror_text_blocks(conn)
         conn.commit()
 
     payload = _run_status(index_db, "--detail")
@@ -1488,6 +1514,28 @@ def test_status_text_prints_daemon_catchup_when_enabled(tmp_path: Path) -> None:
 
     assert "Next action:          drain_backlog" in output
     assert "Command:              polylogue ops embed backfill --yes --max-sessions 10" in output
+
+
+def test_status_names_an_unreadable_prose_relation_instead_of_a_timeout(tmp_path: Path) -> None:
+    """An Index missing the relation readiness reads is unmeasured, not slow.
+
+    Anti-vacuity: report every empty aggregate as ``readiness_inspection_timeout``
+    (the previous mapping) and this goes red, telling an operator to wait out
+    a timeout that will never clear.
+    """
+    db_path = tmp_path / "archive.db"
+    index_db = _index_path(db_path)
+    _seed_archive_file_set_from_archive_tiers(index_db)
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DROP TABLE blocks")
+        conn.commit()
+
+    payload = _run_status(index_db, cfg=_cfg(embedding_enabled=True, voyage_api_key="vk-live"))
+
+    assert payload["coverage_measurable"] is False
+    assert payload["coverage_unmeasurable_reason"] == "readiness_relation_unavailable"
+    assert payload["status"] == "unknown"
+    assert payload["embedded_sessions"] is None
 
 
 def test_status_json_reports_ready_next_action(tmp_path: Path) -> None:

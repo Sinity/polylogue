@@ -26,18 +26,29 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.blob_store import blob_store_for_connection
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.retained_replay import replay_retained_components
 
 _PARENT = "0d9f1c2e-parent-uuid"
 _T0 = "2026-05-28T00:59:00.000Z"
 
 
+def _bootstrapped(path: Path) -> Path:
+    # Tier files live inside a canonical archive root; the fixture writer
+    # refuses tier files that predate the root's format marker.
+    if not (path.parent / ".polylogue-format.json").exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        bootstrap_archive_root(path.parent)
+    return path
+
+
 def _index_conn(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = connect_measured(_bootstrapped(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)
@@ -45,7 +56,7 @@ def _index_conn(path: Path) -> sqlite3.Connection:
 
 
 def _source_conn(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(_bootstrapped(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.SOURCE)
@@ -194,11 +205,11 @@ def test_child_first_converges_to_the_same_edge(tmp_path: Path) -> None:
     Red if ``_refill_inbound_dispatch_block_ids`` stops running on the parent
     write, or if the inbound resolution loop stops binding the block.
     """
-    first = _index_conn(tmp_path / "parent-first.db")
+    first = _index_conn(tmp_path / "parent-first" / "index.db")
     _write_parent(first, _parent_records([("call_1", "a1")]))
     child_first_edge = dict(_link(first, _write_child(first, "a1")))
 
-    second = _index_conn(tmp_path / "child-first.db")
+    second = _index_conn(tmp_path / "child-first" / "index.db")
     child_id = _write_child(second, "a1")
     pending = _link(second, child_id)
     assert pending["resolved_dst_session_id"] is None
@@ -475,30 +486,20 @@ def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) ->
                 provider=Provider.CLAUDE_CODE, payload=payload, source_path=source_path, acquired_at_ms=1
             )
 
-        parent_raw = _retained(parent_path, _jsonl(parent_records))
+        _retained(parent_path, _jsonl(parent_records))
         _retained(_subagent_path(_PARENT, "a1", ".meta.json"), _sidecar_payload("call_1"))
-        child_raw = _retained(child_path, _jsonl(_child_records("a1")))
-        archive.write_parsed_for_retained_raw_result(
-            parse_code(parent_records, _PARENT),
-            raw_id=parent_raw,
-            source_path=parent_path,
-            acquired_at_ms=1,
-            revision_authoritative=True,
-        )
-        child_id = archive.write_parsed_for_retained_raw_result(
-            parse_code(_child_records("a1"), "agent-a1"),
-            raw_id=child_raw,
-            source_path=child_path,
-            acquired_at_ms=1,
-            revision_authoritative=True,
-        ).session_id
-        index = archive.index_connection
-        assert index is not None
+        _retained(child_path, _jsonl(_child_records("a1")))
+
+    replay_retained_components(root)
+
+    with sqlite3.connect(root / "index.db") as index:
         edge = index.execute(
             """SELECT l.parent_tool_use_block_id, l.method, json_extract(l.evidence_json, '$.dispatch_reason'),
                       (SELECT b.block_id FROM blocks b WHERE b.tool_id = 'call_1' AND b.block_type = 'tool_use')
-               FROM session_links l WHERE l.src_session_id = ?""",
-            (child_id,),
+               FROM session_links l JOIN sessions s ON s.session_id = l.src_session_id
+               WHERE s.native_id = ?""",
+            # A Claude Code subagent's native id is scoped by its parent session.
+            (f"{_PARENT}:agent-a1",),
         ).fetchall()
 
     assert len(edge) == 1

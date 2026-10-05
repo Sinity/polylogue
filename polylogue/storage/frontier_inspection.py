@@ -1245,6 +1245,7 @@ def frontier_inspection_projection_from_connections(
     healthy frontier. This performs only journal/identity reads, not a corpus
     inspection or a filesystem blob walk.
     """
+    from polylogue.core.errors import SchemaRefusalError
     from polylogue.core.evidence import Measured, Unavailable
     from polylogue.storage.archive_identity import resolve_active_index_path
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
@@ -1272,7 +1273,7 @@ def frontier_inspection_projection_from_connections(
 
     try:
         frame = capture_sqlite_read(read_frame)
-    except (OSError, ValueError) as failure:
+    except (OSError, ValueError, SchemaRefusalError) as failure:
         return {"available": False, "current": False, "healthy": False, "detail": str(failure)}
     if not isinstance(frame, Measured):
         detail = frame.detail if isinstance(frame, Unavailable) else None
@@ -1948,4 +1949,29 @@ def read_frontier_coverage_for_archive(archive_root: Path) -> dict[str, object]:
         attach_readonly_database(conn, archive_root / "ops.db", alias="ops_tier")
         with closing(conn.execute("BEGIN")):
             pass
+        _require_attached_tier_versions(conn)
         return frontier_inspection_projection(conn, archive_root=archive_root)
+
+
+def _require_attached_tier_versions(conn: sqlite3.Connection) -> None:
+    """Refuse an attached durable Source tier this runtime's schema cannot read.
+
+    The Index reader validates its own tier on open; an attached tier carries
+    no such check, so a newer or older Source would otherwise be read as if
+    it held the current schema and report a misleading frontier.
+    """
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.connection_profile import _schema_skew_remedy
+
+    with closing(conn.execute("PRAGMA source_tier.user_version")) as cursor:
+        found = int(cursor.fetchone()[0])
+    expected = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    if found != expected:
+        raise SchemaSkew(
+            tier=ArchiveTier.SOURCE.value,
+            expected=expected,
+            found=found,
+            remedy=_schema_skew_remedy(ArchiveTier.SOURCE),
+        )

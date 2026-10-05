@@ -19,11 +19,11 @@ from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 from polylogue.storage.sqlite.queries.message_query_reads import get_messages
-from tests.infra.archive_templates import bootstrapped_tier_path
+from tests.infra.archive_templates import bootstrap_archive_root, bootstrapped_tier_path
 from tests.infra.excision_execution import execute_excision
 from tests.infra.index_writer import write_fixture_index_session
 from tests.infra.thread_state import seed_spawn_edges
@@ -237,7 +237,8 @@ def test_inherited_message_usage_is_not_counted_again_on_child_write(tmp_path: P
 
 def test_cascade_excision_removes_rawless_inherited_child(tmp_path: Path) -> None:
     """Anti-vacuity: target resolution must count a session row without physical child messages."""
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # Excision previews and authorizes in the audit tier: a whole archive.
+    bootstrap_archive_root(tmp_path)
     conn = sqlite3.connect(tmp_path / "index.db")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute(

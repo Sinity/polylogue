@@ -24,6 +24,7 @@ from polylogue.operations.session_profile_convergence import (
     make_session_summary_derivation,
     make_session_usage_rollup_derivation,
 )
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.convergence_harness import (
     converge_session_profiles,
     raw_authority_facts,
@@ -163,7 +164,8 @@ async def test_real_factory_defers_hot_target_without_losing_the_no_hint_cursor(
     session deferred, then repaired by its callback, while the cold sibling
     still receives the next no-hint page.
     """
-    recovered = seed_partial_convergence_archive(tmp_path / "recovered", target_hot=True)
+    # Seeding takes the synchronous writer lease; keep it off the test's event loop.
+    recovered = run_off_event_loop(lambda: seed_partial_convergence_archive(tmp_path / "recovered", target_hot=True))
     # The hot predicate receives an injected clock.  It is deliberately based
     # on the fixture file metadata rather than the ambient test process clock.
     observed_now = recovered.target_source.stat().st_mtime + 1.0

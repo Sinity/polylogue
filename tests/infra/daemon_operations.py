@@ -337,27 +337,6 @@ def daemon_serving_archive(archive_root: Path, *, session_derivation: bool = Fal
         yield stack
 
 
-@contextlib.asynccontextmanager
-async def async_daemon_serving_archive(
-    archive_root: Path, *, session_derivation: bool = False
-) -> AsyncIterator[DaemonOperationStack]:
-    """:func:`daemon_serving_archive` for an async test.
-
-    Starting the stack bootstraps the archive under a synchronous write lease,
-    which refuses to block a running event loop; entry and exit therefore run
-    on a worker thread while the test's loop keeps serving.
-    """
-    serving = daemon_serving_archive(archive_root, session_derivation=session_derivation)
-    stack = await asyncio.to_thread(serving.__enter__)
-    try:
-        yield stack
-    except BaseException as failure:
-        if not await asyncio.to_thread(serving.__exit__, type(failure), failure, failure.__traceback__):
-            raise
-    else:
-        await asyncio.to_thread(serving.__exit__, None, None, None)
-
-
 def accepted_operation_reference(
     operation: str, *, request_id: str, artifact_kind: str, part_count: int = 1
 ) -> dict[str, object]:
@@ -449,3 +428,23 @@ def execute_bound_delete(
             )
 
     return stack.write_bridge.run_sync("test.delete.bound-actuator", execute)
+
+
+@contextlib.asynccontextmanager
+async def async_daemon_serving_archive(
+    archive_root: Path, *, session_derivation: bool = False
+) -> AsyncIterator[DaemonOperationStack]:
+    """``daemon_serving_archive`` for an async law, started and stopped off its loop.
+
+    Starting the operation stack bootstraps the archive under the synchronous
+    write lease, which refuses to block a running event loop.
+    """
+    serving = daemon_serving_archive(archive_root, session_derivation=session_derivation)
+    stack = await asyncio.to_thread(serving.__enter__)
+    try:
+        yield stack
+    except BaseException as error:
+        if not await asyncio.to_thread(serving.__exit__, type(error), error, error.__traceback__):
+            raise
+    else:
+        await asyncio.to_thread(serving.__exit__, None, None, None)

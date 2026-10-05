@@ -952,9 +952,9 @@ class _Pass:
             return
 
         started_key = time.monotonic()
-        # Budgets count the key once; a declared phase continuation is the same
-        # key's unit of work, bounded by the adapter's own phase count.
-        phases_remaining = max(0, int(getattr(adapter, "publication_phases", 1)) - 1)
+        # Budgets count the key once; a phase continuation is the same key's
+        # unit of work. It is bounded by progress: an adapter reports an
+        # advance only for committed work that cannot repeat for this state.
         self.computed += 1
         first_attempt = True
         while True:
@@ -1052,19 +1052,13 @@ class _Pass:
             if accepted:
                 break
             # An adapter whose publication applies a prerequisite phase
-            # (restored bytes, Source census, classification) returns False
-            # after committing it: its next phase must be prepared off the
-            # writer against that committed state. That is the key's own
-            # progress, not an external binding move, so continue in this pass
-            # up to the adapter's declared phase count.
+            # (restored bytes, Source census, classification, parents deferred
+            # children wait on) returns False after committing it: its next
+            # phase must be prepared off the writer against that committed
+            # state. That is the key's own progress, not an external binding
+            # move, so continue in this pass while the adapter reports it.
             advanced = getattr(adapter, "publication_advanced", None)
-            if (
-                held_at_admission
-                or phases_remaining <= 0
-                or not callable(advanced)
-                or not advanced(replacement)
-                or self.out_of_time()
-            ):
+            if held_at_admission or not callable(advanced) or not advanced(replacement) or self.out_of_time():
                 self.record(
                     KeyOutcome(
                         key=derivation_key,
@@ -1075,7 +1069,6 @@ class _Pass:
                     )
                 )
                 return
-            phases_remaining -= 1
             self.phase_continuations += 1
 
         # The output relation certifies the publication, not its return value.

@@ -142,6 +142,12 @@ def _apply(root: Path) -> tuple[object, ...]:
         return apply_declared_durable_migrations(root, archive_owner=owner, write_lease=_lease(root))  # type: ignore[arg-type]
 
 
+def _backup_manifests(root: Path) -> set[Path]:
+    """Pre-migration backups present now (fresh bootstrap may already own some)."""
+    backups = root / ".maintenance-state" / "pre-migration-backups"
+    return set(backups.rglob("manifest.json")) if backups.exists() else set()
+
+
 def _version_and_table(path: Path, table: str) -> tuple[int, bool]:
     with sqlite3.connect(path) as conn:
         version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -151,9 +157,11 @@ def _version_and_table(path: Path, table: str) -> tuple[int, bool]:
 
 def test_an_archive_at_the_runtime_version_is_left_alone(cli_workspace: dict[str, Path]) -> None:
     root = cli_workspace["archive_root"]
+    before = _backup_manifests(root)
 
     assert _apply(root) == ()
-    assert not (root / ".maintenance-state" / "pre-migration-backups").exists()
+    # Applying nothing creates no backup of its own.
+    assert _backup_manifests(root) == before
 
 
 def test_an_additive_migration_applies_at_open_without_a_backup(
@@ -186,6 +194,7 @@ def test_a_data_changing_migration_applies_only_behind_a_verified_backup(
     cli_workspace: dict[str, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = cli_workspace["archive_root"]
+    before = _backup_manifests(root)
     _declare_future_migration(
         tmp_path,
         monkeypatch,
@@ -198,7 +207,7 @@ def test_a_data_changing_migration_applies_only_behind_a_verified_backup(
 
     assert [(item.tier, item.requires_backup) for item in applied] == [(ArchiveTier.USER, True)]  # type: ignore[attr-defined]
     assert _version_and_table(root / "user.db", "future_user_items") == (2, True)
-    (manifest,) = (root / ".maintenance-state" / "pre-migration-backups").rglob("manifest.json")
+    (manifest,) = _backup_manifests(root) - before
     assert (manifest.parent / "verification-receipt.json").is_file()
 
 

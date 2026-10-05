@@ -57,6 +57,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.storage.sqlite.connection_profile import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.raw_owner_routes import run_ingest_files
 
 _FILES = 6
@@ -152,6 +153,9 @@ def _processor(
 ) -> tuple[LiveBatchProcessor, list[Path], BoundedComputeAdapter]:
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
+    # The daemon ingests into a bootstrapped root; source-only acquisition
+    # refuses a missing Source tier.
+    bootstrap_archive_root(archive_root)
     corpus_root = tmp_path / "corpus"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))

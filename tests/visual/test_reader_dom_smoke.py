@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import cast
 from urllib.request import Request, urlopen
 
+import pytest
+
 from polylogue.surfaces.payloads import reader_anchor
 from tests.visual.conftest import (
     READER_C1,
@@ -183,17 +185,25 @@ def test_overlay_operations_remain_route_backed(reader_workspace: ReaderWorkspac
 
 
 def test_unavailable_overview_and_degraded_search_are_explicit(
-    reader_workspace: ReaderWorkspace, tmp_path: Path
+    reader_workspace: ReaderWorkspace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
         empty_status, _, empty_page = get_text(base_url, "/")
         empty_list = cast(dict[str, object], get_json(base_url, "/api/sessions"))
+        # A bootstrapped empty archive is available; only a root with no
+        # built tiers is unavailable.
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "uninitialized-archive"))
+        unavailable_status, _, unavailable_page = get_text(base_url, "/")
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(reader_workspace.archive_root))
     with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
         degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
-    assert empty_status == 503
-    assert "<h1>Archive overview</h1>" in empty_page
+    assert empty_status == 200
+    assert "No indexed message activity is available." in empty_page
     assert empty_list["total"] == 0
+    assert unavailable_status == 503
+    assert "<h1>Archive overview</h1>" in unavailable_page
+    assert "The archive is unavailable" in unavailable_page
     assert degraded_status == 200
     degraded_payload = json.loads(degraded_body)
     assert degraded_payload["route_state"]["state"] == "degraded"
@@ -204,5 +214,10 @@ def test_unavailable_overview_and_degraded_search_are_explicit(
         artifact_id="polylogue.webui.unavailable_and_degraded",
         route="/api/sessions?query=Hello",
         fixture_id="reader-visual-synthetic-empty-and-degraded-v1",
-        checks={"unavailable_status": empty_status, "degraded_status": degraded_status, "sanitized": True},
+        checks={
+            "empty_status": empty_status,
+            "unavailable_status": unavailable_status,
+            "degraded_status": degraded_status,
+            "sanitized": True,
+        },
     )

@@ -10,6 +10,7 @@ from polylogue.cli.commands.judge import judge_command
 from polylogue.cli.query_verbs import mark_verb
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.surfaces.action_affordances import CandidateReviewDecision, assertion_candidate_review_affordances
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 from polylogue.surfaces.payloads import (
     AssertionBulkJudgmentItemPayload,
     AssertionBulkJudgmentPayload,
@@ -174,7 +175,8 @@ def test_candidates_review_reports_matched_total_and_degraded_truncation() -> No
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    # A truncated listing is a degraded terminal outcome, and the CLI exit follows it.
+    assert result.exit_code == OUTCOME_EXIT_CODES["degraded"], result.output
     rendered = json.loads(result.output)
     assert rendered["total"] == 3
     assert len(rendered["items"]) == 2
@@ -211,7 +213,8 @@ def test_candidates_review_since_reports_full_filtered_match_count() -> None:
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    # A truncated listing is a degraded terminal outcome, and the CLI exit follows it.
+    assert result.exit_code == OUTCOME_EXIT_CODES["degraded"], result.output
     rendered = json.loads(result.output)
     assert rendered["total"] == 3
     assert len(rendered["items"]) == 2
@@ -246,7 +249,8 @@ def test_candidates_review_text_names_truncation() -> None:
         catch_exceptions=False,
     )
 
-    assert result.exit_code == 0
+    # A truncated listing is a degraded terminal outcome, and the CLI exit follows it.
+    assert result.exit_code == OUTCOME_EXIT_CODES["degraded"], result.output
     assert "Showing 2 of 3 matching candidates (degraded: result_truncated)." in result.output
 
 

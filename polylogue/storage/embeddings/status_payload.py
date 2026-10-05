@@ -627,8 +627,12 @@ def _authoritative_archive_embedding_state(
         LEFT JOIN per_session AS p ON p.session_id = s.session_id
         """
     rows = _rows_with_timeout(conn, sql, timeout_ms=timeout_ms)
-    if not rows:
+    if rows is None:
         return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_inspection_timeout")
+    if not rows:
+        # The aggregate always answers one row; none means a relation it reads
+        # (e.g. ``blocks``) is absent. That is an unreadable Index, not a slow one.
+        return ArchiveEmbeddingStateProbe(counts=None, reason="readiness_relation_unavailable")
     counts: tuple[int, int, int, int] = tuple(_payload_int(value) for value in rows[0])  # type: ignore[assignment]
     return ArchiveEmbeddingStateProbe(counts=counts)
 

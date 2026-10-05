@@ -185,6 +185,14 @@ class RawObservationReplacement:
     prepared_membership_keys: tuple[str, ...] = ()
     prepared_byte_logical_keys: tuple[str, ...] = ()
     prepared_key_refusals: tuple[CohortMembershipRefusalError, ...] = ()
+    #: Logical keys whose parent publishes earlier in this same unit; they
+    #: publish nothing here and are re-prepared against that parent.
+    prepared_lineage_deferrals: tuple[str, ...] = ()
+    #: The retained raws of those deferred keys; the rest of the unit published.
+    lineage_deferred_raw_ids: tuple[str, ...] = ()
+    #: Retained raws outside this unit whose sessions a write claims as its
+    #: absent parent; compute widens the unit to them and prepares again.
+    lineage_parent_raw_ids: tuple[str, ...] = ()
     needs_source_classification: bool = False
     scratch_directory: Path | None = None
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
@@ -787,10 +795,12 @@ class RawObservationDerivation(RawObservationInspection):
 
     domain = RAW_OBSERVATION_DOMAIN
     prerequisites: tuple[str, ...] = ()
-    #: Restored bytes, Source census and classification each commit before
-    #: the replay that depends on them can be prepared off the writer; the
-    #: kernel continues those phases within one pass (replay is the last).
-    publication_phases = 4
+    # Restored bytes, Source census, classification and in-unit lineage
+    # deferral each commit before the work that depends on them can be
+    # prepared off the writer; the kernel continues those phases within one
+    # pass while :meth:`publication_advanced` reports committed progress.
+    # Every advance is one that cannot repeat for the same state, so the
+    # continuation is bounded by progress rather than a phase count.
 
     def __init__(
         self,
@@ -811,6 +821,10 @@ class RawObservationDerivation(RawObservationInspection):
         #: Replacements whose publication committed a prerequisite phase,
         #: consumed by :meth:`publication_advanced` on the same key.
         self._phase_committed: dict[int, str] = {}
+        #: Logical keys already deferred once for in-unit lineage. A key is
+        #: deferred at most once per adapter, so re-preparation always makes
+        #: progress even when its parent's publication is itself refused.
+        self._lineage_deferred: set[str] = set()
         if owned_generation is not None:
             from polylogue.storage.sqlite.reference_seal import IndexMutationDestination
 
@@ -821,6 +835,94 @@ class RawObservationDerivation(RawObservationInspection):
                 raise ValueError("retained replay Index differs from its owned generation")
             self._index_db_path = destination.index_path
 
+    def _lineage_deferrals(
+        self,
+        prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite],
+        selected_writes: Mapping[tuple[str, str], tuple[ParsedSession, PreparedJsonl]],
+        *,
+        write_keys: Mapping[str, tuple[str, str]],
+    ) -> tuple[str, ...]:
+        """Logical keys whose claimed parent session publishes earlier in this unit.
+
+        Each write was prepared against the Index as it stood before the unit,
+        so a child whose parent is absent there expects no parent. Only a
+        child whose parent another write of this unit produces is deferred.
+        """
+        produced = {session_id for _raw_id, session_id in write_keys.values()}
+        deferred: list[str] = []
+        for logical_key, write_key in write_keys.items():
+            write = prepared_writes.get(write_key)
+            selected = selected_writes.get(write_key)
+            if write is None or selected is None or write.context.parent_session_id is not None:
+                continue
+            session = selected[0]
+            claimed = write.context.hook_parent_native_id or session.parent_session_provider_id
+            if not claimed:
+                continue
+            from polylogue.core.sources import origin_from_provider
+
+            parent_session_id = f"{origin_from_provider(session.source_name).value}:{claimed.strip()}"
+            if parent_session_id == write_key[1] or parent_session_id not in produced:
+                continue
+            if logical_key in self._lineage_deferred:
+                continue
+            deferred.append(logical_key)
+        self._lineage_deferred.update(deferred)
+        return tuple(sorted(deferred))
+
+    @staticmethod
+    def _lineage_parent_raw_ids(
+        reference_seal: PreparedIndexMutation,
+        read: PreparedSessionSourceRead,
+        selected_writes: Mapping[tuple[str, str], tuple[ParsedSession, PreparedJsonl]],
+        *,
+        unit_raw_ids: Sequence[str],
+    ) -> tuple[str, ...]:
+        """Retained raws of claimed parents that are absent from the Index and this unit.
+
+        A parent shares its child's origin. It is found by its logical key once
+        censused, and by its acquired native id before that. A parent whose
+        retained bytes refuse to decode is left out: widening must not make a
+        child fail on it.
+        """
+        from polylogue.core.sources import origin_from_provider
+
+        produced = {session_id for _raw_id, session_id in selected_writes}
+        claims: dict[str, tuple[str, str]] = {}
+        for (_raw_id, session_id), (session, _artifact) in selected_writes.items():
+            claimed = (session.parent_session_provider_id or "").strip()
+            if not claimed:
+                continue
+            origin = origin_from_provider(session.source_name).value
+            parent_session_id = f"{origin}:{claimed}"
+            if parent_session_id == session_id or parent_session_id in produced:
+                continue
+            reference_seal.before_index_input(
+                "sessions", ("session_id",), "SELECT rowid FROM sessions WHERE session_id=?", (parent_session_id,)
+            )
+            with closing(
+                reference_seal.observer("index").execute(
+                    "SELECT 1 FROM sessions WHERE session_id=?", (parent_session_id,)
+                )
+            ) as present:
+                if present.fetchone() is not None:
+                    continue
+            claims.setdefault(parent_session_id, (origin, claimed))
+        if not claims:
+            return ()
+        candidates: set[str] = set()
+        with read.replay_representative_rows(sorted(claims)) as rows:
+            for _logical_source_key, raw_id in rows:
+                candidates.add(str(raw_id))
+        for origin, native_id in sorted(set(claims.values())):
+            candidates.update(read.raw_ids_for_native_session(origin, native_id))
+        unit = set(unit_raw_ids)
+        return tuple(
+            raw_id
+            for raw_id in sorted(candidates)
+            if raw_id not in unit and read.raw_terminal_decode_refusal(raw_id) is None
+        )
+
     def publication_advanced(self, replacement: RawObservationReplacement) -> bool:
         """Whether this replacement's publication committed a prerequisite phase.
 
@@ -829,6 +931,30 @@ class RawObservationDerivation(RawObservationInspection):
         own progress that a fresh preparation can continue.
         """
         return self._phase_committed.pop(id(replacement), None) == replacement.key
+
+    #: The durable Source rows a census or classification phase may change.
+    _CENSUS_STATE_TABLES = (
+        "raw_sessions",
+        "raw_artifacts",
+        "raw_session_memberships",
+        "raw_membership_census",
+        "raw_authority_parser_census",
+    )
+
+    def _census_state(self, raw_ids: Sequence[str]) -> tuple[tuple[object, ...], ...]:
+        """Committed census state of ``raw_ids``; equal before and after means no progress."""
+        from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+
+        selected = tuple(sorted(raw_ids))
+        marks = ",".join("?" for _ in selected)
+        state: list[tuple[object, ...]] = []
+        with readonly_connection_context(self.archive_root / "source.db") as source:
+            for table in self._CENSUS_STATE_TABLES:
+                with closing(
+                    source.execute(f"SELECT * FROM {table} WHERE raw_id IN ({marks}) ORDER BY rowid", selected)
+                ) as rows:
+                    state.extend((table, *row) for row in rows)
+        return tuple(state)
 
     @staticmethod
     def _blob_stat_identity(path: Path) -> tuple[int, int, int, int, int]:
@@ -884,12 +1010,41 @@ class RawObservationDerivation(RawObservationInspection):
         replay_current: bool = False,
         select_retained_raw_ids: Callable[[PreparedSessionSourceRead], Sequence[str]] | None = None,
     ) -> RawObservationReplacement:
-        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
-
         self._compute_adapter.require_current_creator()
         # Even an initially empty discovery holds exclusive byte admission
         # before its witness can hydrate durable reference proof inputs.
         self._compute_adapter.amend_current_input_demand(0)
+        # A child replayed before its parent stores the shared prefix whole and
+        # is normalized again once the parent arrives. When a write claims a
+        # parent retained in another component and absent from the Index, the
+        # unit widens to that parent and prepares again; in-unit deferral then
+        # publishes the parent first. The selection only grows, so this ends.
+        widened: tuple[str, ...] = ()
+        while True:
+            selection = select_retained_raw_ids
+            if widened:
+
+                def selection(read: PreparedSessionSourceRead, extra: tuple[str, ...] = widened) -> Sequence[str]:
+                    base = (key,) if select_retained_raw_ids is None else tuple(select_retained_raw_ids(read))
+                    return (*base, *(raw_id for raw_id in extra if raw_id not in base))
+
+            replacement = self._compute_once(frame, key, replay_current=replay_current, selection=selection)
+            additional = tuple(raw_id for raw_id in replacement.lineage_parent_raw_ids if raw_id not in widened)
+            if not additional:
+                return replacement
+            replacement.close()
+            widened = (*widened, *additional)
+
+    def _compute_once(
+        self,
+        frame: RawFrame,
+        key: str,
+        *,
+        replay_current: bool,
+        selection: Callable[[PreparedSessionSourceRead], Sequence[str]] | None,
+    ) -> RawObservationReplacement:
+        from polylogue.storage.sqlite.reference_seal import IndexMutationDestination, PreparedIndexMutation
+
         index_path = self._index_db_path or ArchiveLocation.resolve(self.archive_root).active_index_path
         destination = (
             None if self._owned_generation is None else IndexMutationDestination.owned_inactive(self._owned_generation)
@@ -908,7 +1063,7 @@ class RawObservationDerivation(RawObservationInspection):
                     key,
                     replay_current=replay_current,
                     reference_seal=seal,
-                    select_retained_raw_ids=select_retained_raw_ids,
+                    select_retained_raw_ids=selection,
                 ),
                 reference_seal=seal,
             )
@@ -1063,6 +1218,8 @@ class RawObservationDerivation(RawObservationInspection):
                     prepared_replay_adoption: dict[tuple[str, tuple[str, ...]], PreparedRevisionAdoption] = {}
                     membership_plans: dict[str, PreparedMembershipReplay] = {}
                     prepared_byte_outcomes: dict[str, PreparedRevisionReplayOutcome] = {}
+                    prepared_lineage_deferrals: tuple[str, ...] = ()
+                    lineage_deferred_raw_ids: set[str] = set()
                     prepared_replay_source: PreparedRetainedReplaySource | None = None
                     verified_blob_stats: dict[str, tuple[int, int, int, int, int]] = {}
                     prepared_source_census: PreparedRevisionSourceCensus | None = None
@@ -1398,6 +1555,27 @@ class RawObservationDerivation(RawObservationInspection):
                                             raw_ids=accepted_raw_ids,
                                         )
                                     )
+                            with reference_seal.original_read_snapshot(), reference_seal.source_producer():
+                                lineage_parent_raw_ids = self._lineage_parent_raw_ids(
+                                    reference_seal,
+                                    PreparedSessionSourceRead(reference_seal, blob_store=material_store),
+                                    selected_writes,
+                                    unit_raw_ids=raw_ids,
+                                )
+                            if lineage_parent_raw_ids:
+                                # The widened unit prepares everything again; this
+                                # carrier only drains what was prepared so far.
+                                return RawObservationReplacement(
+                                    key,
+                                    binding,
+                                    None,
+                                    raw_ids,
+                                    prepared_inputs=prepared,
+                                    prepared_aggregates=aggregates,
+                                    lineage_parent_raw_ids=lineage_parent_raw_ids,
+                                    scratch_directory=scratch,
+                                    scratch_owner=scratch_owner,
+                                )
                             from polylogue.storage.sqlite.archive_tiers.revision_governance import (
                                 prepared_raw_revision_file_mtime,
                             )
@@ -1427,10 +1605,13 @@ class RawObservationDerivation(RawObservationInspection):
                                 prepared_membership_keys = tuple(
                                     key for key in expanded_membership_keys if not is_work_event_raw_id(key)
                                 )
+                                # Membership-keyed sessions are ordered with the
+                                # byte-typed ones, so a parent replays before its
+                                # children whichever authority keys either.
                                 prepared_replay_schedule = _lineage_aware_replay_schedule(
                                     {
                                         logical_key
-                                        for logical_key in prepared_logical_keys
+                                        for logical_key in (*prepared_logical_keys, *prepared_membership_keys)
                                         if not is_work_event_raw_id(logical_key)
                                     },
                                     source_read,
@@ -1594,6 +1775,44 @@ class RawObservationDerivation(RawObservationInspection):
                                             ),
                                             before_input=reference_seal.before_index_input,
                                         )
+                            # A child prepared against an Index without its parent
+                            # expects no parent; if that parent publishes earlier in
+                            # this same unit, the child's write would find it and
+                            # refuse as moved lineage. Defer the child: the rest
+                            # publishes, and the child is re-prepared in this same
+                            # pass against its published parent.
+                            write_keys = {
+                                **{
+                                    logical_key: (
+                                        prepared_revision_plans[logical_key].accepted_raw_ids[-1],
+                                        str(
+                                            prepared_replay_adoption[
+                                                (logical_key, prepared_revision_plans[logical_key].accepted_raw_ids)
+                                            ].session_id
+                                        ),
+                                    )
+                                    for logical_key in prepared_byte_outcomes
+                                },
+                                **{
+                                    logical_key: (
+                                        plan.classification.accepted_raw_ids[-1],
+                                        _session_id(plan.sessions[plan.classification.accepted_raw_ids[-1]]),
+                                    )
+                                    for logical_key, plan in membership_plans.items()
+                                    if plan.classification.accepted_raw_ids
+                                },
+                            }
+                            prepared_lineage_deferrals = self._lineage_deferrals(
+                                prepared_writes, selected_writes, write_keys=write_keys
+                            )
+                            for deferred_key in prepared_lineage_deferrals:
+                                prepared_byte_outcomes.pop(deferred_key, None)
+                                deferred_plan = membership_plans.pop(deferred_key, None)
+                                lineage_deferred_raw_ids.update(
+                                    deferred_plan.candidate_raw_ids
+                                    if deferred_plan is not None
+                                    else prepared_revision_plans[deferred_key].accepted_raw_ids
+                                )
                             # A later membership refusal supersedes any earlier
                             # prepared byte outcome for that same original key.
                             # The Source acknowledgement and writer consume the
@@ -1654,6 +1873,8 @@ class RawObservationDerivation(RawObservationInspection):
                         prepared_membership_keys=prepared_membership_keys,
                         prepared_byte_logical_keys=prepared_byte_logical_keys,
                         prepared_key_refusals=tuple(prepared_key_refusals.values()),
+                        prepared_lineage_deferrals=prepared_lineage_deferrals,
+                        lineage_deferred_raw_ids=tuple(sorted(lineage_deferred_raw_ids)),
                         scratch_directory=scratch,
                         scratch_owner=scratch_owner,
                     )
@@ -1749,6 +1970,7 @@ class RawObservationDerivation(RawObservationInspection):
         publication_failure: Callable[[BaseException], None] | None = None,
     ) -> bool:
         from polylogue.sources.revision_backfill import (
+            RetainedPreparationNoProgressError,
             RetainedPreparationRetryableError,
             apply_prepared_revision_census,
             apply_prepared_revision_classification,
@@ -1825,10 +2047,15 @@ class RawObservationDerivation(RawObservationInspection):
                         raise RetainedPreparationRetryableError(
                             "retained census lacks its original prepared Source tape"
                         )
+                    before = self._census_state(replacement.raw_ids)
                     receipt = apply_prepared_revision_census(
                         replacement.reference_seal,
                         replacement.prepared_source_census,
                     )
+                    if self._census_state(replacement.raw_ids) == before:
+                        raise RetainedPreparationNoProgressError(
+                            f"retained census left its durable inputs unchanged: {replacement.key}"
+                        )
                     if phase_receipt is not None:
                         phase_receipt("census", receipt)
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
@@ -1841,6 +2068,7 @@ class RawObservationDerivation(RawObservationInspection):
                         raise RetainedPreparationRetryableError(
                             "retained classification lacks its original Source tape"
                         )
+                    before = self._census_state(replacement.raw_ids)
                     try:
                         receipt = apply_prepared_revision_classification(
                             replacement.reference_seal,
@@ -1851,6 +2079,10 @@ class RawObservationDerivation(RawObservationInspection):
                         if publication_failure is not None:
                             publication_failure(failure)
                         return False
+                    if self._census_state(replacement.raw_ids) == before:
+                        raise RetainedPreparationNoProgressError(
+                            f"retained classification left its durable inputs unchanged: {replacement.key}"
+                        )
                     if phase_receipt is not None:
                         phase_receipt("classification", receipt)
                     refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
@@ -1890,6 +2122,7 @@ class RawObservationDerivation(RawObservationInspection):
                         prepared_membership_keys=replacement.prepared_membership_keys,
                         prepared_byte_logical_keys=replacement.prepared_byte_logical_keys,
                         prepared_key_refusals=replacement.prepared_key_refusals,
+                        prepared_lineage_deferrals=replacement.prepared_lineage_deferrals,
                         bulk_fts=True,
                         # One publication is one component of a pass: each
                         # replayed session proves its own FTS rows, and the
@@ -1912,6 +2145,11 @@ class RawObservationDerivation(RawObservationInspection):
                 refusal = next(iter(self.terminal_decode_refusals(replacement.raw_ids).values()), None)
                 if refusal is not None:
                     raise refusal
+                if replacement.prepared_lineage_deferrals:
+                    # The parents published; their deferred children are
+                    # prepared against them by the next phase of this pass.
+                    self._phase_committed[id(replacement)] = replacement.key
+                    return False
                 return True
             finally:
                 if lifetime_bound:

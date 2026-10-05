@@ -907,8 +907,10 @@ def _parse_insight_includes(raw: str | None) -> tuple[str, ...]:
 
 
 def _provenance_dict(prov: Any) -> dict[str, object]:
+    # An unmaterialized insight has no recorded materializer version; keep it unknown.
+    version = getattr(prov, "materializer_version", None)
     return {
-        "materializer_version": int(getattr(prov, "materializer_version", 0)),
+        "materializer_version": None if version is None else int(version),
         "materialized_at": getattr(prov, "materialized_at", None),
         "source_updated_at": getattr(prov, "source_updated_at", None),
         "source_sort_key": getattr(prov, "source_sort_key", None),

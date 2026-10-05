@@ -77,6 +77,7 @@ from polylogue.storage.sqlite.literal_cells import (
     LITERAL_CHUNK_BYTES,
     SQLiteLiteralCell,
     cell_projection,
+    inline_cell_projection,
     literal_metadata,
     owned_literal_stream,
     quote_identifier,
@@ -2125,6 +2126,10 @@ class PreparedIndexMutation:
         self._excision_embeddings_requested = _excision_embeddings
         # Depth of row operations whose entry gate verified the namespace.
         self._namespace_verified_depth = 0
+        # Literal cells are append-only on the witness; a rolled-back insert
+        # can return its cell_id to a later one, so any witness rollback or
+        # failed statement clears this memo.
+        self._literal_cell_memo: dict[int, tuple[str, int, bytes | None]] = {}
         self._excision_embeddings_intent_ready = False
         self._excision_embeddings_intent_sha256 = ""
         self._excision_source_command_sha256: str | None = None
@@ -2488,7 +2493,8 @@ class PreparedIndexMutation:
 
     def _observer_identity(self, name: str) -> tuple[int, int, int, int]:
         self._require_capability(name)
-        self._assert_configured_namespace()
+        if not self._namespace_verified_depth:
+            self._assert_configured_namespace()
         metadata = self._observer_leaves[name].identity_metadata()
         return metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns
 
@@ -2668,8 +2674,10 @@ class PreparedIndexMutation:
             with connection_cursor(conn, "SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)) as cursor:
                 if cursor.fetchone():
                     return False
-        parsed = _relevant_ref(ref.wire_ref)
-        return parsed is not None and _resolve_target(conn, parsed) is None
+        # The anchored target itself must no longer resolve. A removed session's
+        # token can fall through to a surviving prefix sibling; that sibling is
+        # a different object, not evidence that the removed target remains.
+        return _relevant_ref(ref.wire_ref) is not None and not _still_resolves(conn, ref)
 
     def note_lineage_change(self, conn: sqlite3.Connection, session_id: str) -> None:
         """Track refs scoped to every composed transcript below a changed node."""
@@ -3858,6 +3866,8 @@ class PreparedIndexMutation:
         parameters: tuple[object, ...] = (),
     ) -> Iterator[sqlite3.Cursor]:
         """Retain each finite statement before execution on its original owner."""
+        if connection is self._owned_scratch_connection and sql.lstrip()[:8].upper() == "ROLLBACK":
+            self._literal_cell_memo.clear()
         cursor = connection.cursor()
         primary: BaseException | None = None
         try:
@@ -3865,6 +3875,8 @@ class PreparedIndexMutation:
             yield cursor
         except BaseException as failure:
             primary = failure
+            if connection is self._owned_scratch_connection:
+                self._literal_cell_memo.clear()
             raise
         finally:
             try:
@@ -4760,7 +4772,13 @@ class PreparedIndexMutation:
             raise ReferenceSealError("physical row image omits canonical cells")
         native_address: int | bytes = logical_vector_key if logical_vector_key is not None else cast(int, image.rowid)
         alias, address = self._original_row_address(connection, image.table, image.columns, native_address)
-        projection = ",".join(cell_projection(quote_identifier(column)) for column in image.columns)
+        # Each cell's metadata, plus its bytes when they fit one literal chunk:
+        # a small cell compares exactly from this same row read, a larger one
+        # streams through its native Blob so no cell is materialized whole.
+        projection = ",".join(
+            f"{cell_projection(quote_identifier(column))}, {inline_cell_projection(quote_identifier(column))}"
+            for column in image.columns
+        )
         source_sql = f"FROM {quote_identifier(image.table)} WHERE {quote_identifier(alias)}=?"
         with self._owned_cursor(
             connection, f"SELECT {quote_identifier(alias)},{projection} {source_sql}", (address,)
@@ -4768,12 +4786,13 @@ class PreparedIndexMutation:
             row = cursor.fetchone()
         if row is None or row[0] != address:
             return False
-        owner = next(child for child in native_sql_children(self) if child.connection is connection)
-        incremental = self._incremental_cell_reads(connection, image.table)
+        owner: NativeSQLCustodyOwner | None = None
+        incremental: bool | None = None
         check: Callable[[], None] = (lambda: None) if settlement else _check_reference_cancellation
         for position, (column, expected) in enumerate(zip(image.columns, image.cells, strict=True)):
             check()
-            actual = literal_metadata(*row[1 + 3 * position : 1 + 3 * position + 3])
+            offset = 1 + 4 * position
+            actual = literal_metadata(*row[offset : offset + 3])
             kind, size, fixed = self._literal_cell_metadata(expected)
             if (actual.storage_class, actual.byte_length) != (kind, size):
                 return False
@@ -4781,6 +4800,19 @@ class PreparedIndexMutation:
                 if actual.fixed_bytes() != fixed:
                     return False
                 continue
+            inline = row[offset + 3]
+            if inline is not None:
+                if len(inline) != size:
+                    return False
+                if not self._literal_streams_equal(
+                    self._literal_cell_chunks(expected, settlement=settlement), (chunk for chunk in (bytes(inline),))
+                ):
+                    return False
+                continue
+            if owner is None:
+                owner = next(child for child in native_sql_children(self) if child.connection is connection)
+                incremental = self._incremental_cell_reads(connection, image.table)
+            assert incremental is not None
             literal = self._native_literal_chunks(
                 connection,
                 owner,
@@ -5220,6 +5252,9 @@ class PreparedIndexMutation:
     def _literal_cell_metadata(self, cell: KnownTierCell) -> tuple[str, int, bytes | None]:
         if cell._seal is not self:
             raise ReferenceSealError("literal cell belongs to another original witness")
+        memo = self._literal_cell_memo.get(cell._cell_id)
+        if memo is not None:
+            return memo
         with self._owned_cursor(
             self._scratch,
             "SELECT storage_class,byte_length,fixed_blob FROM known_tier_literal_cells WHERE cell_id=?",
@@ -5228,7 +5263,9 @@ class PreparedIndexMutation:
             row = cursor.fetchone()
         if row is None:
             raise ReferenceSealError("literal cell locator has no retained original image")
-        return str(row[0]), int(row[1]), row[2]
+        metadata = (str(row[0]), int(row[1]), row[2])
+        self._literal_cell_memo[cell._cell_id] = metadata
+        return metadata
 
     def _literal_cell_chunks(self, cell: KnownTierCell, *, settlement: bool = False) -> Generator[bytes, None, None]:
         kind, size, fixed = self._literal_cell_metadata(cell)
@@ -5280,15 +5317,16 @@ class PreparedIndexMutation:
 
     def validate_observers_current(self) -> None:
         """Point-check every retained observer immediately after gate admission."""
-        self._require_new_work()
-        for name, _path in self._paths.items():
-            observer = self._require_unpinned_observer(name)
-            if self._observer_identity(name) != self._identities[name]:
-                raise ReferenceSealStaleError(f"the {name}.db file incarnation changed after preparation")
-            with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
-                current = int(cursor.fetchone()[0])
-            if current != self._versions[name]:
-                raise ReferenceSealStaleError(f"{name}.db changed after preparation")
+        # One namespace walk covers every observer's identity check below.
+        with self.verified_namespace():
+            for name, _path in self._paths.items():
+                observer = self._require_unpinned_observer(name)
+                if self._observer_identity(name) != self._identities[name]:
+                    raise ReferenceSealStaleError(f"the {name}.db file incarnation changed after preparation")
+                with self._owned_cursor(observer, "PRAGMA data_version") as cursor:
+                    current = int(cursor.fetchone()[0])
+                if current != self._versions[name]:
+                    raise ReferenceSealStaleError(f"{name}.db changed after preparation")
 
     @staticmethod
     def _candidate_schema_identity(observer: sqlite3.Connection) -> tuple[int, str | None]:
@@ -8582,6 +8620,9 @@ class PreparedIndexMutation:
             "ON known_tier_effects(tier,parent_effect_id,table_name)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_old ON known_tier_effects(tier,table_name,old_rowid,effect_id)",
             "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_new ON known_tier_effects(tier,table_name,new_rowid,effect_id)",
+            # Pending-capture probes name no table; without this they scan
+            # every effect of the tier on each Source statement.
+            "CREATE INDEX IF NOT EXISTS temp.known_tier_effect_consumed ON known_tier_effects(tier,consumed)",
         )
         for statement in statements:
             _check_reference_cancellation()
@@ -9016,12 +9057,18 @@ class PreparedIndexMutation:
         ) as coordinates:
             for table, rowid in coordinates:
                 _check_reference_cancellation()
+                # The latest effect touching this coordinate, from two indexed
+                # probes: an OR over both rowids walked every effect of the
+                # table, making each verification quadratic in its effects.
                 with self._owned_cursor(
                     self._scratch,
-                    "SELECT new_rowid,new_image FROM temp.known_tier_effects "
-                    "WHERE tier=? AND table_name=? AND (old_rowid=? OR new_rowid=?) "
-                    "ORDER BY effect_id DESC LIMIT 1",
-                    (tier, table, rowid, rowid),
+                    "SELECT new_rowid,new_image FROM temp.known_tier_effects WHERE effect_id=("
+                    "SELECT max(effect_id) FROM ("
+                    "SELECT max(effect_id) AS effect_id FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND old_rowid=? "
+                    "UNION ALL SELECT max(effect_id) FROM temp.known_tier_effects "
+                    "WHERE tier=? AND table_name=? AND new_rowid=?))",
+                    (tier, table, rowid, tier, table, rowid),
                 ) as cursor:
                     expected = cursor.fetchone()
                 assert expected is not None

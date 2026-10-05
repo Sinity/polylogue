@@ -1327,14 +1327,12 @@ def mutation_judgment_record(
     }
 
 
-def _observe_frontier_control_authority(
-    request: DaemonOperationRequest, context: OperationContext, *, started: float
-) -> OperationControlRead:
-    """Control authority plus the Index precondition the client stamped on the request.
+def _observe_frontier_authority(request: DaemonOperationRequest, context: OperationContext) -> OperationControlRead:
+    """Control provenance plus the Index condition the frontier owner reads.
 
-    Frontier inspection reads Index references, so a supplied Index schema
-    version is verified against the live tier rather than against a control
-    snapshot that never observed it.
+    Control authority carries Source/Audit versions only. Frontier inspection
+    also reads the active Index, so a caller's Index precondition is observed
+    on that tier instead of being compared against an absent version.
     """
     from polylogue.archive.query.execution_control import QueryExecutionContext
     from polylogue.operations.daemon_execution import _observe_explicit_index_condition
@@ -1343,15 +1341,17 @@ def _observe_frontier_control_authority(
     read_control = context.read_control or QueryExecutionContext(
         call_id=str(request.request_id),
         query_ref=request.fingerprint,
-        deadline_monotonic=None if request.deadline_ms is None else started + request.deadline_ms / 1000,
+        deadline_monotonic=None,
         owner_ref=context.principal.actor_ref,
     )
-    return _observe_explicit_index_condition(
+    authority = _observe_explicit_index_condition(
         request,
         observe_control_authority(context.archive_root),
         archive_root=context.archive_root,
         read_control=read_control,
     )
+    read_control.mark_cleanup_complete()
+    return authority
 
 
 async def execute_raw_authority_blocker_resolve_operation(
@@ -1376,7 +1376,7 @@ async def execute_raw_authority_blocker_resolve_operation(
     audit = runtime.audit_for_request(request, context)
 
     def execute() -> Any:
-        authority = _observe_frontier_control_authority(request, context, started=started)
+        authority = _observe_frontier_authority(request, context)
         _validate_identity(request, context, authority)
         runtime.observe_snapshot(request, authority)
         blocker_id = str(request.payload["blocker_id"])
@@ -1395,7 +1395,7 @@ async def execute_raw_authority_blocker_resolve_operation(
                 args = BlockerResolveArgs(context.archive_root, blocker_id, resolution, prepared)
 
                 def begin() -> StartedBoundMutation:
-                    current = _observe_frontier_control_authority(request, context, started=started)
+                    current = observe_control_authority(context.archive_root)
                     _validate_identity(request, context, current)
                     if current.identity != authority.identity:
                         raise ValueError("archive changed before blocker acknowledgement authorization")
@@ -1477,7 +1477,7 @@ async def execute_raw_authority_frontier_operation(request: DaemonOperationReque
     started = monotonic()
 
     def accept() -> None:
-        authority = _observe_frontier_control_authority(request, context, started=started)
+        authority = _observe_frontier_authority(request, context)
         _validate_identity(request, context, authority)
         runtime.observe_snapshot(request, authority)
         runtime.begin_unbound_write(request, snapshot=authority)

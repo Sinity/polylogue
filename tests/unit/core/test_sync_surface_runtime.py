@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -226,17 +227,24 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
     from polylogue.config import Config
 
     archive = MagicMock()
-    archive.list_session_tag_rollup_insights.return_value = []
+
+    # Tag rollups merge the streaming materialized reader with origin rollups.
+    def no_materialized_rows(**_kwargs: object) -> Iterator[object]:
+        yield from ()
+
+    archive.iter_session_tag_rollup_insights.side_effect = no_materialized_rows
     archive.stats_by.return_value = {}
     archive.get_thread_insight.return_value = "thread"
-    archive.list_thread_insights.return_value = ["threads"]
+    # Thread lists page through the same streaming reader as API and MCP (#5988).
+    archive.iter_thread_insights.side_effect = lambda **_kwargs: (row for row in ["threads"])
     archive.list_archive_coverage_insights.return_value = ["coverage"]
     archive.list_tool_usage_insights.return_value = [
         ToolUsageInsight(
             provenance=ArchiveInsightProvenance(materializer_version=1, materialized_at="2026-01-01T00:00:00Z")
         )
     ]
-    archive.list_session_cost_insights.return_value = []
+    # Session cost pages scan the streaming reader before enrichment.
+    archive.iter_session_cost_insights.side_effect = no_materialized_rows
     archive.list_cost_rollup_insights.return_value = []
     archive.list_archive_debt_insights.return_value = ["debt"]
 
@@ -276,12 +284,12 @@ async def test_polylogue_products_mixin_forwards_all_product_calls(tmp_path: Pat
         assert await harness.list_cost_rollup_insights() == []
         assert await harness.list_archive_debt_insights() == ["debt"]
 
-    archive.list_session_tag_rollup_insights.assert_called_once()
+    archive.iter_session_tag_rollup_insights.assert_called_once()
     archive.get_thread_insight.assert_called_once_with("thread-1")
-    archive.list_thread_insights.assert_called_once()
+    archive.iter_thread_insights.assert_called_once()
     archive.list_archive_coverage_insights.assert_called_once()
     archive.list_tool_usage_insights.assert_called_once()
-    archive.list_session_cost_insights.assert_called()  # also called by cost-rollup derivation
+    archive.iter_session_cost_insights.assert_called()  # also scanned by cost-rollup derivation
     archive.list_archive_debt_insights.assert_called_once()
 
 

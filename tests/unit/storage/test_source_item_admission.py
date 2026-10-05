@@ -30,7 +30,9 @@ _PAYLOAD = b'{"synthetic":"source-item"}\n'
 _BLOB_HASH = hashlib.sha256(_PAYLOAD).digest()
 
 
-def _archive(tmp_path: Path, *, payload: bytes = _PAYLOAD) -> tuple[sqlite3.Connection, str, str, RawAdmissionPlan]:
+def _archive(
+    tmp_path: Path, *, payload: bytes = _PAYLOAD, coordinate: str = "capture.json"
+) -> tuple[sqlite3.Connection, str, str, RawAdmissionPlan]:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     blob_hash = hashlib.sha256(payload).digest()
@@ -42,15 +44,15 @@ def _archive(tmp_path: Path, *, payload: bytes = _PAYLOAD) -> tuple[sqlite3.Conn
         source_generation_id="synthetic-generation",
         manifest_digest="a" * 64,
         addressing_mode="physical-file-v1",
-        coordinates=("capture.json",),
-        input_blob_hashes={"capture.json": blob_hash},
+        coordinates=(coordinate,),
+        input_blob_hashes={coordinate: blob_hash},
         enumeration_fingerprint="b" * 64,
         observed_at_ms=1,
     )
     request = PendingPreParseRawAdmissionRequest(
         origin=Origin.CLAUDE_CODE_SESSION,
         capture_mode=Provider.CLAUDE_CODE,
-        source_path="/synthetic/capture.json",
+        source_path=f"/synthetic/{coordinate}",
         source_index=0,
         blob_hash=blob_hash,
         blob_size=len(payload),
@@ -273,7 +275,9 @@ def test_duplicate_member_preserves_revision_refined_by_actual_retained_parser(t
         b'{"sessionId":"accepted-session","uuid":"native-message","type":"user",'
         b'"cwd":"/synthetic","message":{"role":"user","content":"retained text"}}\n'
     )
-    conn, _generation, item_id, plan = _archive(tmp_path, payload=payload)
+    # A Claude Code transcript is a JSONL record stream; at its declared
+    # suffix the census binds it as its own session's singleton revision.
+    conn, _generation, item_id, plan = _archive(tmp_path, payload=payload, coordinate="capture.jsonl")
     with conn:
         conn.execute("BEGIN")
         execute_source_item_admission(conn, plan, _member(item_id))

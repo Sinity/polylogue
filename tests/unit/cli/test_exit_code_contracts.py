@@ -278,8 +278,10 @@ class TestRefusalExitCodeThroughRealEntrypoint:
 
         empty_root, env = self._refusable_root(tmp_path)
 
-        json_result = run_cli(["demo", "verify", "--root", str(empty_root), "--format", "json"], env=env)
-        plain_result = run_cli(["demo", "verify", "--root", str(empty_root)], env=env)
+        json_result = run_cli(
+            ["demo", "verify", "--root", str(empty_root), "--format", "json"], env=env, entrypoint="module"
+        )
+        plain_result = run_cli(["demo", "verify", "--root", str(empty_root)], env=env, entrypoint="module")
 
         assert json_result.exit_code != 0, json_result.output
         assert json_result.exit_code == plain_result.exit_code, (
@@ -317,7 +319,7 @@ class TestRefusalExitCodeThroughRealEntrypoint:
 
         _empty_root, env = self._refusable_root(tmp_path)
 
-        assert run_cli(["--version"], env=env).exit_code == 0
+        assert run_cli(["--version"], env=env, entrypoint="module").exit_code == 0
 
 
 def test_facets_exit_status_follows_the_reported_outcome() -> None:
