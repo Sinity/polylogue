@@ -4279,6 +4279,26 @@ _CODEX_SUPPORTED_OUTER_RECORD_TYPES = frozenset(
 )
 
 
+def is_supported_outer_record(item: object) -> bool:
+    """Whether the parser materializes this outer record rather than dropping it.
+
+    Artifact classification applies the same predicate to every record of a
+    stream, so a rollout holding a record the parser cannot materialize is
+    refused as an unsupported shape instead of parsing with that record
+    silently missing. It reads only ``record_type``, ``type``, ``role``,
+    ``id`` and ``timestamp``, all of which candidacy projection retains.
+    """
+    record = _dict_record(item)
+    if record is None:
+        return False
+    return (
+        _is_state(record)
+        or _record_type(record) in _CODEX_SUPPORTED_OUTER_RECORD_TYPES
+        or _is_direct_message(record)
+        or (_record_id(record) is not None and _record_timestamp(record) is not None and not _record_type(record))
+    )
+
+
 def _account_codex_outer_record(
     ledger: AdmissionLedger,
     *,
@@ -4288,13 +4308,7 @@ def _account_codex_outer_record(
     """Settle one source record as the materializing pass consumes it."""
     ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
     record_type = _record_type(record) if record is not None else None
-    supported = record is not None and (
-        _is_state(record)
-        or record_type in _CODEX_SUPPORTED_OUTER_RECORD_TYPES
-        or _is_direct_message(record)
-        or _session_meta_record(record) is not None
-    )
-    if supported:
+    if is_supported_outer_record(record):
         ledger.materialized(AdmissionUnit.OUTER_RECORD, index, record_type or "direct")
     else:
         ledger.unknown(AdmissionUnit.OUTER_RECORD, index, record_type or "unsupported")

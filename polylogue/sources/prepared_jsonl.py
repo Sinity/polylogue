@@ -27,6 +27,7 @@ from polylogue.archive.artifact_taxonomy import (
     ArtifactKind,
     ArtifactStreamClassification,
     classify_artifact_stream,
+    fact_path_admits_session_content,
     strong_path_classification,
 )
 from polylogue.core.compute import DaemonBackpressureError, DaemonOperationCancelled
@@ -2425,14 +2426,13 @@ def prepare_jsonl_blob(
     strict_jsonl_records: bool = False,
     publication_publisher: ArchiveBlobPublisher | None = None,
     publication_source_read: BlobPublicationSourceRead | None = None,
-    retained_session_recovery: bool = False,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC.
 
-    ``retained_session_recovery`` is supplied only by an original retained Raw
-    producer. It permits streamed candidacy at a fact path to reach the full
-    parser; the accepted-session rule still owns recovery and empty input
-    keeps its original fact classification.
+    At an OriginSpec ``fact`` path, streamed candidacy lets records carrying a
+    provider session envelope reach the full parser; the accepted-session rule
+    still owns recovery, and input that yields no accepted session keeps its
+    original fact classification.
 
     Every sealed session is admitted: the positive-conversational-evidence
     rule (``require_positive_conversational_evidence``) runs here, before any
@@ -2503,7 +2503,6 @@ def prepare_jsonl_blob(
                 source_path=source_path,
                 wire_format="jsonl" if jsonl_wire else "json",
                 check_stop=check_compute_cancelled,
-                retained_session_recovery=retained_session_recovery,
             )
         input_admitted = not taxonomy.proved_non_session
         record_container: str | None = None
@@ -3600,7 +3599,7 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
-        if retained_session_recovery:
+        if fact_path_admits_session_content(source_path, provider=provider):
             explicit = strong_path_classification(source_path, provider=provider)
             accepted_count = store.conn.execute("SELECT COUNT(*) FROM prepared_session").fetchone()[0]
             if explicit is not None and not explicit.parse_as_session and not accepted_count:
