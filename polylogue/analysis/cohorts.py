@@ -10,18 +10,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import tempfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256
-from pathlib import Path
 from typing import ClassVar
 
 from pydantic import ConfigDict
 
-from polylogue.core.sqlite_scratch import connect_scratch_database
+from polylogue.storage.sqlite.connection_profile import scratch_connection_context
 
 _UNKNOWN = "unknown"
 
@@ -148,8 +145,7 @@ def compile_cohort_manifest(
 
     checkpoint()
     with (
-        tempfile.TemporaryDirectory(prefix="polylogue-cohort-") as directory,
-        closing(connect_scratch_database(Path(directory) / "population.db")) as scratch,
+        scratch_connection_context(prefix="polylogue-cohort-", filename="population.db") as scratch,
     ):
         scratch.execute("PRAGMA temp_store = FILE")
         scratch.execute("PRAGMA cache_size = -2048")
