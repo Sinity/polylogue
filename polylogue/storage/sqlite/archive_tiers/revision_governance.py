@@ -27,9 +27,8 @@ possibly many times), this module decides:
   queried (``replace_raw_membership_census``, ``raw_membership_*``);
 - bookkeeping for a raw's own parse lifecycle
   (``finalize_raw_parse_state``, ``mark_raw_parse_failed/succeeded``) and the
-  narrow raw-write paths that hand a parsed session to this authority
-  (``write_parsed_for_retained_raw*``,
-  ``_index_parsed_for_retained_raw``).
+  narrow prepared raw-write path that hands a parsed session to this
+  authority (``_index_parsed_for_retained_raw``).
 
 ## What this module refuses
 
@@ -210,7 +209,7 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, reconcile_refused_attachments
+from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.derivation import converge_fts_partition_sync
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
@@ -1202,96 +1201,6 @@ def admit_raw_artifact_blob_ref(
     )
     # Acquisition retains the typed artifact and original bytes. The resident
     # Source phase records its parser receipt on the original prepared witness.
-    return result
-
-
-def write_parsed_for_retained_raw(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    raw_id: str,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "append",
-    manage_transaction: bool = True,
-    finalize_raw_parse: bool = True,
-    revision_authoritative: bool = False,
-) -> tuple[str, str]:
-    """Index one session for raw evidence that is already durable."""
-    result = write_parsed_for_retained_raw_result(
-        store,
-        session,
-        raw_id=raw_id,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-        source_index=source_index,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        finalize_raw_parse=finalize_raw_parse,
-        revision_authoritative=revision_authoritative,
-    )
-    return result.raw_id, result.session_id
-
-
-def write_parsed_for_retained_raw_result(
-    store: RawRevisionGovernanceHost,
-    session: ParsedSession,
-    *,
-    raw_id: str,
-    source_path: str,
-    acquired_at_ms: int,
-    source_index: int = 0,
-    stage_timings_s: dict[str, float] | None = None,
-    stage_timing_prefix: str = "append",
-    manage_transaction: bool = True,
-    finalize_raw_parse: bool = True,
-    revision_authoritative: bool = False,
-) -> ArchiveRawParsedWriteResult:
-    """Index one session for raw evidence that is already durable, with counts.
-
-    Used both by append-chain replay and by any caller that must index
-    several sessions parsed from ONE physical raw acquisition (e.g. a
-    Claude Code/Codex grouped JSONL file whose content splits into
-    multiple sessions) against the SAME raw_id, instead of writing a
-    duplicate raw row per session.
-    """
-    preacquired_attachments, attachment_blob_refs = store._preacquire_attachment_blobs(
-        session,
-        source_path=source_path,
-        acquired_at_ms=acquired_at_ms,
-    )
-    if store._blob_publisher is not None:
-        store._blob_publisher.flush()
-    preacquired_attachments, attachment_blob_refs = reconcile_refused_attachments(
-        preacquired_attachments,
-        attachment_blob_refs,
-        store._blob_publisher,
-        source_conn=store._ensure_source_conn(),
-    )
-
-    def original_attachment_refs() -> Iterable[ArchiveSourceBlobRef]:
-        return iter(attachment_blob_refs)
-
-    write_source_blob_refs(store._ensure_source_conn(), raw_id, original_attachment_refs)
-    index_started = time.perf_counter()
-    result = _index_parsed_for_retained_raw(
-        store,
-        session,
-        raw_id=raw_id,
-        source_index=source_index,
-        stage_timings_s=stage_timings_s,
-        stage_timing_prefix=stage_timing_prefix,
-        manage_transaction=manage_transaction,
-        preacquired_attachment_blobs=preacquired_attachments,
-        finalize_raw_parse=finalize_raw_parse,
-        revision_authoritative=revision_authoritative,
-    )
-    if stage_timings_s is not None:
-        key = f"{stage_timing_prefix}.index_parsed_write"
-        stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
     return result
 
 

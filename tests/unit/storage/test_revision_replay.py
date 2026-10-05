@@ -1292,139 +1292,77 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
     assert second_plan.accepted_raw_ids == ()
 
 
-def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> None:
-    """A raw whose OWN logical identity is durably recorded
-    ``raw_session_memberships.decision = 'ambiguous'`` must never reach
-    ``sessions`` through the ordinary (non-revision-authoritative) parsed-
-    write path.
-
-    ``ArchiveStore._write_parsed_precedence_result``'s only revision-
-    authority awareness before this fix was a check against
-    ``raw_revision_heads`` -- populated ONLY when a cohort has an ACCEPTED
-    winner (``apply_raw_membership_classification``/
-    ``apply_raw_revision_replay``). A cohort ``classify_membership_
-    revisions`` genuinely refused to arbitrate never gets an accepted head,
-    so that check stays silent and the ordinary browser-capture-precedence/
-    freshness fallback below it writes the session unconditionally on the
-    next reparse -- arbitrary last-writer-wins over the exact invariant this
-    subsystem exists to enforce. Live evidence: 28 aistudio-drive cohorts
-    recorded ambiguous nonetheless materialized a session with 641
-    attachments reported unfetched despite the bytes existing in the blob
-    store, because ``write_parsed_for_retained_raw`` (called from the
-    one-shot importer, ``revision_authoritative=False`` by default) never
-    consulted ``raw_session_memberships`` at all.
-    """
+def _seed_membership_gate_archive(tmp_path: Path, memberships: tuple[tuple[str, str], ...]) -> str:
+    """Retain one raw and record each ``(provider_session_id, decision)`` membership."""
     bootstrap_archive_root(tmp_path)
-
-    session = ParsedSession(
-        source_name=Provider.CHATGPT,
-        provider_session_id="s1",
-        messages=[ParsedMessage(provider_message_id="s1-0", role=Role.USER, text="left")],
-    )
-
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
+            provider=Provider.CHATGPT, payload=b"membership-gate", source_path="bundle.json", acquired_at_ms=1
         )
-        # Durable evidence that this raw's identity was already judged
-        # ambiguous -- the shape ``replace_raw_membership_census`` /
-        # ``apply_raw_membership_classification`` leave behind for a
-        # genuinely divergent cohort (reproduced directly here so the test
-        # isolates the WRITE-PATH guard from the classifier that produces
-        # this state).
         with independent_source_connection(archive) as source_conn:
-            source_conn.execute(
-                """
-                INSERT INTO raw_session_memberships (
-                    raw_id, logical_source_key, provider_session_id,
-                    source_revision, normalized_content_hash, message_count,
-                    decision, decided_at_ms
-                ) VALUES (?, 'chatgpt-export:s1', 's1', ?, ?, 1, 'ambiguous', 1)
-                """,
-                (raw_id, raw_id, bytes.fromhex(raw_id)),
-            )
+            for ordinal, (provider_session_id, decision) in enumerate(memberships):
+                source_conn.execute(
+                    """
+                    INSERT INTO raw_session_memberships (
+                        raw_id, logical_source_key, provider_session_id,
+                        source_revision, normalized_content_hash, message_count,
+                        decision, decided_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?, 1)
+                    """,
+                    (
+                        raw_id,
+                        f"chatgpt-export:{provider_session_id}",
+                        provider_session_id,
+                        f"{raw_id}-{ordinal}",
+                        bytes.fromhex(raw_id),
+                        decision,
+                    ),
+                )
+    return raw_id
 
-        returned_raw_id, session_id = archive.write_parsed_for_retained_raw(
-            session,
-            raw_id=raw_id,
-            source_path="a.json",
-            acquired_at_ms=2,
+
+def test_precedence_gate_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> None:
+    """A raw whose own membership is recorded ``ambiguous`` never reaches ``sessions``.
+
+    ``revision_authority_refuses_write`` is the one gate both retained write
+    routes call before their freshness/browser-capture precedence; without
+    the membership leg, a cohort ``classify_membership_revisions`` refused to
+    arbitrate falls through to last-writer-wins on the next reparse.
+    """
+    from polylogue.storage.sqlite.archive_tiers.ingest_precedence import revision_authority_refuses_write
+
+    raw_id = _seed_membership_gate_archive(tmp_path, (("s1", "ambiguous"),))
+    with sqlite3.connect(tmp_path / "index.db") as conn, sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert revision_authority_refuses_write(
+            conn, source_conn, session_id="chatgpt-export:s1", raw_id=raw_id, provider_session_id="s1"
         )
 
-    assert returned_raw_id == raw_id
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (session_id,)).fetchone() == (0,)
 
-
-def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_raw(tmp_path: Path) -> None:
+def test_precedence_gate_allows_a_non_ambiguous_sibling_membership_on_the_same_raw(tmp_path: Path) -> None:
     """The ambiguity refusal is per-membership, not per-raw.
 
     One retained raw routinely lowers to many independently-arbitrated sessions
     -- a Claude Code transcript plus its subagent sidechains, a bundle member
     set. Scoping the refusal to ``raw_id`` alone suppresses every session that
-    raw carries the moment a single sibling membership is ambiguous, turning a
-    fidelity downgrade into outright absence.
-
-    Measured on the live archive when this was caught: 295 raws carry a mix of
-    decisions, together holding 489 sessions whose own membership is not
-    ambiguous, and one raw carries 106 memberships. Their content would have
-    silently vanished at the next full rebuild.
+    raw carries the moment a single sibling membership is ambiguous.
     """
-    bootstrap_archive_root(tmp_path)
+    from polylogue.storage.sqlite.archive_tiers.ingest_precedence import revision_authority_refuses_write
 
-    ambiguous_session = ParsedSession(
-        source_name=Provider.CHATGPT,
-        provider_session_id="s-ambiguous",
-        messages=[ParsedMessage(provider_message_id="a-0", role=Role.USER, text="left")],
-    )
-    settled_session = ParsedSession(
-        source_name=Provider.CHATGPT,
-        provider_session_id="s-settled",
-        messages=[ParsedMessage(provider_message_id="b-0", role=Role.USER, text="right")],
-    )
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"two-sessions", source_path="bundle.json", acquired_at_ms=1
+    raw_id = _seed_membership_gate_archive(tmp_path, (("s-ambiguous", "ambiguous"), ("s-settled", "applied")))
+    with sqlite3.connect(tmp_path / "index.db") as conn, sqlite3.connect(tmp_path / "source.db") as source_conn:
+        assert revision_authority_refuses_write(
+            conn,
+            source_conn,
+            session_id="chatgpt-export:s-ambiguous",
+            raw_id=raw_id,
+            provider_session_id="s-ambiguous",
         )
-        with independent_source_connection(archive) as source_conn:
-            # One raw, two memberships, arbitrated differently -- the live shape.
-            source_conn.execute(
-                """
-                INSERT INTO raw_session_memberships (
-                    raw_id, logical_source_key, provider_session_id,
-                    source_revision, normalized_content_hash, message_count,
-                    decision, decided_at_ms
-                ) VALUES (?, 'chatgpt-export:s-ambiguous', 's-ambiguous', ?, ?, 1, 'ambiguous', 1)
-                """,
-                (raw_id, raw_id, bytes.fromhex(raw_id)),
-            )
-            source_conn.execute(
-                """
-                INSERT INTO raw_session_memberships (
-                    raw_id, logical_source_key, provider_session_id,
-                    source_revision, normalized_content_hash, message_count,
-                    decision, decided_at_ms
-                ) VALUES (?, 'chatgpt-export:s-settled', 's-settled', ?, ?, 1, 'applied', 1)
-                """,
-                (raw_id, raw_id + "-b", bytes.fromhex(raw_id)),
-            )
-
-        _, ambiguous_session_id = archive.write_parsed_for_retained_raw(
-            ambiguous_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=2
-        )
-        _, settled_session_id = archive.write_parsed_for_retained_raw(
-            settled_session, raw_id=raw_id, source_path="bundle.json", acquired_at_ms=3
-        )
-
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        # The ambiguous membership is still refused ...
-        assert conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE session_id = ?", (ambiguous_session_id,)
-        ).fetchone() == (0,)
-        # ... and its settled sibling on the same raw is not collateral damage.
-        assert conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id = ?", (settled_session_id,)).fetchone() == (
-            1,
+        assert not revision_authority_refuses_write(
+            conn,
+            source_conn,
+            session_id="chatgpt-export:s-settled",
+            raw_id=raw_id,
+            provider_session_id="s-settled",
         )
 
 
@@ -2401,43 +2339,6 @@ def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: P
         )
 
     assert artifact == (RawFailureEvidenceKind.TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER.value,)
-
-
-def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A retained-raw CAS failure cannot commit an untyped state first."""
-    bootstrap_archive_root(tmp_path)
-    session = _parsed_session(("m0", "retained CAS failure"))
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = _write_quarantined_member(archive, "retained-cas-failure", session)
-
-        def raise_conflict(*_args: object, **_kwargs: object) -> None:
-            raise archive_revision_governance.MembershipReplayConflictError("retained membership conflict")
-
-        monkeypatch.setattr(archive_revision_governance, "_write_parsed_precedence_result", raise_conflict)
-        with pytest.raises(archive_revision_governance.MembershipReplayConflictError):
-            archive._index_parsed_for_retained_raw(
-                session,
-                raw_id=raw_id,
-                source_index=0,
-                stage_timings_s=None,
-                stage_timing_prefix="test",
-                manage_transaction=False,
-                preacquired_attachment_blobs={},
-                finalize_raw_parse=False,
-                revision_authoritative=True,
-            )
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        assert source_conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (
-            "MembershipReplayConflictError: retained membership conflict",
-        )
-        assert source_conn.execute(
-            "SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts "
-            "WHERE raw_id = ? ORDER BY artifact_id DESC LIMIT 1",
-            (raw_id,),
-        ).fetchone() == ("deferred_cas_frontier", "partial_decode", 1)
 
 
 def _head_row(archive: ArchiveStore) -> tuple[object, ...] | None:

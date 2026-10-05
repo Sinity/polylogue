@@ -191,7 +191,7 @@ def revision_authority_refuses_write(
 
     Consolidated from two independently hand-maintained copies of the exact
     same two checks (polylogue-c737: PR #3397 fixed
-    ``ArchiveStore._write_parsed_precedence_result``
+    ``_write_parsed_precedence_result``
     (``revision_governance.py``), then PR #3398 had to separately re-apply
     the identical fix to the daemon batch-ingest path's ``_write_session``
     (``pipeline/services/ingest_batch/_core.py``) -- "the signature of

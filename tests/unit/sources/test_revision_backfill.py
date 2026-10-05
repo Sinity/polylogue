@@ -4,7 +4,6 @@ import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from io import BytesIO
 from pathlib import Path
 from typing import Any, cast
 
@@ -25,8 +24,6 @@ from polylogue.core.enums import Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.sources import revision_backfill
-from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     _browser_snapshot_fidelity,
@@ -704,22 +701,6 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
             "SELECT revision_kind, revision_authority, parsed_at_ms FROM raw_sessions WHERE raw_id = ?",
             (legacy_append_raw_id,),
         ).fetchone() == ("unknown", "quarantined", None)
-
-    parsed_baseline = parse_payload(
-        Provider.CODEX,
-        list(_iter_json_stream(BytesIO(baseline), "session.jsonl")),
-        "session",
-        source_path="session.jsonl",
-    )[0]
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_parsed_for_retained_raw(
-            parsed_baseline,
-            raw_id=baseline_raw_id,
-            source_path="session.jsonl",
-            acquired_at_ms=3,
-        )
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT message_count, raw_id FROM sessions").fetchone() == (2, newest_raw_id)
 
 
 def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path: Path) -> None:

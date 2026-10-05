@@ -212,14 +212,12 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     PreparedRevisionReplayOutcome,
     _authorize_full_snapshot_fold,
     _flush_pending_raw_parse_states,
-    _index_parsed_for_retained_raw,
     _promote_contiguous_append_evidence,
     _raw_revision_authority,
     _raw_revision_candidates,
     _raw_revision_matches_segments,
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
-    _write_parsed_precedence_result,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     admit_work_event_raw,
@@ -267,8 +265,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_replay_plan,
     record_raw_failure_evidence,
     release_provisional_full_revisions,
-    write_parsed_for_retained_raw,
-    write_parsed_for_retained_raw_result,
     write_raw_blob_ref,
     write_raw_payload,
 )
@@ -2564,36 +2560,6 @@ class ArchiveStore:
             )
         return acquired, tuple(refs)
 
-    def _write_parsed_precedence_result(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_index: int,
-        stage_timings_s: dict[str, float] | None,
-        stage_timing_prefix: str,
-        manage_transaction: bool,
-        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-        revision_authoritative: bool = False,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        defer_fts_rebuild: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        return _write_parsed_precedence_result(
-            self,
-            session,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            revision_authoritative=revision_authoritative,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-        )
-
     @_archive_mutator
     def write_raw_payload(
         self,
@@ -2896,68 +2862,6 @@ class ArchiveStore:
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
         )
-
-    @_archive_mutator
-    def write_parsed_for_retained_raw(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_path: str,
-        acquired_at_ms: int,
-        source_index: int = 0,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        finalize_raw_parse: bool = True,
-        revision_authoritative: bool = False,
-    ) -> tuple[str, str]:
-        self._require_writable("write retained source.db and index.db evidence")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return write_parsed_for_retained_raw(
-                self,
-                session,
-                raw_id=raw_id,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-                source_index=source_index,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                finalize_raw_parse=finalize_raw_parse,
-                revision_authoritative=revision_authoritative,
-            )
-
-    @_archive_mutator
-    def write_parsed_for_retained_raw_result(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_path: str,
-        acquired_at_ms: int,
-        source_index: int = 0,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        finalize_raw_parse: bool = True,
-        revision_authoritative: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        self._require_writable("write retained source.db and index.db evidence")
-        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
-            return write_parsed_for_retained_raw_result(
-                self,
-                session,
-                raw_id=raw_id,
-                source_path=source_path,
-                acquired_at_ms=acquired_at_ms,
-                source_index=source_index,
-                stage_timings_s=stage_timings_s,
-                stage_timing_prefix=stage_timing_prefix,
-                manage_transaction=manage_transaction,
-                finalize_raw_parse=finalize_raw_parse,
-                revision_authoritative=revision_authoritative,
-            )
 
     @_archive_mutator
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
@@ -3331,38 +3235,6 @@ class ArchiveStore:
 
     def _flush_pending_raw_parse_states(self) -> None:
         return _flush_pending_raw_parse_states(self)
-
-    def _index_parsed_for_retained_raw(
-        self,
-        session: ParsedSession,
-        *,
-        raw_id: str,
-        source_index: int,
-        stage_timings_s: dict[str, float] | None,
-        stage_timing_prefix: str,
-        manage_transaction: bool,
-        preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]],
-        finalize_raw_parse: bool,
-        revision_authoritative: bool = False,
-        bulk_fts: bool = False,
-        bulk_build: bool = False,
-        defer_fts_rebuild: bool = False,
-    ) -> ArchiveRawParsedWriteResult:
-        return _index_parsed_for_retained_raw(
-            self,
-            session,
-            raw_id=raw_id,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            finalize_raw_parse=finalize_raw_parse,
-            revision_authoritative=revision_authoritative,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            defer_fts_rebuild=defer_fts_rebuild,
-        )
 
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
