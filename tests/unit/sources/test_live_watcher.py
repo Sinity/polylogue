@@ -402,7 +402,8 @@ async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> N
     )
     before = _live_archive_snapshot(tmp_path)
 
-    metrics = await watcher._ingest_files([blocked_path, sibling])
+    async with supplied_live_owners(watcher._batch_processor):
+        metrics = await watcher._ingest_files([blocked_path, sibling])
 
     assert metrics.skipped_file_count == 1
     assert metrics.succeeded_file_count == 1
@@ -1105,7 +1106,8 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
 
-    result = await processor._ingest_full_paths([source_path], source_name="projects")
+    async with supplied_live_owners(processor):
+        result = await processor._ingest_full_paths([source_path], source_name="projects")
 
     assert result.succeeded == [source_path]
     assert result.failed == []
@@ -2301,6 +2303,7 @@ async def test_live_batch_processor_records_durable_attempt(tmp_path: Path) -> N
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2363,6 +2366,7 @@ async def test_live_batch_processor_records_cursor_after_each_converged_group(
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2439,6 +2443,7 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
     source_path.write_text('{"type":"session_meta","payload":{"id":"responsive"}}\n', encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -2497,6 +2502,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
@@ -2556,6 +2562,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
     db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(workspace_env["archive_root"]))
     processor = LiveBatchProcessor(
         archive,
         (WatchSource(name="claude-code", root=root, suffixes=(".json", ".jsonl", ".ndjson")),),
@@ -2675,7 +2682,8 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
     root = workspace_env["data_root"] / "hermes-observability"
     root.mkdir(parents=True)
     source_path = root / "events.jsonl"
-    db_path = workspace_env["data_root"] / "append-atof-boundary.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2816,7 +2824,8 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
     chatgpt_dir = root / "chatgpt"
     chatgpt_dir.mkdir(parents=True)
     source_path = chatgpt_dir / "conv-emx2.json"
-    db_path = workspace_env["data_root"] / "membership-defer.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2898,7 +2907,8 @@ async def test_live_append_merges_tail_visible_through_public_archive_read(works
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "append-public-read.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -2992,7 +3002,8 @@ async def test_live_ingest_metrics_carry_real_session_identity(workspace_env: di
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "session-identity.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3085,7 +3096,8 @@ async def test_live_full_ingest_expands_inbox_zip_members(
         zf.writestr("session-a.jsonl", member_a + "\n")
         zf.writestr("session-b.jsonl", member_b + "\n")
 
-    db_path = workspace_env["data_root"] / "inbox-zip-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3175,7 +3187,8 @@ async def test_live_full_ingest_sniffs_zip_provider_for_non_session_siblings(
         zf.writestr("conversations.json", json.dumps([conversation]))
         zf.writestr("message_feedback.json", json.dumps([{"conversation_id": "chatgpt-zip-sniff-1", "rating": 1}]))
 
-    db_path = workspace_env["data_root"] / "inbox-zip-sniff-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3216,7 +3229,8 @@ async def test_live_full_ingest_detects_provider_when_source_name_is_not_provide
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "session.jsonl"
-    db_path = workspace_env["data_root"] / "detect-provider-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3259,7 +3273,8 @@ async def test_live_full_ingest_excludes_non_session_sidecars_before_raw_storage
     project.mkdir(parents=True)
     source_path = project / "sessions-index.json"
     source_path.write_text(json.dumps({"sessions": [{"id": "metadata-only"}]}), encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-sidecar-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3300,7 +3315,8 @@ async def test_live_full_ingest_excludes_known_provider_invalid_jsonl_sidecars_b
     project.mkdir(parents=True)
     source_path = project / "architecture_discussions.jsonl"
     source_path.write_text("not json\nstill not json\n", encoding="utf-8")
-    db_path = workspace_env["data_root"] / "exclude-invalid-jsonl-live.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3338,7 +3354,8 @@ async def test_codex_append_uses_existing_session_identity_when_tail_lacks_sessi
     project = root / "project"
     project.mkdir(parents=True)
     source_path = project / "codex-session.jsonl"
-    db_path = workspace_env["data_root"] / "append-codex.db"
+    # The live writer binds ops writes to the archive root that owns them.
+    db_path = workspace_env["archive_root"] / "index.db"
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
     cursor = CursorStore(db_path)
     processor = LiveBatchProcessor(
@@ -3777,9 +3794,16 @@ def test_a_cursored_file_is_rediscovered_without_being_ingested_again(tmp_path: 
     )
 
     async def _admit() -> dict[str, Any]:
-        page = await adapter.discover(limit=8)
-        assert [Path(cast(Any, item.payload)) for item in page] == [f]
-        return dict(await adapter.admit_page(page))
+        # Page admission initializes the cursor on the daemon writer.
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        watcher._write_coordinator = coordinator
+        try:
+            page = await adapter.discover(limit=8)
+            assert [Path(cast(Any, item.payload)) for item in page] == [f]
+            return dict(await adapter.admit_page(page))
+        finally:
+            watcher._write_coordinator = None
+            assert await coordinator.shutdown(timeout=float("inf"))
 
     outcomes = asyncio.run(_admit())
     assert [result.outcome for result in outcomes.values()] == [AdmissionOutcome.DUPLICATE]
@@ -4038,6 +4062,7 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
     db_path = tmp_path / "live.sqlite"
     cursor = CursorStore(db_path)
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4152,6 +4177,7 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
@@ -4252,6 +4278,7 @@ async def test_zero_hold_threshold_does_not_refuse_acquired_files(tmp_path: Path
 
     cursor = CursorStore(tmp_path / "live.sqlite")
     polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, polylogue),
         (WatchSource(name="codex", root=root),),
