@@ -492,18 +492,6 @@ def _read_view_option_values(bound_values: Mapping[str, object]) -> dict[str, ob
 _CONTINUE_CANDIDATE_DEFAULT_LIMIT = 10
 
 
-def _successor_context_unit_queries(session_id: str) -> tuple[str, ...]:
-    """Default successor-context recipe expressed through terminal DSL units."""
-
-    session_clause = f"session.id:{session_id}"
-    return (
-        f"runs where {session_clause}",
-        f"observed-events where {session_clause}",
-        f"context-snapshots where {session_clause}",
-        f"actions where {session_clause}",
-    )
-
-
 def _wants_json(request: RootModeRequest, *, output_format: str | None) -> bool:
     """Return whether the local/root output contract requests JSON."""
 
@@ -536,30 +524,45 @@ def _emit_continue_candidates(
     """
 
     from polylogue.cli.shared.machine_errors import emit_success
+    from polylogue.operations.daemon_protocol import ContinuationCandidatesResult
 
-    candidates = run_coroutine_sync(
-        env.polylogue.find_resume_candidates(
-            repo_path=repo_path,
-            cwd=cwd,
-            recent_files=recent_files,
-            limit=limit,
+    result = ContinuationCandidatesResult.model_validate(
+        _dispatch_continuation(
+            env,
+            request,
+            "continuation.candidates",
+            {"repo_path": repo_path, "cwd": cwd, "recent_files": list(recent_files), "limit": limit},
         )
     )
-    payload = {
-        "candidates": [candidate.model_dump(mode="json") for candidate in candidates],
-        "returned": len(candidates),
-        "limit": limit,
-    }
     if _wants_json(request, output_format=output_format):
-        emit_success(payload)
+        emit_success(result.model_dump(mode="json"))
         return
-    for candidate in candidates:
+    for candidate in result.candidates:
         basis = candidate.overlap_basis
         click.echo(
             f"{candidate.score:.3f} {candidate.logical_session_id} {candidate.title} "
             f"[overlap exact={len(basis.exact)} dir={len(basis.dir)} "
             f"dead-excluded={len(basis.dead_excluded)}]"
         )
+
+
+def _dispatch_continuation(
+    env: AppEnv, request: RootModeRequest, operation: str, payload: dict[str, object]
+) -> dict[str, object]:
+    from polylogue.cli.operation_kernel import OperationKernelError, OperationRequest
+    from polylogue.cli.read_dispatch import daemon_route_disabled, dispatch_read
+    from polylogue.cli.render.outcome import exit_for_read_failure
+
+    try:
+        result, _ = dispatch_read(
+            env.config,
+            OperationRequest(operation, payload),
+            daemon_disabled=daemon_route_disabled(flag=bool(request.params.get("no_daemon"))),
+            selection_epoch=request.selection_epoch,
+        )
+    except OperationKernelError as exc:
+        exit_for_read_failure(exc)
+    return result
 
 
 def _complete_read_view(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
@@ -1644,35 +1647,47 @@ def continue_verb(
         raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
     if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
         raise click.UsageError("--limit is only valid with continue --candidates.")
-    from polylogue.cli.select import machine_output_requested
-
-    session_id = _resolve_query_action_session_id(
-        env, request, operation="continue", machine_output=machine_output_requested(output_format)
-    )
-    if session_id is None:
-        raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
-    session = run_coroutine_sync(env.polylogue.get_session(session_id))
-    if session is None:
-        raise click.UsageError(f"Session not found: {session_id}")
-    if _wants_json(request, output_format=output_format):
+    is_json = _wants_json(request, output_format=output_format)
+    if is_json:
         if execute:
             raise click.UsageError("continue --exec cannot be combined with --format json.")
         if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT, RenderDestination.FILE):
             raise click.UsageError("continue --format json supports terminal, stdout, or file destinations only.")
         if destination == RenderDestination.FILE and not out_path:
             raise click.UsageError("continue --format json --to file requires --out.")
-        from polylogue.context.compiler import ContextSpec
+    elif not execute and (
+        destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None
+    ):
+        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
+    from polylogue.cli.select import machine_output_requested
 
-        image = run_coroutine_sync(
-            env.polylogue.compile_context(
-                ContextSpec(
-                    purpose="continue",
-                    seed_refs=(f"session:{session_id}",),
-                    read_views=("messages",),
-                    unit_queries=_successor_context_unit_queries(session_id),
-                )
-            )
+    selected_frames: list[str] = []
+    session_id = _resolve_query_action_session_id(
+        env,
+        request,
+        operation="continue",
+        machine_output=machine_output_requested(effective_output_format),
+        frame_sink=selected_frames.append,
+    )
+    if selected_frames:
+        request = request.with_param_updates(selection_epoch=selected_frames[-1])
+    if session_id is None:
+        raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
+    if is_json:
+        from datetime import datetime, timezone
+
+        from polylogue.cli.read_views.context import record_context_image_ledger
+        from polylogue.context.compiler import ContextImage
+
+        observed_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        result = _dispatch_continuation(
+            env,
+            request,
+            "continuation.context",
+            {"session_id": session_id, "observed_at_ms": observed_at_ms},
         )
+        image = ContextImage.model_validate(result["payload"])
+        record_context_image_ledger(env.config, image.model_dump(mode="json"), observed_at_ms=observed_at_ms)
         _deliver_content(
             env,
             serialize_surface_payload(image, exclude_none=True) + "\n",
@@ -1680,18 +1695,18 @@ def continue_verb(
             out_path=out_path,
         )
         return
-    from polylogue.archive.resume_routing import route_resume
+    from polylogue.operations.daemon_protocol import ContinuationRouteResult
 
-    route = route_resume(session)
+    route = ContinuationRouteResult.model_validate(
+        _dispatch_continuation(env, request, "continuation.route", {"session_id": session_id})
+    )
     if route.status != "supported" or route.command is None:
         raise click.UsageError(route.detail or "This session cannot be resumed by a verified local harness command.")
     if execute:
-        result = subprocess.run(route.argv, cwd=route.cwd, check=False)
-        if result.returncode:
-            raise SystemExit(_shell_exit_status(result.returncode))
+        executed = subprocess.run(route.argv, cwd=route.cwd, check=False)
+        if executed.returncode:
+            raise SystemExit(_shell_exit_status(executed.returncode))
         return
-    if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
-        raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
     click.echo(route.command)
 
 
@@ -2611,6 +2626,7 @@ def _resolve_query_action_session_id(
     operation: str,
     first_only: bool = False,
     machine_output: bool = False,
+    frame_sink: Callable[[str], None] | None = None,
 ) -> str | None:
     """Resolve one query-action session with explicit ranked-result cardinality.
 
@@ -2631,6 +2647,9 @@ def _resolve_query_action_session_id(
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
         selection = query_session_selection(env.config, request, limit=resolve_limit)
         selection.require_authoritative()
+        if frame_sink is not None:
+            assert selection.snapshot_epoch is not None
+            frame_sink(selection.snapshot_epoch)
         rows = selection.rows
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
@@ -2644,6 +2663,12 @@ def _resolve_query_action_session_id(
                     return list(rows)
                 complete = query_session_selection(env.config, request, limit=None)
                 complete.require_authoritative()
+                if complete.snapshot_epoch != selection.snapshot_epoch:
+                    from polylogue.cli.operation_kernel import OperationFailedError
+
+                    raise OperationFailedError(
+                        "query_continuation_stale", "selection changed before choosing a continuation target"
+                    )
                 return list(complete.rows)
 
             return resolve_ambiguous_selection(

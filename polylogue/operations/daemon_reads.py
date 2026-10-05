@@ -278,6 +278,12 @@ def execute_read_operation(
                 mode="json", exclude_none=True
             ),
         }
+    elif name in {"continuation.route", "continuation.context", "continuation.candidates"}:
+        from polylogue.operations.continuation import execute_continuation_read
+
+        result = execute_continuation_read(
+            name, payload, archive=archive, serving_identity=serving_identity, checkpoint=dependencies.raise_if_aborted
+        )
     elif name == "session.reference":
         result = _session_reference_payload(payload, archive=archive)
     elif name == "query.units":

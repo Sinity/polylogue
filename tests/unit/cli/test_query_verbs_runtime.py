@@ -19,7 +19,7 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, AmbiguousSelectionError
+from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
@@ -1323,22 +1323,23 @@ def test_continue_verb_emits_successor_context_json() -> None:
     """JSON mode preserves the successor-context contract beside resume routing."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
 
-    async def get_session(session_id: str) -> object:
-        assert session_id == "codex-session:abc123"
-        return SimpleNamespace(origin=Origin.CODEX_SESSION, id=session_id, working_directories=())
+    from polylogue.operations.continuation import successor_context_spec
 
-    from polylogue.context.compiler import ContextImage
-
-    async def compile_context(spec: ContextSpec) -> ContextImage:
-        return ContextImage(spec=spec, segments=())
-
-    child.obj = SimpleNamespace(polylogue=SimpleNamespace(get_session=get_session, compile_context=compile_context))
+    image = ContextImage(spec=successor_context_spec("codex-session:abc123"), segments=())
+    child.obj = SimpleNamespace(config=SimpleNamespace())
     wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
-
-    with patch("polylogue.cli.read_views.base.deliver_content") as deliver:
+    with (
+        patch(
+            "polylogue.cli.query_verbs._dispatch_continuation", return_value={"payload": image.model_dump(mode="json")}
+        ) as dispatch,
+        patch("polylogue.cli.read_views.context.record_context_image_ledger") as ledger,
+        patch("polylogue.cli.read_views.base.deliver_content") as deliver,
+    ):
         wrapped(child, **_continue_verb_kwargs(output_format="json"))
-
+    assert dispatch.call_args.args[2] == "continuation.context"
+    assert dispatch.call_args.args[3]["session_id"] == "codex-session:abc123"
+    assert ledger.call_args.kwargs["observed_at_ms"] == dispatch.call_args.args[3]["observed_at_ms"]
     payload = json.loads(deliver.call_args.args[1])
     assert payload["spec"]["purpose"] == "continue"
     assert payload["spec"]["seed_refs"] == ["session:codex-session:abc123"]
@@ -1958,67 +1959,31 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
 
-    # Dry-run previews the SAME full pre-resolved id set the real delete acts on
-    # via execute_delete_by_session_ids(dry_run=True). It must NOT route through
-    # _execute_query_verb, which re-runs the query at the default limit of 20 and
-    # would preview fewer sessions than --yes --all deletes (#1873). The preview
-    # uses force=True internally so it never triggers an interactive prompt.
-    with (
-        patch(
-            "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
-            return_value=["alpha-id"],
-        ) as probe_ids,
-        patch(
-            "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-            return_value=["alpha-id"],
-        ) as resolve,
-        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute,
-        patch("polylogue.cli.query_verbs._execute_query_verb") as legacy,
-    ):
+    # Preview and confirmed execution use the same resident selection owner.
+    with patch("polylogue.cli.archive_query.execute_delete_selection") as execute:
         wrapped(child, True, False, False, "json")
-
-    legacy.assert_not_called()
-    probe_ids.assert_called_once()
-    resolve.assert_called_once()
     args, kwargs = execute.call_args
-    assert list(args[1]) == ["alpha-id"]
-    assert kwargs.get("dry_run") is True
-    assert kwargs.get("force") is True
+    assert args[1].query_terms == ("alpha",)
+    assert kwargs == {"mode": "single", "force": True, "dry_run": True}
 
-    with (
-        patch(
-            "polylogue.cli.verb_cardinality.resolve_session_ids_for_verb",
-            return_value=["alpha-id"],
-        ),
-        patch("polylogue.cli.verb_cardinality.check_cardinality"),
-        patch("polylogue.cli.archive_query.execute_delete_by_session_ids") as execute_confirmed,
-    ):
+    with patch("polylogue.cli.archive_query.execute_delete_selection") as execute_confirmed:
         wrapped(child, False, True, False, None)
-
-    _, confirmed_kwargs = execute_confirmed.call_args
-    assert confirmed_kwargs.get("force") is True
-    assert confirmed_kwargs.get("dry_run") is None
+    assert execute_confirmed.call_args.kwargs == {"mode": "single", "force": True}
 
 
-def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
-    """The dry-run refusal labels the two-row prefix as incomplete.
-
-    Anti-vacuity: treating the bounded probe as complete tells users the
-    displayed candidates are the full ambiguous selection.
-    """
-    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
-
+def test_delete_dry_run_delegates_complete_selection_without_a_candidate_prefix() -> None:
+    """Resident preview resolves cardinality rather than a truncated local probe."""
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
-    with patch(
-        "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
-        return_value=[f"session-{index}" for index in range(AMBIGUITY_CANDIDATE_LIMIT + 1)],
+    with (
+        patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb") as probe,
+        patch("polylogue.cli.archive_query.execute_delete_selection") as execute,
     ):
-        with pytest.raises(AmbiguousSelectionError) as exc_info:
-            wrapped(child, True, False, False, "json")
-    assert exc_info.value.bounded is True
-    assert f"First {len(exc_info.value.candidates)} candidates:" in exc_info.value.format_message()
+        wrapped(child, True, False, False, "json")
+    probe.assert_not_called()
+    assert execute.call_args.args[1].query_terms == ("alpha",)
+    assert execute.call_args.kwargs == {"mode": "single", "force": True, "dry_run": True}
 
 
 @pytest.mark.parametrize(("returncode", "expected"), [(0, 0), (7, 7), (-9, 137)])

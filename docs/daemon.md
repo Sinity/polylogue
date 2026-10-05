@@ -1178,3 +1178,11 @@ Pages retain `matched_annotation_count`, `next_offset` and
 The declared `completion` read accepts `source="cwd_prefix"`. It filters distinct paths from the original pinned Index's `session_working_dirs` before applying the requested candidate window, ordered by session count and then path. Windows separators are rendered as `/`, matching the canonical cwd query field. Literal `%` and `_` in a prefix remain path characters. The operation shares the resident read cancellation and snapshot lifetime.
 
 Shell `--cwd-prefix` and cwd query completion use this operation. They never open a local archive. A recent answer may be used from the selected archive's 24-hour advisory cache when the daemon is absent; a successful empty answer removes matching cached values. Cache publication skips a contended lock instead of blocking a TAB press.
+
+## Resident continuation reads
+
+`continue` uses `continuation.route` to resolve the original harness route from session identity and working directories. Printing the command and explicitly executing its argv stay client-side. `continue --candidates` uses `continuation.candidates` and the existing logical-session ranking, preserving repository, cwd, repeated recent paths and the requested window. The result reports `returned` and `limit`, without inventing a population total.
+
+`continue --format json` uses `continuation.context` on one pinned Index/User reader. The original compiler receives messages and the successor recipe's runs, observed-events, context-snapshots and actions queries through the canonical query-unit executor. Selected reads carry the originating selection epoch; a changed view refuses. Missing or ambiguous targets remain explicit, and an absent daemon never opens the local facade. Cancellation controls the original reader and reaches candidate ranking.
+
+Context-image delivery submits the resulting disposable scheduler ledger through the existing `mutation.facade.context_ledger` resident writer, with the compilation observation time. This remains best-effort scheduler telemetry, separate from successful image composition; the read itself does not open a writer. Terminal/stdout resume commands and JSON file delivery retain their existing options.

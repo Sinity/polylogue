@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, GetJsonSchemaHandler, Validat
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import SchemaValidator, core_schema
 
+from polylogue.analysis.resume_contracts import ResumeCandidate
 from polylogue.core.annotation_limits import MAX_ANNOTATION_IMPORT_BYTES
 from polylogue.core.enums import OperationStatus
 from polylogue.operations.machine_receipts import IngestTerminalReceipt
@@ -506,6 +507,22 @@ class ContextImageReadRequest(_OperationPayload):
     include_messages: bool = True
     include_assertions: bool = True
     redact_paths: bool = True
+
+
+class ContinuationRouteRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+    selection_epoch: str | None = Field(default=None, min_length=1)
+
+
+class ContinuationContextRequest(ContinuationRouteRequest):
+    observed_at_ms: int = Field(ge=1)
+
+
+class ContinuationCandidatesRequest(_OperationPayload):
+    repo_path: str = Field(min_length=1)
+    cwd: str | None = None
+    recent_files: list[str] = Field(default_factory=list)
+    limit: int = 10
 
 
 class AssertionClaimsListRequest(_OperationPayload):
@@ -1411,6 +1428,29 @@ class ContextImageReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class ContinuationRouteResult(_OperationResult):
+    status: Literal["supported", "unsupported"]
+    origin: str
+    native_session_id: str
+    argv: list[str]
+    cwd: str | None
+    detail: str | None
+    open_state: Literal["open", "closed", "unknown"]
+    command: str | None
+
+
+class ContinuationCandidatesResult(_OperationResult):
+    candidates: list[ResumeCandidate]
+    returned: int = Field(ge=0)
+    limit: int
+
+    @model_validator(mode="after")
+    def _exact_window(self) -> ContinuationCandidatesResult:
+        if self.returned != len(self.candidates):
+            raise ValueError("returned must equal the candidate window length")
+        return self
+
+
 class CompletionCandidateResult(_OperationPayload):
     value: str
     insert: str
@@ -2063,6 +2103,27 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.context-image.result/v1",
         request_model=ContextImageReadRequest,
         result_model=ContextImageReadResult,
+    ),
+    DaemonOperationSpec(
+        "continuation.route",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationRouteRequest,
+        result_model=ContinuationRouteResult,
+    ),
+    DaemonOperationSpec(
+        "continuation.context",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationContextRequest,
+        result_model=ContextImageReadResult,
+    ),
+    DaemonOperationSpec(
+        "continuation.candidates",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        request_model=ContinuationCandidatesRequest,
+        result_model=ContinuationCandidatesResult,
     ),
     DaemonOperationSpec(
         "user.assertions.list",
