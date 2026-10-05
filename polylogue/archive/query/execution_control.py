@@ -36,7 +36,7 @@ import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Iterator
-from contextlib import ExitStack, asynccontextmanager, contextmanager, suppress
+from contextlib import AbstractContextManager, ExitStack, asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeVar
@@ -721,6 +721,7 @@ async def execute_archive_read(
     controller: QueryAdmissionController | None = None,
     read_timeout: float = 5.0,
     index_path: Path | None = None,
+    read_owner: Callable[[QueryExecutionContext], AbstractContextManager[ArchiveStore]] | None = None,
 ) -> T:
     """Run one archive read off the event loop under admission control.
 
@@ -730,10 +731,15 @@ async def execute_archive_read(
     A worker still settling after that wait retains admission and has its
     eventual exception observed; caller cancellation never releases its lease.
     """
+    if read_owner is not None and index_path is not None:
+        raise ValueError("read_owner cannot be combined with a pinned archive index")
     admission = controller or default_admission_controller()
     reader = InterruptibleSQLiteRead(ctx)
 
     def _admitted_run() -> T:
+        if read_owner is not None:
+            with read_owner(ctx) as store:
+                return work(store)
         return reader.run(archive_root, work, read_timeout=read_timeout, index_path=index_path)
 
     from polylogue.storage.sqlite.async_adapter import default_archive_read_async_adapter

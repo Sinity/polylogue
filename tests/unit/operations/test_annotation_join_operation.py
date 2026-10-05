@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 import sqlite3
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from polylogue.annotations.join_contracts import AnnotationJoinOperationResult
 from polylogue.annotations.schema import AnnotationField, AnnotationSchema
+from polylogue.api import Polylogue
 from polylogue.archive.query.execution_control import QueryCancelledError
 from polylogue.core.enums import AssertionKind, AssertionStatus
 from polylogue.operations.annotation_join import execute_annotation_join
-from polylogue.operations.operation_context import open_operation_read
+from polylogue.operations.operation_context import ConcurrentArchivePublicationError, open_operation_read
 from polylogue.operations.ref_resolution import resolve_ref_against_archive
+from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.daemon_operations import running_daemon_operations
 
 
@@ -152,3 +160,76 @@ def test_resident_join_resolves_user_targets_on_the_original_reader(tmp_path: Pa
     assert joined.result.joined_count == 1
     assert joined.result.rows[0].target_ref == "assertion:neutral-label-0"
     assert joined.result.rows[0].structural["payload_kind"] == "assertion-claim"
+
+
+@pytest.mark.asyncio
+async def test_direct_join_refuses_republication_during_its_single_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = bootstrap_archive_root(tmp_path / "archive")
+    _seed_labels(root)
+    generation = root / ".index-generations" / "neutral-republication"
+    generation.mkdir(parents=True)
+    shutil.copyfile(ArchiveLocation.resolve(root).active_index_path, generation / "index.db")
+    original_pin = ArchiveStore.pin_operation_snapshot
+    handles: list[sqlite3.Connection] = []
+    pins: list[ArchiveStore] = []
+
+    def republish_after_pin(archive: ArchiveStore) -> tuple[dict[str, int], tuple[str, ...]]:
+        result = original_pin(archive)
+        pins.append(archive)
+        assert archive.index_connection is not None
+        handles.append(archive.index_connection)
+        (root / ".index-active-pointer").write_text(str(generation / "index.db"), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(ArchiveStore, "pin_operation_snapshot", republish_after_pin)
+    async with Polylogue(archive_root=root) as poly:
+        with pytest.raises(ConcurrentArchivePublicationError):
+            await poly.join_typed_annotations(schema_id="neutral.labels", schema_version=1, statuses=("active",))
+    assert len(pins) == 1
+    assert ArchiveLocation.resolve(root).active_index_path == generation / "index.db"
+    for handle in handles:
+        with pytest.raises(sqlite3.ProgrammingError):
+            handle.execute("SELECT 1")
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("coordinates cancellation with the actual controlled read worker")
+async def test_direct_join_cancellation_settles_the_original_pinned_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.operations import annotation_join
+
+    root = bootstrap_archive_root(tmp_path / "archive")
+    _seed_labels(root)
+    entered = threading.Event()
+    settled = threading.Event()
+    handles: list[sqlite3.Connection] = []
+
+    def waiting_join(
+        payload: dict[str, object], *, archive: ArchiveStore, checkpoint: Callable[[], None]
+    ) -> dict[str, object]:
+        assert archive.index_connection is not None
+        handles.append(archive.index_connection)
+        entered.set()
+        try:
+            while True:
+                checkpoint()
+                settled.wait(0.01)
+        finally:
+            settled.set()
+
+    monkeypatch.setattr(annotation_join, "execute_annotation_join", waiting_join)
+    async with Polylogue(archive_root=root) as poly:
+        task = asyncio.create_task(
+            poly.join_typed_annotations(schema_id="neutral.labels", schema_version=1, statuses=("active",))
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert settled.is_set()
+    assert len(handles) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        handles[0].execute("SELECT 1")

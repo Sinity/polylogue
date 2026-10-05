@@ -3272,7 +3272,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """Join selected typed annotations to exact structural targets."""
 
         from polylogue.annotations.join_contracts import AnnotationJoinOperationResult, AnnotationStructuralJoinRequest
-        from polylogue.operations.annotation_join import execute_annotation_join
+        from polylogue.operations.annotation_join import execute_annotation_join, open_annotation_join_read
 
         request = AnnotationStructuralJoinRequest(
             schema_id=schema_id,
@@ -3286,7 +3286,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         payload = request.model_dump(mode="json")
 
         def read_join(archive: ArchiveStore) -> dict[str, object]:
-            archive.pin_operation_snapshot()
             return execute_annotation_join(payload, archive=archive, checkpoint=archive.check_operation_read)
 
         response = await run_archive_read(
@@ -3297,6 +3296,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             page_size=limit,
             offset=offset,
             projection="annotation-join",
+            read_owner=lambda context: open_annotation_join_read(_active_archive_root(self.config), context),
         )
         return AnnotationJoinOperationResult.model_validate(response).result
 
