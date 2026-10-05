@@ -522,7 +522,11 @@ def test_hermes_snapshot_uses_opened_profile_after_parent_alias_retargets(tmp_pa
     second = tmp_path / "profile-b"
     for directory in (first, second):
         (directory / "sessions").mkdir(parents=True)
-    document = {"session_id": "shared-session", "messages": [{"role": "user", "content": "captured"}]}
+    document = {
+        "session_id": "shared-session",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "messages": [{"role": "user", "content": "captured"}],
+    }
     (first / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
     (second / "sessions" / "session_shared.json").write_text(json.dumps(document), encoding="utf-8")
     alias = tmp_path / "profile"
