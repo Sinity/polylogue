@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, ParamSpec, TypeVar
 
+from polylogue.core.compute import retain_current_creator_settlement
 from polylogue.core.write_admission import WriteAdmission, active_write_admission
 from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 from polylogue.core.write_lease import (
@@ -1087,16 +1088,26 @@ async def _run_writer_worker(
                 )
 
         terminal: _TerminalWriter | None = None
+        release_creator_settlement: Callable[[], None] | None = None
         if pending():
 
             def settled() -> None:
                 assert terminal is not None
+                if release_creator_settlement is not None:
+                    release_creator_settlement()
                 if not loop.is_closed():
                     with contextlib.suppress(RuntimeError):
                         loop.call_soon_threadsafe(coordinator._terminal_worker_completed, terminal)
 
             terminal = _TerminalWriter(lambda: context.run(cleanup), pending, lambda: context.run(retire), settled)
             coordinator._retain_terminal_worker(terminal, loop)
+            # On a compute creator thread the adapter owns retry and shutdown
+            # for that thread; let them reach this parked terminal as well.
+            release_creator_settlement = retain_current_creator_settlement(
+                terminal.request_settlement,
+                owner_count=len(sql_owners()),
+                failure_types=() if error is None else (type(error).__name__,),
+            )
             refusal = DaemonWriterSettlementError("writer returned with unsettled SQL; retry terminal settlement")
             if error is not None:
                 refusal.__cause__ = error
