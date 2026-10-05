@@ -61,6 +61,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.prepared_replay import apply_prepared_membership_classification
 from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
 
@@ -4286,7 +4287,8 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
         )
     seed_membership_census(tmp_path, [(raw_id, [session])], parser_fingerprint="test-parser")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:decided-unresolved",
             MembershipClassification((), (), (raw_id,)),
             {raw_id: session},
@@ -4376,7 +4378,8 @@ def test_cursor_reconciliation_restores_the_newest_archived_outcome(
         parser_fingerprint="test-parser",
     )
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.apply_raw_membership_classification(
+        apply_prepared_membership_classification(
+            archive,
             "codex-session:newest-outcome",
             MembershipClassification((materialized,), (), (decided,)),
             parsed,

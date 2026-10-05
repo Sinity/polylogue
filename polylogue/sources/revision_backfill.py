@@ -3559,6 +3559,7 @@ def prepare_retained_replay_source(
                 plan.classification,
                 decisions=decisions,
                 decided_at_ms=decided_at_ms,
+                projections=plan.projections,
             )
             selected_membership[logical_key] = dataclasses.replace(
                 plan,

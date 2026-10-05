@@ -6406,6 +6406,7 @@ def _record_membership_decisions(
     *,
     decided_at_ms: int,
     manage_transaction: bool,
+    projections: Mapping[str, SessionRevisionProjection] | None = None,
 ) -> Iterator[tuple[str, bool]]:
     """Use one canonical decision builder and completion read on both hosts.
 
@@ -6437,23 +6438,36 @@ def _record_membership_decisions(
                     # A skipped derived attempt cannot retract settled Source
                     # evidence or issue a new terminal acknowledgement for it.
                     continue
-            values = (
-                decision.value,
-                decided_at_ms,
-                "quarantined"
+            # The decision is about the projection classified now. Enrichment
+            # evidence admitted after the census (a renamed index title) moves
+            # that projection; record the revision this decision is about.
+            projection = None if projections is None else projections.get(raw_id)
+            assignments: dict[str, object] = {
+                "decision": decision.value,
+                "decided_at_ms": decided_at_ms,
+                "revision_authority": "quarantined"
                 if decision in {MembershipDecision.AMBIGUOUS, MembershipDecision.DEFERRED}
                 else "byte_proven",
-                classification.accepted_raw_ids.index(raw_id) if raw_id in classification.accepted_raw_ids else 0,
-                raw_id,
-                logical_source_key,
+                "acquisition_generation": classification.accepted_raw_ids.index(raw_id)
+                if raw_id in classification.accepted_raw_ids
+                else 0,
+            }
+            if projection is not None:
+                assignments["source_revision"] = projection.session_hash.hex()
+                assignments["normalized_content_hash"] = projection.session_hash
+                assignments["message_count"] = len(projection.message_hashes)
+            # Placeholders bind in statement order: assignments, then the key.
+            rendered = tuple(
+                producer.binding_literal(value) for value in (*assignments.values(), raw_id, logical_source_key)
             )
-            rendered = tuple(producer.binding_literal(value) for value in values)
             expressions = tuple(expression for expression, _ in rendered)
             parameters = tuple(value for _, operands in rendered for value in operands)
+            set_clause = ",".join(
+                f"{column}={expression}" for column, expression in zip(assignments, expressions, strict=False)
+            )
             sql = (
-                f"UPDATE raw_session_memberships SET decision={expressions[0]},decided_at_ms={expressions[1]},"
-                f"revision_authority={expressions[2]},acquisition_generation={expressions[3]} "
-                f"WHERE raw_id={expressions[4]} AND logical_source_key={expressions[5]}"
+                f"UPDATE raw_session_memberships SET {set_clause} "
+                f"WHERE raw_id={expressions[-2]} AND logical_source_key={expressions[-1]}"
             )
             producer.membership_decision_write(raw_id, logical_source_key, sql, parameters)
             updated_raw_ids.append(raw_id)
@@ -6470,6 +6484,7 @@ def prepare_membership_classification_source(
     *,
     decisions: Mapping[str, MembershipDecision],
     decided_at_ms: int,
+    projections: Mapping[str, SessionRevisionProjection] | None = None,
 ) -> None:
     """Stage the canonical Source outcome after the parent resolves its head.
 
@@ -6485,6 +6500,7 @@ def prepare_membership_classification_source(
         decisions,
         decided_at_ms=decided_at_ms,
         manage_transaction=False,
+        projections=projections,
     ):
         check_compute_cancelled()
         if complete:
@@ -6702,6 +6718,22 @@ def _apply_membership_head_plan(index: sqlite3.Connection, logical_source_key: s
             pass
 
 
+def _retire_superseded_membership_applications(
+    conn: sqlite3.Connection, raw_id: str, logical_source_key: str, source_revision: str
+) -> None:
+    """Drop applications made for a membership projection that has moved.
+
+    A membership revision is the semantic projection, which enrichment admitted
+    after the census (a renamed index title) can change. Applications decided
+    for the earlier projection describe no current evidence, and a rebuild from
+    current evidence would not produce them.
+    """
+    conn.execute(
+        "DELETE FROM raw_revision_applications WHERE raw_id=? AND logical_source_key=? AND source_revision!=?",
+        (raw_id, logical_source_key, source_revision),
+    )
+
+
 def apply_prepared_membership_index(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
@@ -6749,6 +6781,9 @@ def apply_prepared_membership_index(
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
+            _retire_superseded_membership_applications(
+                store._conn, raw_id, logical_source_key, projection.session_hash.hex()
+            )
             record_revision_application_sync(
                 store._conn,
                 RevisionApplicationReceipt(
@@ -6819,6 +6854,9 @@ def apply_prepared_membership_index(
         )
         for generation, raw_id in enumerate(cohort_raw_ids):
             projection = projections_by_raw_id[raw_id]
+            _retire_superseded_membership_applications(
+                store._conn, raw_id, logical_source_key, projection.session_hash.hex()
+            )
             decision = decisions.get(raw_id, MembershipDecision.APPLIED)
             is_ambiguous = decision is MembershipDecision.AMBIGUOUS
             record_revision_application_sync(
