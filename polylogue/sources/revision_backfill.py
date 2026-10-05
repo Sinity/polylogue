@@ -3170,6 +3170,41 @@ def prepare_revision_source_census(
         outcome = _prepared_retained_outcome(evidence_reader, raw_id, prepared_inputs)
         provider, _hash, source_path, revision_kind, _size = evidence_reader.raw_revision_descriptor(raw_id)
         observed_at_ms = evidence_reader.raw_revision_observation_order(raw_id)[0]
+        if isinstance(outcome, UnsupportedRetainedJsonShapeError):
+            # Complete input with no recognized session shape (an empty
+            # export, say) is a settled no-session observation: typed
+            # terminal evidence and a non-session census, never a retry.
+            _record_raw_failure_evidence(
+                producer,
+                raw_id,
+                provider=provider,
+                source_path=source_path,
+                source_index=source_index,
+                acquired_at_ms=observed_at_ms,
+                kind=(
+                    RawFailureEvidenceKind.TERMINAL_UNKNOWN_EXPORT_NO_SESSION
+                    if provider is Provider.UNKNOWN
+                    else RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE
+                ),
+                manage_transaction=False,
+            )
+            _apply_source_raw_state_update(
+                producer,
+                raw_id,
+                state=_raw_parse_failure_state(provider, outcome),
+                manage_transaction=False,
+            )
+            replace_raw_membership_census(
+                seal,
+                raw_id,
+                [],
+                parser_fingerprint=raw_authority_parser_fingerprint(),
+                censused_at_ms=0,
+                detail=str(outcome),
+                retire_full_revision_governance=revision_kind is RawRevisionKind.FULL,
+                revision_authority=None,
+            )
+            return
         if isinstance(outcome, Exception):
             if _persist_terminal_raw_refusal(
                 producer,
