@@ -91,10 +91,23 @@ def _insert_message(
     conn.execute(
         """
         INSERT INTO messages (
-            session_id, native_id, position, role, message_type, model_name, content_hash, occurred_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            session_id, native_id, position, role, message_type, model_name, content_hash, content_address,
+            occurred_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (session_id, native_id, position, "assistant", "message", model_name, _HASH, 1_767_225_600_000 + position),
+        # The writer always stores a content address; lineage signature reads
+        # compose a child against its parent's stored addresses.
+        (
+            session_id,
+            native_id,
+            position,
+            "assistant",
+            "message",
+            model_name,
+            _HASH,
+            hashlib.sha256(f"{session_id}:{native_id}".encode()).digest(),
+            1_767_225_600_000 + position,
+        ),
     )
     return str(
         conn.execute(
