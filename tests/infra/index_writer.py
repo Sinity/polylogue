@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from builtins import BaseExceptionGroup
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any
@@ -103,6 +103,7 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
     """
     import tempfile
 
+    from polylogue.core.stage_admission import stage_write_admission
     from polylogue.sources.prepared_jsonl import PreparedJsonl
     from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
     from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
@@ -147,8 +148,17 @@ def write_fixture_ingest_payload(conn: sqlite3.Connection, payload: Any, **kwarg
                 kwargs["source_conn"] = seal.observer("source")
             _prepare_ingest_payloads(index, kwargs["source_conn"], (payload,))
             seal.validate_observers_current()
-            with write_lease("test.fixture.ingest", archive_root=root):
+
+            # Prepared Blob reservations are prepared lease-free on their
+            # reference seal; each page's publication is admitted as a stage
+            # write that holds the lease, as the daemon's writer admits it.
+            def leased_stage_write(actor: str, work: Callable[[], Any]) -> Any:
+                with write_lease(actor, archive_root=root):
+                    return work()
+
+            with stage_write_admission(leased_stage_write):
                 artifact.publish_blobs(reference_seal=seal)
+            with write_lease("test.fixture.ingest", archive_root=root):
                 with seal.mutation_scope(conn):
                     result = _lower_ingest_session(conn, payload, **kwargs)
                 with (

@@ -1334,7 +1334,10 @@ def seed_attachment_library_lineage_archive(root: Path) -> dict[str, str]:
     foreign.add_attachment("foreign", message_id="foreign", display_name="foreign.txt")
     foreign.save()
     parent_id, child_id = parent.native_session_id(), child.native_session_id()
-    with write_lease("test.attachment-library-lineage"), ArchiveStore.open_existing(root, read_only=False) as archive:
+    with (
+        write_lease("test.attachment-library-lineage", archive_root=root),
+        ArchiveStore.open_existing(root, read_only=False) as archive,
+    ):
         message = archive._conn.execute(
             "SELECT message_id,content_address FROM messages WHERE session_id=? ORDER BY position LIMIT 1",
             (parent_id,),
