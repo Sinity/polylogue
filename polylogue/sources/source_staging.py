@@ -799,14 +799,12 @@ def _bound_byte_request(binding: SourceInputBinding, operation: str) -> dict[str
 def preflight_bound_bytes(
     binding: SourceInputBinding,
     *,
-    label: str,
     check_stop: Callable[[], None],
 ) -> dict[str, Any]:
     """Return shape evidence only after the accepted byte reader has settled."""
     from polylogue.sources.sqlite_export import _ProgressSink, source_byte_page
 
     request = _bound_byte_request(binding, "preflight_bytes")
-    request["preflight_label"] = label
     request["progress"] = True
     with source_byte_page() as reader:
         result = reader.exchange(request, _ProgressSink(check_stop))

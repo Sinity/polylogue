@@ -26,6 +26,7 @@ from polylogue.sources.parsers.chatgpt_sidecars import (
     parse_library_files,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageStore
+from polylogue.storage import io_phase_metrics
 
 
 def test_sidecar_enrichment_updates_prepared_rows_without_collecting(tmp_path: Path) -> None:
@@ -483,7 +484,7 @@ def test_asset_index_constructor_settles_or_retains_actual_sql_owner(
     original_connect = sqlite3.connect
     fail_closes = [failed_close]
 
-    class FaultConnection(sqlite3.Connection):
+    class FaultConnection(io_phase_metrics._MeasuredConnection):
         def execute(self, sql: str, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
             if sql.startswith(failed_statement):
                 raise sqlite3.OperationalError("synthetic asset setup fault")
@@ -666,7 +667,7 @@ def test_asset_lookup_failed_native_close_retains_index_until_actual_settlement(
     original_connect = sqlite3.connect
     fail_closes = [True]
 
-    class FaultReader(sqlite3.Connection):
+    class FaultReader(io_phase_metrics._MeasuredConnection):
         def close(self) -> None:
             if fail_closes[0]:
                 raise sqlite3.OperationalError("synthetic asset lookup close fault")
