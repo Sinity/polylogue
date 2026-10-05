@@ -24,9 +24,9 @@ from polylogue.sources.parsers.base import (
 )
 from polylogue.storage.derived.session.usage_rollup import reconcile_session_usage_rollups
 from polylogue.storage.io_phase_metrics import connect_measured
-from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write
+from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 from tests.infra.archive_templates import bootstrapped_tier_path
-from tests.infra.index_writer import write_fixture_index_session
+from tests.infra.index_writer import write_fixture_index_session, write_fixture_prepared_session
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -83,19 +83,13 @@ def _write(
     merge_append: bool = False,
 ) -> str:
     if route == "prepared":
-        prepared = prepare_session_write(conn, session, merge_append=merge_append, raw_id=raw_id)
-        assert prepared.cross_acquisition_union is not None, "the prepared route must carry a union"
-        try:
-            return write_fixture_index_session(
-                conn,
-                session,
-                content_hash=prepared.input_content_hash.hex(),
-                raw_id=raw_id,
-                merge_append=merge_append,
-                prepared_write=prepared,
-            )
-        finally:
-            prepared.close()
+
+        def carries_union(prepared: PreparedSessionWrite) -> None:
+            assert prepared.cross_acquisition_union is not None, "the prepared route must carry a union"
+
+        return write_fixture_prepared_session(
+            conn, session, inspect=carries_union, raw_id=raw_id, merge_append=merge_append
+        )
     return write_fixture_index_session(conn, session, raw_id=raw_id, merge_append=merge_append)
 
 

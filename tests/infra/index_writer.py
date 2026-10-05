@@ -418,3 +418,42 @@ def prepared_fixture_index_batch(
     finally:
         if seal is None or not seal.publication_lifetime_bound:
             exclusion.close()
+
+
+def write_fixture_prepared_session(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    inspect: Callable[[PreparedSessionWrite], None] | None = None,
+    **kwargs: Any,
+) -> str:
+    """Prepare one write on an original seal, let the law inspect it, then publish.
+
+    For laws about the prepared carrier itself (its union, its resolved root):
+    preparation reads the seal's original Source snapshot and publication runs
+    under that seal's admitted Index scope, as ``write_fixture_index_session``
+    does internally. ``kwargs`` are the write's options (``raw_id``,
+    ``merge_append``, ``force_replace``, ``content_hash``).
+    """
+    path = index_path_for_connection(conn)
+    root = path.parent
+    with PreparedIndexMutation(path, archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            prepared = prepare_session_write(
+                seal.observer("index"),
+                session,
+                merge_append=bool(kwargs.get("merge_append", False)),
+                source_read=PreparedSessionSourceRead(
+                    seal, blob_store=blob_store_for_connection(seal.observer("source"))
+                ),
+                raw_id=kwargs.get("raw_id"),
+                force_replace=bool(kwargs.get("force_replace", False)),
+                before_input=seal.before_index_input,
+            )
+        try:
+            if inspect is not None:
+                inspect(prepared)
+            with _fixture_writer_admission(conn, "test.fixture.prepared.publish", root), seal.mutation_scope(conn):
+                return write_fixture_index_session(conn, session, prepared_write=prepared, **kwargs)
+        finally:
+            prepared.close()

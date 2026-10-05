@@ -15,6 +15,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
@@ -37,20 +38,26 @@ def _seed_archive(
     """
     db_path = db_setup(workspace_env)
     ids: list[str] = []
-    with ArchiveStore(workspace_env["archive_root"]) as archive:
-        for i in range(count):
-            provider = providers[i % len(providers)]
-            builder = (
-                SessionBuilder(db_path, f"{id_prefix}-{i:04d}").provider(provider).title(f"Scale Test Session {i}")
-            )
-            for j in range(msgs_per_conv):
-                builder.add_message(
-                    role="user" if j % 2 == 0 else "assistant",
-                    text=f"Message {j} in session {i}",
+
+    def write() -> None:
+        with ArchiveStore(workspace_env["archive_root"]) as archive:
+            for i in range(count):
+                provider = providers[i % len(providers)]
+                builder = (
+                    SessionBuilder(db_path, f"{id_prefix}-{i:04d}").provider(provider).title(f"Scale Test Session {i}")
                 )
-            parsed = _record_to_parsed_session(builder.conv, builder.messages, builder.attachments)
-            write_index_session(archive, parsed)
-            ids.append(builder.native_session_id())
+                for j in range(msgs_per_conv):
+                    builder.add_message(
+                        role="user" if j % 2 == 0 else "assistant",
+                        text=f"Message {j} in session {i}",
+                    )
+                parsed = _record_to_parsed_session(builder.conv, builder.messages, builder.attachments)
+                write_index_session(archive, parsed)
+                ids.append(builder.native_session_id())
+
+    # The budget laws are async; the synchronous writer lease may not block
+    # their running event loop, so seeding runs before measurement, off it.
+    run_off_event_loop(write)
     return ids
 
 

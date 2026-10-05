@@ -92,7 +92,7 @@ def test_session_kind_follows_a_later_resolved_subagent_link(tmp_path: Path) -> 
 def _block_columns() -> dict[str, int]:
     names = ("tool_outcome", "tool_result_is_error", "tool_result_exit_code", "tool_result_outcome_unknown_reason")
     base = ("message_id", "session_id", "position", "content_hash", "block_type", "text", "tool_name")
-    extra = ("tool_input", "semantic_type", "media_type", "language")
+    extra = ("tool_input", "semantic_type", "semantic_extra_json", "media_type", "language")
     return {name: index for index, name in enumerate(base + extra + names)}
 
 
