@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
 from polylogue.api import Polylogue
@@ -88,12 +88,18 @@ async def test_command_shapes_repository_projection_and_paging_reach_api_cli_mcp
                         for row in result["command_shapes"]
                     ] == [(shape, repository, 2)]
             assert await poly.list_command_shape_usage(CommandShapeUsageQuery(repository="absent")) == []
-    with cli_daemon_archive(root, monkeypatch):
-        cli_result = CliRunner().invoke(
-            cli,
-            ["analyze", "insights", "command-shapes", "--repository", "B", "--limit", "1", "--format", "json"],
-            catch_exceptions=False,
-        )
+
+    def run_cli() -> Result:
+        # The CLI daemon's bootstrap takes the synchronous lease, which must
+        # not block this test's event loop.
+        with cli_daemon_archive(root, monkeypatch):
+            return CliRunner().invoke(
+                cli,
+                ["analyze", "insights", "command-shapes", "--repository", "B", "--limit", "1", "--format", "json"],
+                catch_exceptions=False,
+            )
+
+    cli_result = run_off_event_loop(run_cli)
     assert cli_result.exit_code == 0
     payload = extract_json_result(cli_result.output)
     cli_rows = payload["command_shapes"]
