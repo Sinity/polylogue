@@ -3122,7 +3122,9 @@ async def test_process_ingest_batch_refuses_sinex_publication_before_the_retaine
     _publication_mode(monkeypatch, mode)
     calls: list[tuple[str, ...]] = []
 
-    async def owner_must_not_run(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+    async def owner_must_not_run(
+        raw_ids: Sequence[str], **_refusal_handlers: object
+    ) -> tuple[PreparedRevisionReplayResult, ...]:
         calls.append(tuple(raw_ids))
         return ()
 
