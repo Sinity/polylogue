@@ -2715,6 +2715,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-a", uuid="a-turn-1", timestamp="2026-07-18T00:00:00Z"),
             ],
         )
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # Growth batch spans a session boundary -- the real shared-file shape.
@@ -2724,6 +2725,7 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
                 _atof_record(session_id="atof-session-b", uuid="b-turn-1", timestamp="2026-07-18T00:00:02Z"),
             ):
                 handle.write(json.dumps(record) + "\n")
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
 
         # fs1.14: a resolvable profile root (the watched directory) now
@@ -2742,12 +2744,32 @@ async def test_live_append_atof_shared_file_multi_session_boundary_retains_all_e
         # Idempotent replay: re-ingesting the SAME growth batch bytes again
         # (e.g. a poll cycle firing before the cursor advanced, or a daemon
         # restart replaying its tail) must not duplicate or lose anything.
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         await ingest_files_with_owners(processor, [source_path], emit_event=False)
         replayed = _atof_event_uuids_by_session(workspace_env["archive_root"])
         assert replayed == event_uuids_by_session
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         assert processor.require_cursor_authority() is None
     finally:
         await archive.close()
+
+
+async def _inspect_accepted_frontier(archive_root: Path) -> None:
+    """Run the daemon's accepted-frontier inspection convergence stage.
+
+    Source selection refuses until the frontier is inspected, and the daemon
+    runs that inspection between live passes, never inside one.
+    """
+    from polylogue.storage.frontier_inspection import inspect_prepared_raw_authority_frontier
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        await owner.run_convergence_sync(
+            "test.live-watcher.frontier",
+            inspect_prepared_raw_authority_frontier,
+            archive_root,
+            input_demand=owner._compute_adapter.amend_current_input_demand,
+        )
 
 
 def _browser_capture_payload(*, provider_session_id: str, assistant_turn_id: str, updated_at: str) -> dict[str, object]:
@@ -2883,9 +2905,11 @@ async def test_live_full_ingest_over_ambiguous_membership_preserves_durable_debt
             ),
             encoding="utf-8",
         )
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         second = await ingest_files_with_owners(processor, [source_path], emit_event=False)
         assert second.succeeded_file_count == 1, "ambiguous membership debt is not retried as a file failure (#3282)"
         assert second.failed_file_count == 0
+        await _inspect_accepted_frontier(workspace_env["archive_root"])
         assert processor.require_cursor_authority() is None
 
         record = cursor.get_record(source_path)
