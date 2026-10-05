@@ -94,43 +94,36 @@ def _run(coro: Coroutine[None, None, int]) -> int:
 
 async def _acquire(archive_root: Path, spool_root: Path) -> int:
     from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
-    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
     from polylogue.sources.live.watcher import LiveWatcher
-    from tests.infra.live_ingest import prepared_live_convergence_owner
+    from tests.infra.raw_owner_routes import live_owner_set
 
     sources = _carrier_sources(spool_root)
-    # Carrier bytes are acquired through the daemon's admitted writer and its
-    # canonical raw owner -- the production route -- not an unowned watcher,
-    # whose writes the archive custody refuses.
-    coordinator = DaemonWriteCoordinator(archive_root=archive_root)
-    async with prepared_live_convergence_owner(archive_root, write_coordinator=coordinator) as owner:
-        watcher = LiveWatcher(
-            _ArchiveRootOwner(archive_root),
-            sources,
-            write_coordinator=coordinator,
-            append_runner=owner.ingest_append_plans,
-            retained_runner=owner.ingest_retained_raw_ids,
-            convergence_runner=owner.run_convergence_sync,
-        )
-        context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
-        dispatcher = FairIntakeDispatcher(
-            tuple(
-                IntakeClassSpec(
-                    name=f"hook_carrier:{source.name}",
-                    adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+    # Carrier acquisition writes the Source tier, so the watcher runs on the
+    # daemon's own writer and owners, exactly as ``polylogued run`` wires it.
+    async with live_owner_set(archive_root) as owners:
+        watcher = LiveWatcher(_ArchiveRootOwner(archive_root), sources, **owners.watcher_kwargs())
+        try:
+            context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+            dispatcher = FairIntakeDispatcher(
+                tuple(
+                    IntakeClassSpec(
+                        name=f"hook_carrier:{source.name}",
+                        adapter=FileIntakeAdapter(context, source, class_name=f"hook_carrier:{source.name}"),
+                    )
+                    for source in sources
                 )
-                for source in sources
             )
-        )
-        admitted = 0
-        for _pass in range(_MAX_PASSES):
-            report = await dispatcher.run_once()
-            moved = sum(int(entry.admitted) for entry in report.classes)
-            admitted += moved
-            if not moved:
-                break
-        return admitted
+            admitted = 0
+            for _pass in range(_MAX_PASSES):
+                report = await dispatcher.run_once()
+                moved = sum(int(entry.admitted) for entry in report.classes)
+                admitted += moved
+                if not moved:
+                    break
+            return admitted
+        finally:
+            watcher.stop()
 
 
 def acquire_hook_carriers(archive_root: Path, *, spool_root: Path | None = None) -> int:

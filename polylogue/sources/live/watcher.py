@@ -41,6 +41,7 @@ from polylogue.sources.live.batch import (
     fingerprint_file,
 )
 from polylogue.sources.live.batch_support import (
+    LiveRetainedRunner,
     _AppendPlan,
     _AppendResult,
     _archive_blob_exists,
@@ -55,6 +56,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import (
     CursorObservationRebase,
+    CursorPathAuthority,
     CursorRecord,
     CursorStore,
 )
@@ -62,7 +64,6 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
 from polylogue.sources.source_staging import SourceInputBinding, bind_source_input
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -391,7 +392,7 @@ class LiveWatcher:
         session_profile_callback: SessionProfileConvergenceCallback | None = None,
         append_runner: Callable[[Any, list[_AppendPlan]], Awaitable[_AppendResult]] | None = None,
         convergence_runner: Callable[..., Awaitable[Any]] | None = None,
-        retained_runner: Callable[[Sequence[str]], Awaitable[Sequence[PreparedRevisionReplayResult]]] | None = None,
+        retained_runner: LiveRetainedRunner | None = None,
         intake_wakeup: asyncio.Event | None = None,
     ) -> None:
         self._polylogue = polylogue
@@ -428,7 +429,10 @@ class LiveWatcher:
             converger=converger,
             stop_requested=self._stop.is_set,
             event_emitter=event_emitter,
-            sync_runner=self._run_writer_sync,
+            # Without a write coordinator there is no writer to run Source
+            # bodies on; the processor then refuses them instead of running
+            # them unleased.
+            sync_runner=self._run_writer_sync if write_coordinator is not None else None,
             append_runner=append_runner,
             convergence_runner=convergence_runner,
             retained_runner=retained_runner,
@@ -443,9 +447,8 @@ class LiveWatcher:
         *args: Any,
         **kwargs: Any,
     ) -> Any:
-        """Run blocking watcher writes without joining the loop executor at exit."""
-        if self._write_coordinator is None:
-            return await asyncio.to_thread(function, *args, **kwargs)
+        """Run blocking watcher writes on the coordinator's writer."""
+        assert self._write_coordinator is not None, "the writer runner exists only with a write coordinator"
         return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
 
     @property
@@ -475,7 +478,7 @@ class LiveWatcher:
                 backlog = self._batch_processor._raw_retention_backlog_paths(exclude=set())
                 if not backlog or backlog == previous:
                     return
-                await self._run_writer_sync(
+                await self._batch_processor._run_source_writer(
                     "watcher.live_ingest.raw_compaction_retry",
                     self._batch_processor._compact_superseded_raw_snapshots,
                     [],
@@ -821,7 +824,7 @@ class LiveWatcher:
                     cursor.byte_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
+                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
                 return False
             prefix_hash = cursor_prefix_hash(cursor.tail_hash)
             if prefix_hash is None:
@@ -892,7 +895,7 @@ class LiveWatcher:
                     stat.st_size - cursor.byte_offset,
                     cursor.byte_offset,
                 )
-                self._cursor.mark_failed(path, failed_stat=stat)
+                self._cursor.mark_failed(path, authority=CursorPathAuthority.of_record(cursor), failed_stat=stat)
                 return False
             return not self._defer_incomplete_jsonl_append(path, stat=stat, cursor=cursor)
         if cursor.content_fingerprint is None:
@@ -978,6 +981,7 @@ class LiveWatcher:
         updated = self._cursor.set(
             path,
             stat.st_size,
+            authority=CursorPathAuthority.observe(path),
             byte_offset=0,
             last_complete_newline=0,
             parser_fingerprint=_PARSER_FINGERPRINT,
@@ -1306,10 +1310,14 @@ class LiveWatcher:
                 tail_hash,
                 ctime_ns=stat.st_ctime_ns,
             )
+        authority = CursorPathAuthority.observe(path)
+        if authority.captured_profile_key != captured_profile_key:
+            # The archived raw was captured under another profile namespace.
+            return _ArchivedCursorReconciliation.INCOMPATIBLE
         self._cursor.set(
             path,
             archived_size,
-            captured_profile_key=captured_profile_key,
+            authority=authority,
             byte_offset=last_complete_newline,
             last_complete_newline=last_complete_newline,
             parser_fingerprint=_PARSER_FINGERPRINT,
