@@ -3808,7 +3808,7 @@ def apply_raw_membership_classification(
                     # own output after parser or representative drift. A
                     # persisted row owned by a raw outside the cohort still
                     # requires separate authority.
-                    persisted_raw = None if persisted_session is None else str(persisted_session[0])
+                    persisted_raw = _persisted_owner_raw(persisted_session)
                     persisted_head_authority = (
                         _raw_revision_authority(store, persisted_raw)
                         if persisted_raw is not None and persisted_raw not in classified_raw_ids
@@ -3855,7 +3855,7 @@ def apply_raw_membership_classification(
                     if yield_to_head_raw_id is None and (
                         existing_raw_id not in classified_raw_ids
                         or (
-                            persisted_session is not None
+                            persisted_raw is not None
                             and persisted_raw != existing_raw_id
                             and persisted_raw not in classified_raw_ids
                         )
@@ -3868,7 +3868,7 @@ def apply_raw_membership_classification(
                             f"cohort(accepted={classification.accepted_raw_ids!r}, "
                             f"equivalent={classification.equivalent_raw_ids!r}, "
                             f"ambiguous={classification.ambiguous_raw_ids!r}) "
-                            f"persisted_session_raw={None if persisted_session is None else str(persisted_session[0])!r}"
+                            f"persisted_session_raw={persisted_raw!r}"
                         )
                     # polylogue-miwv: #3211 removed a byte-governance
                     # refusal here on the theory that this branch is only
@@ -6587,6 +6587,19 @@ def prepare_membership_head_plan(
     )
 
 
+def _persisted_owner_raw(persisted_session: Sequence[object] | None) -> str | None:
+    """The raw that owns a persisted session row, if any.
+
+    ``sessions.raw_id`` is nullable: a row without one makes no ownership
+    claim, so it cannot be "owned by a raw outside the cohort". Coercing the
+    NULL to text produced the raw ID ``'None'`` and refused a cohort's own
+    replacement.
+    """
+    if persisted_session is None or persisted_session[0] is None:
+        return None
+    return str(persisted_session[0])
+
+
 def prepare_membership_head_plan_from_inputs(
     source_read: MembershipHeadSourceRead,
     logical_source_key: str,
@@ -6615,7 +6628,7 @@ def prepare_membership_head_plan_from_inputs(
     # quarantined captures. A scalar semantic frontier cannot prove dominance.
     if existing_raw_id not in classified_raw_ids and chain_head_authority not in (None, "quarantined"):
         return MembershipHeadPlan(existing_head, existing_raw_id, None)
-    persisted_raw = None if persisted_session is None else str(persisted_session[0])
+    persisted_raw = _persisted_owner_raw(persisted_session)
     persisted_head_authority = (
         source_read.raw_revision_authority(persisted_raw)
         if persisted_raw is not None and persisted_raw not in classified_raw_ids
@@ -6637,7 +6650,7 @@ def prepare_membership_head_plan_from_inputs(
         )
         return MembershipHeadPlan(existing_head, persisted_raw, restored)
     if existing_raw_id not in classified_raw_ids or (
-        persisted_session is not None and persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids
+        persisted_raw is not None and persisted_raw != existing_raw_id and persisted_raw not in classified_raw_ids
     ):
         raise MembershipReplayConflictError(
             "membership replay cannot retire an unrelated accepted head: "
