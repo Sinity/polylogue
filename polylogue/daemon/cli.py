@@ -3104,7 +3104,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         compute_adapter=promotion_compute,
                     )
 
-                    from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
+                    from polylogue.operations.canonical_archive_ingest import live_sqlite_capture_stage
 
                     watcher = LiveWatcher(
                         polylogue,
@@ -3112,7 +3112,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         converger=converger,
                         event_emitter=functools.partial(_emit_live_batch_event, archive_root_path=archive_root_path),
                         write_coordinator=write_coordinator,
-                        sqlite_capture_stage=LiveSQLiteCaptureStage(compute_adapter=promotion_compute),
+                        sqlite_capture_stage=live_sqlite_capture_stage(promotion_compute),
                         embedding_owner=embedding_callback,
                         session_profile_callback=session_profile_callback,
                         append_runner=raw_observation_owner.ingest_append_plans

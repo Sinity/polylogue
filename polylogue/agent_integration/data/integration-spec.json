@@ -127,7 +127,7 @@
       "token": "beads-issue"
     },
     {
-      "meaning": "Grok account-data exports (lab: xAI)",
+      "meaning": "Grok account exports and original endpoint bundles (lab: xAI)",
       "token": "grok-export"
     },
     {

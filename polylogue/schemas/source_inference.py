@@ -26,7 +26,7 @@ from datetime import UTC
 from functools import partial
 from itertools import chain, islice
 from pathlib import Path
-from typing import BinaryIO, Literal, cast, overload
+from typing import IO, Literal, cast, overload
 from uuid import UUID
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
@@ -846,7 +846,7 @@ def _iter_sized_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[_SizedPayloa
 
 
 def _iter_document_payloads(
-    open_handle: Callable[[], BinaryIO],
+    open_handle: Callable[[], IO[bytes]],
     path_name: str,
     *,
     byte_count: int,

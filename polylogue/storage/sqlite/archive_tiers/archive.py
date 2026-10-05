@@ -110,7 +110,6 @@ from polylogue.archive.query.predicate import (
 from polylogue.archive.query.spec import split_csv
 from polylogue.archive.revision_authority import (
     WORK_EVENT_RAW_ID_PREFIX,
-    RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
 )
@@ -215,15 +214,12 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     _flush_pending_raw_parse_states,
     _index_parsed_for_retained_raw,
     _promote_contiguous_append_evidence,
-    _raw_parse_failure_state,
-    _raw_parse_success_state,
     _raw_revision_authority,
     _raw_revision_candidates,
     _raw_revision_matches_segments,
     _raw_revision_payload_digest_and_size,
     _raw_revision_source_path_has_divergent_evidence,
     _write_parsed_precedence_result,
-    admit_raw_and_parsed_result,
     admit_raw_artifact_blob_ref,
     admit_raw_artifact_payload,
     admit_work_event_raw,
@@ -271,11 +267,8 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     raw_revision_replay_plan,
     record_raw_failure_evidence,
     release_provisional_full_revisions,
-    replace_raw_membership_census,
     write_parsed_for_retained_raw,
     write_parsed_for_retained_raw_result,
-    write_raw_and_parsed,
-    write_raw_and_parsed_result,
     write_raw_blob_ref,
     write_raw_payload,
 )
@@ -2601,44 +2594,6 @@ class ArchiveStore:
         )
 
     @_archive_mutator
-    def write_raw_and_parsed(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        canonical_source_path: str | None = None,
-        captured_profile_key: str | None = None,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> tuple[str, str]:
-        self._require_writable("write source.db and index.db")
-        return write_raw_and_parsed(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            source_index=source_index,
-            raw_id=raw_id,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
-        )
-
-    @_archive_mutator
     def write_raw_payload(
         self,
         *,
@@ -3155,34 +3110,6 @@ class ArchiveStore:
     def raw_payload_sizes(self, raw_ids: Sequence[str]) -> dict[str, int]:
         return raw_payload_sizes(self, raw_ids)
 
-    @_archive_mutator
-    def replace_raw_membership_census(
-        self,
-        raw_id: str,
-        sessions: Sequence[ParsedSession] | None,
-        *,
-        parser_fingerprint: str,
-        censused_at_ms: int,
-        revision_authority: RawRevisionAuthority | None,
-        detail: str = "",
-        retire_full_revision_governance: bool = False,
-        projections: Sequence[SessionRevisionProjection] | None = None,
-        manage_transaction: bool = True,
-    ) -> None:
-        self._require_writable("replace source.db membership census")
-        return replace_raw_membership_census(
-            self,
-            raw_id,
-            sessions,
-            parser_fingerprint=parser_fingerprint,
-            censused_at_ms=censused_at_ms,
-            detail=detail,
-            retire_full_revision_governance=retire_full_revision_governance,
-            projections=projections,
-            manage_transaction=manage_transaction,
-            revision_authority=revision_authority,
-        )
-
     def convertible_full_revision_raw_ids(self, logical_source_key: str) -> tuple[str, ...]:
         return convertible_full_revision_raw_ids(self, logical_source_key)
 
@@ -3434,101 +3361,6 @@ class ArchiveStore:
             bulk_fts=bulk_fts,
             bulk_build=bulk_build,
             defer_fts_rebuild=defer_fts_rebuild,
-        )
-
-    @staticmethod
-    def _raw_parse_success_state(provider: Provider) -> RawSessionStateUpdate:
-        return _raw_parse_success_state(provider)
-
-    @staticmethod
-    def _raw_parse_failure_state(provider: Provider, exc: BaseException) -> RawSessionStateUpdate:
-        return _raw_parse_failure_state(provider, exc)
-
-    @_archive_mutator
-    def write_raw_and_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        canonical_source_path: str | None = None,
-        captured_profile_key: str | None = None,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> ArchiveRawParsedWriteResult:
-        self._require_writable("write source.db and index.db evidence")
-        return write_raw_and_parsed_result(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            source_index=source_index,
-            raw_id=raw_id,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
-        )
-
-    @_archive_mutator
-    def admit_raw_and_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        payload: bytes,
-        source_path: str,
-        canonical_source_path: str | None = None,
-        captured_profile_key: str | None = None,
-        acquired_at_ms: int,
-        file_mtime_ms: int | None = None,
-        logical_source_key: str,
-        source_index: int = 0,
-        raw_id: str | None = None,
-        shared_raw: bool = False,
-        stage_timings_s: dict[str, float] | None = None,
-        stage_timing_prefix: str = "append",
-        manage_transaction: bool = True,
-        blob_publication_receipt_id: str | None = None,
-        finalize_raw_parse: bool = True,
-    ) -> ArchiveRawParsedWriteResult:
-        """Write raw bytes through the raw-admission chokepoint, then index.
-
-        See :func:`polylogue.storage.sqlite.archive_tiers.revision_governance.admit_raw_and_parsed_result`.
-        Restricted to first-observation callers (no prior head exists for
-        ``logical_source_key``); use :meth:`write_raw_and_parsed_result` for
-        callers with revision-chain/dedup semantics of their own.
-        """
-        self._require_writable("admit source.db and index.db evidence")
-        return admit_raw_and_parsed_result(
-            self,
-            session,
-            payload=payload,
-            source_path=source_path,
-            canonical_source_path=canonical_source_path,
-            captured_profile_key=captured_profile_key,
-            acquired_at_ms=acquired_at_ms,
-            file_mtime_ms=file_mtime_ms,
-            logical_source_key=logical_source_key,
-            source_index=source_index,
-            raw_id=raw_id,
-            shared_raw=shared_raw,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            blob_publication_receipt_id=blob_publication_receipt_id,
-            finalize_raw_parse=finalize_raw_parse,
         )
 
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:

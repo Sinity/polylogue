@@ -14,8 +14,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from polylogue.core.evidence import Measured, Unavailable
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.io_phase_metrics import connection_cursor
+from polylogue.storage.tier_access import capture_sqlite_read
 
 
 #: An attachment the writer retained with an ambiguous owner is unreferenced by
@@ -166,18 +168,30 @@ def _source_global_blockers(source_conn: sqlite3.Connection) -> list[str]:
     blockers = _schema_blockers(source_conn, tier="source", required=True)
     if blockers:
         return blockers
-    scan_complete = False
-    try:
-        with connection_cursor(source_conn, "SELECT DISTINCT ref_type FROM blob_refs") as cursor:
-            unknown = sorted(str(row[0]) for row in cursor if str(row[0]) not in _known_ref_types())
-            scan_complete = True
-    except sqlite3.Error as exc:
-        # A completed read can fail here only while physically closing its
-        # cursor. That cleanup failure must retain custody, never become a
-        # schema blocker. Combined read/close failures already escape grouped.
-        if scan_complete:
+    close_failures: list[sqlite3.Error] = []
+
+    def scan() -> list[str]:
+        scan_complete = False
+        try:
+            with connection_cursor(source_conn, "SELECT DISTINCT ref_type FROM blob_refs") as cursor:
+                rows = sorted(str(row[0]) for row in cursor if str(row[0]) not in _known_ref_types())
+                scan_complete = True
+        except sqlite3.Error as exc:
+            # A completed read can fail here only while physically closing
+            # its cursor. That cleanup failure must retain custody and escape,
+            # never become a schema blocker.
+            if scan_complete:
+                close_failures.append(exc)
             raise
-        return [f"source.blob_refs is unreadable: {exc}"]
+        return rows
+
+    evidence = capture_sqlite_read(scan)
+    if close_failures:
+        raise close_failures[0]
+    if not isinstance(evidence, Measured):
+        detail = evidence.detail if isinstance(evidence, Unavailable) else None
+        return [f"source.blob_refs is unreadable: {detail or 'sqlite_read_failed'}"]
+    unknown = evidence.value
     if unknown:
         blockers.append(f"unknown blob_refs ref_type(s): {', '.join(unknown)}")
     return blockers

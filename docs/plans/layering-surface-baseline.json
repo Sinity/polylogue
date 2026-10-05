@@ -196,16 +196,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/import_command.py",
-    "import": "polylogue.sources.parsers"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/import_command.py",
-    "import": "polylogue.sources.sqlite_snapshot"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/maintenance/_archive_read.py",
     "import": "polylogue.storage.archive_identity"
   },
@@ -608,11 +598,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/healthz.py",
     "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/http.py",
-    "import": "polylogue.sources.import_preflight"
   },
   {
     "target": "polylogue/daemon",
