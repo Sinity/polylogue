@@ -333,10 +333,8 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
-    PreparedRows,
-    PreparedSessionShardRows,
+    PreparedSessionRows,
     PreparedSessionWrite,
-    bind_session_shard,
     locate_composed_message,
     read_archive_session_envelope,
     read_archive_session_page,
@@ -344,8 +342,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     search_archive_blocks,
     session_attachment_ids,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
-from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PROFILE,
@@ -1300,11 +1296,7 @@ class ArchiveStore:
             self._conn = (
                 connect_measured(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
-                # URI filenames are inert for a plain path -- SQLite only
-                # parses one when it starts with ``file:`` -- and the flag is
-                # what lets this connection ATTACH a stage-A shard read-only
-                # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
-                else connect_measured(self.index_db_path, uri=True)
+                else connect_measured(self.index_db_path)
             )
             from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
 
@@ -2322,39 +2314,6 @@ class ArchiveStore:
                 raise ArchiveStoreSettlementError(self, failure) from failure
             raise failure
 
-    @contextmanager
-    def attached_session_shard(
-        self, shard_path: Path | None, *, required: bool = False
-    ) -> Iterator[Mapping[str, PreparedSessionShardRows]]:
-        """Mount a stage-A shard read-only for the body and yield its bindings.
-
-        ``None``, a missing file, or a shard this build refuses all yield an
-        empty mapping: the caller then writes with no prepared rows, which is
-        the unchanged inline path. ``required=True`` is for a caller that has
-        explicitly selected the sealed-shard route: it propagates refusal so
-        that route cannot silently become an inline write.
-        """
-        if shard_path is None:
-            if required:
-                raise ShardRefusedError("a required session shard is absent")
-            yield {}
-            return
-        self._require_writable("attach a session shard")
-        try:
-            shard = open_session_shard(shard_path)
-            attachment = attach_session_shard(self._conn, shard)
-            schema = attachment.__enter__()
-        except (ShardRefusedError, OSError, sqlite3.DatabaseError) as exc:
-            if required:
-                raise ShardRefusedError(f"required session shard refused: {exc}") from exc
-            logger.warning("index write: %s; building this session's rows inline", exc)
-            yield {}
-            return
-        try:
-            yield bind_session_shard(schema, shard)
-        finally:
-            attachment.__exit__(None, None, None)
-
     @_archive_mutator
     def admit_work_event(
         self,
@@ -3195,13 +3154,13 @@ class ArchiveStore:
         bulk_build: bool = False,
         fresh_build: bool = False,
         fresh_build_batch: set[str] | None = None,
-        prepared_by_raw_id: dict[str, PreparedRows] | None = None,
+        prepared_by_raw_id: dict[str, PreparedSessionRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
         preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]]
         | None = None,
         prepared_aggregate_session: ParsedSession | None = None,
         preacquired_aggregate_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-        prepared_aggregate_rows: PreparedRows | None = None,
+        prepared_aggregate_rows: PreparedSessionRows | None = None,
         prepared_write: PreparedSessionWrite | None = None,
         prepared_aggregate_content_hash: bytes | None = None,
         write_result: Callable[[ArchiveRawParsedWriteResult], None] | None = None,
@@ -3250,7 +3209,7 @@ class ArchiveStore:
         fresh_build_batch: set[str] | None = None,
         preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
         preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
-        prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
+        prepared_by_raw_id: Mapping[str, PreparedSessionRows] | None = None,
         prepared_required_raw_ids: frozenset[str] = frozenset(),
         prepared_write: PreparedSessionWrite | None = None,
     ) -> str | None:

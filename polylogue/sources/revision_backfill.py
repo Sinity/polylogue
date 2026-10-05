@@ -140,18 +140,18 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ConnectionSessionSourceRead,
-    PreparedRows,
+    PreparedSessionRows,
     PreparedSessionSourceRead,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
     prepare_session_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, discard_session_shard
 from polylogue.storage.sqlite.connection_profile import (
     StaleContinuationError,
     read_frame,
 )
 from polylogue.storage.sqlite.reference_seal import ReferenceSealError
+from polylogue.storage.sqlite.session_shard import ShardRefusedError, discard_session_shard
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
 
@@ -1421,8 +1421,8 @@ def _lineage_aware_replay_schedule(
 def _required_shard_prepared_rows(
     raw_id: str,
     session: ParsedSession,
-    bindings: Mapping[str, PreparedRows],
-) -> dict[str, PreparedRows]:
+    bindings: Mapping[str, PreparedSessionRows],
+) -> dict[str, PreparedSessionRows]:
     """Bind exactly the session the frozen replay is about to full-replace."""
     session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     try:

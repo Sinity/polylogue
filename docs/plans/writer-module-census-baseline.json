@@ -568,5 +568,10 @@
     "tiers": [
       "ops"
     ]
+  },
+  {
+    "file": "polylogue/storage/sqlite/session_shard.py",
+    "tiers": [],
+    "authority": "scratch"
   }
 ]

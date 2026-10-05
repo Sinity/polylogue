@@ -147,14 +147,6 @@ from polylogue.storage.sqlite.archive_tiers.session_suppression import (
     record_suppression_refusal,
     session_write_is_suppressed,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import (
-    SessionShard,
-    SessionShardBuilder,
-    ShardSessionRows,
-    build_session_shard,
-    copy_shard_session_rows,
-    open_session_shard,
-)
 from polylogue.storage.sqlite.connection_profile import (
     NativeConnectionSettlementError,
     NativeSQLCustodyOwner,
@@ -173,6 +165,12 @@ from polylogue.storage.sqlite.reference_seal import (
     note_current_deleted_session,
     note_current_lineage_change,
     note_current_session_namespace_change,
+)
+from polylogue.storage.sqlite.session_shard import (
+    SessionShard,
+    SessionShardBuilder,
+    build_session_shard,
+    open_session_shard,
 )
 from polylogue.storage.usage import UsageProjectionModel, project_provider_usage_events, provider_usage_event_identity
 
@@ -1602,34 +1600,6 @@ class _PreparedCrossAcquisitionUnion:
     carry_forward: _ProjectionCarryForward
 
 
-@dataclass(frozen=True, slots=True)
-class PreparedSessionShardRows:
-    """One session's rows resident in a shard attached to the writer's connection.
-
-    Interchangeable with :class:`PreparedSessionRows` at the writer's
-    acceptance gate -- it answers the same two questions, which session and
-    which content -- and differs only in where the rows are. Where
-    ``PreparedSessionRows`` hands the writer tuples to bind one row at a
-    time, this hands it a rowid range to copy in one statement; see
-    ``polylogue.storage.sqlite.archive_tiers.write_shard``.
-
-    ``schema`` is the ATTACH alias the shard is currently mounted under, so
-    an instance is only meaningful inside the ``attached_session_shard``
-    block that produced it.
-    """
-
-    session_id: str
-    session_content_hash: bytes
-    schema: str
-    entry: ShardSessionRows
-    #: The identity carrier extracted from the sealed shard manifest/rows.
-    content_identities: Sequence[MessageContentIdentity]
-
-
-#: What a caller may hand the writer instead of letting it build rows inline.
-PreparedRows = PreparedSessionRows | PreparedSessionShardRows
-
-
 #: Publication counts accepted canonical preparations. Refused carriers fail
 #: before mutation; no writer-side lowering fallback exists. The counter is
 #: diagnostic and does not decide admission.
@@ -1659,7 +1629,7 @@ def reset_prepared_row_dispositions() -> None:
 
 
 def _validated_prepared_content_identities(
-    prepared: PreparedRows,
+    prepared: PreparedSessionRows,
     messages: Sequence[ParsedMessage],
 ) -> Sequence[MessageContentIdentity]:
     """Validate and return the parse-side identity carrier without hashing.
@@ -2340,37 +2310,6 @@ def append_session_to_shard(builder: SessionShardBuilder, session: ParsedSession
     finally:
         if isinstance(duplicates, _DiskDuplicateNativeIds):
             duplicates.close()
-
-
-class _BoundSessionShardRows(Mapping[str, PreparedSessionShardRows]):
-    def __init__(self, schema: str, shard: SessionShard) -> None:
-        self.schema = schema
-        self.entries = shard.by_session_id()
-
-    def __len__(self) -> int:
-        return len(self.entries)
-
-    def __iter__(self) -> Iterator[str]:
-        yield from self.entries
-
-    def __getitem__(self, session_id: str) -> PreparedSessionShardRows:
-        entry = self.entries[session_id]
-        return PreparedSessionShardRows(
-            session_id=entry.session_id,
-            session_content_hash=entry.session_content_hash,
-            schema=self.schema,
-            entry=entry,
-            content_identities=entry.content_identities,
-        )
-
-
-def bind_session_shard(schema: str, shard: SessionShard) -> Mapping[str, PreparedSessionShardRows]:
-    """Address an attached shard's sessions the way the writer accepts them.
-
-    ``schema`` is the alias ``attached_session_shard`` mounted the shard
-    under; the returned bindings are valid only while that attachment lives.
-    """
-    return _BoundSessionShardRows(schema, shard)
 
 
 @contextmanager
@@ -6809,7 +6748,7 @@ def _replace_full_session_messages_and_blocks(
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
+    prepared: PreparedSessionRows | None = None,
     prepared_union: _PreparedCrossAcquisitionUnion | None = None,
 ) -> _ProjectionCarryForward | None:
     """Replace one session's messages/blocks wholesale.
@@ -6833,9 +6772,8 @@ def _replace_full_session_messages_and_blocks(
     lineage tail-slicing changed ``messages`` since. The message/block
     row-building loops (the CPU-bound part of this function -- per-item
     hashing, JSON encoding, enum lookups) are then skipped entirely.
-    ``PreparedSessionRows`` leaves the ``executemany`` on this (writer)
-    thread; ``PreparedSessionShardRows`` (polylogue-bp12n.6) replaces it with
-    one ``INSERT ... SELECT`` per table out of an attached shard. A different
+    ``PreparedSessionRows`` streams its sealed rows into the ``executemany``
+    on this (writer) thread. A different
     acquisition with prior rows requires ``prepared_union``: its reconciled
     rows were sealed outside the writer and its predecessor is rechecked.
     ``None`` retains the direct list-backed route.
@@ -6890,9 +6828,6 @@ def _replace_full_session_messages_and_blocks(
         raw_id=raw_id,
         existing_raw_id=existing_raw_id,
     )
-    shard_rows = prepared if isinstance(prepared, PreparedSessionShardRows) else None
-    if shard_rows is not None and needs_union:
-        raise PreparedSessionWriteRefusedError("cross-acquisition shard requires prepared field union")
     if (
         needs_union
         and prepared_union is None
@@ -6903,11 +6838,7 @@ def _replace_full_session_messages_and_blocks(
         )
     ):
         raise PreparedSessionWriteRefusedError("disk-backed cross-acquisition write requires prepared field union")
-    tuple_rows = (
-        prepared_union.rows
-        if prepared_union is not None
-        else (prepared if isinstance(prepared, PreparedSessionRows) else None)
-    )
+    tuple_rows = prepared_union.rows if prepared_union is not None else prepared
     # polylogue-geop: compute the field-path union against whatever is
     # currently stored *before* any delete below removes it. Must run ahead
     # of the FTS/base-table deletes -- both messages and blocks are read here.
@@ -6920,12 +6851,6 @@ def _replace_full_session_messages_and_blocks(
         unioned_message_rows = prepared_union.rows.message_rows
         unioned_block_rows = prepared_union.rows.block_rows
         carry_forward = prepared_union.carry_forward
-    elif shard_rows is not None:
-        # The rows are already built, in the shard; the writer copies them
-        # below without ever materializing a tuple on this thread.
-        unioned_message_rows = ()
-        unioned_block_rows = ()
-        carry_forward = None
     elif not needs_union:
         # A first write cannot have prior rows to reconcile.  The caller's
         # session PK lookup already proved this session_id is absent, and all
@@ -7020,29 +6945,25 @@ def _replace_full_session_messages_and_blocks(
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             add_timing("delete_messages", t0)
         t0 = time.perf_counter()
-        if shard_rows is not None:
-            copy_shard_session_rows(conn, shard_rows.schema, shard_rows.entry)
-            add_timing("shard_copy", t0)
-        else:
-            _write_messages(
-                conn,
-                session_id,
-                messages,
-                duplicate_native_ids=duplicate_native_ids,
-                rows=unioned_message_rows,
-                content_identities=content_identities,
-            )
-            add_timing("messages", t0)
-            t0 = time.perf_counter()
-            _write_blocks(
-                conn,
-                session_id,
-                messages,
-                duplicate_native_ids=duplicate_native_ids,
-                rows=unioned_block_rows,
-                content_identities=content_identities,
-            )
-            add_timing("blocks", t0)
+        _write_messages(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+            rows=unioned_message_rows,
+            content_identities=content_identities,
+        )
+        add_timing("messages", t0)
+        t0 = time.perf_counter()
+        _write_blocks(
+            conn,
+            session_id,
+            messages,
+            duplicate_native_ids=duplicate_native_ids,
+            rows=unioned_block_rows,
+            content_identities=content_identities,
+        )
+        add_timing("blocks", t0)
         t0 = time.perf_counter()
         _write_file_edits(
             conn,
@@ -17115,10 +17036,7 @@ def _enum_value(value: object) -> str | None:
 
 
 __all__ = [
-    "PreparedRows",
-    "PreparedSessionShardRows",
-    "bind_session_shard",
-    "copy_shard_session_rows",
+    "PreparedSessionRows",
     "prepare_session_shard",
     "ArchiveAgentPolicy",
     "ARCHIVE_BLOCK_ROW_COLUMNS",

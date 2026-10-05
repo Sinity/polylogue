@@ -156,7 +156,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     BeforeIndexInput,
     ConnectionSessionSourceRead,
     MembershipHeadSourceRead,
-    PreparedRows,
+    PreparedSessionRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
     SessionSourceRead,
@@ -450,7 +450,7 @@ def _write_parsed_precedence_result(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
+    prepared: PreparedSessionRows | None = None,
     prepared_required: bool = False,
     prepared_write: PreparedSessionWrite | None = None,
     content_hash: str | None = None,
@@ -3257,12 +3257,12 @@ def apply_raw_revision_replay(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    prepared_by_raw_id: dict[str, PreparedRows] | None = None,
+    prepared_by_raw_id: dict[str, PreparedSessionRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     preacquired_attachment_blobs_by_raw_id: Mapping[str, Mapping[object, tuple[bytes | None, int, str]]] | None = None,
     prepared_aggregate_session: ParsedSession | None = None,
     preacquired_aggregate_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
-    prepared_aggregate_rows: PreparedRows | None = None,
+    prepared_aggregate_rows: PreparedSessionRows | None = None,
     prepared_write: PreparedSessionWrite | None = None,
     prepared_aggregate_content_hash: bytes | None = None,
     write_result: Callable[[ArchiveRawParsedWriteResult], None] | None = None,
@@ -3376,7 +3376,7 @@ def apply_raw_revision_replay(
         tip_raw_id = pending_raw_ids[-1]
         # ``prepared_aggregate_rows`` describes the exact composed session.
         # The raw-id map remains a single-chunk shortcut only.
-        resolved_prepared: PreparedRows | None = None
+        resolved_prepared: PreparedSessionRows | None = None
         if prepared_aggregate_rows is not None:
             resolved_prepared = prepared_aggregate_rows
         elif len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
@@ -3564,7 +3564,7 @@ def apply_raw_membership_classification(
     fresh_build_batch: set[str] | None = None,
     preacquired_attachment_blobs: Mapping[object, tuple[bytes | None, int, str]] | None = None,
     preacquired_attachment_refs: Callable[[], Iterable[ArchiveSourceBlobRef]] | None = None,
-    prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
+    prepared_by_raw_id: Mapping[str, PreparedSessionRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     prepared_write: PreparedSessionWrite | None = None,
 ) -> str | None:
@@ -4151,7 +4151,7 @@ def _index_parsed_for_retained_raw(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedRows | None = None,
+    prepared: PreparedSessionRows | None = None,
     prepared_required: bool = False,
     prepared_write: PreparedSessionWrite | None = None,
     content_hash: str | None = None,
@@ -6603,7 +6603,7 @@ def apply_prepared_membership_index(
     bulk_build: bool = False,
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
-    prepared_by_raw_id: Mapping[str, PreparedRows] | None = None,
+    prepared_by_raw_id: Mapping[str, PreparedSessionRows] | None = None,
     prepared_required_raw_ids: frozenset[str] = frozenset(),
     prepared_write: PreparedSessionWrite | None = None,
     write_result: Callable[[ArchiveRawParsedWriteResult], None] | None = None,

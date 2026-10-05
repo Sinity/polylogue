@@ -130,7 +130,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     append_session_to_shard,
     prepare_session_shard,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import (
+from polylogue.storage.sqlite.session_shard import (
     SessionShard,
     SessionShardBuilder,
     discard_session_shard,

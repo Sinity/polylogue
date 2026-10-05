@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from polylogue.storage.sqlite.archive_tiers import write_shard
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardIdentitySequence
+from polylogue.storage.sqlite import session_shard
+from polylogue.storage.sqlite.session_shard import ShardIdentitySequence
 
 
 def _identity_shard(path: Path, rows: int) -> None:
@@ -31,7 +31,7 @@ def test_identity_lookups_open_one_connection_per_page(tmp_path: Path, monkeypat
     """
     path = tmp_path / "shard.db"
     _identity_shard(path, 40)
-    monkeypatch.setattr(write_shard, "_IDENTITY_PAGE_ROWS", 8)
+    monkeypatch.setattr(session_shard, "_IDENTITY_PAGE_ROWS", 8)
     opened = 0
     real_connect = sqlite3.connect
 
@@ -65,5 +65,5 @@ def test_identity_lookup_refuses_a_page_with_missing_rows(tmp_path: Path) -> Non
         conn.commit()
     sequence = ShardIdentitySequence(path, 1, 10)
 
-    with pytest.raises(write_shard.ShardRefusedError):
+    with pytest.raises(session_shard.ShardRefusedError):
         sequence[0]

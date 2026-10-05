@@ -19,14 +19,11 @@ from polylogue.storage.index_generation import ActiveWriterLease
 from polylogue.storage.sqlite.archive_tiers.write import (
     ConnectionSessionSourceRead,
     PreparedSessionRows,
-    PreparedSessionShardRows,
     PreparedSessionSourceRead,
     PreparedSessionWrite,
     prepare_session_write,
-    prepared_session_rows_from_shard,
     write_parsed_session_to_archive,
 )
-from polylogue.storage.sqlite.archive_tiers.write_shard import ShardIdentitySequence
 from polylogue.storage.sqlite.connection_profile import native_sql_owner_for_connection
 from polylogue.storage.sqlite.reference_seal import (
     IndexMutationDestination,
@@ -258,11 +255,6 @@ def write_fixture_index_session(
 
     def prepare(index: sqlite3.Connection, source_read: Any, before_input: Any = None) -> Any:
         rows = kwargs.pop("prepared_rows", None)
-        if isinstance(rows, PreparedSessionShardRows):
-            identities = rows.entry.content_identities
-            if not isinstance(identities, ShardIdentitySequence):
-                raise TypeError("fixture shard must carry its sealed identity sequence")
-            rows = prepared_session_rows_from_shard(identities.path, rows.session_id)
         if rows is not None and not isinstance(rows, PreparedSessionRows):
             raise TypeError("fixture rows must be the canonical prepared carrier")
         prepared = prepare_session_write(
