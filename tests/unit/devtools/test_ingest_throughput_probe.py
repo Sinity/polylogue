@@ -212,7 +212,16 @@ def test_unreportable_private_failure_cleans_its_scratch(tmp_path: Path, monkeyp
     import devtools.ingest_throughput_probe as probe
 
     scratch = tmp_path / "unreportable"
-    monkeypatch.setattr(tempfile, "mkdtemp", lambda **kwargs: str(scratch))
+    real_mkdtemp = tempfile.mkdtemp
+
+    def probe_mkdtemp(*args: str | None, **kwargs: str | None) -> str:
+        # Only the probe's own scratch is redirected; other owners (such as a
+        # pre-migration backup) keep their real private directories.
+        if kwargs.get("prefix") == "plg-ingest-tput-":
+            return str(scratch)
+        return real_mkdtemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", probe_mkdtemp)
 
     def fail_before_report(*args: object, **kwargs: object) -> object:
         raise RuntimeError("controlled route failure")

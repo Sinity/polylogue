@@ -60,6 +60,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
 )
 from polylogue.surfaces.payloads import _MESSAGE_MASK, _SESSION_SUMMARY_MASK, MessageRenderEnvelope
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_session_sync
 from tests.infra.storage_records import db_setup
 
@@ -309,11 +310,16 @@ class _Seeded:
     session_id: str
 
 
-def _seed(workspace_env: dict[str, Path]) -> _Seeded:
+def _seed_sync(workspace_env: dict[str, Path]) -> _Seeded:
     db_path = db_setup(workspace_env)
     write_session_sync(db_path, _parent_session())
     session_id = write_session_sync(db_path, _child_session())
     return _Seeded(archive_root=workspace_env["archive_root"], session_id=session_id)
+
+
+def _seed(*args: Any, **kwargs: Any) -> _Seeded:
+    """Run setup off the event loop: a synchronous write lease may not block it."""
+    return run_off_event_loop(lambda: _seed_sync(*args, **kwargs))
 
 
 def _canonical_summary(seeded: _Seeded) -> tuple[ArchiveSessionSummary, SessionSummary]:
@@ -844,23 +850,25 @@ async def test_prose_classification_survives_stored_and_bounded_reads(workspace_
     from polylogue.archive.message.types import MessageType
 
     db_path = db_setup(workspace_env)
-    session_id = write_session_sync(
-        db_path,
-        ParsedSession(
-            source_name=Provider.CLAUDE_CODE,
-            provider_session_id="prose-classification",
-            messages=[
-                ParsedMessage(
-                    provider_message_id="ordinary-assistant",
-                    role=Role.ASSISTANT,
-                    text="Ordinary prose",
-                    blocks=[
-                        ParsedContentBlock(type=BlockType.THINKING, text="<environment_context>"),
-                        ParsedContentBlock(type=BlockType.TEXT, text="Ordinary prose"),
-                    ],
-                )
-            ],
-        ),
+    session_id = run_off_event_loop(
+        lambda: write_session_sync(
+            db_path,
+            ParsedSession(
+                source_name=Provider.CLAUDE_CODE,
+                provider_session_id="prose-classification",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="ordinary-assistant",
+                        role=Role.ASSISTANT,
+                        text="Ordinary prose",
+                        blocks=[
+                            ParsedContentBlock(type=BlockType.THINKING, text="<environment_context>"),
+                            ParsedContentBlock(type=BlockType.TEXT, text="Ordinary prose"),
+                        ],
+                    )
+                ],
+            ),
+        )
     )
     seeded = _Seeded(workspace_env["archive_root"], session_id)
     rows, composed = _canonical_messages(seeded)

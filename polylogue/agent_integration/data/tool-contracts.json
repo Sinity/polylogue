@@ -958,6 +958,13 @@
           "kind": "boolean",
           "name": "confirm",
           "required_initial": false
+        },
+        {
+          "description": "Sessions whose insights to rebuild; omitted selects every session.",
+          "enum_values": [],
+          "kind": "array",
+          "name": "session_ids",
+          "required_initial": false
         }
       ],
       "confirmation": {

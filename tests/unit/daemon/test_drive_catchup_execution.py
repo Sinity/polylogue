@@ -19,7 +19,7 @@ from polylogue.config import Config, Source
 from polylogue.daemon.drive_catchup import DriveCatchupExecution
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator
 from polylogue.pipeline.services.ingest_batch import _core as ingest
-from polylogue.pipeline.services.ingest_batch._models import _IngestWorkerRequest, _PreparedIngestUnit
+from polylogue.pipeline.services.ingest_batch._models import _PreparedIngestUnit
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources import DriveFile
@@ -177,7 +177,7 @@ async def test_drive_preparation_leaves_real_writer_available(
     monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
     original = ingest._run_ingest_record
 
-    def parse(record: RawSessionRecord, request: _IngestWorkerRequest) -> IngestRecordResult:
+    def parse(record: RawSessionRecord, request: object) -> IngestRecordResult:
         assert current_write_lease() is None
         if blocked_phase == "parser":
             block()

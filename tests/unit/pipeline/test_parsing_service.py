@@ -7,7 +7,8 @@ import hashlib
 import json
 import sqlite3
 import time
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -34,6 +35,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.storage_records import admit_raw_record, make_raw_session
 
 pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
@@ -516,6 +518,31 @@ class TestParsingServiceParseSources:
             await service.parse_sources([source])
 
 
+@asynccontextmanager
+async def _canonical_parsing(
+    archive_root: Path, config: Config
+) -> AsyncIterator[tuple[ParsingService, AcquisitionService]]:
+    """Parsing and acquisition on the archive's own Index, published by the daemon's owners."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    backend = SQLiteBackend(db_path=archive_root / "index.db")
+    try:
+        async with prepared_live_convergence_owner(archive_root) as owner:
+            execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+            parsing = ParsingService(
+                repository=SessionRepository(backend=backend),
+                archive_root=archive_root,
+                config=config,
+                execution=execution,
+                retained_runner=owner.ingest_retained_raw_ids,
+            )
+            yield parsing, AcquisitionService(backend=backend, execution=execution)
+    finally:
+        await backend.close()
+
+
 class TestParsingServiceIntegration:
     def _session_json(self, session_id: str, title: str, message: str) -> SessionPayload:
         return {
@@ -548,21 +575,13 @@ class TestParsingServiceIntegration:
         (inbox / "sessions.json").write_text(
             json.dumps([self._session_json("test-conv-1", "Test Session", "Hello, world!")])
         )
-        # This ParsingService/SQLiteBackend path persists into read model
-        # sessions/messages tables. cli_workspace["db_path"] is the archive
-        # index.db, so this test writes to its own fresh backend database
-        # alongside it.
-        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
         )
-        result = await ParsingService(
-            repository=SessionRepository(backend=backend),
-            archive_root=cli_workspace["archive_root"],
-            config=config,
-        ).parse_sources(config.sources)
+        async with _canonical_parsing(cli_workspace["archive_root"], config) as (parsing, _acquisition):
+            result = await parsing.parse_sources(config.sources)
         assert result.counts["sessions"] >= 1
         assert result.processed_ids
 
@@ -571,34 +590,27 @@ class TestParsingServiceIntegration:
         (inbox / "sessions.json").write_text(
             json.dumps([self._session_json("test-conv-raw", "Test Raw Session", "Hello from raw!")])
         )
-        # See test_ingest_with_real_database: this SQLiteBackend path cannot
-        # open the archive index.db, so route it to its own DB.
-        backend = SQLiteBackend(db_path=cli_workspace["archive_root"] / "ingest.db")
         config = Config(
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
         )
-        acquire_result = await AcquisitionService(backend=backend).acquire_sources(config.sources)
-        raw_ids = acquire_result.raw_ids
-        assert len(raw_ids) == 1
+        async with _canonical_parsing(cli_workspace["archive_root"], config) as (parsing, acquisition):
+            acquire_result = await acquisition.acquire_sources(config.sources)
+            raw_ids = acquire_result.raw_ids
+            assert len(raw_ids) == 1
 
-        parse_result = await ParsingService(
-            repository=SessionRepository(backend=backend),
-            archive_root=cli_workspace["archive_root"],
-            config=config,
-        ).parse_from_raw(raw_ids=raw_ids)
+            parse_result = await parsing.parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["sessions"] >= 1
         assert parse_result.processed_ids
-        async with backend.connection() as conn:
-            row = await (
-                await conn.execute(
-                    "SELECT raw_id FROM sessions WHERE session_id = ?",
-                    (list(parse_result.processed_ids)[0],),
-                )
+        index_uri = f"file:{cli_workspace['archive_root'] / 'index.db'}?mode=ro"
+        with sqlite3.connect(index_uri, uri=True) as conn:
+            row = conn.execute(
+                "SELECT raw_id FROM sessions WHERE session_id = ?",
+                (list(parse_result.processed_ids)[0],),
             ).fetchone()
         assert row is not None
-        assert row["raw_id"] == raw_ids[0]
+        assert row[0] == raw_ids[0]
 
 
 class TestParsingServiceStreaming:
@@ -724,7 +736,7 @@ class TestParsingServiceStreaming:
         applied to the daemon's other unbounded writer-holding actor
         (``maintenance.drive_catchup``, measured hold_max=18,623s). A per-call
         wall-clock budget must stop ``parse_from_raw`` from draining the whole
-        raw-id backlog in one call even though ``raw_batch_size`` alone would
+        raw-id backlog in one call even though the parse page size alone would
         admit every batch. The budget is checked only *between* batches (each
         batch is a real write/transaction boundary), so at least one batch
         always completes -- forward progress is guaranteed -- and raw ids left
@@ -746,8 +758,10 @@ class TestParsingServiceStreaming:
             repository=repository,
             archive_root=config.archive_root,
             config=config,
-            raw_batch_size=1,
         )
+        # One raw per parse page, so every page is its own write boundary. Set
+        # on the instance: the clock patch below is undone mid-test.
+        service.RAW_BATCH_SIZE = 1
 
         # A monotonic clock that always advances well past any small budget
         # after its very first read -- deterministic regardless of exactly
@@ -847,6 +861,8 @@ class TestPlanningService:
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_acquisition_records")
     async def test_build_plan_dedupes_duplicate_scanned_raw_ids(self, mock_iter: MagicMock, tmp_path: Path) -> None:
+        # Planning reads the archive's known source cursors before scanning.
+        run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         planner = PlanningService(backend=backend, config=config)
