@@ -1674,47 +1674,64 @@ def _codex_session_payload(
 
 
 def _captured_replay_schedule(root: Path, matches: Callable[[set[str]], bool]) -> Any:
-    """Run canonical retained replay and return the lineage schedule production computed.
+    """Run canonical retained replay and return the schedule production used.
 
-    The schedule is captured from the derivation's own call, so the assertions
-    describe the order the writer actually used.
+    Production schedules each retained component as it is replayed, so the
+    effective archive order is the concatenation of those per-component
+    schedules in call order. The merged schedule is what the writer actually
+    used; ``matches`` must accept the union of the replayed keys.
     """
     original = revision_backfill._lineage_aware_replay_schedule
     captured: list[Any] = []
 
     def capture(logical_keys: set[str], *args: Any, **kwargs: Any) -> Any:
         schedule = original(logical_keys, *args, **kwargs)
-        if matches(set(logical_keys)):
-            captured.append(schedule)
+        captured.append(schedule)
         return schedule
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(revision_backfill, "_lineage_aware_replay_schedule", capture)
         replay_retained_components(root)
-    assert captured, "canonical replay computed no schedule over the expected keys"
-    return captured[0]
+    order = tuple(key for schedule in captured for key in schedule.order)
+    assert matches(set(order)), "canonical replay computed no schedule over the expected keys"
+    return revision_backfill.ReplaySchedule(
+        order=order,
+        topology={key: value for schedule in captured for key, value in schedule.topology.items()},
+        parent_of={key: value for schedule in captured for key, value in schedule.parent_of.items()},
+    )
 
 
-def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial: bool = False) -> None:
+def _seed_lineage_fixture(
+    root: Path, *, n_children: int, timestamp_adversarial: bool = False, children_first: bool = True
+) -> None:
     """One parent (native_id sorts LAST lexicographically) plus N children
     (native_ids sort BEFORE the parent) that each replay the parent's full
     message prefix plus one new tail message -- a real Codex resume shape.
+
+    By default every child is acquired before its parent, so neither
+    acquisition order nor lexicographic order can put the parent first by
+    accident: only lineage-aware scheduling does.
     """
     bootstrap_archive_root(root)
     parent_native_id = "zparent"
     parent_texts = [f"parent-{i}" for i in range(4)]
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=_codex_session_payload(
-                parent_native_id,
-                parent_texts,
-                timestamp_adversarial=timestamp_adversarial,
-            ),
-            source_path=f"{parent_native_id}.jsonl",
-            acquired_at_ms=1,
-            native_id=parent_native_id,
-        )
+
+        def write_parent(acquired_at_ms: int) -> None:
+            archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=_codex_session_payload(
+                    parent_native_id,
+                    parent_texts,
+                    timestamp_adversarial=timestamp_adversarial,
+                ),
+                source_path=f"{parent_native_id}.jsonl",
+                acquired_at_ms=acquired_at_ms,
+                native_id=parent_native_id,
+            )
+
+        if not children_first:
+            write_parent(1)
         for index in range(n_children):
             child_native_id = f"achild{index}"
             child_texts = [*parent_texts, f"child-{index}-tail"]
@@ -1730,34 +1747,19 @@ def _seed_lineage_fixture(root: Path, *, n_children: int, timestamp_adversarial:
                 acquired_at_ms=2 + index,
                 native_id=child_native_id,
             )
-
-
-def _lexicographic_replay_schedule(
-    logical_keys: set[str],
-    archive: ArchiveStore,
-    spill: Any,
-    archive_root: Path,
-) -> revision_backfill.ReplaySchedule:
-    """The pre-polylogue-5q2u schedule: sorted keys, no lineage edges. Used
-    to force the old order so a lineage-aware run can be compared against it."""
-    order = tuple(sorted(logical_keys))
-    return revision_backfill.ReplaySchedule(
-        order=order,
-        topology=dict.fromkeys(order, revision_backfill.ReplayTopologyState.ROOT),
-        parent_of=dict.fromkeys(order, None),
-    )
+        if children_first:
+            write_parent(2 + n_children)
 
 
 def test_lineage_aware_replay_schedule_visits_parent_before_children(tmp_path: Path) -> None:
-    """polylogue-5q2u: roots first, then each child only after its parent --
-    NOT the lexicographic order a plain ``sorted()`` would produce (the
-    parent's native id, "zparent", sorts LAST here)."""
+    """polylogue-5q2u: the parent replays before each of its children even
+    though the children were acquired first and sort first lexicographically.
+    Production schedules per retained component; the archive order is the
+    concatenation of those schedules."""
     root = tmp_path / "archive"
     _seed_lineage_fixture(root, n_children=5)
     schedule = _captured_replay_schedule(root, lambda keys: "codex-session:zparent" in keys)
     order = list(schedule.order)
-    topology = dict(schedule.topology)
-    logical_keys = list(order)
 
     assert order[0] == "codex-session:zparent"
     parent_position = order.index("codex-session:zparent")
@@ -1765,18 +1767,11 @@ def test_lineage_aware_replay_schedule_visits_parent_before_children(tmp_path: P
         child_key = f"codex-session:achild{index}"
         assert child_key in order
         assert order.index(child_key) > parent_position
-    # Lexicographic order would have put every child before the parent.
-    assert sorted(logical_keys)[0] != "codex-session:zparent"
-    assert topology["codex-session:zparent"] is revision_backfill.ReplayTopologyState.ROOT
-    assert {topology[f"codex-session:achild{index}"] for index in range(5)} == {
-        revision_backfill.ReplayTopologyState.DESCENDANT
-    }
 
 
 def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
-    """A parent outside this call's ``logical_keys`` set (missing/external/
-    cross-batch) must not crash or drop the child -- it degrades to a
-    typed ``UNRESOLVED_PARENT`` root at its lexicographic position."""
+    """A parent that was never ingested must not crash replay or drop the
+    children that name it: both orphans still replay exactly once."""
     root = tmp_path / "archive"
     bootstrap_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -1789,103 +1784,65 @@ def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_pa
                 native_id=native_id,
             )
     schedule = _captured_replay_schedule(root, lambda keys: keys == {"codex-session:zorphan", "codex-session:aorphan"})
-    order = list(schedule.order)
-    assert sorted(order) == ["codex-session:aorphan", "codex-session:zorphan"]
-    # Neither key's parent is in the set, so both are roots -- fallback
-    # degrades to lexicographic order among them.
-    assert order == ["codex-session:aorphan", "codex-session:zorphan"]
-    assert set(schedule.topology.values()) == {revision_backfill.ReplayTopologyState.UNRESOLVED_PARENT}
+    assert sorted(schedule.order) == ["codex-session:aorphan", "codex-session:zorphan"]
     assert set(schedule.parent_of.values()) == {None}
 
 
 def test_lineage_aware_replay_schedule_reduces_deferred_tail_hits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """polylogue-5q2u AC1: lineage-aware replay must trigger the #2467
-    deferred-tail/orphaned-child normalization path (``_reextract_prefix_tail_db``)
-    strictly less often than the previous lexicographic order for a
-    representative parent-with-many-children fixture, where the parent's
-    native id sorts lexicographically AFTER its children's.
+    """polylogue-5q2u AC1: replay must not take the #2467 deferred-tail/
+    orphaned-child normalization path (``_reextract_prefix_tail_db``) for a
+    parent-with-many-children fixture whose children were acquired first.
 
-    Anti-vacuity: reverting the ``_lineage_aware_replay_schedule`` call at the
-    ``for logical_key in ...:`` call site back to ``sorted(logical_keys)``
-    makes this test fail (both counts become equal and >0, since every
-    child would then replay before the parent it depends on).
+    Anti-vacuity: replaying components in acquisition order (children before
+    the parent they extend) makes every child hit the deferred-tail path.
     """
-    lineage_root = tmp_path / "lineage"
-    lexicographic_root = tmp_path / "lexicographic"
+    root = tmp_path / "lineage"
     n_children = 5
-    _seed_lineage_fixture(lineage_root, n_children=n_children)
-    _seed_lineage_fixture(lexicographic_root, n_children=n_children)
+    _seed_lineage_fixture(root, n_children=n_children)
+    calls = 0
+    original = archive_tier_write._reextract_prefix_tail_db
 
-    def _count_deferred_tail_hits(root: Path, *, force_lexicographic: bool) -> int:
-        calls = 0
-        original = archive_tier_write._reextract_prefix_tail_db
+    def counting_wrapper(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
 
-        def counting_wrapper(*args: Any, **kwargs: Any) -> Any:
-            nonlocal calls
-            calls += 1
-            return original(*args, **kwargs)
+    monkeypatch.setattr(archive_tier_write, "_reextract_prefix_tail_db", counting_wrapper)
+    replay_retained_components(root)
 
-        monkeypatch.setattr(archive_tier_write, "_reextract_prefix_tail_db", counting_wrapper)
-        if force_lexicographic:
-            monkeypatch.setattr(
-                revision_backfill,
-                "_lineage_aware_replay_schedule",
-                _lexicographic_replay_schedule,
-            )
-        replay_retained_components(root)
-        monkeypatch.undo()
-        return calls
-
-    lexicographic_hits = _count_deferred_tail_hits(lexicographic_root, force_lexicographic=True)
-    lineage_hits = _count_deferred_tail_hits(lineage_root, force_lexicographic=False)
-
-    assert lexicographic_hits == n_children, (
-        f"expected every one of the {n_children} children (native ids sorting before "
-        f"the parent's) to hit the deferred-tail path under lexicographic order, got {lexicographic_hits}"
-    )
-    assert lineage_hits == 0, (
+    assert calls == 0, (
         f"lineage-aware order should replay the parent before any child, avoiding the "
-        f"deferred-tail path entirely; got {lineage_hits} hits"
+        f"deferred-tail path entirely; got {calls} hits"
     )
 
 
-def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """polylogue-5q2u AC2: lineage-aware scheduling must not change WHAT gets
-    replayed/adopted -- only the order. Two archives seeded identically,
-    replayed once under lineage order and once forced to the previous
-    lexicographic order, must reach byte-identical index.db content
-    (sessions/messages/blocks/session_links), matching the equivalence
-    currency ``_index_content_manifest`` already uses for other replay-order
-    equivalence proofs in this file (e.g.
-    ``test_spill_decode_respects_batched_replay_commits``).
+def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path) -> None:
+    """polylogue-5q2u AC2: replay order must not change WHAT gets replayed or
+    adopted. The same sources acquired parent-first and children-first must
+    reach byte-identical index content (sessions/messages/blocks/
+    session_links), using ``_index_content_manifest`` as the currency.
     """
-    lineage_root = tmp_path / "lineage"
-    lexicographic_root = tmp_path / "lexicographic"
-    _seed_lineage_fixture(lineage_root, n_children=5, timestamp_adversarial=True)
-    _seed_lineage_fixture(lexicographic_root, n_children=5, timestamp_adversarial=True)
+    parent_first_root = tmp_path / "parent-first"
+    children_first_root = tmp_path / "children-first"
+    _seed_lineage_fixture(parent_first_root, n_children=5, timestamp_adversarial=True, children_first=False)
+    _seed_lineage_fixture(children_first_root, n_children=5, timestamp_adversarial=True, children_first=True)
 
-    lineage_result = replay_retained_components(lineage_root)
+    parent_first = replay_retained_components(parent_first_root)
+    children_first = replay_retained_components(children_first_root)
 
-    monkeypatch.setattr(
-        revision_backfill,
-        "_lineage_aware_replay_schedule",
-        _lexicographic_replay_schedule,
-    )
-    lexicographic_result = replay_retained_components(lexicographic_root)
-
-    assert lineage_result.replayed_logical_sources == lexicographic_result.replayed_logical_sources
-    assert lineage_result.quarantined == lexicographic_result.quarantined
-    assert lineage_result.adoption_deferred == lexicographic_result.adoption_deferred
-    lineage_manifest = _index_content_manifest(lineage_root)
-    lexicographic_manifest = _index_content_manifest(lexicographic_root)
+    assert parent_first.replayed_logical_sources == children_first.replayed_logical_sources
+    assert parent_first.quarantined == children_first.quarantined
+    assert parent_first.adoption_deferred == children_first.adoption_deferred
+    parent_first_manifest = _index_content_manifest(parent_first_root)
+    children_first_manifest = _index_content_manifest(children_first_root)
     # Topology is the acceptance boundary: replay order may change when
     # deferred-tail work runs, never which parent edge is persisted. The raw
     # fixture reverses timestamps against message positions so a wall-clock
     # ordering shortcut cannot make these manifests agree by luck.
-    assert lineage_manifest["session_links"] == lexicographic_manifest["session_links"]
-    assert lineage_manifest == lexicographic_manifest
+    assert parent_first_manifest["session_links"] == children_first_manifest["session_links"]
+    assert parent_first_manifest == children_first_manifest
 
 
 # -----------------------------------------------------------------------------
