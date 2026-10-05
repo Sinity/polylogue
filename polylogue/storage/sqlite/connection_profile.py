@@ -447,6 +447,45 @@ class NativeSQLCustodyOwner:
             if all(retained is not dependency for retained in self._lifetime_dependencies):
                 self._lifetime_dependencies.append(dependency)
 
+    def idle_handoff_ready(self, borrowed: tuple[object, ...]) -> bool:
+        """Whether only ``borrowed`` lifetimes stand between this idle handle and handoff.
+
+        Checked before :meth:`handoff`, whose refusal of a live obligation
+        closes the handle; a borrower returning an unowned caller connection
+        must never close it.
+        """
+        if self.pid != os.getpid() or self.thread is not threading.current_thread():
+            return False
+        if self.task is not _native_owner_task() and (self.task is None or not self.task.done()):
+            return False
+        connection = self.connection
+        return (
+            connection is not None
+            and not self._settled
+            and not self.close_required
+            and not self._parent_cleanup_requested
+            and self._terminal_parent is None
+            and self.scratch_directory is None
+            and not self._settlement_callbacks
+            and not self._incremental_blobs
+            and not self.anchored_descriptors
+            and self.leaf is None
+            and self.frame is None
+            and self.cache_entry is None
+            and not connection.in_transaction
+            and all(any(dependency is item for item in borrowed) for dependency in self._lifetime_dependencies)
+        )
+
+    def release_lifetime(self, dependency: object) -> None:
+        """Drop one artifact retained by :meth:`retain_lifetime` once it settled."""
+        self._require_owner()
+        with _LIVE_NATIVE_SQL_OWNERS_LOCK:
+            if all(retained is not dependency for retained in self._lifetime_dependencies):
+                raise RuntimeError("native owner does not retain this artifact")
+            self._lifetime_dependencies[:] = [
+                retained for retained in self._lifetime_dependencies if retained is not dependency
+            ]
+
     def retain_incremental_blob(self, blob: sqlite3.Blob) -> None:
         """Retain the actual readonly incremental handle on its SQL creator."""
         self._require_owner()
