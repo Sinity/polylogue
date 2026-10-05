@@ -20,13 +20,13 @@ import tempfile
 import threading
 from builtins import BaseExceptionGroup
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from functools import partial
+from functools import partial, wraps
 from itertools import zip_longest
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
 if TYPE_CHECKING:
     from polylogue.security.excision import ExcisionTarget
@@ -2078,6 +2078,33 @@ def _locate_composed_message(conn: sqlite3.Connection, session_id: str, message_
     return locate_composed_message(conn, session_id, message_id, before_input=_index_input_hook(conn))
 
 
+_Method = TypeVar("_Method", bound=Callable[..., Any])
+
+
+def _namespace_verified_per_row(method: _Method) -> _Method:
+    """Verify the configured namespace once at a row operation's entry.
+
+    One row load or insert passes through several nested work gates (one per
+    cell, producer and witness), and each repeated the whole namespace walk:
+    a stat per path and a realpath per tier, per cell. Nested gates inside the
+    verified row skip only that walk; every acceptance and direct namespace
+    check still verifies, so a change cannot reach a commit unseen.
+    """
+
+    @wraps(method)
+    def verified(self: PreparedIndexMutation, *args: Any, **kwargs: Any) -> Any:
+        if self._namespace_verified_depth:
+            return method(self, *args, **kwargs)
+        self._require_new_work()
+        self._namespace_verified_depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._namespace_verified_depth -= 1
+
+    return cast(_Method, verified)
+
+
 class PreparedIndexMutation:
     """Live observer set and typed reachability captured before writer admission."""
 
@@ -2101,6 +2128,8 @@ class PreparedIndexMutation:
         self._configured_root = archive_root.absolute()
         self.archive_root = archive_root.resolve(strict=True)
         self._excision_embeddings_requested = _excision_embeddings
+        # Depth of row operations whose entry gate verified the namespace.
+        self._namespace_verified_depth = 0
         self._excision_embeddings_intent_ready = False
         self._excision_embeddings_intent_sha256 = ""
         self._excision_source_command_sha256: str | None = None
@@ -2865,7 +2894,12 @@ class PreparedIndexMutation:
             raise ReferenceSealError("original rows require this seal's pinned preparation window")
         if tier not in self._paths:
             raise ValueError("original preparation rows require a declared archive tier")
-        observer = self.observer(tier)
+        # The entry gate above verified the namespace for this one read.
+        self._namespace_verified_depth += 1
+        try:
+            observer = self.observer(tier)
+        finally:
+            self._namespace_verified_depth -= 1
         owner = next(child for child in native_sql_children(self) if child.connection is observer)
         cursor = owner.require_connection().cursor()
         primary: BaseException | None = None
@@ -3150,6 +3184,7 @@ class PreparedIndexMutation:
                 pass
         self._source_stage_receipt_accepted = False
 
+    @_namespace_verified_per_row
     def load_source_row(self, image: KnownTierRowImage) -> bool:
         self._require_selected_producer("source")
         if self._selected_tier(image.table) != "source":
@@ -3197,6 +3232,7 @@ class PreparedIndexMutation:
             raise ReferenceSealError("Source allocation cannot borrow a User table")
         self._source_allocation_dependencies(table)
 
+    @_namespace_verified_per_row
     def source_row_is_touched(self, table: str, rowid: int) -> bool:
         self._require_selected_producer("source")
         if self._selected_tier(table) != "source":
@@ -3845,13 +3881,25 @@ class PreparedIndexMutation:
     @contextmanager
     def source_rows(self, sql: str, parameters: tuple[object, ...] = ()) -> Iterator[sqlite3.Cursor]:
         self._require_selected_producer("source")
-        with self._selected_rows(sql, parameters) as cursor:
+        with ExitStack() as selected:
+            # The producer gate above verified the namespace for this one read.
+            self._namespace_verified_depth += 1
+            try:
+                cursor = selected.enter_context(self._selected_rows(sql, parameters))
+            finally:
+                self._namespace_verified_depth -= 1
             yield cursor
 
     @contextmanager
     def user_rows(self, sql: str, parameters: tuple[object, ...] = ()) -> Iterator[sqlite3.Cursor]:
         self._require_selected_producer("user")
-        with self._selected_rows(sql, parameters) as cursor:
+        with ExitStack() as selected:
+            # The producer gate above verified the namespace for this one read.
+            self._namespace_verified_depth += 1
+            try:
+                cursor = selected.enter_context(self._selected_rows(sql, parameters))
+            finally:
+                self._namespace_verified_depth -= 1
             yield cursor
 
     @contextmanager
@@ -4132,6 +4180,7 @@ class PreparedIndexMutation:
                 if primary is not None:
                     self._cleanup_requested = True
 
+    @_namespace_verified_per_row
     def _source_image_insert(self, image: KnownTierRowImage) -> None:
         """Insert exact original cells with no Python variable-value adapter."""
         if not self._source_baseline_active or image._seal is not self or type(image.rowid) is not int:
@@ -4921,6 +4970,7 @@ class PreparedIndexMutation:
             self._cleanup_requested = True
             raise
 
+    @_namespace_verified_per_row
     def retain_tier_row(self, tier: str, table: str, rowid: int | bytes) -> KnownTierRowImage | None:
         """Retain one selected original row without fetching any TEXT/BLOB cell.
 
@@ -4996,6 +5046,7 @@ class PreparedIndexMutation:
                 raise NativeConnectionSettlementError(owner, cleanup) from cleanup
             return image
 
+    @_namespace_verified_per_row
     def _amend_original_input_fields(self, tier: str, table: str, rowid: int | bytes, columns: tuple[str, ...]) -> None:
         """Charge exact declared native inputs before any Python hydration.
 
@@ -9492,7 +9543,8 @@ class PreparedIndexMutation:
         if self._cleanup_requested:
             raise ReferenceSealError("reference seal requires original-owner terminal cleanup")
         _check_reference_cancellation()
-        self._assert_configured_namespace()
+        if not self._namespace_verified_depth:
+            self._assert_configured_namespace()
 
     def _require_live_owner(self) -> None:
         if self._closed:
@@ -9621,6 +9673,11 @@ class PreparedIndexMutation:
         if sql_settled:
             for owner in native_sql_children(self):
                 sql_settled = settle(partial(owner.release_settled_parent_lifetimes, self)) and sql_settled
+        writer_scope = self._pending_index_scope
+        if writer_scope is None and self._accepted_index_commit is not None:
+            writer_scope = self._accepted_index_commit._scope
+        if sql_settled and writer_scope is not None:
+            sql_settled = settle(writer_scope.return_borrowed_writer) and sql_settled
         if sql_settled and self._publication_payload_cleanup is not None and settle(self._publication_payload_cleanup):
             self._publication_payload_cleanup = None
         if sql_settled and self._publication_payload_cleanup is None and self._mutation_custody is not None:
@@ -9994,6 +10051,8 @@ class IndexMutationScope:
     _user_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
     _user_admission_custody: ArchiveWriteCustody | None = field(default=None, init=False, repr=False)
     _writer_owner: NativeSQLCustodyOwner | None = field(default=None, init=False, repr=False)
+    # True when this scope registered the owner for a caller's unowned handle.
+    _writer_owner_borrowed: bool = field(default=False, init=False, repr=False)
     _custody: ArchiveWriteCustody | None = field(default=None, init=False, repr=False)
     _writer_version: int | None = field(default=None, init=False, repr=False)
     _initial_changes: int = field(default=0, init=False, repr=False)
@@ -10017,6 +10076,7 @@ class IndexMutationScope:
         # caller. Capture that existing caller lifetime once; never replace
         # or detach a registered parent's live child.
         owner = native_sql_owner_for_connection(self.conn)
+        borrowed = owner is None
         if owner is None:
             # BEGIN IMMEDIATE has already exercised SQLite's actual closed-
             # handle and creator-thread checks on this same connection.
@@ -10034,11 +10094,33 @@ class IndexMutationScope:
             self._writer_version = int(cursor.fetchone()[0])
         self._initial_changes = self.conn.total_changes
         self._writer_owner = owner
+        self._writer_owner_borrowed = borrowed
         self._writer_owner.retain_lifetime(self)
         self._writer_owner.retain_lifetime(seal)
         self._custody = custody
         seal._retain_mutation_custody(custody)
         seal._pending_index_scope = self
+
+    def return_borrowed_writer(self) -> None:
+        """Hand a caller's idle handle back unowned once its seal has settled.
+
+        The owner this scope registered for an unowned caller connection
+        retains the lease's archive custody. Left in place, the caller's
+        long-lived handle would hold that custody's file lock after the lease
+        ends and block every later writer of the archive. A handle with any
+        other live obligation keeps its owner until the caller settles it.
+        """
+        owner = self._writer_owner
+        seal = self.seal
+        if not self._writer_owner_borrowed or owner is None or seal is None:
+            return
+        if not owner.idle_handoff_ready((self, seal)):
+            return
+        for dependency in (self, seal):
+            if any(item is dependency for item in owner._lifetime_dependencies):
+                owner.release_lifetime(dependency)
+        owner.handoff()
+        self._writer_owner_borrowed = False
 
     @property
     def commit_receipt(self) -> IndexCommitReceipt:

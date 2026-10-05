@@ -378,6 +378,38 @@ class RetainedSQLSettlement:
     failure_types: tuple[str, ...]
 
 
+class _ForwardingSettlementRetry(SQLSettlementRetry):
+    """Deliver an adapter retry to a cleanup owner parked on its creator thread."""
+
+    def __init__(self, forward: Callable[[], object]) -> None:
+        super().__init__()
+        self._forward = forward
+
+    def request(self) -> None:
+        super().request()
+        self._forward()
+
+
+def retain_current_creator_settlement(
+    request: Callable[[], object], *, owner_count: int, failure_types: tuple[str, ...]
+) -> Callable[[], None] | None:
+    """Expose a cleanup owner parked on the current compute task to its adapter.
+
+    A writer that keeps its admitted compute thread to settle failed SQL
+    waits for settlement requests of its own. Without this registration the
+    adapter's retry and shutdown cannot reach it, and joining the adapter waits
+    on a thread that nothing will ever wake. Returns the release callback, or
+    ``None`` outside a compute task.
+    """
+    adapter = getattr(_CURRENT_COMPUTE, "adapter", None)
+    task = getattr(_CURRENT_COMPUTE, "task", None)
+    if adapter is None or task is None:
+        return None
+    return cast("BoundedComputeAdapter", adapter)._retain_creator_settlement(
+        task, request, owner_count=owner_count, failure_types=failure_types
+    )
+
+
 @dataclass(slots=True)
 class _RetainedSQLSettlement:
     retry: SQLSettlementRetry
@@ -1037,6 +1069,36 @@ class BoundedComputeAdapter:
             preserved_native_owners=preserved_native_owners,
             initial_observed_generation=task.sql_observed_generation,
         )
+
+    def _retain_creator_settlement(
+        self,
+        task: _Task,
+        request: Callable[[], object],
+        *,
+        owner_count: int,
+        failure_types: tuple[str, ...],
+    ) -> Callable[[], None]:
+        """Register a cleanup owner the running task keeps on its creator thread."""
+        entry = _RetainedSQLSettlement(
+            _ForwardingSettlementRetry(request),
+            RetainedSQLSettlement(
+                thread_name=threading.current_thread().name,
+                admission_class=task.admission_class,
+                owner_count=owner_count,
+                failure_types=failure_types,
+            ),
+        )
+        with self._lock:
+            self._sql_settlements[id(entry)] = entry
+            shutting_down = self._shutdown
+        if shutting_down:
+            entry.retry.request()
+
+        def release() -> None:
+            with self._lock:
+                self._sql_settlements.pop(id(entry), None)
+
+        return release
 
     def retained_sql_settlements(self) -> tuple[RetainedSQLSettlement, ...]:
         """Return unresolved physical ownership without touching native handles."""
