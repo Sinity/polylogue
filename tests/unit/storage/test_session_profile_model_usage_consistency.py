@@ -55,7 +55,7 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
-# matching the corpus finding in _provider_usage_disjoint_lanes's docstring),
+# matching the corpus finding in provider_usage_disjoint_lanes's docstring),
 # output inclusive of reasoning. Disjoint-lane mapping: fresh_input =
 # input - cached = 100_000 - 96_000 = 4_000; output unchanged at 5_000;
 # cache_read = 96_000; cache_write = 0.
@@ -296,6 +296,7 @@ def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Pa
                 output_tokens=model_usage[1],
                 cache_read_tokens=model_usage[2],
                 cache_write_tokens=model_usage[3],
+                provider_lanes_complete=True,
             )
         ],
     )

@@ -28,7 +28,7 @@ def test_zero_token_model_usage_row_is_labelled_unknown_not_reported() -> None:
     """A model-identity-only row (real model_name, zero tokens) must not be
     stamped as provider-reported evidence."""
 
-    rows = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0)]
+    rows = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0, provider_lanes_complete=True)]
     per_model = _per_model_from_model_usage(rows)
 
     (breakdown,) = per_model.values()
@@ -39,7 +39,7 @@ def test_zero_token_model_usage_row_is_labelled_unknown_not_reported() -> None:
 def test_nonzero_model_usage_row_stays_provider_reported() -> None:
     """A row with real token counts is unaffected by the zero-token guard."""
 
-    rows = [ModelUsageTotals(model_name="gpt-4o", input_tokens=100, output_tokens=50)]
+    rows = [ModelUsageTotals(model_name="gpt-4o", input_tokens=100, output_tokens=50, provider_lanes_complete=True)]
     per_model = _per_model_from_model_usage(rows)
 
     (breakdown,) = per_model.values()
@@ -58,7 +58,11 @@ def test_catalog_priced_session_money_is_not_labelled_provider_reported() -> Non
     summary = compute_session_cost(
         session,
         estimate_if_missing=False,
-        model_usage=[ModelUsageTotals(model_name="claude-opus-4-8", input_tokens=1_000, output_tokens=500)],
+        model_usage=[
+            ModelUsageTotals(
+                model_name="claude-opus-4-8", input_tokens=1_000, output_tokens=500, provider_lanes_complete=True
+            )
+        ],
     )
 
     assert summary.cost_provenance == "catalog_priced"
@@ -98,7 +102,9 @@ def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() ->
             total_usd=1.0,
             usage=CostUsagePayload(),
         ),
-        model_usage=[ModelUsageTotals(model_name="gpt-4o", input_tokens=100, output_tokens=20)],
+        model_usage=[
+            ModelUsageTotals(model_name="gpt-4o", input_tokens=100, output_tokens=20, provider_lanes_complete=True)
+        ],
     )
 
     assert summary.total_input_tokens == 100
@@ -111,7 +117,10 @@ def test_routed_names_with_their_own_rates_keep_separate_buckets() -> None:
     """Anti-vacuity: merging routed names by normalized model prices all tokens at the last route's rate."""
     routed = ("amazon.nova-pro-v1:0", "bedrock/us-gov-east-1/amazon.nova-pro-v1:0")
     session = make_conv(id="two-routes", provider="chatgpt", messages=[])
-    rows = [ModelUsageTotals(model_name=name, input_tokens=1000, output_tokens=100) for name in routed]
+    rows = [
+        ModelUsageTotals(model_name=name, input_tokens=1000, output_tokens=100, provider_lanes_complete=True)
+        for name in routed
+    ]
     forward = compute_session_cost(session, model_usage=rows)
     backward = compute_session_cost(session, model_usage=list(reversed(rows)))
     assert len(forward.per_model) == 2
@@ -125,8 +134,12 @@ def test_exact_session_total_is_not_attributed_to_an_arbitrary_unpriced_model() 
         session,
         session_estimate=CostEstimatePayload(origin="chatgpt", status="exact", total_usd=1.0, usage=CostUsagePayload()),
         model_usage=[
-            ModelUsageTotals(model_name="unpriced-model-a", input_tokens=100, output_tokens=20),
-            ModelUsageTotals(model_name="unpriced-model-b", input_tokens=50, output_tokens=10),
+            ModelUsageTotals(
+                model_name="unpriced-model-a", input_tokens=100, output_tokens=20, provider_lanes_complete=True
+            ),
+            ModelUsageTotals(
+                model_name="unpriced-model-b", input_tokens=50, output_tokens=10, provider_lanes_complete=True
+            ),
         ],
     )
 
@@ -145,7 +158,10 @@ def test_exact_total_reconciliation_never_yields_a_negative_share() -> None:
         session_estimate=CostEstimatePayload(
             origin="chatgpt", status="exact", total_usd=0.000002, usage=CostUsagePayload()
         ),
-        model_usage=[ModelUsageTotals(model_name=name, input_tokens=n, output_tokens=0) for name, n in tokens.items()],
+        model_usage=[
+            ModelUsageTotals(model_name=name, input_tokens=n, output_tokens=0, provider_lanes_complete=True)
+            for name, n in tokens.items()
+        ],
     )
 
     shares = [item.api_cost_usd for item in summary.per_model]
@@ -169,7 +185,7 @@ def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_u
             make_msg(id="m2", role="assistant", text="a reasonably long assistant reply with several words too"),
         ],
     )
-    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0)]
+    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0, provider_lanes_complete=True)]
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
 
@@ -195,7 +211,7 @@ def test_zero_token_fallback_keeps_the_declared_model_identity_and_price() -> No
             make_msg(id="m2", role="assistant", text="a reasonably long assistant reply with several words too"),
         ],
     )
-    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0)]
+    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0, provider_lanes_complete=True)]
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
 
@@ -220,8 +236,8 @@ def test_zero_token_fallback_keeps_declared_identities_it_cannot_attribute() -> 
         messages=[make_msg(id="m1", role="user", text="several words of user text for the estimate")],
     )
     model_usage = [
-        ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0),
-        ModelUsageTotals(model_name="o3", input_tokens=0, output_tokens=0),
+        ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0, provider_lanes_complete=True),
+        ModelUsageTotals(model_name="o3", input_tokens=0, output_tokens=0, provider_lanes_complete=True),
     ]
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
@@ -242,7 +258,7 @@ def test_compute_session_cost_is_unknown_when_no_real_evidence_exists() -> None:
         provider="chatgpt",
         messages=[],
     )
-    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0)]
+    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=0, output_tokens=0, provider_lanes_complete=True)]
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
 
@@ -320,8 +336,8 @@ def test_compute_session_cost_downgrades_to_partial_when_one_model_unknown_along
     """
 
     model_usage = [
-        ModelUsageTotals(model_name="gpt-4o", input_tokens=1000, output_tokens=500),
-        ModelUsageTotals(model_name="claude-3-5-sonnet", input_tokens=0, output_tokens=0),
+        ModelUsageTotals(model_name="gpt-4o", input_tokens=1000, output_tokens=500, provider_lanes_complete=True),
+        ModelUsageTotals(model_name="claude-3-5-sonnet", input_tokens=0, output_tokens=0, provider_lanes_complete=True),
     ]
     session = make_conv(id="mixed-reported-unknown-session", provider="chatgpt", messages=[])
 
@@ -346,7 +362,11 @@ def test_catalog_gap_model_with_real_tokens_is_not_a_confident_zero() -> None:
     catalog entry and quietly stops exercising the gap this covers.
     """
 
-    model_usage = [ModelUsageTotals(model_name="not-a-catalogued-model", input_tokens=1000, output_tokens=500)]
+    model_usage = [
+        ModelUsageTotals(
+            model_name="not-a-catalogued-model", input_tokens=1000, output_tokens=500, provider_lanes_complete=True
+        )
+    ]
     session = make_conv(id="catalog-gap-session", provider="claude-code", messages=[])
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
@@ -362,7 +382,9 @@ def test_catalogued_model_with_real_tokens_stays_reported() -> None:
     """Anti-vacuity twin: a genuinely priced model is unaffected by the
     catalog-gap downgrade."""
 
-    model_usage = [ModelUsageTotals(model_name="gpt-4o", input_tokens=1000, output_tokens=500)]
+    model_usage = [
+        ModelUsageTotals(model_name="gpt-4o", input_tokens=1000, output_tokens=500, provider_lanes_complete=True)
+    ]
     session = make_conv(id="catalogued-session", provider="chatgpt", messages=[])
 
     summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
@@ -377,7 +399,11 @@ def test_compute_session_cost_defaults_to_pro_tier_subscription_equivalent() -> 
     """No explicit ``subscription_tier`` keeps the conservative ``pro`` default
     (polylogue-at44 AC: "cost compute reads it with a sane default")."""
 
-    model_usage = [ModelUsageTotals(model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0)]
+    model_usage = [
+        ModelUsageTotals(
+            model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0, provider_lanes_complete=True
+        )
+    ]
     session = make_conv(id="sub-tier-default-session", provider="claude-code", messages=[])
 
     default_summary = compute_session_cost(session, estimate_if_missing=False, model_usage=model_usage)
@@ -395,7 +421,11 @@ def test_compute_session_cost_honors_explicit_subscription_tier() -> None:
     rate reflected in the subscription-equivalent figure, not the hardcoded
     ``pro`` ratio (polylogue-at44)."""
 
-    model_usage = [ModelUsageTotals(model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0)]
+    model_usage = [
+        ModelUsageTotals(
+            model_name="claude-sonnet-4-5", input_tokens=1_000_000, output_tokens=0, provider_lanes_complete=True
+        )
+    ]
     session = make_conv(id="sub-tier-explicit-session", provider="claude-code", messages=[])
 
     pro_summary = compute_session_cost(
@@ -527,3 +557,21 @@ def test_runtime_protocol_input_is_still_estimated(role: str) -> None:
     per_model = _per_model_from_messages(session)
 
     assert sum(breakdown.input_tokens for breakdown in per_model.values()) > 0
+
+
+def test_unmappable_zero_provider_lanes_do_not_become_text_estimates() -> None:
+    session = make_conv(
+        id="unmappable-zero",
+        provider="codex",
+        messages=[make_msg(id="m1", role="assistant", text="a reply long enough to produce estimated tokens")],
+    )
+    summary = compute_session_cost(
+        session,
+        estimate_if_missing=False,
+        model_usage=[ModelUsageTotals(model_name="gpt-4o", provider_lanes_complete=False)],
+    )
+    assert summary.total_input_tokens == 0
+    assert summary.total_output_tokens == 0
+    assert summary.cost_confidence == "unknown"
+    assert summary.cost_provenance == "unknown"
+    assert summary.per_model[0].confidence == "unknown"

@@ -838,7 +838,7 @@ def _token_usage(record: dict[str, object]) -> dict[str, int | None]:
     Codex input includes cache reads, while message pricing bills fresh input
     and cache reads separately. Normalize at the source; Claude already reports
     these lanes disjointly. The event rollup applies the same rule in
-    ``_provider_usage_disjoint_lanes``.
+    ``provider_usage_disjoint_lanes``.
     """
     usage = _dict_record(record.get("usage")) or _dict_record(record.get("tokens")) or record
     input_value = _optional_int_field(usage, "input_tokens", "inputTokenCount")
