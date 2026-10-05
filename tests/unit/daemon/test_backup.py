@@ -594,9 +594,15 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
     assert receipt["verdict"] == "success"
     assert receipt["manifest_sha256"] == hashlib.sha256((backup_root / "manifest.json").read_bytes()).hexdigest()
     artifact_inventory = {item["path"]: item for item in receipt["artifact_inventory"]}
-    # Format birth authority and released Source002 history are retained
-    # together; neither is rebuildable cache.
-    expected_inventory = {
+    # Format birth authority and every released Source train's history are
+    # retained together; neither is rebuildable cache.
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    released_trains = {
+        f".maintenance-state/durable-change-trains/source-{step:03d}.json"
+        for step in range(2, ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE] + 1)
+    }
+    expected_inventory = released_trains | {
         "blob",
         f"blob/{blob_hash[:2]}",
         f"blob/{blob_hash[:2]}/{blob_hash[2:]}",
@@ -610,12 +616,12 @@ def test_backup_archive_copies_precious_tiers_and_referenced_blobs(
         ".polylogue-format.json",
         ".maintenance-state",
         ".maintenance-state/durable-change-trains",
-        ".maintenance-state/durable-change-trains/source-002.json",
     }
     assert set(artifact_inventory) == expected_inventory, sorted(set(artifact_inventory) ^ expected_inventory)
-    train_path = Path(".maintenance-state/durable-change-trains/source-002.json")
-    assert (backup_root / train_path).read_bytes() == (archive_root / train_path).read_bytes()
-    assert not (backup_root / train_path.with_suffix(".json.lock")).exists()
+    for released in sorted(released_trains):
+        train_path = Path(released)
+        assert (backup_root / train_path).read_bytes() == (archive_root / train_path).read_bytes()
+        assert not (backup_root / train_path.with_suffix(".json.lock")).exists()
     assert artifact_inventory["user.db"]["sha256"] == hashlib.sha256((backup_root / "user.db").read_bytes()).hexdigest()
     assert "verification-receipt.json" not in artifact_inventory
     assert {artifact["path"] for artifact in receipt["tier_artifacts"]} == {
@@ -1165,6 +1171,15 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
             ) VALUES (?, ?, ?, ?, ?, -1, ?, ?, 2, 'passed', 'unknown')""",
             (f"append-{origin}", origin, capture_mode, identity, str(source_path), append_hash, len(expected)),
         )
+        # Currency is durable receipt order: the full observation, then the append.
+        for raw_id, blob_hash, size in (
+            (f"prior-{origin}", prior_hash, len(prefix)),
+            (f"append-{origin}", append_hash, len(expected)),
+        ):
+            conn.execute(
+                "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+                (blob_hash, raw_id, "raw_payload", str(source_path), size, 1),
+            )
     # Backup reads these proofs from its checkpointed copy of the tier; fold
     # the seeded WAL into the main file the same way.
     checkpoint_durable_tier(archive_root / "source.db")
@@ -1177,7 +1192,7 @@ def test_backup_replays_legacy_append_from_preceding_full_snapshot(
         unproven=unproven,
     )
 
-    assert len(proofs) == 1
+    assert len(proofs) == 1, (proofs, unproven)
     assert proofs[0]["kind"] == "historical_append_segment_sha256"
     assert proofs[0]["append_start_offset"] == str(len(prefix))
     assert proofs[0]["append_end_offset"] == str(len(prefix) + len(append))
