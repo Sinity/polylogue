@@ -6767,7 +6767,8 @@ def test_full_multi_session_failure_retries_without_success_mapping(
     root = tmp_path / "sessions"
     root.mkdir()
     source = root / "full-multi.jsonl"
-    source.write_bytes(b"{}\n")
+    # Rollout bytes retained preparation admits; the parser stub decides the sessions.
+    source.write_bytes(_codex_shaped_bytes("full-multi"))
     index_db = tmp_path / "index.db"
     bootstrap_archive_root(tmp_path)
     processor = LiveBatchProcessor(
@@ -8219,31 +8220,21 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         pass
 
     _path, plan, owner, _processor = _seed_live_append_plan(tmp_path, native_id="crash-retry")
-    # polylogue-1r9c: mark_raw_parse_succeeded is called internally by
-    # revision_governance.py (a direct module-internal function reference),
-    # not through ArchiveStore's `self.` dispatch -- patch it there.
-    original_mark_succeeded = archive_revision_governance.mark_raw_parse_succeeded
+    # The append replay commits its Index publication, then publishes the
+    # Source acknowledgement that marks the raw parsed. Crash between them.
+    original_publish_source = archive_revision_governance.publish_prepared_revision_source
     crashed = False
 
-    def crash_after_index(
-        archive: archive_revision_governance.RawRevisionGovernanceHost,
-        raw_id: str,
-        *,
-        provider: Provider,
-    ) -> None:
+    def crash_after_index(seal: Any, permit: Any) -> None:
         nonlocal crashed
-        source_index = (
-            archive._ensure_source_conn()
-            .execute("SELECT source_index FROM raw_sessions WHERE raw_id = ?", (raw_id,))
-            .fetchone()[0]
-        )
-        if source_index == -1 and not crashed:
-            assert archive._conn.execute("SELECT 1 FROM messages WHERE native_id = 'message-1'").fetchone() is not None
+        with sqlite3.connect(tmp_path / "index.db") as index:
+            index_committed = index.execute("SELECT 1 FROM messages WHERE native_id = 'message-1'").fetchone()
+        if index_committed is not None and not crashed:
             crashed = True
             raise SimulatedProcessCrash
-        original_mark_succeeded(archive, raw_id, provider=provider)
+        original_publish_source(seal, permit)
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", crash_after_index)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", crash_after_index)
     with pytest.raises(SimulatedProcessCrash):
         ingest_append_with_owner(owner, [plan])
 
@@ -8252,7 +8243,7 @@ def test_append_crash_after_index_commit_repairs_idempotently(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0] == 2
 
-    monkeypatch.setattr(archive_revision_governance, "mark_raw_parse_succeeded", original_mark_succeeded)
+    monkeypatch.setattr(archive_revision_governance, "publish_prepared_revision_source", original_publish_source)
     retry = ingest_append_with_owner(owner, [plan])
 
     assert retry.succeeded == [plan]
