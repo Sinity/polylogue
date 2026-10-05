@@ -112,7 +112,8 @@ if TYPE_CHECKING:
     from polylogue.analysis.portfolio import PortfolioBundle
     from polylogue.analysis.postmortem import PostmortemBundle
     from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
-    from polylogue.analysis.resume import ResumeBrief, ResumeCandidate
+    from polylogue.analysis.resume import ResumeBrief
+    from polylogue.analysis.resume_contracts import ResumeCandidate
     from polylogue.analysis.transforms import SessionDigest
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
     from polylogue.annotations.join_contracts import AnnotationStructuralJoinResult
