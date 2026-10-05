@@ -12,7 +12,7 @@ from polylogue.demo.receipts import _connect
 
 
 def test_demo_receipt_reader_reads_and_rejects_sqlite_writes(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.db"
     with sqlite3.connect(db_path) as writer:
         writer.execute("CREATE TABLE evidence (value TEXT NOT NULL)")
         writer.execute("INSERT INTO evidence VALUES ('retained')")

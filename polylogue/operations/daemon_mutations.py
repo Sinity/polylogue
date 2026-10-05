@@ -1834,7 +1834,10 @@ async def execute_session_delete_preview_operation(request: DaemonOperationReque
             _validate_identity(request, context, pinned)
             runtime.observe_snapshot(request, pinned)
             authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-            return authority, audit.machine_request(_binding(request, context, authority))
+            # A lookup on a compute worker holds no writer lease; it reads the
+            # settled audit tier, never audit's writer leaf.
+            with audit.settled_machine_read():
+                return authority, audit.machine_request(_binding(request, context, authority))
 
     authority, existing = await runtime.compute_phase(prior)
     with tempfile.TemporaryFile(mode="w+b") as document:
@@ -2001,7 +2004,10 @@ async def execute_session_mark_operation(request: DaemonOperationRequest, contex
             _validate_identity(request, context, pinned)
             runtime.observe_snapshot(request, pinned)
             authority = OperationControlRead(pinned.identity, dict(pinned.schema_versions), pinned.degraded_components)
-            return authority, audit.machine_request(_binding(request, context, authority))
+            # A lookup on a compute worker holds no writer lease; it reads the
+            # settled audit tier, never audit's writer leaf.
+            with audit.settled_machine_read():
+                return authority, audit.machine_request(_binding(request, context, authority))
 
     authority, existing = await runtime.compute_phase(prior)
     with tempfile.TemporaryFile(mode="w+b") as document:

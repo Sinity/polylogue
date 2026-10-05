@@ -13,6 +13,7 @@ from polylogue.storage.derived.session.profiles import (
     enrichment_fallback_reasons,
     session_enrichment_payload,
 )
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder
 
 # ---------------------------------------------------------------------------
@@ -99,8 +100,11 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
-    with open_connection(db_path) as connection:
-        rebuild_session_insights_sync(connection)
+    def rebuild() -> None:
+        with open_connection(db_path) as connection:
+            rebuild_session_insights_sync(connection)
+
+    run_off_event_loop(rebuild)
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     report: InsightReadinessReport = await archive.insight_readiness_report(

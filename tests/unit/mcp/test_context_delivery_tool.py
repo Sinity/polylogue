@@ -22,6 +22,7 @@ from typing import cast
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import (
     MCPServerUnderTest,
@@ -63,7 +64,7 @@ class TestDeliverContextOperation:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
         context_fn = server._tool_manager._tools["context"].fn
@@ -116,7 +117,7 @@ class TestDeliverContextOperation:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
@@ -139,7 +140,7 @@ class TestDeliverContextOperation:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
 
@@ -159,7 +160,7 @@ class TestDeliverContextOperation:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server())  # read-only, default capabilities
 
         assert "write" not in server._tool_manager._tools
@@ -171,7 +172,7 @@ class TestContextToolListsReceiptSummaries:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
         write_fn = server._tool_manager._tools["write"].fn
         context_fn = server._tool_manager._tools["context"].fn
@@ -210,7 +211,7 @@ class TestContextToolListsReceiptSummaries:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
+        run_off_event_loop(lambda: _seed_archive(archive_root))
         server = cast(MCPServerUnderTest, build_server())
         context_fn = server._tool_manager._tools["context"].fn
 
@@ -232,8 +233,12 @@ async def test_context_receipt_routes_refuse_unavailable_user_authority(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = tmp_path / "archive"
-    with ArchiveStore(root):
-        pass
+
+    def bootstrap() -> None:
+        with ArchiveStore(root):
+            pass
+
+    run_off_event_loop(bootstrap)
     server = cast(MCPServerUnderTest, build_server())
     context_fn = server._tool_manager._tools["context"].fn
     with installed_runtime_services(root):

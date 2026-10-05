@@ -3416,6 +3416,28 @@ def build_seeded_archive(
         _release_lock_domain(domain)
 
 
+def copy_seeded_archive(
+    artifact: SeededArchiveArtifact,
+    specs: Iterable[CorpusSpec] | None = None,
+    *,
+    cache_root: Path,
+) -> SeededArchiveArtifact:
+    """Publish a validated artifact into another cache without rebuilding it.
+
+    A test that mutates or collects its own cache starts from the shared
+    build. The copy is never trusted as copied: the ordinary lookup in the
+    new cache validates every member against the manifest and its key, so a
+    mismatch is rebuilt there like any other invalid artifact.
+    """
+    destination = cache_root.expanduser() / "artifacts" / artifact.root.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with _shared_seeded_artifact_read_locks(artifact):
+        _copy_tree(artifact.root, destination)
+    # Published artifacts are sealed read-only; an unsealed copy is invalid.
+    _make_read_only(destination)
+    return build_seeded_archive(specs, cache_root=cache_root)
+
+
 def _complete_orphan_blob_hashes(archive_root: Path, *, expected_count: int) -> set[str]:
     """Return every unreferenced blob hash and cross-check the full scan."""
     blob_store = BlobStore(archive_root / "blob")

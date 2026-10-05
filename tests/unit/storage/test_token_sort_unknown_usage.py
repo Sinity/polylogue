@@ -9,10 +9,10 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.archive_tiers.archive import _summary_order_by
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+from tests.infra.archive_templates import bootstrapped_tier_path
 from tests.infra.index_writer import write_fixture_index_session
 
 
@@ -47,11 +47,10 @@ def test_ascending_token_sort_ranks_measured_zero_ahead_of_unmeasured(tmp_path: 
     returns to the front of the ascending band, making this red.
     """
     path = tmp_path / "index.db"
-    conn = sqlite3.connect(path)
+    conn = connect_measured(bootstrapped_tier_path(path))
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
         written: dict[str, str] = {}
         for name, timestamp, tokens in (
             ("unknown", "2026-01-01T00:00:00Z", None),

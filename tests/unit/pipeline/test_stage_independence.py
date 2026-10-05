@@ -7,23 +7,36 @@ input is handled cleanly.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
 
+from polylogue.pipeline.services.acquisition import AcquisitionService
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 
 
-def _make_backend(tmp_path: Path) -> tuple[SQLiteBackend, Path]:
-    """Create a backend with initialized schema."""
-    db_path = tmp_path / "test.db"
-    with open_connection(db_path):
-        pass
+def _make_backend(archive_root: Path) -> tuple[SQLiteBackend, Path]:
+    """Bootstrap the archive (off the test's loop) and open a backend on its index."""
+    run_off_event_loop(lambda: bootstrap_archive_root(archive_root))
+    db_path = archive_root / "index.db"
     return SQLiteBackend(db_path=db_path), db_path
+
+
+@asynccontextmanager
+async def _admitted_acquisition(backend: SQLiteBackend, archive_root: Path) -> AsyncIterator[AcquisitionService]:
+    """Acquisition publishes through the daemon's admitted writer, like configured catch-up."""
+    from polylogue.daemon.drive_catchup import DriveCatchupExecution
+    from tests.infra.live_ingest import prepared_live_convergence_owner
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        execution = DriveCatchupExecution(owner._write_coordinator, compute_adapter=owner._compute_adapter)
+        yield AcquisitionService(backend, execution=execution)
 
 
 def _write_synthetic_files(
@@ -59,14 +72,13 @@ class TestAcquisitionStageIndependence:
     async def test_acquire_runs_independently(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Acquire stage completes without downstream stages."""
         from polylogue.config import Source
-        from polylogue.pipeline.services.acquisition import AcquisitionService
 
-        backend, _ = _make_backend(tmp_path)
-        service = AcquisitionService(backend)
+        backend, _ = _make_backend(workspace_env["archive_root"])
         files = _write_synthetic_files(tmp_path)
 
         sources = [Source(name="test", path=files[0])]
-        result = await service.acquire_sources(sources)
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            result = await service.acquire_sources(sources)
         assert result.counts["acquired"] >= 0
         assert result.counts["errors"] == 0
         await backend.close()
@@ -75,17 +87,17 @@ class TestAcquisitionStageIndependence:
     async def test_acquire_idempotent(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Running acquire twice does not create duplicates."""
         from polylogue.config import Source
-        from polylogue.pipeline.services.acquisition import AcquisitionService
 
-        backend, _ = _make_backend(tmp_path)
-        service = AcquisitionService(backend)
+        backend, _ = _make_backend(workspace_env["archive_root"])
         files = _write_synthetic_files(tmp_path, count=1)
 
         sources = [Source(name="test", path=files[0])]
 
-        r1 = await service.acquire_sources(sources)
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            r1 = await service.acquire_sources(sources)
         assert r1.counts["acquired"] == 1
-        r2 = await service.acquire_sources(sources)
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            r2 = await service.acquire_sources(sources)
 
         # Second run should not acquire new records (mtime-based or hash-based dedup)
         assert r2.counts["acquired"] == 0
@@ -94,12 +106,10 @@ class TestAcquisitionStageIndependence:
     @pytest.mark.asyncio
     async def test_acquire_empty_source(self, tmp_path: Path, workspace_env: dict[str, Path]) -> None:
         """Acquire with no source files completes cleanly."""
-        from polylogue.pipeline.services.acquisition import AcquisitionService
 
-        backend, _ = _make_backend(tmp_path)
-        service = AcquisitionService(backend)
-
-        result = await service.acquire_sources([])
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        async with _admitted_acquisition(backend, workspace_env["archive_root"]) as service:
+            result = await service.acquire_sources([])
         assert result.counts["acquired"] == 0
         assert result.counts["errors"] == 0
         await backend.close()
@@ -118,7 +128,7 @@ class TestValidationStageIndependence:
         """Validate with no raw IDs completes cleanly."""
         from polylogue.pipeline.services.validation import ValidationService
 
-        backend, _ = _make_backend(tmp_path)
+        backend, _ = _make_backend(workspace_env["archive_root"])
         service = ValidationService(backend)
 
         result = await service.validate_raw_ids(raw_ids=[])
@@ -141,9 +151,8 @@ class TestParseStageIndependence:
         from polylogue.config import Config
         from polylogue.pipeline.services.parsing import ParsingService
 
-        backend, _ = _make_backend(tmp_path)
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir(exist_ok=True)
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        archive_root = workspace_env["archive_root"]
         repo = SessionRepository(backend=backend)
 
         render_root = tmp_path / "render"
@@ -170,9 +179,8 @@ class TestParseStageIndependence:
         from polylogue.config import Config
         from polylogue.pipeline.services.parsing import ParsingService
 
-        backend, _ = _make_backend(tmp_path)
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir(exist_ok=True)
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        archive_root = workspace_env["archive_root"]
         render_root = tmp_path / "render"
         render_root.mkdir(exist_ok=True)
         repo = SessionRepository(backend=backend)
@@ -207,9 +215,8 @@ class TestIndexStageIndependence:
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
 
-        backend, _ = _make_backend(tmp_path)
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir(exist_ok=True)
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        archive_root = workspace_env["archive_root"]
         render_root = tmp_path / "render"
         render_root.mkdir(exist_ok=True)
         config = Config(sources=[], archive_root=archive_root, render_root=render_root)
@@ -224,9 +231,8 @@ class TestIndexStageIndependence:
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
 
-        backend, _ = _make_backend(tmp_path)
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir(exist_ok=True)
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        archive_root = workspace_env["archive_root"]
         render_root = tmp_path / "render"
         render_root.mkdir(exist_ok=True)
         config = Config(sources=[], archive_root=archive_root, render_root=render_root)
@@ -245,9 +251,8 @@ class TestIndexStageIndependence:
         from polylogue.config import Config
         from polylogue.pipeline.services.indexing import IndexService
 
-        backend, _ = _make_backend(tmp_path)
-        archive_root = tmp_path / "archive"
-        archive_root.mkdir(exist_ok=True)
+        backend, _ = _make_backend(workspace_env["archive_root"])
+        archive_root = workspace_env["archive_root"]
         render_root = tmp_path / "render"
         render_root.mkdir(exist_ok=True)
         config = Config(sources=[], archive_root=archive_root, render_root=render_root)

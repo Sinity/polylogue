@@ -25,10 +25,12 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.archive_templates import seeds_off_event_loop
 from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
+@seeds_off_event_loop
 def _seed_archive(archive_root: Path) -> str:
     """Write one session with searchable text; returns its canonical id."""
     from polylogue.archive.message.roles import Role
@@ -82,6 +84,7 @@ def _daemon_owned_archive(archive_root: Path) -> Iterator[str]:
         yield seeded[0]
 
 
+@seeds_off_event_loop
 def _seed_paged_archive(archive_root: Path, *, count: int = 7) -> list[str]:
     """Write enough deterministic rows to exercise three session pages."""
     from polylogue.archive.message.roles import Role

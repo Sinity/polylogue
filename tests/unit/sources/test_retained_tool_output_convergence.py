@@ -40,6 +40,7 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.raw_owner_routes import ingest_files_with_owners
 from tests.infra.retained_jsonl import prepared_source_fixture
 
@@ -221,7 +222,7 @@ def _processor(
     sources: tuple[WatchSource, ...],
 ) -> tuple[Polylogue, CursorStore, LiveBatchProcessor]:
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
-    cursor = CursorStore(workspace_env["data_root"] / "cursor.db")
+    cursor = CursorStore(workspace_env["data_root"] / "cursor.db", ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         sources,
@@ -255,6 +256,16 @@ def _tool_result_texts(session: ParsedSession) -> list[str]:
 
 def _sidecar_events(session: ParsedSession, event_type: str) -> list[dict[str, object]]:
     return [dict(event.payload) for event in session.session_events if event.event_type == event_type]
+
+
+def _parse_retained(archive_root: Path, *raw_ids: str) -> list[list[ParsedSession]]:
+    """Parse retained raws on the prepared Source fixture, off any running loop."""
+
+    def parse() -> list[list[ParsedSession]]:
+        with prepared_source_fixture(archive_root) as store:
+            return [list(parse_retained_raw_sessions(store, raw_id)) for raw_id in raw_ids]
+
+    return run_off_event_loop(parse)
 
 
 def _derive_after_tree_removal(archive_root: Path, raw_id: str, tree_root: Path) -> list[ParsedSession]:
@@ -300,7 +311,7 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
     finally:
         await archive.close()
 
-    [derived] = _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root)
+    [derived] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root))
 
     [text] = _tool_result_texts(derived)
     assert _PARENT_NEEDLE in text
@@ -347,9 +358,7 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
         await archive.close()
 
     shutil.rmtree(root)
-    with prepared_source_fixture(workspace_env["archive_root"]) as store:
-        [parent] = parse_retained_raw_sessions(store, parent_raw)
-        [subagent] = parse_retained_raw_sessions(store, subagent_raw)
+    [[parent], [subagent]] = _parse_retained(workspace_env["archive_root"], parent_raw, subagent_raw)
 
     parent_events = _sidecar_events(parent, "claude_tool_result_sidecar")
     subagent_events = _sidecar_events(subagent, "claude_tool_result_sidecar")
@@ -400,8 +409,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     finally:
         await archive.close()
 
-    with prepared_source_fixture(workspace_env["archive_root"]) as store:
-        [before] = parse_retained_raw_sessions(store, parent_raw)
+    [[before]] = _parse_retained(workspace_env["archive_root"], parent_raw)
 
     absent = [
         event
@@ -421,7 +429,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     finally:
         await archive.close()
 
-    [after] = _derive_after_tree_removal(workspace_env["archive_root"], parent_raw, root)
+    [after] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], parent_raw, root))
 
     [recovered] = _tool_result_texts(after)
     assert _PARENT_NEEDLE in recovered
@@ -453,7 +461,7 @@ async def test_gemini_full_tool_output_survives_the_loss_of_its_source_tree(
     finally:
         await archive.close()
 
-    [derived] = _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root)
+    [derived] = run_off_event_loop(lambda: _derive_after_tree_removal(workspace_env["archive_root"], raw_id, root))
 
     [text] = _tool_result_texts(derived)
     assert _GEMINI_NEEDLE in text
@@ -495,8 +503,7 @@ async def test_retained_resolution_is_what_carries_the_full_text(
     with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
         conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(tree["parent_sidecar"]),))
 
-    with prepared_source_fixture(workspace_env["archive_root"]) as store:
-        [derived] = parse_retained_raw_sessions(store, raw_id)
+    [[derived]] = _parse_retained(workspace_env["archive_root"], raw_id)
 
     [text] = _tool_result_texts(derived)
     assert _PARENT_NEEDLE not in text
