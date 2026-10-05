@@ -6756,7 +6756,10 @@ def test_append_multi_session_payload_is_rejected_before_index_write(
             messages=[ParsedMessage(provider_message_id="multi-2-0", role=Role.USER, text="hello")],
         ),
     ]
-    monkeypatch.setattr("polylogue.sources.dispatch.parse_stream_payload", lambda *_args, **_kwargs: sessions)
+    # Retained preparation is the only parser on the live route.
+    monkeypatch.setattr(
+        "polylogue.sources.prepared_jsonl.iter_parsed_stream", _retained_parse_by_path(lambda _path: sessions)
+    )
     result = ingest_append_with_owner(owner, [plan])
 
     assert result.failed == [plan]
@@ -8294,6 +8297,7 @@ def test_append_ingest_bootstraps_archive_root(
         payload_hash="payload-hash",
         cursor_fingerprint="base",
         bytes_read=len(payload),
+        native_id_hint="append-bootstrap",
     )
 
     result = ingest_append_with_owner(Owner(), [plan])
