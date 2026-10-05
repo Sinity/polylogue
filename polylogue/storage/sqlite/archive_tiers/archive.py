@@ -367,7 +367,7 @@ from polylogue.storage.sqlite.connection_profile import (
     readonly_temp_staging,
     write_connection_pragma_statements,
 )
-from polylogue.storage.sqlite.queries.model_usage import MODEL_USAGE_CATALOG_SUM_SQL
+from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL, model_usage_cost_estimated_sql
 from polylogue.storage.sqlite.queries.session_links import SESSION_LINK_COLUMNS as _SESSION_LINK_COLUMNS
 from polylogue.storage.sqlite.query_watch import (
     clear_query_watch,
@@ -4082,7 +4082,7 @@ class ArchiveStore:
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
+                   (SELECT {model_usage_cost_estimated_sql("s.reported_cost_usd")} FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
                    (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (
                        SELECT smu.model_name
@@ -4873,7 +4873,6 @@ class ArchiveStore:
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
                    (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.input_row_count, sp.input_content_hash, sp.materializer_version,
@@ -5054,7 +5053,6 @@ class ArchiveStore:
                    sp.attachment_count,
                    sp.tool_calls_per_minute,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
                    (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN {MODEL_USAGE_CATALOG_SUM_SQL} IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, {MODEL_USAGE_CATALOG_SUM_SQL}) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
@@ -9640,7 +9638,7 @@ def _session_profile_record_from_archive_row(
         terminal_state=str(row["terminal_state"] or "unknown"),
         terminal_state_method=str(row["terminal_state_method"] or "unknown"),
         terminal_state_confidence=float(row["terminal_state_confidence"] or 0.0),
-        cost_is_estimated=bool(row["cost_is_estimated"]),
+        cost_is_estimated=evidence.cost_is_estimated,
         thinking_duration_ms=evidence.thinking_duration_ms,
         output_duration_ms=evidence.output_duration_ms,
         tool_duration_ms=evidence.tool_duration_ms,

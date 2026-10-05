@@ -1098,3 +1098,60 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
     assert [node.depth for node in subtree_from_a] == [0, 1]
     assert [node.session_id for node in ancestry_from_a] == [b_id, a_id]
     assert [node.depth for node in ancestry_from_a] == [1, 0]
+
+
+@pytest.mark.parametrize(
+    ("provider", "reported", "catalog", "complete", "expected", "estimated"),
+    [
+        (0.42, None, None, True, 0.42, False),
+        (0.0, 7.0, 2.0, True, 0.0, False),
+        (None, 0.0, 2.0, True, 0.0, False),
+        (None, 7.0, 2.0, True, 7.0, False),
+        (None, None, 2.0, True, 2.0, True),
+        (None, None, 0.0, True, 0.0, True),
+        (None, None, 2.0, False, None, None),
+        (None, None, None, True, None, None),
+    ],
+)
+def test_delegation_cost_basis_survives_actual_attempt_and_card_reads(
+    tmp_path: Path,
+    provider: float | None,
+    reported: float | None,
+    catalog: float | None,
+    complete: bool,
+    expected: float | None,
+    estimated: bool | None,
+) -> None:
+    """Catalog coverage formerly mislabeled provider dollars and hid partial pricing."""
+    conn = _connect(tmp_path / "index.db")
+    parent_id = _insert_session(conn, native_id="basis-parent")
+    child_id = _insert_session(conn, native_id="basis-child")
+    message_id = _insert_message(conn, session_id=parent_id, native_id="dispatch", position=0)
+    _insert_dispatch_action(conn, message_id=message_id, session_id=parent_id, position=0, tool_id="basis-task")
+    conn.execute("UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?", (reported, child_id))
+    conn.execute(
+        """INSERT INTO session_model_usage
+           (session_id, model_name, input_tokens, provider_cost_usd, catalog_cost_usd, provider_lanes_complete)
+           VALUES (?, 'unknown-test-model', 100, ?, ?, ?)""",
+        (child_id, provider, catalog, int(complete)),
+    )
+    _insert_session_link(
+        conn,
+        child_session_id=child_id,
+        dst_origin="claude-code-session",
+        dst_native_id="basis-parent",
+        parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{message_id}:0",
+    )
+    conn.commit()
+    conn.close()
+    initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        row = archive.get_delegation_attempt(instruction_tool_use_block_id=f"{message_id}:0")
+        card = archive.get_delegation_card(instruction_tool_use_block_id=f"{message_id}:0")
+        assert row is not None and card is not None
+        assert row.child_cost_usd == expected
+        assert row.child_cost_is_estimated == estimated
+        payload = DelegationCardPayload.from_card(card)
+        assert payload.attempt.child_cost_usd == expected
+        assert payload.attempt.child_cost_is_estimated is estimated

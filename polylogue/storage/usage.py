@@ -58,7 +58,7 @@ from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import WARNING, emit
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
-from polylogue.storage.sqlite.queries.model_usage import MODEL_USAGE_CATALOG_SUM_SQL
+from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL
 
 UsageReportDetail = Literal["headline", "full"]
 

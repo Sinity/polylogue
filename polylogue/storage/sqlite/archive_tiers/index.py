@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPE
 from polylogue.storage.sqlite.archive_tiers.query_unit_frame import index_frame_bump_sql, index_frame_seed_sql
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
+from polylogue.storage.sqlite.model_usage_sql import MODEL_USAGE_CATALOG_SUM_SQL, model_usage_cost_estimated_sql
 
 
 # polylogue-crwl6: the profile domain's binding-retirement triggers are
@@ -2169,12 +2170,12 @@ SELECT
     pp.terminal_state                           AS parent_terminal_state,
     cp.primary_model_name                       AS child_session_dominant_model,
     cp.primary_model_family                     AS child_session_dominant_model_family,
-    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd),
-                     (SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id))
+    (SELECT COALESCE(SUM(u.provider_cost_usd),
+                     (SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id),
+                     {MODEL_USAGE_CATALOG_SUM_SQL})
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_usd,
-    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL
-                 WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END
+    (SELECT {model_usage_cost_estimated_sql("(SELECT reported_cost_usd FROM sessions WHERE session_id = att.child_session_id)")}
        FROM session_model_usage u
        WHERE u.session_id = att.child_session_id) AS child_cost_is_estimated,
     (SELECT SUM(COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0)
