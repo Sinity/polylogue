@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.errors import SchemaSkew
@@ -781,12 +781,78 @@ _FINDINGS_COUNTS = (
     "blocking_heads",
     "broken_heads",
     "cursor_checks",
+    "cursor_comparisons",
     "cursor_ahead",
     "cursor_ahead_comparisons",
     "cursor_gaps",
+    "cursor_deferred",
     "missing_session_raws",
 )
-_FINDINGS_SAMPLE_FIELDS = frozenset({"logical_source_key", "accepted_raw_id", "reason"})
+_FINDINGS_SAMPLES = ("broken_head_samples", "cursor_ahead_samples", "cursor_gap_samples")
+_GAP_STATES = frozenset(get_args(CursorAuthorityGapState))
+
+
+def _require_sample(raw: object, fields: dict[str, tuple[type, ...]]) -> dict[str, object]:
+    if not isinstance(raw, dict) or set(raw) != set(fields):
+        raise ValueError("frontier inspection sample has an undeclared shape")
+    for name, types in fields.items():
+        value = raw[name]
+        if type(value) not in types or (type(value) is int and value < 0):
+            raise ValueError(f"frontier inspection sample field {name} has an undeclared value")
+    return raw
+
+
+def _broken_head_from_document(raw: object) -> BrokenAppendHeadSample:
+    sample = _require_sample(raw, {"logical_source_key": (str,), "accepted_raw_id": (str,), "reason": (str,)})
+    return BrokenAppendHeadSample(
+        logical_source_key=str(sample["logical_source_key"]),
+        accepted_raw_id=str(sample["accepted_raw_id"]),
+        reason=str(sample["reason"]),
+    )
+
+
+def _cursor_ahead_from_document(raw: object) -> CursorAheadSample:
+    sample = _require_sample(
+        raw,
+        {
+            "source_path": (str,),
+            "logical_source_key": (str,),
+            "cursor_byte_offset": (int,),
+            "accepted_frontier": (int,),
+            "affected_head_count": (int,),
+            "canonical_source_path": (str, type(None)),
+        },
+    )
+    return CursorAheadSample(
+        source_path=str(sample["source_path"]),
+        logical_source_key=str(sample["logical_source_key"]),
+        cursor_byte_offset=cast(int, sample["cursor_byte_offset"]),
+        accepted_frontier=cast(int, sample["accepted_frontier"]),
+        affected_head_count=cast(int, sample["affected_head_count"]),
+        canonical_source_path=cast(str | None, sample["canonical_source_path"]),
+    )
+
+
+def _cursor_gap_from_document(raw: object) -> CursorAuthorityGapSample:
+    sample = _require_sample(
+        raw,
+        {
+            "state": (str,),
+            "source_path": (str, type(None)),
+            "logical_source_key": (str, type(None)),
+            "cursor_byte_offset": (int, type(None)),
+            "reason": (str,),
+        },
+    )
+    if sample["state"] not in _GAP_STATES:
+        raise ValueError("frontier inspection gap sample names an undeclared state")
+    return CursorAuthorityGapSample(
+        state=cast(CursorAuthorityGapState, sample["state"]),
+        source_path=cast(str | None, sample["source_path"]),
+        logical_source_key=cast(str | None, sample["logical_source_key"]),
+        cursor_byte_offset=cast(int | None, sample["cursor_byte_offset"]),
+        reason=str(sample["reason"]),
+    )
 
 
 @dataclass(frozen=True)
@@ -806,24 +872,23 @@ class FrontierInspectionFindings:
     broken_heads: int
     broken_head_samples: tuple[BrokenAppendHeadSample, ...]
     cursor_checks: int
+    cursor_comparisons: int
     cursor_ahead: int
     cursor_ahead_comparisons: int
+    cursor_ahead_samples: tuple[CursorAheadSample, ...]
     cursor_gaps: int
+    cursor_gap_samples: tuple[CursorAuthorityGapSample, ...]
+    cursor_deferred: int
     missing_session_raws: int
 
     def to_document(self) -> str:
         import json
+        from dataclasses import asdict
 
         payload: dict[str, object] = {name: getattr(self, name) for name in _FINDINGS_COUNTS}
         payload["mode"] = self.mode
-        payload["broken_head_samples"] = [
-            {
-                "logical_source_key": sample.logical_source_key,
-                "accepted_raw_id": sample.accepted_raw_id,
-                "reason": sample.reason,
-            }
-            for sample in self.broken_head_samples
-        ]
+        for name in _FINDINGS_SAMPLES:
+            payload[name] = [asdict(sample) for sample in getattr(self, name)]
         return json.dumps(payload, sort_keys=True)
 
     @classmethod
@@ -832,7 +897,7 @@ class FrontierInspectionFindings:
         import json
 
         payload = json.loads(document)
-        if not isinstance(payload, dict) or set(payload) != {*_FINDINGS_COUNTS, "mode", "broken_head_samples"}:
+        if not isinstance(payload, dict) or set(payload) != {*_FINDINGS_COUNTS, "mode", *_FINDINGS_SAMPLES}:
             raise ValueError("frontier inspection findings have an undeclared shape")
         counts: dict[str, int] = {}
         for name in _FINDINGS_COUNTS:
@@ -843,27 +908,22 @@ class FrontierInspectionFindings:
         mode = payload["mode"]
         if mode not in {"full", "delta"}:
             raise ValueError("frontier inspection findings name an undeclared mode")
-        raw_samples = payload["broken_head_samples"]
-        if not isinstance(raw_samples, list):
-            raise ValueError("frontier inspection broken-head samples are not a list")
-        samples: list[BrokenAppendHeadSample] = []
-        for raw in raw_samples:
-            if (
-                not isinstance(raw, dict)
-                or set(raw) != _FINDINGS_SAMPLE_FIELDS
-                or not all(isinstance(raw[field], str) for field in _FINDINGS_SAMPLE_FIELDS)
-            ):
-                raise ValueError("frontier inspection broken-head sample has an undeclared shape")
-            samples.append(
-                BrokenAppendHeadSample(
-                    logical_source_key=raw["logical_source_key"],
-                    accepted_raw_id=raw["accepted_raw_id"],
-                    reason=raw["reason"],
-                )
-            )
-        if len(samples) > counts["broken_heads"]:
-            raise ValueError("frontier inspection records more broken-head samples than broken heads")
-        return cls(mode=mode, broken_head_samples=tuple(samples), **counts)
+        for name in _FINDINGS_SAMPLES:
+            if not isinstance(payload[name], list):
+                raise ValueError(f"frontier inspection {name} are not a list")
+        broken = tuple(_broken_head_from_document(raw) for raw in payload["broken_head_samples"])
+        ahead = tuple(_cursor_ahead_from_document(raw) for raw in payload["cursor_ahead_samples"])
+        gaps = tuple(_cursor_gap_from_document(raw) for raw in payload["cursor_gap_samples"])
+        for samples, count in ((broken, "broken_heads"), (ahead, "cursor_ahead"), (gaps, "cursor_gaps")):
+            if len(samples) > counts[count]:
+                raise ValueError(f"frontier inspection records more samples than {count}")
+        return cls(
+            mode=mode,
+            broken_head_samples=broken,
+            cursor_ahead_samples=ahead,
+            cursor_gap_samples=gaps,
+            **counts,
+        )
 
 
 @dataclass(frozen=True)
@@ -1186,14 +1246,14 @@ def _raw_frontier_integrity_from_findings(
         cursor_ahead_status=cursor_status,
         cursor_ahead_count=findings.cursor_ahead,
         cursor_ahead_checked_count=findings.cursor_checks,
-        cursor_head_comparison_count=findings.cursor_checks,
+        cursor_head_comparison_count=findings.cursor_comparisons,
         cursor_ahead_comparison_count=findings.cursor_ahead_comparisons,
-        cursor_ahead_samples=(),
+        cursor_ahead_samples=findings.cursor_ahead_samples,
         cursor_authority_gap_count=findings.cursor_gaps,
-        cursor_authority_gap_samples=(),
-        cursor_authority_deferred_count=0,
+        cursor_authority_gap_samples=findings.cursor_gap_samples,
+        cursor_authority_deferred_count=findings.cursor_deferred,
         cursor_ahead_reason=cursor_ahead_reason(
-            findings.cursor_ahead, findings.cursor_ahead_comparisons, findings.cursor_gaps, 0
+            findings.cursor_ahead, findings.cursor_ahead_comparisons, findings.cursor_gaps, findings.cursor_deferred
         ),
     )
 
@@ -2572,6 +2632,38 @@ def _classify_cursor_frontier_input(
     return _CursorFrontierComparison(True, count, ahead, representative, False, False)
 
 
+def cursor_gap_sample(path: str, cursor_offset: int, *, retained: bool) -> CursorAuthorityGapSample:
+    """The sample for a cursor whose path cannot be joined to an accepted byte head."""
+    return CursorAuthorityGapSample(
+        state="source_raws_without_accepted_head" if retained else "cursor_path_absent_from_source",
+        source_path=path,
+        logical_source_key=None,
+        cursor_byte_offset=cursor_offset,
+        reason=(
+            "source tier has raw evidence but index has no accepted byte head"
+            if retained
+            else "ingest cursor path is absent from source tier"
+        ),
+    )
+
+
+def cursor_ahead_sample(
+    path: str, cursor: _OpsCursorAuthority, comparison: _CursorFrontierComparison
+) -> CursorAheadSample:
+    """The sample for a cursor committed past its representative accepted byte head."""
+    representative = comparison.representative
+    if representative is None:
+        raise ValueError("a cursor ahead of accepted raw names no representative head")
+    return CursorAheadSample(
+        source_path=path,
+        logical_source_key=representative.logical_source_key,
+        cursor_byte_offset=cursor.byte_offset,
+        accepted_frontier=representative.accepted_frontier,
+        affected_head_count=comparison.ahead_count,
+        canonical_source_path=cursor.canonical_source_path,
+    )
+
+
 def _compare_cursor_frontier_inputs(
     heads: tuple[_IndexRawRevisionHead, ...],
     *,
@@ -2646,23 +2738,7 @@ def _compare_cursor_frontier_inputs(
                 continue
             gap_count += 1
             if len(gaps) < sample_limit:
-                gaps.append(
-                    CursorAuthorityGapSample(
-                        state=(
-                            "source_raws_without_accepted_head"
-                            if path in retained_source_paths
-                            else "cursor_path_absent_from_source"
-                        ),
-                        source_path=path,
-                        logical_source_key=None,
-                        cursor_byte_offset=cursor_offset,
-                        reason=(
-                            "source tier has raw evidence but index has no accepted byte head"
-                            if path in retained_source_paths
-                            else "ingest cursor path is absent from source tier"
-                        ),
-                    )
-                )
+                gaps.append(cursor_gap_sample(path, cursor_offset, retained=path in retained_source_paths))
             continue
         checked += 1
         comparison_count += comparison.comparison_count
@@ -2671,18 +2747,7 @@ def _compare_cursor_frontier_inputs(
         ahead_count += 1
         ahead_comparison_count += comparison.ahead_count
         if len(samples) < sample_limit:
-            representative = comparison.representative
-            assert representative is not None
-            samples.append(
-                CursorAheadSample(
-                    source_path=path,
-                    logical_source_key=representative.logical_source_key,
-                    cursor_byte_offset=cursor_offset,
-                    accepted_frontier=representative.accepted_frontier,
-                    affected_head_count=comparison.ahead_count,
-                    canonical_source_path=cursor.canonical_source_path,
-                )
-            )
+            samples.append(cursor_ahead_sample(path, cursor, comparison))
 
     status: RawFrontierIntegrityStatus = "violated" if ahead_count else "unknown" if gap_count else "healthy"
     return (

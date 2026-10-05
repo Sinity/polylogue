@@ -1546,11 +1546,20 @@ def inspect_prepared_raw_authority_frontier(
                 state,
                 None if check_physical_dependencies else mark,
             )
-            from polylogue.storage.raw_retention import BrokenAppendHeadSample, FrontierInspectionFindings
+            from polylogue.storage.raw_retention import (
+                BrokenAppendHeadSample,
+                CursorAheadSample,
+                CursorAuthorityGapSample,
+                FrontierInspectionFindings,
+                cursor_ahead_sample,
+                cursor_gap_sample,
+            )
 
             head_count = blocking_count = broken_count = cursor_count = ahead_count = gap_count = 0
-            ahead_comparisons = missing_refs = 0
+            ahead_comparisons = cursor_comparisons = deferred_count = missing_refs = 0
             broken_samples: list[BrokenAppendHeadSample] = []
+            ahead_samples: list[CursorAheadSample] = []
+            gap_samples: list[CursorAuthorityGapSample] = []
             if mode != "current":
                 for item, chain in _iter_selected_frontier_proofs(
                     source,
@@ -1567,11 +1576,20 @@ def inspect_prepared_raw_authority_frontier(
                         # A bounded sample for the operator; the count stays exact.
                         if len(broken_samples) < _FINDINGS_SAMPLE_LIMIT:
                             broken_samples.extend(cast(tuple[BrokenAppendHeadSample, ...], chain[3])[:1])
-                for _cursor, comparison, _retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
+                for cursor, comparison, retained_path in _iter_selected_cursor_proofs(source, frame.selection, ops):
                     cursor_count += 1
                     ahead_count += int(comparison.ahead_count > 0)
                     ahead_comparisons += comparison.ahead_count
+                    cursor_comparisons += comparison.comparison_count
                     gap_count += int(comparison.gap)
+                    deferred_count += int(comparison.deferred)
+                    # Bounded samples for the operator; the counts stay exact.
+                    if comparison.ahead_count and len(ahead_samples) < _FINDINGS_SAMPLE_LIMIT:
+                        ahead_samples.append(cursor_ahead_sample(cursor.source_path, cursor, comparison))
+                    if comparison.gap and len(gap_samples) < _FINDINGS_SAMPLE_LIMIT:
+                        gap_samples.append(
+                            cursor_gap_sample(cursor.source_path, cursor.byte_offset, retained=retained_path)
+                        )
                 if mode == "full":
                     missing_refs = _missing_session_raw_references(source)
                 pass_id = "raw-authority-frontier-pass:" + frame.selection.proof_inventory_digest()
@@ -1635,9 +1653,13 @@ def inspect_prepared_raw_authority_frontier(
                     broken_heads=broken_count,
                     broken_head_samples=tuple(broken_samples),
                     cursor_checks=cursor_count,
+                    cursor_comparisons=cursor_comparisons,
                     cursor_ahead=ahead_count,
                     cursor_ahead_comparisons=ahead_comparisons,
+                    cursor_ahead_samples=tuple(ahead_samples),
                     cursor_gaps=gap_count,
+                    cursor_gap_samples=tuple(gap_samples),
+                    cursor_deferred=deferred_count,
                     missing_session_raws=missing_refs,
                 ).to_document(),
             )
