@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.live_ingest import write_index_session
 
@@ -48,7 +49,7 @@ def facade_daemon_writer(monkeypatch: pytest.MonkeyPatch) -> Callable[[Path], Ab
     return start
 
 
-def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
+def _seed_on_writer(archive_root: Path, *, provider_session_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive:
         write_index_session(
             archive,
@@ -68,6 +69,11 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
                 ],
             ),
         )
+
+
+def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
+    """Run the synchronous seed off any running event loop."""
+    return run_off_event_loop(lambda: _seed_on_writer(archive_root, provider_session_id=provider_session_id, text=text))
 
 
 async def test_compile_and_record_context_persists_the_exact_compiled_image(

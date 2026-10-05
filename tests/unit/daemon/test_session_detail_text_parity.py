@@ -19,10 +19,12 @@ flattened string per message.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from polylogue.daemon.webui_data import attachment_to_envelope, envelope_paste_spans
 from polylogue.operations.http_session_reads import HttpSessionProjectionAdapters, execute_http_session_detail
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 _MIXED_BLOCKS = [
@@ -53,15 +55,20 @@ async def test_db_backed_and_archive_backed_message_text_agree_for_mixed_blocks(
 
     # Archive-backed route: its pinned product read and wire projection.
     archive_root = db_path.parent
-    with ArchiveStore(archive_root) as archive:
-        detail = execute_http_session_detail(
-            {"session_id": builder.native_session_id(), "shape": "full", "limit": None, "offset": 0},
-            archive=archive,
-            adapters=HttpSessionProjectionAdapters(
-                attachment=attachment_to_envelope,
-                paste_spans=envelope_paste_spans,
-            ),
-        )
+
+    def _off_loop_1() -> Any:
+        with ArchiveStore(archive_root) as archive:
+            detail = execute_http_session_detail(
+                {"session_id": builder.native_session_id(), "shape": "full", "limit": None, "offset": 0},
+                archive=archive,
+                adapters=HttpSessionProjectionAdapters(
+                    attachment=attachment_to_envelope,
+                    paste_spans=envelope_paste_spans,
+                ),
+            )
+        return (detail,)
+
+    (detail,) = run_off_event_loop(_off_loop_1)
     assert detail is not None
     messages = detail["messages"]
     assert isinstance(messages, list) and len(messages) == 1
