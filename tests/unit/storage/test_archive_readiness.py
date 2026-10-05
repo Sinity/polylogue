@@ -535,7 +535,7 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
     with sqlite3.connect(index_db) as conn:
         conn.executescript(
             """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT);
             CREATE TABLE raw_revision_applications (raw_id TEXT, decision TEXT, detail TEXT);
             INSERT INTO raw_revision_applications VALUES ('terminal-application', 'superseded', 'test');
             INSERT INTO raw_revision_applications VALUES ('terminal-application-error', 'superseded', 'test');
@@ -656,7 +656,7 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
@@ -705,7 +705,7 @@ def test_raw_materialization_snapshot_counts_raw_artifacts_once(tmp_path: Path) 
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
         conn.executemany(
             "INSERT INTO sessions(session_id, raw_id) VALUES (?, ?)",
             [
@@ -751,7 +751,7 @@ def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: 
             ],
         )
     with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, raw_id TEXT)")
 
     _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
