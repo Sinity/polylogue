@@ -474,3 +474,11 @@ profile row, so such rows disappear through ordinary convergence.
   `get(ref="cost-outlook:<plan_name>")`.
 * [Configuration](configuration.md) — `[[cost.subscription.plans]]` in
   `polylogue.toml`.
+
+Archive read projections preserve the profile's recorded estimated-cost evidence.
+Delegation and session cost reads choose per-model provider dollars first, then
+the session's reported total, then the canonical complete catalog total. A
+recorded provider amount of zero remains exact. Catalog totals are estimates;
+incomplete catalog coverage or token lanes leave the dollar amount and estimated
+flag unknown unless a provider amount exists. These read projections do not
+reprice or replace the stored usage evidence.
