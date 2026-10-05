@@ -9,7 +9,7 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Buffer, Callable, Iterable, Iterator
+from collections.abc import Awaitable, Buffer, Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +18,7 @@ from typing import IO, TYPE_CHECKING, Protocol, cast
 import ijson
 
 if TYPE_CHECKING:
+    from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
     from polylogue.sources.source_staging import SourceInputBinding
     from polylogue.sources.sqlite_inspection import SQLiteClassification
 
@@ -32,7 +33,7 @@ from polylogue.archive.raw_payload.decode import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
-from polylogue.core.raw_failure_evidence import PartialAdmission
+from polylogue.core.raw_failure_evidence import PartialAdmission, RetainedRawDecodeRefusalError
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
     ForeignOriginContentError,
@@ -279,6 +280,17 @@ class _AppendResult:
     # (a cursor-tracked prior observation), so every entry here is an
     # existing-session touch, never a newly created session.
     session_ids_by_path: dict[Path, str] = field(default_factory=dict)
+
+
+class LiveRetainedRunner(Protocol):
+    """The retained owner's acquired-raw publication, with its terminal refusals."""
+
+    def __call__(
+        self,
+        raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+    ) -> Awaitable[Sequence[PreparedRevisionReplayResult]]: ...
 
 
 class _DeferredAppend:
