@@ -32,7 +32,9 @@ from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.live_ingest import prepared_live_convergence_owner
 
 
-def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
+def _make_watcher(
+    tmp_path: Path, root: Path, *, write_coordinator: DaemonWriteCoordinator | None = None
+) -> LiveWatcher:
     polylogue = cast(
         Any,
         SimpleNamespace(
@@ -41,7 +43,9 @@ def _make_watcher(tmp_path: Path, root: Path) -> LiveWatcher:
         ),
     )
     cursor = CursorStore(tmp_path / "archive.sqlite")
-    return LiveWatcher(polylogue, (WatchSource(name="test", root=root),), cursor=cursor)
+    return LiveWatcher(
+        polylogue, (WatchSource(name="test", root=root),), cursor=cursor, write_coordinator=write_coordinator
+    )
 
 
 @pytest.mark.parametrize("route", ["append", "full"])
@@ -168,7 +172,9 @@ async def test_a_locked_archive_leaves_the_whole_page_retryable_and_unacknowledg
     second = root / "b-session.jsonl"
     first.write_text('{"role":"user","content":"a"}\n')
     second.write_text('{"role":"user","content":"b"}\n')
-    watcher = _make_watcher(tmp_path, root)
+    # Page admission initializes the cursor on the daemon writer.
+    coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+    watcher = _make_watcher(tmp_path, root, write_coordinator=coordinator)
     calls: list[list[Path]] = []
 
     async def locked_ingest(paths: list[Path], **_kwargs: object) -> None:
@@ -181,11 +187,14 @@ async def test_a_locked_archive_leaves_the_whole_page_retryable_and_unacknowledg
         DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=watcher._sources),
         source,
     )
-    page = await adapter.discover(limit=8)
-    assert {Path(cast(Any, item.payload)) for item in page} == {first, second}
+    try:
+        page = await adapter.discover(limit=8)
+        assert {Path(cast(Any, item.payload)) for item in page} == {first, second}
 
-    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        await adapter.admit_page(page)
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await adapter.admit_page(page)
+    finally:
+        assert await coordinator.shutdown(timeout=float("inf"))
 
     # One page, one batch attempt -- not one per file.
     assert calls == [[first, second]]

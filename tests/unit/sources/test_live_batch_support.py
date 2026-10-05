@@ -9101,9 +9101,13 @@ def _retry_retention_on_admitted_writer(archive_root: Path, processor: LiveBatch
         watcher._batch_processor = processor
         watcher._ingest_lock = asyncio.Lock()
         watcher._write_coordinator = coordinator
+        # The retry's Source body runs on the processor's writer runner.
+        previous_runner = processor._sync_runner
+        processor._sync_runner = coordinator.run_sync
         try:
             await watcher.retry_raw_retention_backlog()
         finally:
+            processor._sync_runner = previous_runner
             if not await coordinator.shutdown(timeout=float("inf")):
                 raise RuntimeError("retention retry coordinator did not physically settle")
 
