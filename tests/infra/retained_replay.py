@@ -3,18 +3,30 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
+from polylogue.core.compute_cancel import check_compute_cancelled
 from polylogue.core.enums import Provider
-from polylogue.sources.revision_backfill import PreparedRevisionReplayResult, RevisionCensusResult
+from polylogue.operations.raw_observation_derivation import make_raw_observation_derivation, raw_observation_frame
+from polylogue.sources.revision_backfill import (
+    PreparedRevisionReplayResult,
+    RetainedPreparationRetryableError,
+    RevisionCensusResult,
+)
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.index_generation import IndexGeneration
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.connection_profile import readonly_connection_context
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.archive_templates import bootstrap_archive_root, run_archive_fixture_write
 from tests.infra.live_ingest import prepared_live_convergence_owner
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from polylogue.core.compute import BoundedComputeAdapter
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +34,8 @@ class RetainedReplayRun:
     """Actual prepared apply receipts emitted during one synthetic replay."""
 
     receipts: tuple[PreparedRevisionReplayResult | RevisionCensusResult, ...]
+    #: The raw ids of each component the derivation published, in order.
+    components: tuple[tuple[str, ...], ...] = ()
 
     @property
     def scanned(self) -> int:
@@ -50,7 +64,54 @@ class RetainedReplayRun:
         )
 
 
-def replay_retained_components(
+def _replay_on_creator(
+    archive_root: Path,
+    compute_adapter: BoundedComputeAdapter,
+    seeds: tuple[str, ...],
+    active_index_path: Path | None,
+    owned_generation: IndexGeneration | None,
+) -> RetainedReplayRun:
+    adapter = make_raw_observation_derivation(
+        archive_root,
+        compute_adapter=compute_adapter,
+        index_db_path=active_index_path,
+        owned_generation=owned_generation,
+    )
+    frame = raw_observation_frame(archive_root, raw_ids=seeds, index_db_path=active_index_path)
+    receipts: list[PreparedRevisionReplayResult | RevisionCensusResult] = []
+    components: list[tuple[str, ...]] = []
+    visited: set[str] = set()
+    for raw_id in seeds:
+        if raw_id in visited:
+            continue
+        while True:
+            check_compute_cancelled()
+            replacement = adapter.compute(frame, raw_id, replay_current=True)
+            phases: list[str] = []
+
+            def record(
+                phase: Literal["census", "classification", "replay"],
+                receipt: RevisionCensusResult | PreparedRevisionReplayResult,
+                phases: list[str] = phases,
+            ) -> None:
+                phases.append(phase)
+                receipts.append(receipt)
+
+            with write_lease("synthetic-retained-replay", archive_root=archive_root):
+                published = adapter.publish(frame, replacement, phase_receipt=record)
+            if published:
+                components.append(tuple(replacement.raw_ids))
+                visited.update(replacement.raw_ids)
+                break
+            # A preparatory Source phase (census or classification) commits its
+            # own receipt and changes the durable input binding; the next pass
+            # prepares against it. A refusal that published no phase is surfaced.
+            if not phases:
+                raise RetainedPreparationRetryableError("canonical retained publication refused without progress")
+    return RetainedReplayRun(tuple(receipts), tuple(components))
+
+
+async def replay_retained_components_async(
     archive_root: Path,
     *,
     selected_raw_ids: Sequence[str] | None = None,
@@ -59,19 +120,16 @@ def replay_retained_components(
 ) -> RetainedReplayRun:
     """Run the real captured preparation/publication route without fallback.
 
-    The canonical daemon owner settles preparatory Source phases and replays
-    each selected retained component on its admitted compute creator. It binds
-    to the registered cold-build generation itself; a fixture naming another
-    destination is refused rather than redirected. A refused attempt with no
-    progress surfaces the owner's typed error; this harness never adds a
-    timeout, a retry count or a substitute result.
+    Preparation runs on the daemon raw owner's admitted worker. A refused
+    attempt with no progress is surfaced; this harness never adds a timeout,
+    a retry count or a substitute result.
     """
-    from polylogue.sources.live.cold_build import active_cold_build_generation
-
     with readonly_connection_context(archive_root / "source.db") as source:
         retained = tuple(str(row[0]) for row in source.execute("SELECT raw_id FROM raw_sessions ORDER BY rowid"))
     selected = frozenset(selected_raw_ids) if selected_raw_ids is not None else None
     seeds = tuple(raw_id for raw_id in retained if selected is None or raw_id in selected)
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
     cold_build = active_cold_build_generation(archive_root)
     registered = None if cold_build is None else cold_build.generation
     if owned_generation is not None:
@@ -79,6 +137,7 @@ def replay_retained_components(
             raise ValueError("retained fixture Index differs from its exact owned generation")
         if registered is None or Path(registered.index_path).resolve() != Path(owned_generation.index_path).resolve():
             raise ValueError("retained fixture generation is not the registered cold-build destination")
+        active_index_path = Path(owned_generation.index_path)
     elif active_index_path is not None:
         expected = (
             ArchiveLocation.resolve(archive_root).active_index_path
@@ -87,13 +146,34 @@ def replay_retained_components(
         )
         if active_index_path.resolve() != expected.resolve():
             raise ValueError("retained fixture Index is not the owner's actual destination")
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        return await owner.run_convergence_sync(
+            "test.retained-replay",
+            _replay_on_creator,
+            archive_root,
+            owner._compute_adapter,
+            seeds,
+            active_index_path,
+            owned_generation,
+        )
 
-    async def run() -> tuple[PreparedRevisionReplayResult, ...]:
-        async with prepared_live_convergence_owner(archive_root) as owner:
-            return await owner.replay_retained_raw_ids(seeds)
 
-    receipts: tuple[PreparedRevisionReplayResult | RevisionCensusResult, ...] = tuple(asyncio.run(run()))
-    return RetainedReplayRun(receipts)
+def replay_retained_components(
+    archive_root: Path,
+    *,
+    selected_raw_ids: Sequence[str] | None = None,
+    active_index_path: Path | None = None,
+    owned_generation: IndexGeneration | None = None,
+) -> RetainedReplayRun:
+    """Synchronous form of :func:`replay_retained_components_async`."""
+    return asyncio.run(
+        replay_retained_components_async(
+            archive_root,
+            selected_raw_ids=selected_raw_ids,
+            active_index_path=active_index_path,
+            owned_generation=owned_generation,
+        )
+    )
 
 
 async def publish_retained_payload(

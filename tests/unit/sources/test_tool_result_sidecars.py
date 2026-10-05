@@ -366,7 +366,7 @@ def test_tool_results_sidecar_never_becomes_a_session_on_either_chokepoint(tmp_p
     assert rule is not None
     assert (rule.kind, rule.parse_policy) == ("tool_result_sidecar", "raw-only")
 
-    replayed = _parse_one(Provider.CLAUDE_CODE, body, str(sidecar))
+    replayed = _parse_one(Provider.CLAUDE_CODE, body, str(sidecar), sidecar_resolver=None)
     assert replayed == []
 
     acquired = list(iter_source_sessions_with_raw(Source(name="claude-code", path=sidecar), capture_raw=False))

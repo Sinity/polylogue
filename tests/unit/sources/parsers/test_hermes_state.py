@@ -100,7 +100,7 @@ def _tool_result_blocks(path: Path, *, tool_contents: list[str]) -> list[ParsedC
 def test_compression_parent_order_and_bound_preview_agree(
     tmp_path: Path, parents: dict[str, str | None], positions: dict[str, int]
 ) -> None:
-    from polylogue.sources.parsers.hermes_identity import profile_key
+    from polylogue.sources.parsers.hermes_identity import profile_key, qualified_session_id
     from polylogue.sources.sqlite_inspection import inspect_sqlite_source
 
     path = tmp_path / "state.db"
@@ -123,11 +123,12 @@ def test_compression_parent_order_and_bound_preview_agree(
     qualifier = profile_key(tmp_path)
     by_id = {session.provider_session_id: session for session in sessions}
     for native_id, position in positions.items():
-        session = by_id[hermes_state._qualified_session_id(native_id, qualifier)]
+        session = by_id[qualified_session_id(native_id, qualifier)]
         assert session.messages[0].position == position
         if position:
-            parent = by_id[session.parent_session_provider_id]
-            assert session.branch_point_provider_message_id == parent.messages[-1].provider_message_id
+            assert session.parent_session_provider_id is not None
+            parent_session = by_id[session.parent_session_provider_id]
+            assert session.branch_point_provider_message_id == parent_session.messages[-1].provider_message_id
     inspection = inspect_sqlite_source(path)
     assert inspection.produced["sessions"] == len(sessions)
     assert inspection.produced["messages"] == sum(len(session.messages) for session in sessions)

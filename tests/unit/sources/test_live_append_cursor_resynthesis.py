@@ -31,7 +31,6 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.core.enums import Provider
 from polylogue.sources.live import WatchSource
-from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import (
     _AppendPlan,
@@ -43,6 +42,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.raw_owner_routes import ingest_append_with_owner
 
 
 def _session_meta(session_id: str) -> bytes:
@@ -283,7 +283,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     source.write_bytes(baseline + first_delta)
     first_plan = processor._append_plan(source)
     assert isinstance(first_plan, _AppendPlan)
-    first_result = ingest_append_plans(processor, [first_plan])
+    first_result = ingest_append_with_owner(processor, [first_plan])
     assert first_result.succeeded == [first_plan]
 
     # Simulate the continuity lapse's full recovery capture.  Its bytes are
@@ -314,7 +314,7 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     assert isinstance(resumed_plan, _AppendPlan)
     assert resumed_plan.start_offset == len(baseline) + len(first_delta)
     assert resumed_plan.payload == recovery_delta + next_delta
-    resumed_result = ingest_append_plans(reset_processor, [resumed_plan])
+    resumed_result = ingest_append_with_owner(reset_processor, [resumed_plan])
     assert resumed_result.succeeded == [resumed_plan]
 
 

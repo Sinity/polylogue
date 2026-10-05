@@ -637,7 +637,10 @@ def test_parent_proven_fanout_preserves_all_results_and_aggregate_verdict(
             + " SELECT * FROM observed_events WHERE kind='tool_finished' AND tool_name='browser'"
         ).fetchall()
         reader = ArchiveReadInsights(
-            conn, normalize_origin=lambda value: value, iso_from_milliseconds=lambda value: str(value)
+            conn,
+            checkpoint=lambda: None,
+            normalize_origin=lambda value: value,
+            iso_from_milliseconds=lambda value: str(value),
         )
         episodes = reader.list_tool_episode_insights(ToolEpisodeQuery(session_id=sid, tool="browser"))
         assert len(episodes) == 1

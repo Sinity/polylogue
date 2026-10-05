@@ -433,6 +433,7 @@ async def test_retained_raw_replay_resolves_the_curated_title(tmp_path: Path) ->
             source_conn=conn,
             blob_root=archive_root / "blob",
             source_path=str(transcript),
+            captured_zip_coordinate=None,
         )
     finally:
         conn.close()

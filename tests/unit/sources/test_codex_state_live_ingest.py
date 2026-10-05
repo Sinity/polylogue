@@ -25,12 +25,15 @@ from __future__ import annotations
 import functools
 import json
 import sqlite3
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
+from polylogue.core.compute import BoundedComputeAdapter
+from polylogue.core.stage_admission import stage_write_admission
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
@@ -38,7 +41,18 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.materials import MaterialObservation
 from polylogue.storage.sqlite.agent_thread_state import read_provenance, read_spawn_edges, read_thread_titles
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.live_batch import prepared_live_batch_processor
+from tests.infra.live_ingest import prepared_live_convergence_owner
+from tests.infra.raw_owner_routes import ingest_files_with_owners, live_owner_set
+
+
+def _lease_writer(root: Path) -> Callable[[str, Callable[[], bool]], bool]:
+    def writer(actor: str, work: Callable[[], bool]) -> bool:
+        with write_lease(actor, archive_root=root):
+            return work()
+
+    return writer
 
 
 async def _live_failure_details(processor: LiveBatchProcessor, root: Path) -> str:
@@ -760,18 +774,18 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
     ``source_raws_without_accepted_head`` and the gate stays blocked.
     """
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-    from tests.infra.retained_replay import replay_retained_components
+    from tests.infra.retained_replay import replay_retained_components_async
 
     archive_root = workspace_env["archive_root"]
     raw_ids = await _seed_unreceipted_codex_state_raws(workspace_env)
 
-    replay_retained_components(archive_root, selected_raw_ids=list(raw_ids.values()))
+    await replay_retained_components_async(archive_root, selected_raw_ids=list(raw_ids.values()))
     assert _cursor_authority_gap_states(archive_root) == []
     assert raw_frontier_source_selection_block_reason(archive_root) is None
     # Replaying the same retained input keeps the terminal authority stable.
     with sqlite3.connect(archive_root / "source.db") as conn:
         before = conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall()
-    replay_retained_components(archive_root, selected_raw_ids=list(raw_ids.values()))
+    await replay_retained_components_async(archive_root, selected_raw_ids=list(raw_ids.values()))
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT * FROM raw_membership_census ORDER BY raw_id").fetchall() == before
 
@@ -853,6 +867,7 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
         detail = conn.execute("SELECT detail FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone()
         assert detail is not None and LEGACY_PAGE_IMAGE_CENSUS_DETAIL in str(detail[0])
     with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        assert archive.index_connection is not None
         assert read_thread_titles(archive.index_connection, thread_ids=[_THREAD_ID]) == {}
 
 
@@ -865,7 +880,7 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
     Anti-vacuity: coupling preparation to a malformed sibling prevents the
     valid goals snapshot from receiving its terminal receipt.
     """
-    from tests.infra.retained_replay import replay_retained_components
+    from tests.infra.retained_replay import replay_retained_components_async
 
     archive, codex_root, codex_state_root = _make_processor(
         workspace_env, "codex-home-schema-drift", "codex-state-schema-drift.db"
@@ -904,7 +919,7 @@ async def test_schema_drift_candidate_does_not_block_other_retained_state_receip
         conn.commit()
 
     retained_by_path = {str(path): str(raw_id) for raw_id, path in rows}
-    replay_retained_components(
+    await replay_retained_components_async(
         workspace_env["archive_root"],
         selected_raw_ids=[retained_by_path[str(good_path)]],
     )
@@ -941,7 +956,6 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
     """
     from polylogue.daemon.intake import FairIntakeDispatcher, IntakeClassSpec
     from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
-    from polylogue.operations.operation_context import open_operation_read
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
     archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-catchup", "codex-catchup.db")
@@ -960,38 +974,39 @@ async def test_a_fresh_root_admits_every_page_with_a_codex_state_snapshot_among_
         WatchSource(name="codex", root=codex_root),
         WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
     )
-    watcher = live_watcher.LiveWatcher(
-        archive,
-        sources,
-        cursor=CursorStore(archive_root / "ops.db"),
-        read_snapshot=open_operation_read,
-    )
-    try:
-        context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
-        # Four rows per page over eighteen files: the deadlock only showed
-        # after the third page.
-        adapters = tuple(FileIntakeAdapter(context, source) for source in sources)
-        dispatcher = FairIntakeDispatcher(
-            tuple(
-                IntakeClassSpec(name=source.name, adapter=adapter, page_size=4)
-                for source, adapter in zip(sources, adapters, strict=True)
-            )
+    async with live_owner_set(archive_root) as owners:
+        watcher = live_watcher.LiveWatcher(
+            archive,
+            sources,
+            cursor=CursorStore(archive_root / "ops.db"),
+            **owners.watcher_kwargs(),
         )
-        pages = 0
-        for _ in range(12):
-            result = await dispatcher.run_once()
-            pages += 1
-            if result.quiescent and not any(adapter.discovery_pending for adapter in adapters):
-                break
-        assert pages >= 5
+        try:
+            context = DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=sources)
+            # Four rows per page over eighteen files: the deadlock only showed
+            # after the third page.
+            adapters = tuple(FileIntakeAdapter(context, source) for source in sources)
+            dispatcher = FairIntakeDispatcher(
+                tuple(
+                    IntakeClassSpec(name=source.name, adapter=adapter, page_size=4)
+                    for source, adapter in zip(sources, adapters, strict=True)
+                )
+            )
+            pages = 0
+            for _ in range(12):
+                result = await dispatcher.run_once()
+                pages += 1
+                if result.quiescent and not any(adapter.discovery_pending for adapter in adapters):
+                    break
+            assert pages >= 5
 
-        assert raw_frontier_source_selection_block_reason(archive_root) is None
-        assert _cursor_authority_gap_states(archive_root) == []
-        assert watcher._batch_processor.cursor_authority_block_reason() is None
-        assert await archive.count_sessions() == rollout_count
-    finally:
-        watcher.stop()
-        await archive.close()
+            assert raw_frontier_source_selection_block_reason(archive_root) is None
+            assert _cursor_authority_gap_states(archive_root) == []
+            assert watcher._batch_processor.cursor_authority_block_reason() is None
+            assert await archive.count_sessions() == rollout_count
+        finally:
+            watcher.stop()
+            await archive.close()
 
 
 def test_codex_state_source_scope_is_lexical_not_process_dependent(
@@ -1060,12 +1075,18 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
     )
     try:
         for path in (state_path, rollout_path) if state_first else (rollout_path, state_path):
-            metrics = await processor.ingest_files([path], emit_event=False)
+            metrics = await ingest_files_with_owners(processor, [path], emit_event=False)
             assert metrics.failed_file_count == 0
     finally:
         await archive.close()
-    for _attempt in range(3):
-        converge_raw_observations(archive_root, source_roots=(install,), limit=64)
+
+    def converge(compute_adapter: BoundedComputeAdapter) -> None:
+        with stage_write_admission(_lease_writer(archive_root)):
+            converge_raw_observations(archive_root, source_roots=(install,), compute_adapter=compute_adapter, limit=64)
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        for _attempt in range(3):
+            await owner.run_convergence_sync("test.codex-state.converge", converge, owner._compute_adapter)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
         rows = conn.execute("SELECT session_id, title FROM sessions").fetchall()
@@ -1088,9 +1109,14 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
             for row in conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path LIKE '%rollout-%.jsonl'")
         ]
     assert rollout_raws
-    statuses = make_raw_observation_derivation(archive_root).inspect(
-        raw_observation_frame(archive_root, source_roots=(install,)), rollout_raws
-    )
+
+    def inspect(compute_adapter: BoundedComputeAdapter) -> Mapping[str, str]:
+        return make_raw_observation_derivation(archive_root, compute_adapter=compute_adapter).inspect(
+            raw_observation_frame(archive_root, source_roots=(install,)), rollout_raws
+        )
+
+    async with prepared_live_convergence_owner(archive_root) as owner:
+        statuses = await owner.run_convergence_sync("test.codex-state.inspect", inspect, owner._compute_adapter)
     assert set(statuses.values()) == {"valid"}
 
 

@@ -337,7 +337,7 @@ def test_sink_failure_reaps_the_reader_blocked_on_its_ack(
                 if operation == "bytes":
                     _write_bound_input(binding, FailingSink())
                 elif operation == "preflight_bytes":
-                    source_staging.preflight_bound_bytes(binding, check_stop=fail_callback)
+                    source_staging.preflight_bound_bytes(binding, label=source.name, check_stop=fail_callback)
                 elif operation == "copy":
                     source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=fail_callback)
                 else:
@@ -658,7 +658,7 @@ def test_malformed_callback_ack_refuses_reaps_and_removes_private_scratch(
                 if operation == "bytes":
                     _write_bound_input(binding, io.BytesIO())
                 elif operation == "preflight_bytes":
-                    source_staging.preflight_bound_bytes(binding, check_stop=lambda: None)
+                    source_staging.preflight_bound_bytes(binding, label=source.name, check_stop=lambda: None)
                 elif operation == "copy":
                     source_staging.copy_bound_input(binding, tmp_path / "copy", heartbeat=lambda: None)
                 else:

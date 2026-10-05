@@ -40,7 +40,8 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.raw_owner_routes import ingest_files_with_owners
+from tests.infra.retained_jsonl import prepared_source_fixture
 
 _SESSION_ID = "5c3d1e40-0000-4000-8000-00000000aaaa"
 _PARENT_NEEDLE = "zz_parent_full_output_needle"
@@ -257,15 +258,10 @@ def _sidecar_events(session: ParsedSession, event_type: str) -> list[dict[str, o
 
 
 def _derive_after_tree_removal(archive_root: Path, raw_id: str, tree_root: Path) -> list[ParsedSession]:
-    """Delete the whole source tree, then derive from retained bytes alone.
-
-    ``parse_retained_raw_sessions`` opens the blob publisher for write (see
-    ``revision_governance.raw_revision_descriptor``), so the store cannot be
-    read-only even though this derivation only reads.
-    """
+    """Delete the whole source tree, then derive from retained bytes alone."""
     shutil.rmtree(tree_root)
     assert not tree_root.exists()
-    with ArchiveStore(archive_root, initialize=False, read_only=False) as store:
+    with prepared_source_fixture(archive_root) as store:
         return parse_retained_raw_sessions(store, raw_id)
 
 
@@ -289,7 +285,8 @@ async def test_claude_full_tool_text_survives_the_loss_of_its_source_tree(
         workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [
                 tree["parent_sidecar"],
                 tree["subagent_sidecar"],
@@ -333,7 +330,8 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
         workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [
                 tree["parent_sidecar"],
                 tree["subagent_sidecar"],
@@ -349,7 +347,7 @@ async def test_claude_subagent_scope_keeps_ownership_after_the_tree_is_gone(
         await archive.close()
 
     shutil.rmtree(root)
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
+    with prepared_source_fixture(workspace_env["archive_root"]) as store:
         [parent] = parse_retained_raw_sessions(store, parent_raw)
         [subagent] = parse_retained_raw_sessions(store, subagent_raw)
 
@@ -393,7 +391,8 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
         # The parent's own sidecar is never acquired: its scope is observed
         # (the subagent's file is), but the file the parent's preview points
         # at is not retained.
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )
@@ -401,7 +400,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
     finally:
         await archive.close()
 
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
+    with prepared_source_fixture(workspace_env["archive_root"]) as store:
         [before] = parse_retained_raw_sessions(store, parent_raw)
 
     absent = [
@@ -418,7 +417,7 @@ async def test_missing_expected_sidecar_stays_explicit_and_a_late_one_reconverge
         workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
     )
     try:
-        await processor.ingest_files([tree["parent_sidecar"]], emit_event=False)
+        await ingest_files_with_owners(processor, [tree["parent_sidecar"]], emit_event=False)
     finally:
         await archive.close()
 
@@ -449,7 +448,7 @@ async def test_gemini_full_tool_output_survives_the_loss_of_its_source_tree(
         workspace_env, (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),)
     )
     try:
-        await processor.ingest_files([tree["sidecar"], tree["snapshot"]], emit_event=False)
+        await ingest_files_with_owners(processor, [tree["sidecar"], tree["snapshot"]], emit_event=False)
         raw_id = _raw_id_for(workspace_env["archive_root"], tree["snapshot"])
     finally:
         await archive.close()
@@ -483,7 +482,8 @@ async def test_retained_resolution_is_what_carries_the_full_text(
         workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["parent_sidecar"], tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )
@@ -495,7 +495,7 @@ async def test_retained_resolution_is_what_carries_the_full_text(
     with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
         conn.execute("DELETE FROM raw_sessions WHERE source_path = ?", (str(tree["parent_sidecar"]),))
 
-    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=False) as store:
+    with prepared_source_fixture(workspace_env["archive_root"]) as store:
         [derived] = parse_retained_raw_sessions(store, raw_id)
 
     [text] = _tool_result_texts(derived)
@@ -530,7 +530,8 @@ async def test_original_sidecar_bytes_stay_recoverable_beside_normalized_text(
         workspace_env, (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),)
     )
     try:
-        await processor.ingest_files(
+        await ingest_files_with_owners(
+            processor,
             [tree["parent_sidecar"], tree["subagent_sidecar"], tree["parent"], tree["subagent"]],
             emit_event=False,
         )
