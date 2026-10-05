@@ -58,7 +58,7 @@ from polylogue.storage.archive_readiness import raw_materialization_readiness_sn
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root, run_off_event_loop
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.raw_owner_routes import replay_retained_raws_async, seed_membership_census
 
@@ -149,24 +149,30 @@ async def _seed_live_cursor_authority_case(
     )
     source_path.write_bytes(prefix + tail)
     await asyncio.to_thread(initialize_active_archive_root, root)
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=prefix,
-            source_path=str(source_path),
-            acquired_at_ms=1,
-            native_id="session-1",
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                "codex-session:session-1",
-                RawRevisionKind.FULL,
-                "revision-0",
-                0,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
-        )
+
+    def acquire_prefix() -> str:
+        # A writable open takes a synchronous lease, which may not block the loop.
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            raw_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=prefix,
+                source_path=str(source_path),
+                acquired_at_ms=1,
+                native_id="session-1",
+            )
+            archive.bind_raw_revision(
+                raw_id,
+                RawRevisionEnvelope(
+                    "codex-session:session-1",
+                    RawRevisionKind.FULL,
+                    "revision-0",
+                    0,
+                    authority=RawRevisionAuthority.BYTE_PROVEN,
+                ),
+            )
+            return raw_id
+
+    raw_id = await asyncio.to_thread(acquire_prefix)
     # The accepted head is published from the acquired prefix through the
     # canonical retained replay route.
     await replay_retained_raws_async(root, [raw_id])
@@ -4024,7 +4030,7 @@ async def test_archive_write_budget_leaves_unwritten_page_tail_retryable(
             ],
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4140,7 +4146,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
 
     monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
     cursor = CursorStore(tmp_path / "live.sqlite")
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="codex", root=root),),
@@ -4550,7 +4556,7 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
             encoding="utf-8",
         )
     cursor = CursorStore(tmp_path / "live.sqlite")
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
         (WatchSource(name="claude-code", root=root),),

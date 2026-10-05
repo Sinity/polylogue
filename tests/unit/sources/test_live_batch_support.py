@@ -71,6 +71,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import raw_authority_parser_fingerprint
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.raw_owner_routes import (
     ingest_append_with_owner,
     ingest_files_with_owners,
@@ -8344,7 +8345,7 @@ async def test_live_full_ingest_skips_convergence_without_session_changes(
     path = root / "unchanged.json"
     path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
@@ -9241,7 +9242,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     for path in (first, second):
         path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
-    bootstrap_archive_root(tmp_path)
+    run_off_event_loop(lambda: bootstrap_archive_root(tmp_path))
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
         (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
