@@ -64,6 +64,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.convergence_debt import ConvergenceDebt
 from polylogue.sources.live.cursor import ConvergenceDebtSettlement, CursorStore
+from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, SETTLED_EXCLUSION_REASONS
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.source_acquisition_components import stream_preserved_zip_entry_raw_data
 from polylogue.sources.source_parsing import has_decoded_session_evidence
@@ -1969,9 +1970,12 @@ def test_full_ingest_unknown_export_without_sessions_records_terminal_evidence(t
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", "unsupported_parseable", 0)
@@ -1993,9 +1997,12 @@ def test_full_ingest_unknown_weak_path_ndjson_records_terminal_evidence(tmp_path
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_export_no_session", 0)
@@ -2032,10 +2039,12 @@ def test_full_ingest_unknown_weak_path_json_retains_terminal_evidence(
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw = conn.execute(
             "SELECT raw_id, blob_size, parse_error FROM raw_sessions WHERE source_path = ?", (str(path),)
@@ -2096,13 +2105,16 @@ def test_full_ingest_unknown_malformed_jsonl_records_terminal_decode_and_stops_r
         parser_fingerprint="test-parser",
     )
 
-    first = _full_paths_sync(processor, [path], source_name="unknown")
-    second = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass twice: the second pass finds nothing to retry.
+    first = run_ingest_files(processor, [path], emit_event=False)
+    second = run_ingest_files(processor, [path], emit_event=False)
 
-    assert first.succeeded == [path]
-    assert first.failed == []
-    assert second.succeeded == [path]
-    assert second.failed == []
+    assert first.failed_file_count == 0
+    assert set(first.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
+    assert second.failed_file_count == 0
+    record = processor._cursor.get_record(path)
+    assert record is not None and record.failure_count == 0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed")
@@ -2126,10 +2138,12 @@ def test_full_ingest_unknown_malformed_final_jsonl_record_records_terminal_decod
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed")
@@ -2149,10 +2163,12 @@ def test_full_ingest_unknown_json_decode_records_terminal_decode_evidence(tmp_pa
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
@@ -2172,10 +2188,12 @@ def test_full_ingest_unknown_invalid_utf8_records_terminal_decode_evidence(tmp_p
         parser_fingerprint="test-parser",
     )
 
-    result = _full_paths_sync(processor, [path], source_name="unknown")
+    # Terminal classification belongs to retained preparation, so the law
+    # runs the live pass: the file settles as a terminal exclusion.
+    metrics = run_ingest_files(processor, [path], emit_event=False)
 
-    assert result.succeeded == [path]
-    assert result.failed == []
+    assert metrics.failed_file_count == 0
+    assert set(metrics.refused_bytes_by_reason or {}) <= SETTLED_EXCLUSION_REASONS
     with sqlite3.connect(tmp_path / "source.db") as conn:
         artifact = conn.execute("SELECT artifact_kind, support_status, parse_as_session FROM raw_artifacts").fetchone()
     assert artifact == ("terminal_unknown_json_decode", "decode_failed", 0)
@@ -3346,8 +3364,11 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
 
     result = run_ingest_files(processor, [metadata_path, journal_path, session_path], emit_event=False)
 
-    assert result.succeeded_file_count == 3
+    # The metadata sidecar is retained evidence that settles as a terminal
+    # no-session exclusion; the two session-shaped files succeed.
+    assert result.succeeded_file_count == 2
     assert result.failed_file_count == 0
+    assert result.refused_bytes_by_reason == {REFUSED_NO_SESSIONS: len(metadata_payload)}
     assert result.ingested_session_count == 2
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
@@ -3882,6 +3903,7 @@ async def test_browser_capture_replacement_advances_membership_head_and_acquires
                     provider=Provider.CHATGPT,
                     payload=foreign_payload,
                     source_path=str(foreign_path),
+                    canonical_source_path=str(foreign_path.resolve()),
                     acquired_at_ms=1,
                 )
                 foreign_archive.commit()
@@ -6345,8 +6367,10 @@ def test_full_batch_declared_artifact_is_admitted_before_pending_raw_write(
 
     metrics = run_ingest_files(processor, [source], emit_event=False)
 
-    assert metrics.succeeded_file_count == 1
+    # The retained artifact settles as a terminal no-session exclusion.
+    assert metrics.succeeded_file_count == 0
     assert metrics.failed_file_count == 0
+    assert metrics.refused_bytes_by_reason == {REFUSED_NO_SESSIONS: len(payload)}
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
         raw = conn.execute(

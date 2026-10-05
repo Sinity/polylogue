@@ -165,6 +165,9 @@ async def _seed_live_cursor_authority_case(
                 provider=Provider.CODEX,
                 payload=prefix,
                 source_path=str(source_path),
+                # Acquisition records the canonical coordinate; the live
+                # frontier gate refuses an archive holding a raw without one.
+                canonical_source_path=str(source_path.resolve()),
                 acquired_at_ms=1,
                 native_id="session-1",
             )
