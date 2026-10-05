@@ -14,7 +14,7 @@ from collections.abc import Callable
 from hashlib import sha256
 from math import inf
 from pathlib import Path
-from typing import TypeVar
+from typing import ParamSpec, TypeVar
 
 from tests.infra.workload_artifacts import (
     ImmutableTreeArtifact,
@@ -177,3 +177,21 @@ def run_off_event_loop(operation: Callable[[], _T]) -> _T:
         return operation()
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="fixture-off-loop") as executor:
         return executor.submit(operation).result()
+
+
+_P = ParamSpec("_P")
+
+
+def seeds_off_event_loop(seed: Callable[_P, _T]) -> Callable[_P, _T]:
+    """Decorate a synchronous seeding helper so async tests may call it.
+
+    The helper runs through :func:`run_off_event_loop`: directly without a
+    running loop, otherwise on a joined loop-free thread.
+    """
+    from functools import wraps
+
+    @wraps(seed)
+    def run(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+        return run_off_event_loop(lambda: seed(*args, **kwargs))
+
+    return run
