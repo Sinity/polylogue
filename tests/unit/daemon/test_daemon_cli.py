@@ -4125,7 +4125,6 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     from polylogue.daemon.catchup_status import _cold_build_settlement
     from polylogue.daemon.intake_adapters import DaemonIntakeService
     from polylogue.daemon.services import ServiceProfile
-    from polylogue.sources.live.batch import LiveBatchProcessor
     from polylogue.sources.live.cold_build import active_cold_build_generation, active_index_generation_is_empty
     from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
     from polylogue.storage.archive_identity import resolve_active_index_path
@@ -4161,17 +4160,14 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
     from tests.infra.archive_templates import run_archive_fixture_write
 
     assert await run_archive_fixture_write(archive_root, lambda: active_index_generation_is_empty(archive_root))
+    from tests.infra.live_batch import prepared_live_batch_processor
+
     for root, path in ((source_root, watched_file), (imports_root, imported_file)):
-        processor = LiveBatchProcessor(
-            cast(
-                Any,
-                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
-            ),
-            (WatchSource("codex", root, suffixes=(".jsonl",)),),
-            cursor=CursorStore(archive_root / "index.db"),
-            parser_fingerprint=_PARSER_FINGERPRINT,
-        )
-        metrics = await processor.ingest_files([path], emit_event=False)
+        # The supplied live owners: writer, retained publication and convergence.
+        async with prepared_live_batch_processor(
+            archive_root, (WatchSource("codex", root, suffixes=(".jsonl",)),), parser_fingerprint=_PARSER_FINGERPRINT
+        ) as processor:
+            metrics = await processor.ingest_files([path], emit_event=False)
         assert metrics.succeeded_file_count == 1, metrics
     assert session_ids(resolve_active_index_path(archive_root)) == served
 
