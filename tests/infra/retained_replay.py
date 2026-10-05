@@ -30,6 +30,8 @@ class RetainedReplayRun:
     """Actual prepared apply receipts emitted during one synthetic replay."""
 
     receipts: tuple[PreparedRevisionReplayResult | RevisionCensusResult, ...]
+    #: The raw ids of each component the derivation published, in order.
+    components: tuple[tuple[str, ...], ...] = ()
 
     @property
     def scanned(self) -> int:
@@ -73,6 +75,7 @@ def _replay_on_creator(
     )
     frame = raw_observation_frame(archive_root, raw_ids=seeds, index_db_path=active_index_path)
     receipts: list[PreparedRevisionReplayResult | RevisionCensusResult] = []
+    components: list[tuple[str, ...]] = []
     visited: set[str] = set()
     for raw_id in seeds:
         if raw_id in visited:
@@ -93,6 +96,7 @@ def _replay_on_creator(
             with write_lease("synthetic-retained-replay", archive_root=archive_root):
                 published = adapter.publish(frame, replacement, phase_receipt=record)
             if published:
+                components.append(tuple(replacement.raw_ids))
                 visited.update(replacement.raw_ids)
                 break
             # A preparatory Source phase (census or classification) commits its
@@ -100,7 +104,7 @@ def _replay_on_creator(
             # prepares against it. A refusal that published no phase is surfaced.
             if not phases:
                 raise RetainedPreparationRetryableError("canonical retained publication refused without progress")
-    return RetainedReplayRun(tuple(receipts))
+    return RetainedReplayRun(tuple(receipts), tuple(components))
 
 
 async def replay_retained_components_async(

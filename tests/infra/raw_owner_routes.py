@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from polylogue.sources.live.sqlite_capture import LiveSQLiteCaptureStage
     from polylogue.sources.parsers.base import ParsedSession
     from polylogue.sources.revision_backfill import PreparedRevisionReplayResult
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
 
 
 def _owner_archive_root(owner: Any) -> Path:
@@ -339,6 +340,54 @@ def inspect_raw_observations(
     return asyncio.run(run())
 
 
+def seed_parser_census(archive_root: Path, raw_ids: Sequence[str]) -> None:
+    """Record current-parser census receipts through the canonical prepared Source route."""
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import record_current_parser_source_census
+
+    def prepare(seal: PreparedIndexMutation) -> None:
+        for raw_id in raw_ids:
+            record_current_parser_source_census(seal, raw_id)
+
+    _publish_source_preparation(archive_root, prepare, actor="test.parser-census.seed")
+
+
+def _publish_source_preparation(
+    archive_root: Path, prepare: Callable[[PreparedIndexMutation], None], *, actor: str
+) -> None:
+    from polylogue.core.stage_admission import admit_stage_write
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    async def run() -> None:
+        async with prepared_live_convergence_owner(archive_root) as raw_owner:
+            retained: list[PreparedIndexMutation] = []
+
+            def seed() -> None:
+                seal = PreparedIndexMutation.source_only(archive_root=archive_root)
+                retained.append(seal)
+                with seal:
+                    with seal.original_read_snapshot(), seal.source_producer():
+                        prepare(seal)
+                    permit = seal.prepare_source_mutation()
+
+                    def publish() -> None:
+                        with permit.hold_authority(), permit.mutation_connection() as source:
+                            with closing(source.execute("BEGIN IMMEDIATE")):
+                                pass
+                            permit.apply_source_statements(source)
+                            permit.allow_commit(source)
+                            source.commit()
+                            seal.accept_known_tier_commit(permit.committed())
+
+                    admit_stage_write(actor, publish)
+                retained.remove(seal)
+
+            await raw_owner.run_prepared_sync(
+                f"{actor}.prepare", seed, settlement_owners=lambda: tuple(retained), estimated_bytes=0
+            )
+
+    asyncio.run(run())
+
+
 __all__ = [
     "converge_raw_observations_with_owner",
     "inspect_raw_observations",
@@ -352,6 +401,7 @@ __all__ = [
     "replay_retained_raws_async",
     "retained_raw_ids",
     "run_ingest_files",
+    "seed_parser_census",
     "seed_membership_census",
     "seed_membership_census_async",
     "supplied_live_owners",
