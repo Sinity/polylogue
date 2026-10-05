@@ -622,6 +622,10 @@ def test_session_index_dependents_are_paged_not_listed(tmp_path: Path, monkeypat
         def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
             return dict.fromkeys(keys, "stale")
 
+        def terminal_decode_refusals(self, _keys: object) -> dict[str, object]:
+            # No dependent is a terminal decode refusal in these paging laws.
+            return {}
+
     pages = []
     while page := discovery._dependents_selected(None, _Adapter(), 2):
         pages.append(page)
@@ -652,6 +656,10 @@ def test_a_revised_session_index_restarts_its_queued_project_scan(
     class _Adapter:
         def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
             return dict.fromkeys(keys, "stale")
+
+        def terminal_decode_refusals(self, _keys: object) -> dict[str, object]:
+            # No dependent is a terminal decode refusal in these paging laws.
+            return {}
 
     discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
     discovery._queue_evidence_dependents(["index"])

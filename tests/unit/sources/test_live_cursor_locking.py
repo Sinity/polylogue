@@ -255,11 +255,12 @@ async def test_archive_lock_never_advances_or_excludes_cursor(
             bytes_read=len(payload),
         )
         monkeypatch.setattr(processor, "_append_plan", lambda *_args, **_kwargs: plan)
-        monkeypatch.setattr(
-            processor,
-            "_ingest_append_plans",
-            lambda _plans: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
-        )
+
+        async def locked_append(*_args: object, **_kwargs: object) -> object:
+            raise sqlite3.OperationalError("database is locked")
+
+        # Append plans publish only through the processor's supplied raw-owner runner.
+        monkeypatch.setattr(processor, "_append_runner", locked_append)
     else:
         monkeypatch.setattr(processor, "_append_plan", lambda *_args, **_kwargs: None)
         monkeypatch.setattr(processor, "_ingest_full_paths", locked_full)
