@@ -783,7 +783,7 @@ def _processor(
     root.mkdir(parents=True)
     db_path = workspace_env["data_root"] / db_name
     archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
-    cursor = CursorStore(db_path)
+    cursor = CursorStore(db_path, ops_db_path=workspace_env["archive_root"] / "ops.db")
     processor = LiveBatchProcessor(
         archive,
         (_hermes_source(root),),
