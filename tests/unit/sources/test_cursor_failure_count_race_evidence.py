@@ -25,6 +25,7 @@ import threading
 from pathlib import Path
 
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 
 
 def test_mark_failed_accumulates_correctly_under_real_concurrent_callers(tmp_path: Path) -> None:
@@ -37,7 +38,7 @@ def test_mark_failed_accumulates_correctly_under_real_concurrent_callers(tmp_pat
     # Seed a baseline cursor row with two prior real failures already
     # recorded, mirroring what mark_failed would have produced after two
     # earlier (non-racing) parse failures.
-    store.set(path, path.stat().st_size, failure_count=2)
+    store.set(path, path.stat().st_size, failure_count=2, authority=fixture_cursor_authority(path))
     baseline = store.get_record(path)
     assert baseline is not None
     assert baseline.failure_count == 2
@@ -51,7 +52,7 @@ def test_mark_failed_accumulates_correctly_under_real_concurrent_callers(tmp_pat
 
     def call_mark_failed() -> None:
         start.wait()
-        store.mark_failed(path)
+        store.mark_failed(path, authority=fixture_cursor_authority(path))
 
     threads = [threading.Thread(target=call_mark_failed) for _ in range(2)]
     for t in threads:
@@ -80,7 +81,7 @@ def test_get_record_then_set_directly_is_still_racy_by_design(tmp_path: Path) ->
     store = CursorStore(tmp_path / "live.sqlite")
     path = tmp_path / "session.jsonl"
     path.write_text("{}\n")
-    store.set(path, path.stat().st_size, failure_count=2)
+    store.set(path, path.stat().st_size, failure_count=2, authority=fixture_cursor_authority(path))
 
     actor_a_read = store.get_record(path)
     actor_b_read = store.get_record(path)
@@ -94,12 +95,14 @@ def test_get_record_then_set_directly_is_still_racy_by_design(tmp_path: Path) ->
         actor_a_read.byte_size,
         failure_count=actor_a_read.failure_count + 1,
         allow_backward=True,
+        authority=fixture_cursor_authority(path),
     )
     store.set(
         path,
         actor_b_read.byte_size,
         failure_count=actor_b_read.failure_count + 1,
         allow_backward=True,
+        authority=fixture_cursor_authority(path),
     )
 
     final = store.get_record(path)

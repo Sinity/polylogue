@@ -17,6 +17,7 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import _AppendPlan, encode_cursor_hash_authority
 from polylogue.sources.live.cursor import CursorStore
+from tests.infra.cursor_authority import fixture_cursor_authority
 from tests.infra.durable_tier_fixtures import initialize_runtime_source_fixture
 from tests.infra.frozen_clock import FrozenClock
 
@@ -90,6 +91,7 @@ def test_page_selection_carries_statted_candidates_without_payload_reads(
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(unchanged),
     )
 
     def fail_fingerprint_file(path: Path) -> tuple[str, int]:
@@ -308,6 +310,7 @@ def test_codex_append_plan_recovers_identity_from_session_meta_when_source_row_m
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(source),
     )
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
@@ -405,6 +408,7 @@ def _seed_healthy_hot_skip_cursor(cursor: CursorStore, path: Path, *, source_nam
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
         mtime_ns=stat.st_mtime_ns,
+        authority=fixture_cursor_authority(path),
     )
 
 
