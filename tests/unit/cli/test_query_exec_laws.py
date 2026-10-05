@@ -743,6 +743,7 @@ def test_async_execute_query_archive_exact_id_clause_reads_session(
                 origin="chatgpt-export",
                 title="Captured ChatGPT session",
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -794,6 +795,7 @@ def test_async_execute_query_archive_bare_native_ref_resolves_before_fts(
                 origin="chatgpt-export",
                 title="Captured ChatGPT session",
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -1907,6 +1909,7 @@ def test_async_execute_query_archive_open_prints_session_url(
                 origin="codex-session",
                 title="Opened",
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -2027,6 +2030,7 @@ def test_async_execute_query_archive_streams_session_messages(
                 origin="codex-session",
                 title="Streamed",
                 active_leaf_message_id="codex-session:native-1:m2",
+                total_message_count=2,
                 messages=(
                     ArchiveMessageRow(
                         message_id="codex-session:native-1:m1",
@@ -2904,6 +2908,7 @@ def test_async_execute_query_archive_adds_tags_to_session(
                 origin="codex-session",
                 title=None,
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -2972,6 +2977,7 @@ def test_async_execute_query_archive_deletes_session_by_id(
                 origin="codex-session",
                 title=None,
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -3058,6 +3064,7 @@ def test_async_execute_query_archive_sets_session_metadata(
                 origin="codex-session",
                 title=None,
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -3124,6 +3131,7 @@ def test_async_execute_query_archive_delete_dry_run_does_not_delete(
                 origin="codex-session",
                 title=None,
                 active_leaf_message_id=None,
+                total_message_count=0,
                 messages=(),
             )
 
@@ -3213,6 +3221,7 @@ def test_async_execute_query_archive_reads_session_by_id(
                 origin="codex-session",
                 title="Copied",
                 active_leaf_message_id="codex-session:native-1:m1",
+                total_message_count=1,
                 messages=(
                     ArchiveMessageRow(
                         message_id="codex-session:native-1:m1",
@@ -3276,6 +3285,7 @@ def test_async_execute_query_archive_reads_session_messages_without_projection(
                 origin="codex-session",
                 title="Projected session",
                 active_leaf_message_id="codex-session:native-1:m2",
+                total_message_count=2,
                 messages=(
                     ArchiveMessageRow(
                         message_id="codex-session:native-1:m1",
