@@ -80,6 +80,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from tests.infra.archive_templates import run_off_event_loop
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
 from tests.infra.session_profiles import write_session_profile
@@ -370,8 +371,7 @@ def _discovered_public_async_methods() -> set[str]:
 
 def _archive(tmp_path: Path) -> Polylogue:
     """Construct a Polylogue facade against an isolated tmp archive."""
-    with ArchiveStore(tmp_path):
-        pass
+    run_off_event_loop(lambda: initialize_active_archive_root(tmp_path))
     return Polylogue(archive_root=tmp_path, db_path=tmp_path / "index.db")
 
 
