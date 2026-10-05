@@ -218,7 +218,9 @@ async def test_authoritative_same_hash_skip_preserves_real_replacement_obligatio
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             index = archive.index_connection
             assert index is not None
-            write_fixture_index_session(index, prior, archive_root=root)
+            # The prior session stays bound to the raw its accepted head names;
+            # only its stored identity (parser, lowering, aliases) differs.
+            write_fixture_index_session(index, prior, archive_root=root, raw_id=prior_raw_id)
 
     with monkeypatch.context() as patch:
         if prior_difference == "parser":
