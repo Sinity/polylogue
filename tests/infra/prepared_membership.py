@@ -1,9 +1,9 @@
 """Publish a membership classification through the canonical prepared route.
 
-Retained publication decides a membership cohort on one original seal: the
-Index head reduction and the Source acknowledgements are prepared together,
-the Index outcome is applied under that seal's mutation scope, and the staged
-Source permit is published afterwards. Laws that supply their own
+Retained publication decides a membership cohort's head on an original seal,
+applies the Index outcome under that seal's mutation scope, then publishes the
+matching Source acknowledgements as one staged mutation on the owner's
+dedicated Source writer. Laws that supply their own
 classification use exactly that sequence here instead of the retired store
 write-back, which wrote Source rows inside the Index publication.
 """
@@ -11,7 +11,7 @@ write-back, which wrote Source rows inside the Index publication.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.storage.blob_store import BlobStore
 
@@ -39,10 +39,10 @@ def publish_prepared_membership_classification(
         prepare_membership_classification_source,
         prepare_membership_head_plan,
         prepared_raw_revision_file_mtime,
-        publish_prepared_revision_source,
     )
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, prepare_session_write
     from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+    from tests.infra.prepared_replay import publish_prepared_source
 
     root = archive.archive_root
     store = BlobStore(root / "blob")
@@ -78,14 +78,6 @@ def publish_prepared_membership_classification(
                     force_replace=True,
                     before_input=seal.before_index_input,
                 )
-            prepare_membership_classification_source(
-                seal,
-                logical_source_key,
-                classification,
-                decisions=decisions,
-                decided_at_ms=decided_at_ms,
-            )
-        permit = seal.prepare_source_mutation()
         with archive.index_mutation_scope(prepared_seal=seal):
             session_id, actual = apply_prepared_membership_index(
                 archive,
@@ -98,9 +90,22 @@ def publish_prepared_membership_classification(
                 preacquired_attachment_blobs=blobs,
                 prepared_write=prepared_write,
             )
-        if actual != decisions:
-            raise AssertionError(f"membership Index outcome {actual!r} differs from its Source decisions {decisions!r}")
-        publish_prepared_revision_source(seal, permit)
+    if actual != decisions:
+        raise AssertionError(f"membership Index outcome {actual!r} differs from its Source decisions {decisions!r}")
+    archive.commit()
+    # The Source acknowledgements (decisions and any incomplete-cohort parse
+    # correction) form one staged mutation published on the owner's writer.
+    publish_prepared_source(
+        root,
+        "test.membership-classification",
+        lambda source_seal: prepare_membership_classification_source(
+            source_seal,
+            logical_source_key,
+            classification,
+            decisions=decisions,
+            decided_at_ms=decided_at_ms,
+        ),
+    )
     return session_id, actual
 
 
@@ -152,5 +157,79 @@ def write_prepared_retained_session(
                 finalize_raw_parse=False,
                 revision_authoritative=revision_authoritative,
                 prepared_required=True,
+                prepared_write=prepared_write,
+            )
+
+
+def apply_prepared_aggregate_replay(
+    archive: ArchiveStore,
+    plan: Any,
+    parsed_by_raw_id: dict[str, ParsedSession],
+    *,
+    acquired_at_ms: int,
+) -> tuple[str, tuple[str, ...]]:
+    """Publish one byte chain as retained publication does: one prepared aggregate.
+
+    The composed aggregate is prepared on an original seal (its timestamps
+    normalized against the tip's retained file time) and the writer consumes
+    exactly that carrier: ``prepared_aggregate_rows``/``prepared_aggregate_session``
+    and its prepared write, as ``apply_prepared_revision_replay`` passes them in
+    production.
+    """
+    from polylogue.sources.dispatch import merge_parsed_session_chunks
+    from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+        prepare_revision_replay_outcome,
+        prepared_raw_revision_file_mtime,
+    )
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionSourceRead, prepare_session_write
+    from polylogue.storage.sqlite.reference_seal import PreparedIndexMutation
+
+    accepted = tuple(plan.accepted_raw_ids)
+    if not accepted:
+        raise ValueError("a prepared aggregate replay requires an accepted raw chain")
+    chunks = [parsed_by_raw_id[raw_id] for raw_id in accepted]
+    composed = chunks if len(chunks) == 1 else merge_parsed_session_chunks(chunks)
+    if len(composed) != 1:
+        raise ValueError("a prepared aggregate replay must compose exactly one session")
+    aggregate = composed[0]
+    tip = accepted[-1]
+    root = archive.archive_root
+    archive.commit()
+    with PreparedIndexMutation(archive.index_db_path, archive_root=root) as seal:
+        with seal.original_read_snapshot(), seal.source_producer():
+            read = PreparedSessionSourceRead(seal, blob_store=BlobStore(root / "blob"))
+            adoption = read.prepare_raw_revision_replay_adoption(
+                [aggregate], logical_source_key=plan.logical_source_key, raw_ids=accepted
+            )
+            prepared_write = prepare_session_write(
+                seal.observer("index"),
+                aggregate,
+                merge_append=False,
+                fallback_timestamp=prepared_raw_revision_file_mtime(seal, tip),
+                source_read=read,
+                raw_id=tip,
+                force_replace=True,
+                before_input=seal.before_index_input,
+            )
+            outcome = prepare_revision_replay_outcome(
+                seal,
+                read,
+                plan,
+                adoption,
+                aggregate_session=aggregate,
+                aggregate_content_hash=prepared_write.rows.session_content_hash,
+                prepared_write=prepared_write,
+            )
+        with archive.index_mutation_scope(prepared_seal=seal):
+            return archive.apply_raw_revision_replay(
+                plan,
+                parsed_by_raw_id,
+                prepared_outcome=outcome,
+                acquired_at_ms=acquired_at_ms,
+                prepared_aggregate_rows=prepared_write.rows,
+                prepared_aggregate_session=aggregate,
+                preacquired_aggregate_attachment_blobs={},
+                preacquired_attachment_blobs_by_raw_id={raw_id: {} for raw_id in accepted},
+                prepared_required_raw_ids=frozenset({tip}),
                 prepared_write=prepared_write,
             )

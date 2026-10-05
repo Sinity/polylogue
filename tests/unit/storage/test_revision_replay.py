@@ -43,6 +43,7 @@ from polylogue.storage.sqlite.archive_tiers import revision_governance as archiv
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.prepared_membership import (
+    apply_prepared_aggregate_replay,
     publish_prepared_membership_classification,
     write_prepared_retained_session,
 )
@@ -2194,7 +2195,7 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
                 authority=RawRevisionAuthority.BYTE_PROVEN,
             ),
         )
-        apply_prepared_revision_replay(
+        apply_prepared_aggregate_replay(
             archive,
             plan_revision_replay([_candidate(raw_id, RawRevisionKind.FULL, 1, size=len(b"retained raw"))]),
             {raw_id: session},
@@ -2289,7 +2290,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
         later_session = parsed(("m0", "zero"), ("m1", "one"), ("m2", "two"))
         later = write_full(archive, "later", 2)
         later_plan = selected_full_plan(later, 2, len("later"))
-        apply_prepared_revision_replay(archive, later_plan, {later: later_session}, acquired_at_ms=0)
+        apply_prepared_aggregate_replay(archive, later_plan, {later: later_session}, acquired_at_ms=0)
 
         semantic_head = archive._conn.execute(
             """SELECT accepted_raw_id, accepted_frontier_kind, accepted_frontier
@@ -2311,7 +2312,7 @@ def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path
             rejected_raw = write_full(archive, label, generation)
             rejected_plan = selected_full_plan(rejected_raw, generation, len(label))
             with pytest.raises(RuntimeError, match=error):
-                apply_prepared_revision_replay(
+                apply_prepared_aggregate_replay(
                     archive,
                     rejected_plan,
                     {rejected_raw: rejected_session},
