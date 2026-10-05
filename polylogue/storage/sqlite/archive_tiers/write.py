@@ -12733,54 +12733,68 @@ def _message_blocks(message: ParsedMessage) -> Sequence[ParsedContentBlock]:
 # happens to equal a parent block is never dropped.
 
 
-def _prefix_alignment_signature(role: str, blocks: Iterable[tuple[str, str, str, str]]) -> str:
-    """Digest what a replayed prefix copies: the role and each block's content.
+def _prefix_alignment_signature(role: str, block_hashes: Iterable[bytes]) -> str:
+    """Digest what a replayed prefix copies: the role and each block's evidence.
 
     A child that replays its parent's prefix (a fork, a resume, a compaction
     continuation) re-emits those messages under new provider ids, timestamps,
     parent links and provenance classification, all of which the complete
-    semantic address hashes. Alignment therefore compares this replay-
-    invariant projection; the branch point itself stays guarded by the
-    parent's stored complete content address (``branch_point_content_address``).
+    semantic address hashes. Alignment compares the role and each block's
+    identity-free evidence digest (``blocks.content_hash``: text, tool call,
+    outcome, error and exit evidence), so a divergent answer still ends the
+    shared prefix. The branch point itself stays guarded by the parent's
+    stored complete content address (``branch_point_content_address``).
     """
-    digest = hashlib.sha256(b"polylogue-prefix-alignment-v1\0")
-    for part in (role, *(value for block in blocks for value in block)):
-        encoded = part.encode("utf-8", "surrogatepass")
-        digest.update(len(encoded).to_bytes(8, "big"))
-        digest.update(encoded)
+    digest = hashlib.sha256(b"polylogue-prefix-alignment-v2\0")
+    encoded_role = role.encode("utf-8", "surrogatepass")
+    digest.update(len(encoded_role).to_bytes(8, "big"))
+    digest.update(encoded_role)
+    for block_hash in block_hashes:
+        digest.update(len(block_hash).to_bytes(8, "big"))
+        digest.update(block_hash)
     return digest.hexdigest()
+
+
+def _parsed_block_evidence_hash(block: ParsedContentBlock) -> bytes:
+    """The stored ``blocks.content_hash`` this block will be written with."""
+    return _block_content_hash(
+        block_type=_block_type(block).value,
+        text=block.text,
+        tool_name=block.tool_name,
+        tool_input_json=_json_dumps(block.tool_input) if block.tool_input is not None else None,
+        semantic_type=_semantic_type(block),
+        media_type=block.media_type,
+        language=_block_language(block),
+        is_error=getattr(block, "is_error", None),
+        exit_code=getattr(block, "exit_code", None),
+        tool_outcome=getattr(block, "tool_outcome", None),
+        outcome_unknown_reason=_enum_value(block.outcome_unknown_reason),
+        semantic_extra_json=_block_semantic_extra_json(block),
+    )
 
 
 def _parsed_message_signature(message: ParsedMessage) -> str:
     """The prefix alignment signature of a parsed message (see above)."""
     return _prefix_alignment_signature(
         _enum_value(message.role) or "",
-        (
-            (
-                _block_type(block).value,
-                _sqlite_text(block.text) or "",
-                _sqlite_text(block.tool_name) or "",
-                _json_dumps(block.tool_input) if block.tool_input is not None else "",
-            )
-            for block in _message_blocks(message)
-        ),
+        (_parsed_block_evidence_hash(block) for block in _message_blocks(message)),
     )
 
 
 def _signatures_from_block_rows(rows: Iterable[Sequence[object]]) -> Iterator[tuple[str, str]]:
-    """Group ``(message_id, role, block_type, text, tool_name, tool_input)`` rows per message."""
+    """Group ``(message_id, role, block content_hash)`` rows per message."""
     current_id: str | None = None
     current_role = ""
-    blocks: list[tuple[str, str, str, str]] = []
-    for message_id, role, block_type, text, tool_name, tool_input in rows:
+    hashes: list[bytes] = []
+    for message_id, role, block_hash in rows:
         if message_id != current_id:
             if current_id is not None:
-                yield current_id, _prefix_alignment_signature(current_role, blocks)
-            current_id, current_role, blocks = str(message_id), str(role or ""), []
-        if block_type is not None:
-            blocks.append((str(block_type), str(text or ""), str(tool_name or ""), str(tool_input or "")))
+                yield current_id, _prefix_alignment_signature(current_role, hashes)
+            current_id, current_role, hashes = str(message_id), str(role or ""), []
+        if block_hash is not None:
+            hashes.append(bytes(cast(bytes, block_hash)))
     if current_id is not None:
-        yield current_id, _prefix_alignment_signature(current_role, blocks)
+        yield current_id, _prefix_alignment_signature(current_role, hashes)
 
 
 def _is_acompact_native_id(native_id: str) -> bool:
@@ -12901,14 +12915,14 @@ def _own_db_signatures(
         )
         before_input(
             "blocks",
-            ("message_id", "position", "block_type", "text", "tool_name", "tool_input"),
+            ("message_id", "position", "content_hash"),
             "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
             (session_id,),
         )
     with connection_cursor(
         conn,
         """
-        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
+        SELECT m.message_id, m.role, b.content_hash
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
         WHERE m.session_id = ?
@@ -12942,14 +12956,14 @@ def _iter_own_db_signatures(
         )
         before_input(
             "blocks",
-            ("message_id", "position", "block_type", "text", "tool_name", "tool_input"),
+            ("message_id", "position", "content_hash"),
             "SELECT rowid FROM blocks WHERE session_id=? ORDER BY message_id,position",
             (segment.session_id,),
         )
     with connection_cursor(
         conn,
         """
-        SELECT m.message_id, m.role, b.block_type, b.text, b.tool_name, b.tool_input
+        SELECT m.message_id, m.role, b.content_hash
         FROM messages m
         LEFT JOIN blocks b ON b.session_id = m.session_id AND b.message_id = m.message_id
         WHERE m.session_id = ?
