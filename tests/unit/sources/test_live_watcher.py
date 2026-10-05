@@ -25,6 +25,7 @@ from polylogue import Polylogue
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
+from polylogue.core.raw_failure_evidence import RetainedRawDecodeRefusalError
 from polylogue.daemon.intake import AdmissionOutcome, IntakeItem
 from polylogue.daemon.status import _archive_live_ingest_attempt_summary_info
 from polylogue.operations.intake_adapters import (
@@ -3656,7 +3657,11 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
     # Derived-only mode must not reach it; the guard records any call.
     prepared: list[tuple[str, ...]] = []
 
-    async def recording_retained(raw_ids: Sequence[str]) -> tuple[PreparedRevisionReplayResult, ...]:
+    async def recording_retained(
+        raw_ids: Sequence[str],
+        *,
+        on_terminal_refusal: Callable[[tuple[str, ...], RetainedRawDecodeRefusalError], None] | None = None,
+    ) -> tuple[PreparedRevisionReplayResult, ...]:
         prepared.append(tuple(raw_ids))
         return ()
 
