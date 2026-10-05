@@ -43,6 +43,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.sources.sqlite_export import logical_export_bytes
 from polylogue.storage.fts.fts_lifecycle import rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
+from polylogue.storage.io_phase_metrics import connect_measured
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -69,7 +70,7 @@ def _connect(path: Path) -> sqlite3.Connection:
     # Shard transport attaches a read-only ``file:`` URI, as production's
     # archive write connection does. Keeping this fixture URI-capable makes
     # the combined fresh-shard path exercise SQLite's actual attachment mode.
-    conn = sqlite3.connect(path, uri=True)
+    conn = connect_measured(path, uri=True)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.INDEX)

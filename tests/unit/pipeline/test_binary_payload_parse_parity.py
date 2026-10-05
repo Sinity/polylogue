@@ -34,6 +34,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.provider_identity import captured_hermes_profile_key
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.sources.sqlite_export import logical_export_bytes
@@ -175,6 +176,7 @@ def test_verification_evidence_db_parses_identically_through_ingest_and_rebuild_
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        profile_identity=captured_hermes_profile_key(profile_dir),
         sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id for session in rebuild_sessions}
@@ -263,6 +265,7 @@ def test_state_db_still_parses_identically_through_both_routes(blob_store: BlobS
         str(db_path),
         payload_path=retained_path,
         archive_root=tmp_path,
+        profile_identity=captured_hermes_profile_key(profile_dir),
         sidecar_resolver=None,
     )
     rebuild_ids = {session.provider_session_id.split("@", 1)[0] for session in rebuild_sessions}
@@ -331,6 +334,7 @@ def test_ingest_refuses_a_hermes_page_image_the_replay_route_refuses(blob_store:
             str(db_path),
             payload_path=db_path,
             archive_root=tmp_path,
+            profile_identity=captured_hermes_profile_key(profile_dir),
             sidecar_resolver=None,
         )
 

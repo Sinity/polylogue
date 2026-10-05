@@ -7,6 +7,7 @@ disagree about what's in the archive.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
@@ -89,7 +90,11 @@ async def multi_provider_adapter_surfaces(
     # The CLI query verbs are served by ``polylogued run`` (#5805); the CLI
     # surface reaches a real daemon over its socket, as an operator's does.
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
-    with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+    # The daemon's bootstrap takes the synchronous write lease, which refuses
+    # to block this fixture's event loop; start and stop it off the loop.
+    daemon = cli_daemon_archive(workspace_env["archive_root"], monkeypatch)
+    await asyncio.to_thread(daemon.__enter__)
+    try:
         surfaces = build_adapter_surface_set(
             db_path=db_path,
             archive_root=workspace_env["archive_root"],
@@ -98,6 +103,8 @@ async def multi_provider_adapter_surfaces(
             yield surfaces
         finally:
             await surfaces.close()
+    finally:
+        await asyncio.to_thread(daemon.__exit__, None, None, None)
 
 
 # ---------------------------------------------------------------------------

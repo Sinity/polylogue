@@ -776,19 +776,20 @@ class TestCanonicalStatusOperation:
 
         configured_root = tmp_path / "configured"
         active_root = tmp_path / "active"
-        # The publication mode comes from the loaded config and the archive
-        # file set from the resolved runtime config (#5722).
-        runtime_config = SimpleNamespace(archive_root=configured_root, db_path=active_root / "index.db")
+        # The resolved runtime config supplies both the publication mode and
+        # the archive file set.
+        runtime_config = SimpleNamespace(
+            archive_root=configured_root, db_path=active_root / "index.db", sinex_mode="off"
+        )
         with (
-            patch("polylogue.config.load_polylogue_config", return_value=SimpleNamespace(sinex_mode="off")),
             patch(
                 "polylogue.config.resolve_runtime_config",
                 return_value=SimpleNamespace(as_config=lambda: runtime_config),
             ),
-            patch("polylogue.sinex.service.publication_status") as publication_status,
+            patch("polylogue.sinex.service.publication_status_payload") as publication_status,
         ):
             _sinex_publication_status_info()
-        assert publication_status.call_args.args[0] == active_root / "source.db"
+        assert publication_status.call_args.args == (active_root / "source.db", "off")
 
     def test_status_command_passes_exact_readiness_to_canonical_operation(self, tmp_path: Path) -> None:
         env = _make_app_env()

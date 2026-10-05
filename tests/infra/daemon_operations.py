@@ -15,7 +15,7 @@ import socket
 import sys
 import threading
 import traceback
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -410,3 +410,23 @@ def execute_bound_delete(
             )
 
     return stack.write_bridge.run_sync("test.delete.bound-actuator", execute)
+
+
+@contextlib.asynccontextmanager
+async def async_daemon_serving_archive(
+    archive_root: Path, *, session_derivation: bool = False
+) -> AsyncIterator[DaemonOperationStack]:
+    """``daemon_serving_archive`` for an async law, started and stopped off its loop.
+
+    Starting the operation stack bootstraps the archive under the synchronous
+    write lease, which refuses to block a running event loop.
+    """
+    serving = daemon_serving_archive(archive_root, session_derivation=session_derivation)
+    stack = await asyncio.to_thread(serving.__enter__)
+    try:
+        yield stack
+    except BaseException as error:
+        if not await asyncio.to_thread(serving.__exit__, type(error), error, error.__traceback__):
+            raise
+    else:
+        await asyncio.to_thread(serving.__exit__, None, None, None)
