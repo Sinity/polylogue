@@ -59,6 +59,20 @@ def _archive_template(tmp_path_factory: pytest.TempPathFactory) -> Generator[Non
         _ARCHIVE_TEMPLATE = None
 
 
+@pytest.fixture(autouse=True)
+def _state_home_outside_archive(
+    _clear_polylogue_env: None, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep XDG state beside, not inside, the cloned archive root.
+
+    These laws clone the archive into ``tmp_path`` itself, where the shared
+    environment fixture also places XDG state. Population records backup
+    attestation keys under XDG state, which the clone's file-set proof would
+    otherwise count as an unowned archive file.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("index-generation-state")))
+
+
 # Bringing up the child process is not what these tests measure.
 #
 # Python 3.14 made ``forkserver`` the default start method on Linux, so the
