@@ -504,7 +504,7 @@ def test_fresh_shard_build_finishes_equivalent_to_retained_indexes(tmp_path: Pat
     """
     sessions = [_session("equivalent-alpha"), _session("equivalent-beta", n_pairs=1)]
 
-    retained_path = tmp_path / "retained.db"
+    retained_path = tmp_path / "retained" / "index.db"
     retained = _connect(retained_path)
     for session in sessions:
         write_fixture_index_session(retained, session, content_hash=str(session_content_hash(session)))
@@ -512,7 +512,7 @@ def test_fresh_shard_build_finishes_equivalent_to_retained_indexes(tmp_path: Pat
     retained_indexes = _reader_index_names(retained)
     retained.close()
 
-    fresh_path = tmp_path / "fresh-shard.db"
+    fresh_path = tmp_path / "fresh-shard" / "index.db"
     fresh = _connect(fresh_path)
     _write_fresh_shard_arm(fresh, tmp_path / "shards", sessions)
 
@@ -547,7 +547,7 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     """The completed-output witness fails for an unfinalized build and for a lost logical row."""
     sessions = [_session("red-twin-alpha"), _session("red-twin-beta", n_pairs=1)]
 
-    retained_path = tmp_path / "retained.db"
+    retained_path = tmp_path / "retained" / "index.db"
     retained = _connect(retained_path)
     for session in sessions:
         write_fixture_index_session(retained, session, content_hash=str(session_content_hash(session)))
@@ -556,7 +556,7 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     expected = _finished_output_snapshot(retained_path)
     assert expected[1], "retained control produced no logical FTS rows"
 
-    fresh_path = tmp_path / "fresh-shard.db"
+    fresh_path = tmp_path / "fresh-shard" / "index.db"
     fresh = _connect(fresh_path)
     _write_fresh_shard_arm(fresh, tmp_path / "shards", sessions)
     restore_deferred_secondary_indexes_sync(fresh)
@@ -612,7 +612,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
-        path = tmp_path / "retained.db"
+        path = tmp_path / "retained" / "index.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=0
         )
@@ -663,7 +663,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
-        path = tmp_path / "deferred.db"
+        path = tmp_path / "deferred" / "index.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=len(sessions)
         )
@@ -721,7 +721,7 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             assert boundaries == ["BEGIN", "COMMIT"]
         finally:
             conn.close()
-        path = tmp_path / "shard.db"
+        path = tmp_path / "shard" / "index.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=len(sessions)
         )
