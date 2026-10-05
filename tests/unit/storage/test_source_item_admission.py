@@ -22,6 +22,7 @@ from polylogue.storage.sqlite.archive_tiers.raw_admission import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_items import SourceItemAdmission, publish_source_generation
 from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
+from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.prepared_replay import run_on_convergence_owner
 
 _PAYLOAD = b'{"synthetic":"source-item"}\n'
@@ -66,10 +67,120 @@ def _member(item_id: str, *, coordinate: str = "record:0", entry_ordinal: int | 
     )
 
 
-def test_late_membership_error_rolls_back_raw_and_membership_together(tmp_path: Path) -> None:
+def _captured_zip_archive(
+    tmp_path: Path, *, content_identity: str | None = None
+) -> tuple[sqlite3.Connection, RawAdmissionPlan, SourceItemAdmission]:
+    """A real accepted ZIP input with its captured member coordinate."""
+    import json
+    import zipfile
+
+    from polylogue.core.raw_coordinates import (
+        CapturedZipMemberCoordinate,
+        MemberAddressingMode,
+        captured_zip_member_raw_id,
+    )
+    from polylogue.sources.source_staging import bind_source_input
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    source = tmp_path / "capture.zip"
+    with zipfile.ZipFile(source, "w") as archive:
+        archive.writestr("capture.json", _PAYLOAD)
+    store = BlobStore(root / "blob")
+    container = source.read_bytes()
+    container_hash = hashlib.sha256(container).digest()
+    store.write_from_bytes(container)
+    store.write_from_bytes(_PAYLOAD)
+    with bind_source_input(source) as binding:
+        identity = binding.captured_identity
+    profile = identity.member_profile_identity("capture.json")
+    assert profile is not None
+    coordinate = CapturedZipMemberCoordinate(
+        canonical_container=identity.canonical_source_path,
+        declared_container=identity.semantic_source_path,
+        member_name="capture.json",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
+        container_blob_hash=container_hash.hex(),
+        decoder_fingerprint="b" * 64,
+        profile_namespace=str(profile[0]),
+    )
+    conn = sqlite3.connect(root / "source.db")
+    conn.execute("PRAGMA foreign_keys = ON")
+    (item_id,) = publish_source_generation(
+        conn,
+        source_generation_id="accepted-zip",
+        manifest_digest="a" * 64,
+        addressing_mode="physical-file-v1",
+        coordinates=(str(source),),
+        source_paths={str(source): str(source)},
+        input_blob_hashes={str(source): container_hash},
+        captured_input_identities={str(source): identity},
+        enumeration_fingerprint="b" * 64,
+        observed_at_ms=1,
+    )
+    request = PendingPreParseRawAdmissionRequest(
+        origin=Origin.CLAUDE_CODE_SESSION,
+        capture_mode=Provider.CLAUDE_CODE,
+        source_path=coordinate.declared_member,
+        canonical_source_path=coordinate.canonical_member,
+        source_index=coordinate.source_index,
+        blob_hash=_BLOB_HASH,
+        blob_size=len(_PAYLOAD),
+        acquired_at_ms=2,
+        captured_zip_coordinate=coordinate,
+        addressing_mode=coordinate.addressing_mode.value,
+        content_identity=content_identity,
+        raw_id=captured_zip_member_raw_id(coordinate, _BLOB_HASH.hex()),
+    )
+    member = SourceItemAdmission(
+        source_generation_id="accepted-zip",
+        source_item_id=item_id,
+        record_coordinate=json.dumps(["zip-v2", 0, 0, "whole_member"], separators=(",", ":")),
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode="whole_member",
+        content_identity=content_identity,
+    )
+    return conn, plan_raw_admission(request), member
+
+
+def test_late_membership_error_rolls_back_raw_and_membership_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure after the raw and membership rows exist rolls both back.
+
+    The container coordinate is the last durable effect before receipt
+    consumption; failing it must leave neither the raw nor its membership.
+    """
+    from polylogue.storage.sqlite.archive_tiers import source_write
+
+    conn, plan, member = _captured_zip_archive(tmp_path)
+
+    def late_failure(*_args: object, **_kwargs: object) -> None:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
+        assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (1,)
+        raise ValueError("late container coordinate failure")
+
+    monkeypatch.setattr(source_write, "record_raw_container_coordinate", late_failure)
+    conn.execute("BEGIN")
+    with pytest.raises(ValueError, match="late container coordinate failure"):
+        execute_source_item_admission(conn, plan, member)
+
+    assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone() == (0,)
+    assert conn.in_transaction
+    conn.rollback()
+    conn.close()
+
+
+def test_zip_member_without_captured_receipt_is_refused_before_any_effect(tmp_path: Path) -> None:
+    from polylogue.core.raw_failure_evidence import RetainedZipMembershipUnprovedError
+
     conn, _generation, item_id, plan = _archive(tmp_path)
     conn.execute("BEGIN")
-    with pytest.raises(ValueError, match="complete container coordinate"):
+    with pytest.raises(RetainedZipMembershipUnprovedError, match="captured member receipt"):
         execute_source_item_admission(conn, plan, _member(item_id, entry_ordinal=3))
 
     assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (0,)
@@ -102,10 +213,11 @@ def test_existing_member_refuses_detached_explicit_raw_and_preserves_publication
         conn.execute("BEGIN")
         execute_source_item_admission(conn, plan, _member(item_id))
     root = tmp_path / "archive"
-    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-    blob_hash, _size = publisher.write_from_bytes(_PAYLOAD)
-    publisher.flush()
-    receipt = publisher.receipt_id(blob_hash)
+    with write_lease("test.source-item.publication", archive_root=root):
+        publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+        blob_hash, _size = publisher.write_from_bytes(_PAYLOAD)
+        publisher.flush()
+        receipt = publisher.receipt_id(blob_hash)
     assert receipt is not None
     other = plan_raw_admission(replace(plan.request, raw_id="explicit-other-raw", blob_publication_receipt_id=receipt))
     conn.execute("BEGIN")
@@ -187,17 +299,8 @@ def test_zip_member_content_identity_reaches_retained_coordinate(tmp_path: Path)
     Anti-vacuity: omit ``content_identity`` from the admission request or its
     call to ``record_raw_container_coordinate`` and the retained value is NULL.
     """
-    conn, _generation, item_id, plan = _archive(tmp_path)
+    conn, plan, member = _captured_zip_archive(tmp_path, content_identity="d" * 64)
     conn.execute("BEGIN")
-    member = SourceItemAdmission(
-        source_generation_id="synthetic-generation",
-        source_item_id=item_id,
-        record_coordinate="zip:0:0",
-        entry_ordinal=0,
-        split_index=0,
-        addressing_mode="whole_member",
-        content_identity="d" * 64,
-    )
     result = execute_source_item_admission(conn, plan, member)
     conn.commit()
     assert conn.execute(
