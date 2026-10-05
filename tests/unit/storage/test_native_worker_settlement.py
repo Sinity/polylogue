@@ -604,7 +604,7 @@ async def test_actual_raw_publication_keeps_exclusion_and_physical_reservation_u
     monkeypatch.setattr(RawObservationReplacement, "_close_prepared_payload", close_payload)
     compute_adapter = BoundedComputeAdapter(max_workers=1)
     adapter = compute_adapter
-    operation = adapter.submit(work)
+    operation = adapter.submit(work, exclusive_bytes=True)
     probe: int | None = None
     try:
         await _pending(adapter.retained_sql_settlements)
