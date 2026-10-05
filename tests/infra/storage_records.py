@@ -1342,3 +1342,35 @@ def seed_attachment_library_lineage_archive(root: Path) -> dict[str, str]:
         )
         archive._conn.commit()
     return {"parent": parent_id, "child": child_id, "foreign": foreign.native_session_id()}
+
+
+def seed_command_shape_archive(root: Path) -> str:
+    """Executed commands observed in two repositories on one session."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(root)
+    repositories = [root / "command-shape-repos" / name for name in ("A", "B")]
+    for repository in repositories:
+        (repository / ".git").mkdir(parents=True)
+    builder = (
+        SessionBuilder(root / "index.db", "command-shapes")
+        .provider("claude-code")
+        .working_directories([str(repository) for repository in repositories])
+        .add_message(
+            "commands",
+            role="assistant",
+            text="ran commands",
+            timestamp="2026-01-01T00:00:00+00:00",
+            blocks=[
+                {
+                    "type": "tool_use",
+                    "tool_name": "Bash",
+                    "tool_id": "shell-1",
+                    "input": {"command": "foo bar | foo bar; other status"},
+                },
+                {"type": "tool_use", "tool_name": "Bash", "tool_id": "shell-2", "input": {"command": "other status"}},
+            ],
+        )
+    )
+    builder.save()
+    return builder.native_session_id()

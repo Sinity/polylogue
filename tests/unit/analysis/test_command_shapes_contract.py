@@ -1,5 +1,14 @@
 """Semantic witness for the command-shape family decision."""
 
+from __future__ import annotations
+
+from builtins import BaseExceptionGroup
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
 from polylogue.analysis.command_shapes import (
     CommandShapeUsageQuery,
     build_command_shape_usage,
@@ -36,3 +45,134 @@ def test_command_shape_library_preserves_shell_semantics_before_aggregation() ->
         ("rg failed", 1, 1),
     ]
     assert all(item.provenance.materializer_version == 1 for item in result)
+
+
+def test_streamed_fold_preserves_stage_multiplicity_and_pages_complete_totals() -> None:
+    consumed = 0
+
+    def rows() -> Iterator[dict[str, object]]:
+        nonlocal consumed
+        for index in range(1001):
+            consumed += 1
+            yield {
+                "origin": "codex",
+                "repository": None,
+                "session_id": f"s{index % 3}",
+                "tool_command": "foo bar | foo bar; other status",
+                "occurred_at_ms": 0 if index == 0 else -1000,
+            }
+
+    result = build_command_shape_usage(rows(), CommandShapeUsageQuery(limit=1), materialized_at="now")
+    assert consumed == 1001
+    assert [(item.command_shape, item.execution_count, item.session_count) for item in result] == [("foo bar", 2002, 3)]
+    assert result[0].repository is None
+    assert result[0].last_used_at == "1970-01-01T00:00:00+00:00"
+    following = build_command_shape_usage(rows(), CommandShapeUsageQuery(limit=None, offset=1), materialized_at="now")
+    assert [(item.command_shape, item.execution_count, item.session_count) for item in following] == [
+        ("other status", 1001, 3)
+    ]
+
+
+def test_fold_cancellation_preserves_identity_and_removes_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import tempfile
+
+    import polylogue.analysis.command_shapes as module
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    failure = RuntimeError("injected cancellation")
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            raise failure
+
+    rows = ({"origin": "codex", "session_id": "s", "tool_command": "foo"} for _ in range(100))
+    with pytest.raises(RuntimeError) as caught:
+        module.build_command_shape_usage(rows, CommandShapeUsageQuery(), materialized_at="now", checkpoint=checkpoint)
+    assert caught.value is failure
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_scratch_sql_cancellation_settles_connection_and_preserves_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sqlite3
+    import tempfile
+
+    import polylogue.analysis.command_shapes as module
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    aggregate_started = False
+    closed = False
+    failure = RuntimeError("injected SQL cancellation")
+
+    class Cursor(sqlite3.Cursor):
+        def execute(self, sql: str, parameters: Any = ()) -> Cursor:
+            nonlocal aggregate_started
+            if sql.startswith("SELECT origin"):
+                aggregate_started = True
+            return super().execute(sql, parameters)
+
+    class Connection(sqlite3.Connection):
+        def cursor(self, factory: Any = None) -> Any:
+            return super().cursor(Cursor if factory is None else factory)
+
+        def close(self) -> None:
+            nonlocal closed
+            super().close()
+            closed = True
+
+    monkeypatch.setattr(module, "connect_scratch_database", lambda path: sqlite3.connect(path, factory=Connection))
+
+    def checkpoint() -> None:
+        if aggregate_started:
+            raise failure
+
+    rows = ({"origin": "codex", "session_id": f"s{i}", "tool_command": "foo"} for i in range(2000))
+    with pytest.raises(RuntimeError) as caught:
+        module.build_command_shape_usage(rows, CommandShapeUsageQuery(), materialized_at="now", checkpoint=checkpoint)
+    assert caught.value is failure
+    assert closed
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("same_failure", [False, True])
+def test_scratch_cleanup_preserves_primary_and_distinct_faults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_failure: bool
+) -> None:
+    import sqlite3
+    import tempfile
+
+    import polylogue.analysis.command_shapes as module
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    primary = RuntimeError("injected fold failure")
+    cleanup = primary if same_failure else RuntimeError("injected cleanup failure")
+    closed = False
+
+    class Connection(sqlite3.Connection):
+        def close(self) -> None:
+            nonlocal closed
+            super().close()
+            closed = True
+            raise cleanup
+
+    monkeypatch.setattr(module, "connect_scratch_database", lambda path: sqlite3.connect(path, factory=Connection))
+
+    def rows() -> Iterator[dict[str, object]]:
+        yield {"origin": "codex", "session_id": "s", "tool_command": "foo"}
+        raise primary
+
+    with pytest.raises(BaseException) as caught:
+        module.build_command_shape_usage(rows(), CommandShapeUsageQuery(), materialized_at="now")
+    if same_failure:
+        assert caught.value is primary
+    else:
+        assert isinstance(caught.value, BaseExceptionGroup)
+        assert caught.value.exceptions == (primary, cleanup)
+    assert closed
+    assert list(tmp_path.iterdir()) == []

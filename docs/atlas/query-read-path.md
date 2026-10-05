@@ -222,3 +222,14 @@ The public thread insight route searches session identity, title, repository URL
 ## Attachment library session scope
 
 The attachment library applies a session filter to its canonical composed transcript before selecting the requested page. Parent-message references through the inherited branch cut are included; references after the cut and foreign messages are excluded. Rows retain their physical owning session, message and provider reference attribution. Both the pinned HTTP reader and asynchronous repository use one shared SQL selection and the existing snapshot/lineage owners. Incomplete lineage refuses the read instead of claiming a complete child-only library; an absent materialized session profile is not a lineage fault. Pages use the same newest-session, transcript-position, attachment-ID and reference-ID order. Planning retains segment metadata, without hydrating all messages or collecting every message ID. Existing offset and SQL relation scans can still scale with the selected relation.
+
+Command-shape usage streams the pinned action relation through the existing shell
+normalizer into a disposable SQLite fold. It retains execution multiplicity and
+counts distinct sessions before selecting the requested aggregate page. Python
+memory holds one command and the returned page; the fold and SQL sort can use
+disk proportional to the selected actions and distinct session/shape pairs. Each
+page still scans its selected input relation. Cancellation checks cover both
+normalization and scratch SQL, and scratch resources settle before the read
+returns. A repository filter projects that admitted repository; unfiltered
+reads retain the alphabetical representative. MCP lowers its public `repo`
+operand to the registry model's declared repository field.

@@ -14,14 +14,20 @@ materializer, worker, or freshness lifecycle of its own.
 
 from __future__ import annotations
 
+import math
 import os
 import shlex
-from collections.abc import Sequence
-
-from typing_extensions import TypedDict
+import sqlite3
+import tempfile
+from builtins import BaseExceptionGroup
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from functools import partial
+from pathlib import Path
 
 from polylogue.analysis.archive import PaginatedInsightQuery
 from polylogue.analysis.archive_models import ArchiveInsightModel, ArchiveInsightProvenance
+from polylogue.core.sqlite_scratch import connect_scratch_database
 
 COMMAND_SHAPES_INSIGHT_VERSION = 1
 
@@ -46,12 +52,6 @@ class CommandShapeUsageQuery(PaginatedInsightQuery):
     repository: str | None = None
     since: str | None = None
     until: str | None = None
-
-
-class _Aggregate(TypedDict):
-    count: int
-    last_ms: float | None
-    sessions: set[str]
 
 
 def normalize_command_shapes(command: str | None) -> tuple[str, ...]:
@@ -133,47 +133,139 @@ def _path_like(token: str) -> bool:
     return token in {".", ".."} or token.startswith(("/", "./", "../", "~/")) or "/" in token
 
 
+@contextmanager
+def _command_shape_scratch() -> Iterator[tuple[sqlite3.Connection, sqlite3.Cursor]]:
+    """Own one disposable fold and settle every resource before returning."""
+    directory = tempfile.TemporaryDirectory(prefix="polylogue-command-shapes-")
+    scratch: sqlite3.Connection | None = None
+    cursor: sqlite3.Cursor | None = None
+    primary: BaseException | None = None
+    try:
+        scratch = connect_scratch_database(Path(directory.name) / "usage.db")
+        cursor = scratch.cursor()
+        yield scratch, cursor
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        faults: list[BaseException] = []
+        if primary is not None:
+            faults.append(primary)
+        cleanup: list[Callable[[], object]] = []
+        if scratch is not None:
+            cleanup.append(partial(scratch.set_progress_handler, None, 0))
+        if cursor is not None:
+            cleanup.append(cursor.close)
+        if scratch is not None:
+            cleanup.append(scratch.close)
+        cleanup.append(directory.cleanup)
+        for finish in cleanup:
+            try:
+                finish()
+            except BaseException as exc:
+                if all(exc is not fault for fault in faults):
+                    faults.append(exc)
+        if faults and (primary is None or len(faults) > 1):
+            if len(faults) == 1:
+                raise faults[0]
+            raise BaseExceptionGroup("command-shape fold and cleanup failed", faults) from None
+
+
 def build_command_shape_usage(
-    rows: Sequence[dict[str, object]],
+    rows: Iterable[Mapping[str, object]],
     query: CommandShapeUsageQuery,
     *,
     materialized_at: str,
+    checkpoint: Callable[[], None] = lambda: None,
 ) -> list[CommandShapeUsage]:
-    """Aggregate normalized action rows into stable public insight rows."""
-    grouped: dict[tuple[str, str | None, str], _Aggregate] = {}
-    for row in rows:
-        for shape in normalize_command_shapes(_text(row.get("tool_command"))):
-            key = (str(row["origin"]), _optional_text(row.get("repository")), shape)
-            item = grouped.setdefault(key, {"count": 0, "last_ms": None, "sessions": set()})
-            item["count"] = int(item["count"]) + 1
-            item["sessions"].add(str(row["session_id"]))
-            timestamp = row.get("occurred_at_ms")
-            if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool):
-                item["last_ms"] = max(item["last_ms"] or float(timestamp), float(timestamp))
-    result: list[CommandShapeUsage] = []
-    for (origin, repository, shape), item in grouped.items():
-        last_ms = item["last_ms"]
-        result.append(
-            CommandShapeUsage(
-                origin=origin,
-                repository=repository,
-                command_shape=shape,
-                execution_count=int(item["count"]),
-                session_count=len(item["sessions"]),
-                last_used_at=_iso_ms(last_ms),
-                window_since=query.since,
-                window_until=query.until,
-                provenance=ArchiveInsightProvenance(
-                    materializer_version=COMMAND_SHAPES_INSIGHT_VERSION,
-                    materialized_at=materialized_at,
-                    source_updated_at=_iso_ms(last_ms),
-                    source_sort_key=float(last_ms) / 1000 if last_ms is not None else None,
-                ),
-            )
+    """Stream normalized executions to disk, then page their exact aggregate."""
+    checkpoint()
+    with _command_shape_scratch() as (scratch, cursor):
+        cursor.execute("PRAGMA temp_store = FILE")
+        cursor.execute("PRAGMA cache_size = -2048")
+        cursor.execute(
+            "CREATE TABLE usage (origin TEXT NOT NULL, repository TEXT NOT NULL, shape TEXT NOT NULL, "
+            "session_id TEXT NOT NULL, executions INTEGER NOT NULL, last_ms REAL, "
+            "PRIMARY KEY(origin, repository, shape, session_id)) WITHOUT ROWID, STRICT"
         )
-    result.sort(key=lambda item: (-item.execution_count, item.command_shape, item.origin, item.repository or ""))
-    start = query.offset
-    return result[start : start + query.limit] if query.limit is not None else result[start:]
+        cancelled: BaseException | None = None
+
+        def progress() -> int:
+            nonlocal cancelled
+            try:
+                checkpoint()
+            except BaseException as exc:
+                cancelled = exc
+                return 1
+            return 0
+
+        scratch.set_progress_handler(progress, 1000)
+
+        def normalized_rows() -> Iterator[tuple[str, str, str, str, float | None]]:
+            for row in rows:
+                checkpoint()
+                timestamp = row.get("occurred_at_ms")
+                last_ms = (
+                    float(timestamp)
+                    if isinstance(timestamp, (int, float)) and not isinstance(timestamp, bool)
+                    else None
+                )
+                if last_ms is not None and not math.isfinite(last_ms):
+                    raise ValueError("command-shape timestamp must be finite")
+                for shape in normalize_command_shapes(_text(row.get("tool_command"))):
+                    checkpoint()
+                    yield (
+                        str(row["origin"]),
+                        _optional_text(row.get("repository")) or "",
+                        shape,
+                        str(row["session_id"]),
+                        last_ms,
+                    )
+
+        try:
+            # One disposable transaction; repeated stages retain multiplicity,
+            # while each session contributes once to a shape's session count.
+            cursor.execute("BEGIN")
+            cursor.executemany(
+                "INSERT INTO usage VALUES (?, ?, ?, ?, 1, ?) "
+                "ON CONFLICT(origin, repository, shape, session_id) DO UPDATE SET "
+                "executions = executions + 1, "
+                "last_ms = CASE WHEN excluded.last_ms IS NULL THEN last_ms "
+                "WHEN last_ms IS NULL THEN excluded.last_ms ELSE MAX(last_ms, excluded.last_ms) END",
+                normalized_rows(),
+            )
+            cursor.execute(
+                "SELECT origin, repository, shape, SUM(executions), COUNT(*), MAX(last_ms) FROM usage "
+                "GROUP BY origin, repository, shape "
+                "ORDER BY SUM(executions) DESC, shape, origin, repository LIMIT ? OFFSET ?",
+                (query.limit if query.limit is not None else -1, query.offset),
+            )
+            result: list[CommandShapeUsage] = []
+            for origin, repository, shape, executions, sessions, last_ms in cursor:
+                checkpoint()
+                result.append(
+                    CommandShapeUsage(
+                        origin=origin,
+                        repository=repository or None,
+                        command_shape=shape,
+                        execution_count=executions,
+                        session_count=sessions,
+                        last_used_at=_iso_ms(last_ms),
+                        window_since=query.since,
+                        window_until=query.until,
+                        provenance=ArchiveInsightProvenance(
+                            materializer_version=COMMAND_SHAPES_INSIGHT_VERSION,
+                            materialized_at=materialized_at,
+                            source_updated_at=_iso_ms(last_ms),
+                            source_sort_key=float(last_ms) / 1000 if last_ms is not None else None,
+                        ),
+                    )
+                )
+            return result
+        except sqlite3.Error as exc:
+            if cancelled is not None and getattr(exc, "sqlite_errorcode", None) == sqlite3.SQLITE_INTERRUPT:
+                raise cancelled from None
+            raise
 
 
 def _text(value: object) -> str | None:

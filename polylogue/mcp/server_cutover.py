@@ -964,7 +964,19 @@ async def _query_registry_insight(
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
         kwargs["offset"] = offset if offset is not None else 0
-    for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
+    if repo is not None:
+        repository_fields = fields.intersection({"repo", "repository"})
+        if len(repository_fields) == 2 and (
+            query_model.model_fields["repo"].annotation != query_model.model_fields["repository"].annotation
+        ):
+            return hooks.error_json(
+                f"insight {descriptor.name!r} declares incompatible repository fields",
+                code="unsupported_projection",
+                tool="query",
+            )
+        if repository_fields:
+            kwargs["repo" if "repo" in repository_fields else "repository"] = repo
+    for key, value in (("origin", origin), ("tag", tag), ("since", since), ("until", until)):
         if value is not None and key in fields:
             kwargs[key] = value
 
