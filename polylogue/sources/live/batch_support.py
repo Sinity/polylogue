@@ -1427,6 +1427,14 @@ def _classify_pre_acquisition(
         and hermes_member is not None
         and hermes_member.disposition != "out-of-scope"
     )
+    if (
+        fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
+        and sqlite_classification is not None
+        and sqlite_classification.antigravity
+    ):
+        # A schema-verified trajectory store is admitted by its schema, also
+        # when staged in the import inbox, whose source carries no provider.
+        return PreAcquisitionDecision(None)
     source_class = recognize_source_class(
         fallback_provider, path, source_only=source_only, sqlite_classification=sqlite_classification
     )
@@ -1440,12 +1448,6 @@ def _classify_pre_acquisition(
         except ForeignOriginContentError as exc:
             return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
-    if (
-        fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN}
-        and sqlite_classification is not None
-        and sqlite_classification.antigravity
-    ):
-        return PreAcquisitionDecision(None)
     if hermes_owned_sqlite_name or (
         not source_only
         and sqlite_classification is not None
