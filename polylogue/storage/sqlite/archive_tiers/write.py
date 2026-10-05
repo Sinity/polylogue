@@ -11405,6 +11405,10 @@ def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> i
 _SESSION_EVENTS_REDUNDANT_TYPES = frozenset(
     {"token_count", "message_usage", "agent_policy", "agent_message", "agent_reasoning"}
 )
+# Usage events carry a typed ``source_message_resolution``: an id naming
+# several occurrences is recorded as ``ambiguous`` (polylogue-1pzmq) instead of
+# refusing the session. Other events have no typed slot for that ambiguity.
+_TYPED_USAGE_EVENT_TYPES = frozenset({"token_count", "message_usage"})
 
 
 def _last_agent_policy_values(
@@ -11577,6 +11581,7 @@ def _write_session_events(
                 if (
                     source_message_id is None
                     and source_message_provider_id
+                    and event.event_type not in _TYPED_USAGE_EVENT_TYPES
                     and (
                         source_message_provider_id.strip() in duplicate_native_ids
                         or source_message_provider_id.strip() in ambiguous_source_provider_ids
@@ -11646,7 +11651,7 @@ def _write_session_events(
                             to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                         ),
                     )
-            elif event.event_type in {"token_count", "message_usage"}:
+            elif event.event_type in _TYPED_USAGE_EVENT_TYPES:
                 # polylogue-1pzmq: an event whose declared provider message id
                 # resolves to no row here used to be dropped outright. The
                 # commonest cause is not a malformed export but a deliberate
