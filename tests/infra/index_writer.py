@@ -257,14 +257,7 @@ def write_fixture_index_session(
         seal.require_source_target(Path(path))
 
     def prepare(index: sqlite3.Connection, source_read: Any, before_input: Any = None) -> Any:
-        rows = kwargs.pop("prepared_rows", None)
-        if isinstance(rows, PreparedSessionShardRows):
-            identities = rows.entry.content_identities
-            if not isinstance(identities, ShardIdentitySequence):
-                raise TypeError("fixture shard must carry its sealed identity sequence")
-            rows = prepared_session_rows_from_shard(identities.path, rows.session_id)
-        if rows is not None and not isinstance(rows, PreparedSessionRows):
-            raise TypeError("fixture rows must be the canonical prepared carrier")
+        rows = _canonical_prepared_rows(kwargs.pop("prepared_rows", None))
         prepared = prepare_session_write(
             index,
             session,
@@ -372,6 +365,18 @@ def write_fixture_index_session(
                 raise
 
 
+def _canonical_prepared_rows(rows: object) -> PreparedSessionRows | None:
+    """Resolve a fixture's supplied rows (or sealed shard binding) to the canonical carrier."""
+    if isinstance(rows, PreparedSessionShardRows):
+        identities = rows.entry.content_identities
+        if not isinstance(identities, ShardIdentitySequence):
+            raise TypeError("fixture shard must carry its sealed identity sequence")
+        rows = prepared_session_rows_from_shard(identities.path, rows.session_id)
+    if rows is not None and not isinstance(rows, PreparedSessionRows):
+        raise TypeError("fixture rows must be the canonical prepared carrier")
+    return rows
+
+
 def _secondary_indexes_deferred(conn: sqlite3.Connection) -> bool:
     """Whether this Index is inside a bulk build: every deferrable index is dropped."""
     from polylogue.storage.sqlite.runtime_indexes import DEFERRED_SECONDARY_INDEX_NAMES
@@ -389,9 +394,19 @@ def _secondary_indexes_deferred(conn: sqlite3.Connection) -> bool:
 
 @contextmanager
 def prepared_fixture_index_batch(
-    conn: sqlite3.Connection, sessions: Sequence[ParsedSession], *, archive_root: Path
+    conn: sqlite3.Connection,
+    sessions: Sequence[ParsedSession],
+    *,
+    archive_root: Path,
+    prepared_rows: Sequence[object] | None = None,
 ) -> Iterator[tuple[PreparedIndexMutation, tuple[PreparedSessionWrite, ...]]]:
-    """Prepare all neutral session inputs before one original Index publication."""
+    """Prepare all neutral session inputs before one original Index publication.
+
+    ``prepared_rows`` optionally supplies each session's already prepared rows
+    (or sealed shard binding), in session order.
+    """
+    if prepared_rows is not None and len(prepared_rows) != len(sessions):
+        raise ValueError("fixture batch prepared rows must name every session")
     if current_index_mutation_scope() is not None:
         raise ValueError("fixture batch preparation must precede its Index transaction scope")
     path = index_path_for_connection(conn)
@@ -423,13 +438,16 @@ def prepared_fixture_index_batch(
                 source_read = PreparedSessionSourceRead(
                     seal, blob_store=blob_store_for_connection(seal.observer("source"))
                 )
-                for session in sessions:
+                for ordinal, session in enumerate(sessions):
                     pending.append(
                         prepare_session_write(
                             seal.observer("index"),
                             session,
                             merge_append=False,
                             source_read=source_read,
+                            prepared_rows=(
+                                None if prepared_rows is None else _canonical_prepared_rows(prepared_rows[ordinal])
+                            ),
                             before_input=seal.before_index_input,
                         )
                     )
@@ -446,6 +464,7 @@ def published_fixture_index_batch(
     *,
     archive_root: Path,
     before_publish: Callable[[], object] | None = None,
+    prepared_rows: Sequence[object] | None = None,
     **write_options: Any,
 ) -> Iterator[list[str]]:
     """Prepare every session first, then publish them all in one Index write scope.
@@ -463,7 +482,10 @@ def published_fixture_index_batch(
         with _fixture_writer_admission(conn, "test.fixture.batch.bootstrap", archive_root):
             bootstrap_archive_root(archive_root)
     with (
-        prepared_fixture_index_batch(conn, sessions, archive_root=archive_root) as (seal, prepared),
+        prepared_fixture_index_batch(conn, sessions, archive_root=archive_root, prepared_rows=prepared_rows) as (
+            seal,
+            prepared,
+        ),
         _fixture_writer_admission(conn, "test.fixture.index.batch", archive_root),
         seal.mutation_scope(conn),
     ):
